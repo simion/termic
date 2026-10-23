@@ -17,6 +17,8 @@ import { cn } from "@/lib/utils";
 import { focusMainTab } from "@/lib/tabFocus";
 import { groupOf } from "@/lib/projectGroups";
 import { accentCss } from "@/lib/accents";
+import { kbd } from "@/lib/platform";
+import { eventCmd } from "@/lib/shortcuts";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import {
@@ -32,6 +34,22 @@ import type { WorkStatePrefs } from "@/lib/taskWorkState";
 const MAX_RESULTS = 30;
 
 export const STATUS_QUALIFIER_RE = /(?:^|\s)(?:status|is):(?:"([^"]+)"|'([^']+)'|([^\s]+))/i;
+
+export interface FilterOption {
+  key: string;
+  column: BoardStateColumn | null;
+  labelKey: string;
+  accent?: string;
+}
+
+export const FILTER_OPTIONS: readonly FilterOption[] = [
+  { key: "1", column: null, labelKey: "taskFinder.filterAll" },
+  { key: "2", column: "working", labelKey: "taskFinder.filterWorking", accent: COL_ACCENT.working },
+  { key: "3", column: "settled", labelKey: "taskFinder.filterSettled", accent: COL_ACCENT.settled },
+  { key: "4", column: "attention", labelKey: "taskFinder.filterAttention", accent: COL_ACCENT.attention },
+  { key: "5", column: "review", labelKey: "taskFinder.filterReview", accent: COL_ACCENT.review },
+  { key: "6", column: "backlog", labelKey: "taskFinder.filterBacklog", accent: COL_ACCENT.backlog },
+];
 
 export function resolveStatusQualifier(
   raw: string,
@@ -113,17 +131,45 @@ export function TaskFinderDialog() {
   );
 
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<BoardStateColumn | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  // Reset query and active selection whenever the finder opens.
+  // Reset query, status filter, and active selection whenever the finder opens.
   useEffect(() => {
     if (open) {
       setQuery("");
+      setStatusFilter(null);
       setActiveIdx(0);
     }
   }, [open]);
+
+  // Derive any status qualifier typed directly in the query (e.g. `is:review` or `status:working`).
+  const queryQualifier = useMemo<BoardStateColumn | null>(() => {
+    const m = query.match(STATUS_QUALIFIER_RE);
+    if (!m) return null;
+    const rawVal = m[1] || m[2] || m[3] || "";
+    return resolveStatusQualifier(rawVal, tc);
+  }, [query, tc]);
+
+  // Unified effective status: a typed qualifier in the search box takes priority
+  // so the displayed results and highlighted footer filter chip always agree.
+  const activeStatus = queryQualifier ?? statusFilter;
+
+  const selectStatusFilter = useCallback((col: BoardStateColumn | null) => {
+    // If the selected filter is already active (via statusFilter or typed qualifier),
+    // selecting it again toggles it off back to All.
+    const isAlreadyActive = col !== null && activeStatus === col;
+    const nextCol = isAlreadyActive || col === null ? null : col;
+
+    if (STATUS_QUALIFIER_RE.test(query)) {
+      setQuery(q => q.replace(STATUS_QUALIFIER_RE, " ").replace(/\s+/g, " ").trim());
+    }
+    setStatusFilter(nextCol);
+    inputRef.current?.focus();
+  }, [activeStatus, query]);
 
   const results = useMemo<ScoredTask[]>(() => {
     if (!open) return [];
@@ -142,8 +188,21 @@ export function TaskFinderDialog() {
 
     const trimmed = query.trim();
 
-    if (!trimmed) {
-      // Empty query: order primarily by recency, with current task at top.
+    // Parse optional status: / is: qualifier from query text or explicit statusFilter
+    let filterColumn: BoardStateColumn | null = statusFilter;
+    let q = trimmed;
+    const qualifierMatch = q.match(STATUS_QUALIFIER_RE);
+    if (qualifierMatch) {
+      const rawVal = qualifierMatch[1] || qualifierMatch[2] || qualifierMatch[3] || "";
+      const resolved = resolveStatusQualifier(rawVal, tc);
+      if (resolved) {
+        filterColumn = resolved;
+        q = q.replace(qualifierMatch[0], " ").trim();
+      }
+    }
+
+    if (!trimmed && !filterColumn) {
+      // Empty query and no filter: order primarily by recency, with current task at top.
       const sorted = [...unarchived].sort((a, b) => {
         if (a.id === activeTaskId) return -1;
         if (b.id === activeTaskId) return 1;
@@ -176,19 +235,6 @@ export function TaskFinderDialog() {
     }
 
     const scored: ScoredTask[] = [];
-
-    // Parse optional status: / is: qualifier
-    let filterColumn: BoardStateColumn | null = null;
-    let q = trimmed;
-    const qualifierMatch = q.match(STATUS_QUALIFIER_RE);
-    if (qualifierMatch) {
-      const rawVal = qualifierMatch[1] || qualifierMatch[2] || qualifierMatch[3] || "";
-      const resolved = resolveStatusQualifier(rawVal, tc);
-      if (resolved) {
-        filterColumn = resolved;
-        q = q.replace(qualifierMatch[0], " ").trim();
-      }
-    }
 
     for (const task of unarchived) {
       const facts = statusFacts[task.id] ?? NO_TAB_FACTS;
@@ -257,12 +303,12 @@ export function TaskFinderDialog() {
 
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, MAX_RESULTS);
-  }, [open, tasks, projects, recentTasks, activeTaskId, query, statusFacts, prByTask, workPrefs, tc]);
+  }, [open, tasks, projects, recentTasks, activeTaskId, query, statusFilter, statusFacts, prByTask, workPrefs, tc]);
 
-  // Keep active index clamped and reset when search results change.
+  // Keep active index clamped and reset when search query or filter changes.
   useEffect(() => {
     setActiveIdx(0);
-  }, [query]);
+  }, [query, statusFilter]);
 
   useEffect(() => {
     if (activeIdx > results.length - 1) {
@@ -285,6 +331,17 @@ export function TaskFinderDialog() {
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
+    const isCmd = eventCmd(e.nativeEvent);
+    if (isCmd && !e.shiftKey && !e.altKey) {
+      const match = FILTER_OPTIONS.find(opt => e.key === opt.key || e.code === `Digit${opt.key}`);
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        selectStatusFilter(match.column);
+        return;
+      }
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIdx(i => Math.min(i + 1, results.length - 1));
@@ -325,6 +382,7 @@ export function TaskFinderDialog() {
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input
+              ref={inputRef}
               autoFocus
               data-testid="task-finder-input"
               value={query}
@@ -352,7 +410,7 @@ export function TaskFinderDialog() {
           <div ref={listRef} className="max-h-[70vh] overflow-y-auto py-1">
             {results.length === 0 && (
               <div className="px-3 py-6 text-center text-[13px] text-[var(--color-fg-faint)]">
-                {query.trim() ? t("taskFinder.noMatching") : t("taskFinder.noTasks")}
+                {query.trim() || activeStatus ? t("taskFinder.noMatching") : t("taskFinder.noTasks")}
               </div>
             )}
             {results.map((r, i) => {
@@ -435,9 +493,44 @@ export function TaskFinderDialog() {
             })}
           </div>
 
-          <div className="flex items-center justify-between border-t border-[var(--color-border-soft)] px-3 py-1.5 text-[11px] text-[var(--color-fg-faint)]">
-            <span>{t("taskFinder.count", { count: results.length })}</span>
-            <span className="flex items-center gap-2.5">
+          <div className="flex items-center justify-between border-t border-[var(--color-border-soft)] px-3 py-1.5 text-[11px] text-[var(--color-fg-faint)] select-none">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="shrink-0">{t("taskFinder.count", { count: results.length })}</span>
+              <span className="h-3 w-px shrink-0 bg-[var(--color-border-soft)]" />
+              <div className="flex items-center gap-1 overflow-x-auto py-0.5">
+                {FILTER_OPTIONS.map(({ key, column, labelKey, accent }) => {
+                  const isActive = column === null ? activeStatus === null : activeStatus === column;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      tabIndex={-1}
+                      data-testid={`task-finder-filter-${column ?? "all"}`}
+                      data-active={isActive || undefined}
+                      onMouseDown={e => {
+                        // Prevent button click from stealing DOM focus from the search input on Windows/Linux.
+                        e.preventDefault();
+                      }}
+                      onClick={() => selectStatusFilter(column)}
+                      className={cn(
+                        "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] transition-colors",
+                        isActive
+                          ? "bg-[var(--color-bg-3)] font-medium text-[var(--color-fg)]"
+                          : "text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg-dim)]",
+                      )}
+                      style={isActive && accent ? { color: accent } : undefined}
+                    >
+                      <kbd className="rounded border border-[var(--color-border)] px-1 py-0.5 text-[9.5px] font-mono leading-none">
+                        {kbd(`⌘${key}`)}
+                      </kbd>
+                      <span>{t(labelKey)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <span className="flex shrink-0 items-center gap-2.5">
               <span><kbd className="rounded border border-[var(--color-border)] px-1 py-0.5 text-[10px]">↑↓</kbd> {t("taskFinder.navigate")}</span>
               <span><kbd className="rounded border border-[var(--color-border)] px-1 py-0.5 text-[10px]">↵</kbd> {t("taskFinder.switch")}</span>
               <span><kbd className="rounded border border-[var(--color-border)] px-1 py-0.5 text-[10px]">esc</kbd> {t("taskFinder.dismiss")}</span>

@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
@@ -21,8 +23,10 @@ import { DEFAULT_BINDINGS, SHORTCUT_DEFS } from "@/lib/shortcuts";
 import { shortcutLabel } from "@/lib/shortcutCopy";
 import { i18n } from "@/lib/i18n";
 import { fuzzyMatch } from "@/lib/fuzzy";
-import { resolveStatusQualifier, STATUS_QUALIFIER_RE } from "./TaskFinderDialog";
+import { TaskFinderDialog, FILTER_OPTIONS, resolveStatusQualifier, STATUS_QUALIFIER_RE } from "./TaskFinderDialog";
 import type { Task, Project } from "@/lib/types";
+
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("TaskFinder shortcut and state", () => {
   beforeEach(() => {
@@ -172,5 +176,194 @@ describe("resolveStatusQualifier and STATUS_QUALIFIER_RE", () => {
     const m5 = "status:not-started".match(STATUS_QUALIFIER_RE);
     expect(m5).toBeTruthy();
     expect(m5?.[1] || m5?.[2] || m5?.[3]).toBe("not-started");
+  });
+});
+
+describe("FILTER_OPTIONS and quick filter shortcuts", () => {
+  it("defines 6 filter options with numeric shortcuts 1-6", () => {
+    expect(FILTER_OPTIONS).toHaveLength(6);
+    expect(FILTER_OPTIONS.map(o => o.key)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(FILTER_OPTIONS.map(o => o.column)).toEqual([null, "working", "settled", "attention", "review", "backlog"]);
+    expect(FILTER_OPTIONS[0].labelKey).toBe("taskFinder.filterAll");
+    expect(FILTER_OPTIONS[1].labelKey).toBe("taskFinder.filterWorking");
+    expect(FILTER_OPTIONS[2].labelKey).toBe("taskFinder.filterSettled");
+    expect(FILTER_OPTIONS[3].labelKey).toBe("taskFinder.filterAttention");
+    expect(FILTER_OPTIONS[4].labelKey).toBe("taskFinder.filterReview");
+    expect(FILTER_OPTIONS[5].labelKey).toBe("taskFinder.filterBacklog");
+  });
+
+  it("resolves all filter label keys in en and zh-CN", () => {
+    const tEn = i18n.getFixedT("en", "dialogs");
+    const tZh = i18n.getFixedT("zh-CN", "dialogs");
+
+    for (const opt of FILTER_OPTIONS) {
+      const en = tEn(opt.labelKey);
+      const zh = tZh(opt.labelKey);
+      expect(en).toBeTruthy();
+      expect(zh).toBeTruthy();
+      expect(en).not.toBe(opt.labelKey);
+      expect(zh).not.toBe(opt.labelKey);
+    }
+
+    expect(tEn("taskFinder.filterAll")).toBe("all");
+    expect(tEn("taskFinder.filterWorking")).toBe("working");
+    expect(tEn("taskFinder.filterSettled")).toBe("settled");
+    expect(tEn("taskFinder.filterAttention")).toBe("attention");
+    expect(tEn("taskFinder.filterReview")).toBe("review");
+    expect(tEn("taskFinder.filterBacklog")).toBe("backlog");
+
+    expect(tZh("taskFinder.filterAll")).toBe("全部");
+    expect(tZh("taskFinder.filterWorking")).toBe("进行中");
+    expect(tZh("taskFinder.filterSettled")).toBe("已完成");
+    expect(tZh("taskFinder.filterAttention")).toBe("需要注意");
+    expect(tZh("taskFinder.filterReview")).toBe("审查中");
+    expect(tZh("taskFinder.filterBacklog")).toBe("未开始");
+  });
+
+  it("toggles and resets filter column states correctly", () => {
+    const toggle = (prev: string | null, next: string | null) =>
+      next === null ? null : prev === next ? null : next;
+
+    expect(toggle(null, "working")).toBe("working");
+    expect(toggle("working", "working")).toBe(null);
+    expect(toggle("working", "settled")).toBe("settled");
+    expect(toggle("settled", null)).toBe(null);
+  });
+
+  it("strips status qualifier tokens cleanly from query strings", () => {
+    const strip = (q: string) => q.replace(STATUS_QUALIFIER_RE, " ").replace(/\s+/g, " ").trim();
+
+    expect(strip("is:working")).toBe("");
+    expect(strip("status:settled")).toBe("");
+    expect(strip("termic is:working")).toBe("termic");
+    expect(strip('auth status:"in review" client')).toBe("auth client");
+    expect(strip("plain query")).toBe("plain query");
+  });
+});
+
+describe("mounted TaskFinderDialog interactions", () => {
+  let root: Root;
+  let host: HTMLDivElement;
+
+  const filterBtn = (name: string) =>
+    document.querySelector<HTMLButtonElement>(`[data-testid="task-finder-filter-${name}"]`)!;
+  const searchInput = () =>
+    document.querySelector<HTMLInputElement>('[data-testid="task-finder-input"]')!;
+
+  async function typeQuery(text: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(searchInput(), text);
+      searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  async function pressShortcut(key: string, modifiers = { ctrlKey: true }) {
+    await act(async () => {
+      searchInput().dispatchEvent(
+        new KeyboardEvent("keydown", { key, code: `Digit${key}`, bubbles: true, cancelable: true, ...modifiers }),
+      );
+    });
+  }
+
+  beforeEach(async () => {
+    useApp.setState({
+      tasks: [
+        { id: "t-review", project_id: "p1", name: "review-task", branch: "review", cli: "claude", pr_url: "https://acme.com/pull/1", archived: false },
+        { id: "t-backlog", project_id: "p1", name: "backlog-task", branch: "backlog", cli: "claude", archived: false },
+      ] as any,
+      projects: [{ id: "p1", name: "termic" }] as any,
+      recentTasks: [],
+      activeTaskId: null,
+      tabs: {},
+      agents: [],
+      groupColors: {},
+    });
+    useUI.setState({ taskFinderOpen: true });
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(createElement(TaskFinderDialog));
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+    useUI.setState({ taskFinderOpen: false });
+  });
+
+  it("keeps the active footer consistent with a typed qualifier after a shortcut", async () => {
+    await pressShortcut("2");
+    expect(filterBtn("working").dataset.active).toBe("true");
+
+    await typeQuery("is:review");
+    expect(document.querySelector("[data-row]")?.textContent).toContain("review-task");
+    expect(filterBtn("review").dataset.active).toBe("true");
+    expect(filterBtn("working").dataset.active).toBeUndefined();
+  });
+
+  it("toggles a query-derived active filter off on the first shortcut", async () => {
+    await typeQuery("is:review");
+    expect(filterBtn("review").dataset.active).toBe("true");
+
+    await pressShortcut("5");
+    expect(searchInput().value).toBe("");
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(filterBtn("review").dataset.active).toBeUndefined();
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])(
+    "handles shortcut modifiers %j and All reset",
+    async modifiers => {
+      await pressShortcut("5", modifiers as any);
+      expect(filterBtn("review").dataset.active).toBe("true");
+      expect(document.querySelectorAll("[data-row]")).toHaveLength(1);
+
+      await pressShortcut("1", modifiers as any);
+      expect(filterBtn("all").dataset.active).toBe("true");
+      expect(document.querySelectorAll("[data-row]")).toHaveLength(2);
+    },
+  );
+
+  it("handles mouse clicking footer filter buttons with mousedown preventDefault", async () => {
+    const reviewBtn = filterBtn("review");
+    const mousedownEv = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    reviewBtn.dispatchEvent(mousedownEv);
+    expect(mousedownEv.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      reviewBtn.click();
+    });
+    expect(filterBtn("review").dataset.active).toBe("true");
+    expect(document.querySelectorAll("[data-row]")).toHaveLength(1);
+  });
+
+  it("toggles backlog filter with shortcut 6", async () => {
+    await pressShortcut("6");
+    expect(filterBtn("backlog").dataset.active).toBe("true");
+    expect(document.querySelectorAll("[data-row]")).toHaveLength(1);
+    expect(document.querySelector("[data-row]")?.textContent).toContain("backlog-task");
+
+    await pressShortcut("6");
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(document.querySelectorAll("[data-row]")).toHaveLength(2);
+  });
+
+  it("resets query and filter state on reopen", async () => {
+    await pressShortcut("5");
+    expect(filterBtn("review").dataset.active).toBe("true");
+
+    await act(async () => {
+      useUI.getState().closeTaskFinder();
+    });
+    await act(async () => {
+      useUI.getState().openTaskFinder();
+    });
+
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("");
   });
 });
