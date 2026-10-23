@@ -530,7 +530,7 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
     await browser.execute((id) => {
       const t = window.__termic!;
       const app = t.useApp.getState() as any, ui = t.useUI.getState() as any;
-      for (const k of ["closeCommandPalette", "closeTaskFinder", "closePromptPalette", "closeProjectPicker", "closeFileFinder", "closeFindInFiles", "closeBroadcast", "closeCreatePr"]) {
+      for (const k of ["closeCommandPalette", "closeTaskFinder", "closePromptPalette", "closeProjectPicker", "closeFileFinder", "closeFindInFiles", "closeBroadcast", "closeCreatePr", "closeNewTabPalette"]) {
         try { ui[k]?.(); } catch { /* not every closer exists under that name */ }
       }
       if (app.view.settingsOpen) app.closeSettings();
@@ -652,7 +652,9 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
     { id: "jump-to-tab", group: "tab", key: "1", where: { super: "bottom" },
       setup: async () => { await ensureBottom(1); await openReadme(); }, undo: closeExtraTabs },
     { id: "new-tab", group: "bottom", modes: ["super"], where: { super: "bottom" }, setup: () => ensureBottom(1) },
-    { id: "new-tab", group: "menu", modes: ["ctrl"] },
+    // outside a terminal, new-tab opens the new tab palette (a useUI dialog),
+    // not the old + menu, so it shows up as a ui change.
+    { id: "new-tab", group: "ui", modes: ["ctrl"] },
     { id: "close-tab", group: "bottom", modes: ["super"], where: { super: "bottom" }, setup: () => ensureBottom(2) },
     { id: "close-tab", group: "tabs", modes: ["ctrl"], setup: openReadme, undo: closeExtraTabs },
     { id: "new-scratchpad", group: "tabs", undo: closeExtraTabs },
