@@ -262,6 +262,9 @@ describe("settings rail", () => {
     // the page shows (the fixture profile is not connected).
     ["sync", "Sync", "Stays on this machine"],
     ["sandbox", "Sandbox", "Global sandbox defaults"],
+    // The intro paragraph renders only once settings have loaded, so it
+    // also proves the page got past its loading state.
+    ["secrets", "Secrets", "Every secret lives in your Keychain"],
     // Marker has to be above the master toggle: everything else on this
     // page renders only once Docker sandboxing is enabled, and the fixture
     // profile leaves it off.

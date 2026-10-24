@@ -27,6 +27,7 @@ export default {
     cli: "Agent access",
     cliHint: "MCP & CLI",
     badgeExp: "Exp",
+    secrets: "Secrets",
     projects: "Projects",
     noProjects: "No projects yet.",
     pickProject: "Pick a project on the left to edit its settings.",

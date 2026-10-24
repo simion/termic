@@ -6,5 +6,6 @@ import task from "./en/task";
 import panels from "./en/panels";
 import chrome from "./en/chrome";
 import backend from "./en/backend";
+import secrets from "./en/secrets";
 
-export default { common, sidebar, settings, dialogs, task, panels, chrome, backend };
+export default { common, sidebar, settings, dialogs, task, panels, chrome, backend, secrets };

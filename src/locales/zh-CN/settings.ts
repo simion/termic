@@ -26,6 +26,7 @@ export default {
     cli: "智能体访问",
     cliHint: "MCP 和 CLI",
     badgeExp: "实验",
+    secrets: "密钥",
     projects: "项目",
     noProjects: "还没有项目。",
     pickProject: "在左侧选择一个项目以编辑其设置。",
