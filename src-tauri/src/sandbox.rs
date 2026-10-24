@@ -634,6 +634,19 @@ fn ppid_of(pid: u32) -> Option<u32> {
 #[cfg(not(target_os = "macos"))]
 fn ppid_of(_pid: u32) -> Option<u32> { None }
 
+/// Session id for a live PID. portable-pty `setsid()`s every PTY child, so
+/// an agent root's pid is its session id, and its descendants keep it after
+/// they are orphaned to launchd. It can't be forged into another task:
+/// `setsid` only ever starts a session numbered after the caller.
+#[cfg(unix)]
+fn sid_of(pid: u32) -> Option<u32> {
+    // SAFETY: getsid only reads the kernel's process table.
+    let s = unsafe { libc::getsid(pid as libc::pid_t) };
+    (s > 0).then_some(s as u32)
+}
+#[cfg(not(unix))]
+fn sid_of(_pid: u32) -> Option<u32> { None }
+
 /// Executable path for a PID, the popover's fallback when the log-parsed
 /// process name is empty or a bare version string. A path, not the
 /// kernel's short name: that is capped at 15 chars and, for claude's
@@ -649,17 +662,20 @@ fn exe_of(_pid: u32) -> Option<String> { None }
 
 /// Which task owns `pid`: walk up the PPID chain until a registered root
 /// (`roots`: root pid -> task id) turns up. Depth 20 guards against
-/// pathological pid loops (shouldn't happen on macOS).
-fn owner_of(mut pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> Option<u32>) -> Option<Arc<str>> {
+/// pathological pid loops (shouldn't happen on macOS). A process whose
+/// parent exited is reparented to launchd and breaks the walk, so the
+/// session id (see `sid_of`) is the fallback.
+fn owner_of(pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> Option<u32>, sid: impl Fn(u32) -> Option<u32>) -> Option<Arc<str>> {
+    let mut cur = pid;
     for _ in 0..20 {
-        if let Some(task) = roots.get(&pid) { return Some(task.clone()); }
-        if pid <= 1 { return None; }
-        match ppid(pid) {
-            Some(p) if p != pid => pid = p,
-            _ => return None,
+        if let Some(task) = roots.get(&cur) { return Some(task.clone()); }
+        if cur <= 1 { break; }
+        match ppid(cur) {
+            Some(p) if p != cur => cur = p,
+            _ => break,
         }
     }
-    None
+    sid(pid).and_then(|s| roots.get(&s).cloned())
 }
 
 /// Whether `pid` descends from one of `task_id`'s registered agent roots:
@@ -675,7 +691,7 @@ pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
         },
         Err(_) => return false,
     };
-    owner_of(pid, &roots, ppid_of).is_some()
+    owner_of(pid, &roots, ppid_of, sid_of).is_some()
 }
 
 /// `pid`'s executable and its parent chain, for logging a peer that
@@ -728,12 +744,13 @@ struct Router {
     roots: HashMap<u32, Arc<str>>,
     cache: HashMap<u32, Proc>,
     ppid: fn(u32) -> Option<u32>,
+    sid: fn(u32) -> Option<u32>,
     exe: fn(u32) -> Option<String>,
 }
 
 impl Router {
-    fn new(ppid: fn(u32) -> Option<u32>, exe: fn(u32) -> Option<String>) -> Self {
-        Router { gen: u64::MAX, roots: HashMap::new(), cache: HashMap::new(), ppid, exe }
+    fn new(ppid: fn(u32) -> Option<u32>, sid: fn(u32) -> Option<u32>, exe: fn(u32) -> Option<String>) -> Self {
+        Router { gen: u64::MAX, roots: HashMap::new(), cache: HashMap::new(), ppid, sid, exe }
     }
 }
 
@@ -760,7 +777,7 @@ impl Resolve for Router {
             if live.is_none() || live == Some(hit.ppid) { return hit.owner.clone(); }
         }
         let parent = live?;
-        let owner = owner_of(parent, &self.roots, self.ppid);
+        let owner = owner_of(parent, &self.roots, self.ppid, self.sid);
         self.cache.insert(pid, Proc { ppid: parent, owner: owner.clone(), exe: Default::default() });
         owner
     }
@@ -944,7 +961,7 @@ fn spawn_stream(gen: u64) -> Option<Child> {
     let stream_pid = child.id();
     dlog(&format!("[sandbox] path watcher started (log stream {stream_pid}, gen {gen})"));
     std::thread::spawn(move || {
-        let mut router = Router::new(ppid_of, exe_of);
+        let mut router = Router::new(ppid_of, sid_of, exe_of);
         for line in BufReader::new(stdout).lines().flatten() {
             dispatch_line(&line, &mut router);
         }
@@ -4074,12 +4091,24 @@ mod watcher_tests {
     #[test]
     fn owner_of_walks_to_the_registered_root() {
         let rs = roots(&[(100, "a"), (400_000, "b")]);
-        assert_eq!(owner_of(100, &rs, tree).as_deref(), Some("a"), "the root itself");
-        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"), "a grandchild");
-        assert_eq!(owner_of(400, &rs, tree), None, "unrelated, reaches launchd");
-        assert_eq!(owner_of(777, &rs, tree), None, "already exited");
-        assert_eq!(owner_of(900, &rs, tree), None, "self-parented loop");
-        assert_eq!(owner_of(300, &HashMap::new(), tree), None, "root unregistered");
+        assert_eq!(owner_of(100, &rs, tree, no_sid).as_deref(), Some("a"), "the root itself");
+        assert_eq!(owner_of(300, &rs, tree, no_sid).as_deref(), Some("a"), "a grandchild");
+        assert_eq!(owner_of(400, &rs, tree, no_sid), None, "unrelated, reaches launchd");
+        assert_eq!(owner_of(777, &rs, tree, no_sid), None, "already exited");
+        assert_eq!(owner_of(900, &rs, tree, no_sid), None, "self-parented loop");
+        assert_eq!(owner_of(300, &HashMap::new(), tree, no_sid), None, "root unregistered");
+    }
+
+    fn no_sid(_: u32) -> Option<u32> { None }
+
+    #[test]
+    fn owner_of_falls_back_to_the_session_for_an_orphan() {
+        // 400's parent exited, so it hangs off launchd but kept a's session.
+        let rs = roots(&[(100, "a")]);
+        let sid = |p: u32| match p { 400 => Some(100), 500 => Some(500), _ => None };
+        assert_eq!(owner_of(400, &rs, tree, sid).as_deref(), Some("a"), "orphan in a's session");
+        assert_eq!(owner_of(500, &rs, tree, sid), None, "its own session (setsid)");
+        assert_eq!(owner_of(400, &HashMap::new(), tree, sid), None, "root unregistered");
     }
 
     #[test]
@@ -4096,8 +4125,8 @@ mod watcher_tests {
     #[test]
     fn owner_of_tells_two_tasks_apart() {
         let rs = roots(&[(100, "a"), (400, "b")]);
-        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"));
-        assert_eq!(owner_of(400, &rs, tree).as_deref(), Some("b"));
+        assert_eq!(owner_of(300, &rs, tree, no_sid).as_deref(), Some("a"));
+        assert_eq!(owner_of(400, &rs, tree, no_sid).as_deref(), Some("b"));
     }
 
     #[cfg(unix)]
@@ -4182,7 +4211,7 @@ mod watcher_tests {
     #[test]
     fn router_caches_and_revalidates() {
         let calls = || RT_CALLS.load(Ordering::Relaxed);
-        let mut r = Router::new(rt_tree, |_| None);
+        let mut r = Router::new(rt_tree, |_| None, |_| None);
         register_root_pid("rt-a", 7100);
         assert_eq!(r.owner(7300).as_deref(), Some("rt-a"));
         let before = calls();
