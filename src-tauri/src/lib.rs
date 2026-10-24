@@ -36,6 +36,8 @@ pub mod agent_usage;
 pub mod codex_trust;
 mod sandbox;
 mod proxy;
+mod secrets;
+mod broker;
 mod proc_ctl;
 mod fs_link;
 #[cfg(windows)]
@@ -159,6 +161,10 @@ pub struct Project {
     /// tasks to Monitoring.
     #[serde(default)]
     pub default_sandbox_mode: Option<SandboxMode>,
+    /// Secrets role new tasks of this project start with (secrets.rs).
+    /// Overrides the agent's default; the task's own pick overrides this.
+    #[serde(default)]
+    pub default_role: Option<String>,
     /// New tasks of this project default to DOCKER rather than Seatbelt.
     /// Mutually exclusive with the two above in effect: when this is on, a
     /// create that does not pin an engine itself resolves to Docker and the
@@ -558,6 +564,14 @@ pub struct Task {
     /// file instead. See docs/sandbox.md "Keychain".
     #[serde(default)]
     pub sandbox_block_keychain: bool,
+    /// The task's Secrets role id (secrets.rs). None = inherit the
+    /// project's, then the agent's default; `Some("")` = explicit "No
+    /// secrets". Only applies while the Keychain is blocked.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Allows saved from the Secrets popover with the "this task" scope.
+    #[serde(default)]
+    pub secret_allows: Vec<secrets::TaskAllow>,
     /// Per-task YOLO (auto-approve / bypass-permissions) flag.
     /// Applied to EVERY agent launched in this task. Only meaningful
     /// when the task is NOT enforce-sandboxed — under Enforcing the
@@ -888,6 +902,16 @@ impl Task {
         self.sandbox_block_keychain && !self.docker_sandbox_enabled
             && matches!(self.effective_sandbox_mode(), SandboxMode::Enforce | SandboxMode::EnforceFs)
     }
+
+    /// A role only means something while the Keychain is blocked (secrets.rs
+    /// `resolve_role`), so every path that sets up or changes the sandbox
+    /// drops it once the block no longer applies. Turning the block back on
+    /// later then starts from the defaults, not a forgotten pick.
+    pub fn drop_role_unless_keychain_blocked(&mut self) {
+        if !self.keychain_blocked() {
+            self.role = None;
+        }
+    }
 }
 
 /// One entry in a multi-repo task's composition: a user-picked member
@@ -1001,6 +1025,10 @@ pub struct CreateTaskArgs {
     /// the first spawn is already cut off. Unset → off.
     #[serde(default)]
     pub sandbox_block_keychain: Option<bool>,
+    /// Secrets role (`Task::role`): an id, `""` for explicit No secrets,
+    /// unset to inherit. Dropped unless the Keychain block applies.
+    #[serde(default)]
+    pub role: Option<String>,
     /// Run this task's agent in Docker instead of Seatbelt. PINNED at
     /// creation like `sandbox_enabled` above - mutually exclusive with it
     /// (the frontend's engine selector only ever sends one of the two as
@@ -2061,6 +2089,16 @@ fn task_dir_scans() -> u64 {
 }
 
 /// One profile's tasks. For listing, and for anything scoped to a window.
+/// One task's record, read straight from its file: for a per-request path
+/// (the broker's live rules) where scanning every profile would not do.
+pub(crate) fn load_task_in(profile: &ProfileId, task_id: &str) -> Option<Task> {
+    if !secrets::id_ok(task_id) { return None; }
+    let f = tasks_dir_in(profile).ok()?.join(format!("{task_id}.json"));
+    let mut t: Task = serde_json::from_str(&fs::read_to_string(f).ok()?).ok()?;
+    t.profile = profile.clone();
+    Some(t)
+}
+
 fn load_tasks_in(id: &ProfileId) -> Vec<Task> {
     #[cfg(test)]
     TASK_DIR_SCANS.with(|c| c.set(c.get() + 1));
@@ -3856,6 +3894,20 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
     (dedup_strings(rw), dedup_strings(hosts))
 }
 
+/// The Secrets role an agent spawn of `task` runs with (secrets.rs): the
+/// task's pick, the project's default, the agent's default. None unless
+/// this spawn's profile blocks the Keychain, the same gate the profile uses.
+fn spawn_broker_setup(task: &Task, agent_id: Option<&str>) -> Option<sandbox::BrokerSetup> {
+    if !sandbox::blocks_keychain(task, task.effective_sandbox_mode()) { return None; }
+    let settings = load_settings_in(&task.profile);
+    let project_default = load_projects_all().into_iter()
+        .find(|p| p.id == task.project_id).and_then(|p| p.default_role);
+    let agent = agent_id.unwrap_or(&task.cli);
+    let agent_default = settings.agents.iter().find(|a| a.id == agent).and_then(|a| a.default_role.clone());
+    let role = secrets::resolve_role(task.role.as_deref(), project_default.as_deref(), agent_default.as_deref(), true, &settings.roles)?.clone();
+    Some(sandbox::BrokerSetup { role, secrets: settings.secrets })
+}
+
 fn dedup_strings(v: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     v.into_iter().filter(|x| seen.insert(x.clone())).collect()
@@ -4305,7 +4357,7 @@ fn pty_spawn(
             task
         })
     {
-        Some(task) => match sandbox::provision(&task, args.agent_id.as_deref(), task.effective_sandbox_mode()) {
+        Some(task) => match sandbox::provision(&task, args.agent_id.as_deref(), task.effective_sandbox_mode(), spawn_broker_setup(&task, args.agent_id.as_deref())) {
             Ok(bundle) => {
                 let port = bundle.proxy.as_ref().map(|p| p.port).unwrap_or(0);
                 let effective_cli = args.agent_id.as_deref().unwrap_or(&task.cli);
@@ -6081,6 +6133,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
     let remote = if non_git { String::new() } else { detect_default_remote(&canon) };
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let p = Project {
+        default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
         profile: window_profile(&window),
@@ -6301,6 +6354,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let name = trimmed_name.to_string();
     let p = Project {
+        default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
         profile: window_profile(&window),
@@ -6622,6 +6676,9 @@ fn task_open_repo(
     // its parent's, so a run is never looser than the task it was
     // scheduled from. Unset → off.
     sandbox_block_keychain: Option<bool>,
+    // Secrets role (`Task::role`), copied from the parent by a scheduled
+    // run like the Keychain flag above. Dropped unless the block applies.
+    role: Option<String>,
     docker_sandbox_enabled: Option<bool>,
     docker_extra_mounts: Option<Vec<String>>,
     resume_session_id: Option<String>,
@@ -6785,7 +6842,9 @@ fn task_open_repo(
     // make the first tab of every OTHER agent cwd-resume an unrelated
     // session; the seeded resume rides agent_session_ids alone.
     let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
-    let task = Task {
+    let mut task = Task {
+        role: role,
+        secret_allows: Vec::new(),
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
         // No account override at create: a new task follows the agent's
@@ -6850,6 +6909,8 @@ fn task_open_repo(
         spawned_by: None,
         schedule: None,
     };
+    // a role only sticks where the Keychain block applies.
+    task.drop_role_unless_keychain_blocked();
     save_task(&task).map_err(|e| e.to_string())?;
     if let Ok(pdir) = profile_dir(&proj.profile) {
         let _ = customizations::ensure_builtin_skills(&pdir);
@@ -7112,6 +7173,8 @@ fn task_import_worktree(
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
     sandbox_block_keychain: Option<bool>,
+    // Secrets role (`Task::role`). Dropped unless the Keychain block applies.
+    role: Option<String>,
     docker_sandbox_enabled: Option<bool>,
     docker_extra_mounts: Option<Vec<String>>,
     resume_session_id: Option<String>,
@@ -7226,7 +7289,9 @@ fn task_import_worktree(
     // seeded_session_ids and the task_open_repo note (per-cli seed vs
     // task-wide flag).
     let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
-    let task = Task {
+    let mut task = Task {
+        role: role,
+        secret_allows: Vec::new(),
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
         // No account override at create: a new task follows the agent's
@@ -7286,6 +7351,8 @@ fn task_import_worktree(
         spawned_by: None,
         schedule: None,
     };
+    // a role only sticks where the Keychain block applies.
+    task.drop_role_unless_keychain_blocked();
     save_task(&task).map_err(|e| e.to_string())?;
     if let Ok(pdir) = profile_dir(&proj.profile) {
         let _ = customizations::ensure_builtin_skills(&pdir);
@@ -7669,7 +7736,9 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // seeded_session_ids and the task_open_repo note (per-cli seed vs
     // task-wide flag).
     let agent_session_ids = seeded_session_ids(&cli, args.resume_session_id.as_deref());
-    let task = Task {
+    let mut task = Task {
+        role: args.role.clone(),
+        secret_allows: Vec::new(),
         id: task_id.clone(),
         project_id: proj.id.clone(),
         // No account override at create: a new task follows the agent's
@@ -7734,6 +7803,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         spawned_by: None,
         schedule: None,
     };
+    // a role only sticks where the Keychain block applies.
+    task.drop_role_unless_keychain_blocked();
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
     emit_create_progress(&app, &task_id, format!("Worktree ready (port {port})."));
@@ -7781,6 +7852,9 @@ pub struct CreateMultiArgs {
     /// See `CreateTaskArgs::sandbox_block_keychain`.
     #[serde(default)]
     pub sandbox_block_keychain: Option<bool>,
+    /// See `CreateTaskArgs::role`.
+    #[serde(default)]
+    pub role: Option<String>,
     /// Run this task's agent in Docker instead of Seatbelt. See
     /// `CreateTaskArgs::docker_sandbox_enabled` - same mutual-exclusivity
     /// enforced in `task_create_multi_sync`.
@@ -8082,7 +8156,9 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     // Block base allocated above, before the members were created.
     let port = ws_port;
     emit_create_progress(&app, &task_id, "Worktrees ready, finishing setup…");
-    let task = Task {
+    let mut task = Task {
+        role: args.role.clone(),
+        secret_allows: Vec::new(),
         id: task_id.clone(),
         project_id: host.id.clone(),
         // No account override at create: a new task follows the agent's
@@ -8139,6 +8215,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         spawned_by: None,
         schedule: None,
     };
+    // a role only sticks where the Keychain block applies.
+    task.drop_role_unless_keychain_blocked();
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
 
@@ -9945,6 +10023,8 @@ fn task_set_sandbox(
     w.sandbox_enabled = mode != SandboxMode::Off;
     w.sandbox_rw_paths = rw_paths;
     w.sandbox_allowed_hosts = allowed_hosts;
+    // leaving Enforce / EnforceFs or unblocking the Keychain clears the role.
+    w.drop_role_unless_keychain_blocked();
     save_task(w).map_err(|e| e.to_string())?;
 
     // `kill_live=false` is an INFORMED escape hatch: the user explicitly
@@ -9979,6 +10059,8 @@ fn task_set_docker(
     w.docker_sandbox_enabled = enabled;
     w.docker_extra_args = extra_args;
     w.docker_extra_mounts = extra_mounts;
+    // Docker gets no broker in v1, so switching to it clears the role.
+    w.drop_role_unless_keychain_blocked();
     save_task(w).map_err(|e| e.to_string())?;
     let killed = kill_task_ptys(&state, &id);
     // Always reap the OLD container here, not just when Docker is being
@@ -9992,6 +10074,206 @@ fn task_set_docker(
     // stale. Harmless when there was nothing to remove.
     docker::cleanup_task(&id);
     Ok(killed)
+}
+
+// ───────────── secrets + broker (secrets.rs, broker.rs) ─────────────
+//
+// No command here returns a secret's value: probe reports a status, gh
+// accounts are names from gh's non-secret hosts.yml, exposure reports a
+// token's prefix. Secrets and roles themselves save through settings_save.
+
+/// Read one secret's Keychain item and say whether it worked. Off the main
+/// thread: the first read can sit on macOS's "Termic wants to access" prompt.
+#[tauri::command]
+async fn secret_probe(window: tauri::Window, id: String) -> Result<broker::SecretStatus, String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let def = load_settings_in(&profile)
+            .secrets
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| "no such secret".to_string())?;
+        Ok(broker::probe(&def))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Save a pasted value (an API key or token) as the Termic-owned Keychain
+/// item for secret `id`, `termic:<id>`, and return the kind it landed as
+/// (`protected`, or `generic` on a build without the entitlement). `name`
+/// labels the item, so macOS's prompt says which secret it is.
+/// Write-only: nothing reads it back but the broker on its way upstream.
+/// Async: a Keychain write can sit on a prompt.
+#[tauri::command]
+async fn secret_store(id: String, name: String, value: String) -> Result<secrets::KeychainKind, String> {
+    tauri::async_runtime::spawn_blocking(move || broker::store_owned(&id, &name, &value))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Delete the Termic-owned item for `id` when no saved secret has that id:
+/// the add dialog's cleanup after a store that worked and a save that did
+/// not. A no-op otherwise. Never reads a value.
+#[tauri::command]
+async fn secret_forget(window: tauri::Window, id: String) -> Result<(), String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::forget_unsaved(&load_settings_in(&profile).secrets, &id);
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Whether this build can write to the data protection keychain. Cached;
+/// the first call is one Keychain query, so off the main thread.
+#[tauri::command]
+async fn secrets_protected_available() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(broker::protected_available).await.map_err(|e| e.to_string())
+}
+
+/// gh's logins per host for the "Add GitHub secret" preset. A missing
+/// hosts.yml is no accounts, not an error.
+#[tauri::command]
+async fn secrets_gh_accounts() -> Result<Vec<secrets::GhAccount>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // a GUI launch has no rc exports, so GH_CONFIG_DIR may only be in the
+        // login-shell delta.
+        let (_, inject) = shell_env::spawn_env();
+        let env = |k: &str| {
+            std::env::var(k).ok().or_else(|| inject.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
+        };
+        let Some(dir) = secrets::gh_config_dir(env, dirs::home_dir()) else { return Ok(Vec::new()) };
+        match fs::read_to_string(dir.join("hosts.yml")) {
+            Ok(text) => secrets::gh_accounts_from_hosts_yml(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Real-looking GitHub tokens outside the broker: in an agent's configured
+/// `env` / `docker_env`, or in Termic's own environment (which caged spawns
+/// inherit). Names and prefixes only.
+#[tauri::command]
+async fn secrets_exposed(window: tauri::Window) -> Result<Vec<secrets::SecretExposure>, String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let agents = load_settings_in(&profile).agents;
+        let configured = agents.iter().flat_map(|a| {
+            a.env.iter().chain(a.docker_env.iter()).map(move |(k, v)| (a.id.as_str(), k.as_str(), v.as_str()))
+        });
+        let process = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+        secrets::scan_exposed(configured, process)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Why `checked_role` refused, from what is SAVED: the dialog draft can
+/// differ, and "needs Enforcing" alone does not say which part is missing.
+fn role_refusal(task: &Task) -> String {
+    let what = if task.docker_sandbox_enabled {
+        "it runs in Docker, which cannot carry a role yet".to_string()
+    } else {
+        let mode = match task.effective_sandbox_mode() {
+            SandboxMode::Off => "Off",
+            SandboxMode::Monitor => "Monitoring",
+            SandboxMode::Enforce => "Enforcing",
+            SandboxMode::EnforceFs => "Enforcing (FS)",
+        };
+        let block = if task.sandbox_block_keychain { "on" } else { "off" };
+        format!("its saved sandbox is {mode} with the Keychain block {block}")
+    };
+    format!("Can't give this task a role: {what}. A role needs Enforcing or Enforcing (FS) with Keychain access blocked, saved before the role.")
+}
+
+/// What `task_set_role` may store. `None` (inherit) and `""` (No secrets)
+/// always; a role id only while the Keychain block applies and only when the
+/// role exists, so the picker cannot persist something the spawn ignores.
+fn checked_role(task: &Task, role: Option<String>, roles: &[secrets::Role]) -> Result<Option<String>, String> {
+    match role.as_deref() {
+        None | Some("") => Ok(role),
+        Some(_) if !task.keychain_blocked() => Err(role_refusal(task)),
+        Some(id) if !roles.iter().any(|r| r.id == id) => Err(format!("no such role: {id}")),
+        Some(_) => Ok(role),
+    }
+}
+
+/// Persist a task's role. Like the account switch, it applies to the next
+/// spawn; a running agent keeps the broker it started with. Async: it scans
+/// every profile's tasks.
+#[tauri::command]
+async fn task_set_role(id: String, role: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut t = load_tasks_all().into_iter().find(|t| t.id == id).ok_or("no such task")?;
+        let roles = load_settings_in(&t.profile).roles;
+        t.role = checked_role(&t, role, &roles)?;
+        save_task(&t).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn broker_counts(id: String) -> broker::BrokerCounts {
+    broker::counts(&id)
+}
+
+#[tauri::command]
+fn broker_events(id: String) -> broker::BrokerEvents {
+    broker::events(&id)
+}
+
+#[tauri::command]
+fn broker_all_events() -> Vec<(String, broker::BrokerEvents)> {
+    broker::all_events()
+}
+
+/// Refuse every brokered request of the task until resumed. Live, no restart.
+#[tauri::command]
+fn broker_set_paused(id: String, paused: bool) {
+    broker::set_paused(&id, paused);
+}
+
+/// Save an allow from the task's Secrets popover. `task` scope lands on
+/// `Task::secret_allows`; `role` scope goes first in `role`'s rule set for
+/// (secret, host), shared by every task on that role. `role` is the one the
+/// blocked entry names, i.e. what the spawn that was blocked runs, not the
+/// task's saved role (which a switch or a second agent can make differ).
+/// Rules are read per request, so the next one sees it, and the blocked rows
+/// it covers are cleared. Async: it scans every profile's tasks.
+#[tauri::command]
+async fn broker_allow(id: String, scope: String, secret: String, host: String, rule: secrets::Rule, role: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut t = load_tasks_all().into_iter().find(|t| t.id == id).ok_or("no such task")?;
+        let mut s = load_settings_in(&t.profile);
+        secrets::check_allow(&s.secrets, &secret, &host, &rule)?;
+        let (method, path) = (rule.methods[0].clone(), rule.pattern.clone());
+        match scope.as_str() {
+            "task" => {
+                secrets::allow_on_task(&mut t.secret_allows, &secret, &host, rule);
+                save_task(&t).map_err(|e| e.to_string())?;
+            }
+            "role" => {
+                let role_id = role.filter(|r| !r.is_empty()).ok_or("a role-scoped allow needs the role that blocked it")?;
+                let r = s.roles.iter_mut().find(|r| r.id == role_id).ok_or("that role no longer exists")?;
+                if !r.secrets.contains(&secret) {
+                    return Err(format!("role {} does not hold that secret", r.name));
+                }
+                secrets::allow_on_role(r, &secret, &host, rule);
+                save_settings_in(&t.profile, &s)?;
+            }
+            other => return Err(format!("unknown scope: {other}")),
+        }
+        broker::clear_blocked(&id, &secret, &host, &method, &path);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// (tasks with a live agent, live AGENT PTYs). Ground truth for what
@@ -22479,6 +22761,10 @@ pub struct Settings {
     pub customizations_enabled: Option<bool>,
     /// Directory to scan for git repos when discovering. Empty = unset.
     pub repos_dir: String,
+    /// Secrets (Keychain item pointers, never values) and the roles that
+    /// bundle them. See secrets.rs and spec/credential-broker/plan.md.
+    pub secrets: Vec<secrets::SecretDef>,
+    pub roles: Vec<secrets::Role>,
     /// True once the user has finished the welcome wizard.
     pub welcomed: bool,
     /// Registered agent CLIs (claude/gemini/codex defaults + user customs).
@@ -22810,6 +23096,10 @@ pub struct Agent {
     pub id: String,                  // stable key referenced by Task.cli
     pub display_name: String,
     pub command: String,             // binary or shell command to spawn
+    /// Secrets role this agent's tasks default to when neither the task nor
+    /// its project picks one.
+    #[serde(default)]
+    pub default_role: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     /// Icon identifier consumed by the frontend. Either a brand id ("claude",
@@ -23031,6 +23321,7 @@ pub struct AgentCapabilities {
 fn default_agents() -> Vec<Agent> {
     vec![
         Agent {
+            default_role: None,
             id: "claude".into(),
             display_name: "claude".into(),
             command: "claude".into(),
@@ -23103,6 +23394,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             id: "codex".into(),
             display_name: "codex".into(),
             command: "codex".into(),
@@ -23166,6 +23458,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
             // Gemini-3-family agentic CLI. `id` is the binary name to
             // keep the id == command == detect-name invariant the rest
@@ -23233,6 +23526,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // GitHub Copilot CLI (`copilot`). Launched 2025; supports
             // --session-id for both minting and resuming sessions,
             // --name for labelling, --allow-all / --yolo for permissions,
@@ -23282,6 +23576,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // xAI's Grok Build TUI. Help text confirmed:
             //   --always-approve     auto-approves every tool call (yolo)
             //   -c, --continue       continue the most recent CWD session
@@ -23337,6 +23632,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // pi (pi.dev). Verified against 0.84.3 on a live binary, not the
             // help text:
             //   --session-id <id>  creates the session if missing and resumes
@@ -23386,6 +23682,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // opencode — SST's open-source agentic coding CLI. Sessions are
             // created lazily (only after the first user message), so termic
             // can't mint a UUID at spawn time. Resume strategy:
@@ -23436,6 +23733,7 @@ fn default_agents() -> Vec<Agent> {
             }),
         },
         Agent {
+            default_role: None,
             // Muse Code — Meta's terminal coding agent, running the Muse Spark
             // model family (GH #275). Measured against a live Muse Code 1.0.2
             // (1.0.2-R2040.1), not the help text, using its offline `--provider
@@ -23562,6 +23860,7 @@ fn default_agents() -> Vec<Agent> {
             }),
         },
         Agent {
+            default_role: None,
             // Cursor CLI (cursor-agent). Installed by cursor.com/install into
             // ~/.local/share/cursor-agent/versions/<ver>/, symlinked as both
             // `cursor-agent` and the far too generic `agent` in ~/.local/bin.
@@ -23642,6 +23941,7 @@ fn default_agents() -> Vec<Agent> {
             post_launch_capture: None,
         },
         Agent {
+            default_role: None,
             // Devin (Cognition). Measured against a live 3000.10.21, not the
             // help text:
             //   --permission-mode dangerous  auto-approves every tool; the
@@ -23742,6 +24042,7 @@ fn default_agents() -> Vec<Agent> {
             }),
         },
         Agent {
+            default_role: None,
             // oh-my-pi (omp, github.com/can1357/oh-my-pi). pi fork, rewritten;
             // measured against a live 18.6.0, not the help text:
             //   tools.approvalMode    defaults to "yolo" (tools/settings.ts:
@@ -24516,6 +24817,14 @@ fn settings_save(app: AppHandle, window: tauri::Window, s: Settings) -> Result<(
     let tray_on = tray_enabled_pref(&s);
     let profile = window_profile(&window);
     let disk = load_settings_in(&profile);
+    // only when they changed: one invalid secret on disk (a hand edit, or a
+    // check a newer build added) must not block every unrelated toggle.
+    if s.secrets != disk.secrets || s.roles != disk.roles {
+        let errs = secrets::validate(&s.secrets, &s.roles);
+        if !errs.is_empty() {
+            return Err(errs.join("; "));
+        }
+    }
     if s.docker_default_extra_mounts != disk.docker_default_extra_mounts {
         docker::refuse_data_dir_mounts(&s.docker_default_extra_mounts)?;
     }
@@ -24528,6 +24837,15 @@ fn settings_save(app: AppHandle, window: tauri::Window, s: Settings) -> Result<(
         if before != (root.cli_enabled, root.mcp_enabled, root.mcp_bind_address.clone(), root.mcp_port, root.lan_sharing_enabled) {
             save_settings_in(&ProfileId::Root, &root)?;
         }
+    }
+    // a removed secret's pasted value goes with it. Off the IPC thread: the
+    // Keychain can take its time.
+    let gone: Vec<String> = disk.secrets.iter()
+        .filter(|d| d.is_owned() && !s.secrets.iter().any(|n| n.id == d.id))
+        .map(|d| d.id.clone())
+        .collect();
+    if !gone.is_empty() {
+        std::thread::spawn(move || gone.iter().for_each(|id| broker::forget_owned(id)));
     }
     // Applies live: flipping the toggle in Settings shouldn't need a restart
     // to show/hide the menu-bar item, matching close_action/cli_enabled's
@@ -26779,6 +27097,8 @@ pub fn run() {
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
             tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
+            task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed,
+            broker_counts, broker_events, broker_all_events, broker_set_paused, broker_allow,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
@@ -27411,6 +27731,52 @@ mod tests {
     }
 
     #[cfg(unix)] // builds its home with a unix symlink
+    #[test]
+    fn role_dropped_when_the_keychain_block_stops_applying() {
+        if !sandbox::available() { return; }
+        // the create paths and task_set_sandbox / task_set_docker all run
+        // this after applying the new sandbox shape.
+        let with = |mode, block, docker| {
+            let mut t = Task {
+                sandbox_mode: Some(mode), sandbox_block_keychain: block, docker_sandbox_enabled: docker,
+                role: Some("r".into()), ..Default::default()
+            };
+            t.drop_role_unless_keychain_blocked();
+            t.role
+        };
+        assert_eq!(with(SandboxMode::Enforce, true, false), Some("r".into()));
+        assert_eq!(with(SandboxMode::EnforceFs, true, false), Some("r".into()));
+        assert_eq!(with(SandboxMode::Enforce, false, false), None, "block cleared");
+        assert_eq!(with(SandboxMode::Monitor, true, false), None);
+        assert_eq!(with(SandboxMode::Off, true, false), None);
+        assert_eq!(with(SandboxMode::Enforce, true, true), None, "switched to Docker");
+    }
+
+    #[test]
+    fn create_args_carry_role() {
+        let a: CreateTaskArgs = serde_json::from_str(r#"{"project_id":"p","name":"n","cli":null,"base_branch":null,"branch":null,"role":"r"}"#).unwrap();
+        assert_eq!(a.role.as_deref(), Some("r"));
+        let m: CreateMultiArgs = serde_json::from_str(r#"{"project_id":"p","name":"n","cli":null,"branch":null,"base_branch":null,"members":[],"role":""}"#).unwrap();
+        assert_eq!(m.role.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn task_set_role_gate() {
+        if !sandbox::available() { return; }
+        let roles = vec![secrets::Role { id: "r".into(), ..Default::default() }];
+        let blocked = Task { sandbox_mode: Some(SandboxMode::Enforce), sandbox_block_keychain: true, ..Default::default() };
+        let open = Task { sandbox_mode: Some(SandboxMode::Enforce), ..Default::default() };
+        assert_eq!(checked_role(&blocked, Some("r".into()), &roles), Ok(Some("r".into())));
+        assert!(checked_role(&blocked, Some("gone".into()), &roles).is_err());
+        assert!(checked_role(&open, Some("r".into()), &roles).is_err(), "no block, no role");
+        // the refusal names what is saved, not just what is needed
+        let e = checked_role(&open, Some("r".into()), &roles).unwrap_err();
+        assert!(e.contains("its saved sandbox is Enforcing with the Keychain block off"), "{e}");
+        // inherit and explicit No secrets are always fine.
+        assert_eq!(checked_role(&open, None, &roles), Ok(None));
+        assert_eq!(checked_role(&open, Some(String::new()), &roles), Ok(Some(String::new())));
+    }
+
     #[test]
     fn under_keychains_matches_both_forms_and_nothing_else() {
         let tmp = tempfile::tempdir().unwrap();

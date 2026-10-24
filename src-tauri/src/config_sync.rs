@@ -75,6 +75,8 @@ pub(crate) const PROJECT_LOCAL: &[&str] = &[
     "code_intel_servers", "code_intel_commands",
     // When THIS machine registered the project.
     "created",
+    // Names a role, and roles are local (see SETTINGS_LOCAL).
+    "default_role",
 ];
 
 pub(crate) const MEMBER_SYNC: &[&str] = &[
@@ -122,6 +124,12 @@ pub(crate) const SETTINGS_LOCAL: &[&str] = &[
     "welcomed", "schema_version",
     // This module's own per-profile state.
     "sync",
+    // Secrets point at Keychain items, which exist per machine (another Mac
+    // may have a different gh login or none). Roles name secret ids, so a
+    // role synced without its secrets would fail `secrets::validate` on
+    // arrival and block every settings save there. Both stay local in v1;
+    // syncing them is a later call, and would belong in the SAFETY lists.
+    "secrets", "roles",
 ];
 
 pub(crate) const AGENT_SYNC: &[&str] = &[
@@ -145,6 +153,8 @@ pub(crate) const AGENT_LOCAL: &[&str] = &[
     "sandbox_allowed_paths",
     // Derived from this build's built-in list, not a user choice.
     "builtin",
+    // Names a role, and roles are local (see SETTINGS_LOCAL).
+    "default_role",
 ];
 
 /// Project fields whose change is shown before or as it applies: they can
@@ -3611,6 +3621,7 @@ mod tests {
 
     fn full_project() -> Project {
         Project {
+            default_role: None,
             id: "p1".into(),
             name: "app".into(),
             root_path: "/Users/u/src/app".into(),
@@ -3654,6 +3665,7 @@ mod tests {
 
     fn full_agent() -> Agent {
         Agent {
+            default_role: None,
             id: "my-agent".into(),
             display_name: "My agent".into(),
             command: "claude".into(),
@@ -3681,6 +3693,8 @@ mod tests {
     fn full_settings() -> Settings {
         Settings {
             customizations_enabled: Some(true),
+            roles: Vec::new(),
+            secrets: Vec::new(),
             repos_dir: "/Users/u/src".into(),
             welcomed: true,
             agents: vec![full_agent()],
