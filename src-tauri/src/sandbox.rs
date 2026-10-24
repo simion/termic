@@ -80,6 +80,22 @@ pub struct SandboxBundle {
     /// saved (see `keychain_open_count`).
     #[allow(dead_code)]
     pub keychain: KeychainHold,
+    /// This spawn's credential broker (gh socket, placeholders, git MITM
+    /// state), when its role resolved. Dropping it stops the socket.
+    pub broker: Option<crate::broker::BrokerHandle>,
+    /// EnforceFs only: the proxy the MITM deliveries are pointed at, so they
+    /// have somewhere to run. git reaches it through its URL-scoped
+    /// `http.<url>.proxy`; an API key's env proxy sets `HTTPS_PROXY` for the
+    /// whole agent, with credentials only that delivery holds.
+    #[allow(dead_code)]
+    pub git_proxy: Option<proxy::ProxyHandle>,
+}
+
+/// The role a spawn runs with plus the secrets it can name, resolved in
+/// lib.rs (`spawn_broker_setup`).
+pub struct BrokerSetup {
+    pub role: crate::secrets::Role,
+    pub secrets: Vec<crate::secrets::SecretDef>,
 }
 
 /// Live agent PTYs per task that can reach the Keychain.
@@ -646,6 +662,46 @@ fn owner_of(mut pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> 
     None
 }
 
+/// Whether `pid` descends from one of `task_id`'s registered agent roots:
+/// the credential broker's peer check on its gh socket.
+pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
+    let roots: HashMap<u32, Arc<str>> = match sandbox_pids().lock() {
+        Ok(g) => match g.get(task_id) {
+            Some(ps) => {
+                let t: Arc<str> = task_id.into();
+                ps.iter().map(|p| (*p, t.clone())).collect()
+            }
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    owner_of(pid, &roots, ppid_of).is_some()
+}
+
+/// `pid`'s executable and its parent chain, for logging a peer that
+/// failed `pid_in_task`. An orphan ends at `1 launchd`; a process that
+/// already exited reads `(exited)`.
+pub(crate) fn describe_pid(pid: u32) -> String {
+    pid_chain(pid, ppid_of, exe_of)
+}
+
+fn pid_chain(pid: u32, ppid: impl Fn(u32) -> Option<u32>, exe: impl Fn(u32) -> Option<String>) -> String {
+    let name = |p: u32| exe(p).map(|e| e.rsplit('/').next().unwrap_or(&e).to_string()).unwrap_or_else(|| "?".into());
+    let mut out = format!("pid {pid} {}", exe(pid).unwrap_or_else(|| "(exited)".into()));
+    let mut parents = Vec::new();
+    let mut cur = pid;
+    // same depth cap as owner_of, so the log shows exactly what the walk saw.
+    for _ in 0..20 {
+        match ppid(cur) {
+            Some(p) if p != cur => { parents.push(format!("{p} {}", name(p))); cur = p; }
+            _ => break,
+        }
+        if cur <= 1 { break; }
+    }
+    if !parents.is_empty() { out.push_str(&format!(", parents: {}", parents.join(" < "))); }
+    out
+}
+
 /// What the router learned about one pid.
 struct Proc {
     /// the parent it had when routed. A pid recycled under a different
@@ -958,6 +1014,16 @@ fn handle_deny_line(line: &str, pid: u32, ws_id: &str, ws_path: &str, r: &mut im
     // config (privacy concern) or just stat()-ing to check if it exists.
     dlog(&format!("[sandbox/{ws_id}] DENY {proc}({pid}) {op} {path}"));
     incr_path_deny(ws_id, &path, pid, &proc);
+    // a brokered agent reaching for the Keychain is trying to get around
+    // its placeholder: surface it as Suspicious too.
+    if crate::broker::is_brokered(ws_id) && under_keychain(&path) {
+        crate::broker::record_keychain_denied(ws_id, &path);
+    }
+}
+
+fn under_keychain(path: &str) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    keychain_dirs(&home.to_string_lossy()).iter().any(|d| under(path, d))
 }
 
 /// Pick the absolute path out of a Sandbox deny log line.
@@ -1618,6 +1684,19 @@ pub(crate) fn render_profile_with(
         }
     }
 
+    // Every brokered spawn's scratch dir sits under one base in /private/tmp,
+    // which the runtime allow above opens read+write, and every agent runs as
+    // the same uid. Without this, one task's agent could rewrite another's gh
+    // config (point its socket elsewhere, set a pager that runs inside it),
+    // swap its CA bundle, or unlink its socket. Emitted after every file
+    // allow; a brokered spawn re-opens only its own dir (`broker_profile_rules`).
+    if matches!(mode, SandboxMode::Enforce | SandboxMode::EnforceFs) {
+        if let Some(base) = crate::broker::spawn_base_dir() {
+            out.push_str("\n;; --- Broker scratch dirs: no task reaches another's ---\n");
+            out.push_str(&format!("(deny file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(&base.to_string_lossy())));
+        }
+    }
+
     // Control-plane socket deny, emitted per-branch below: it must be the
     // FINAL network rule AFTER every allow that could match (the broad
     // unix-socket allow, EnforceFs's `(allow network*)`, and the agy
@@ -2100,7 +2179,12 @@ pub fn host_patterns_for(task: &Task, agent_override: Option<&str>) -> Vec<Strin
 ///
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
-pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -> Result<SandboxBundle> {
+///
+/// `broker` is the spawn's resolved Secrets role. It only takes effect when
+/// this profile also blocks the Keychain (an agent that can read the
+/// Keychain can read the real token itself); otherwise the spawn is exactly
+/// what it would be without one.
+pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode, broker: Option<BrokerSetup>) -> Result<SandboxBundle> {
     let monitor = mode == SandboxMode::Monitor;
     // Hard-fail early on platforms where Seatbelt doesn't exist.
     // The frontend should be gating on sandbox_available(), but
@@ -2123,6 +2207,7 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     clear_path_access(&task.id);
     crate::proxy::clear_network_denies(&task.id);
     crate::proxy::clear_network_access(&task.id);
+    crate::broker::clear_events(&task.id);
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", task.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", task.id));
@@ -2144,6 +2229,8 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     // hostname allow-list, no http_proxy injection (wrap_command only
     // injects it when `proxy` is Some). The seatbelt profile allows all
     // network directly. Every other mode runs the filtering/logging proxy.
+    let broker = broker.filter(|_| blocks_keychain(task, mode));
+    let host_patterns = patterns.clone();
     let proxy = if mode == SandboxMode::EnforceFs {
         dlog(&format!("[sandbox/{}] network sandbox OFF (enforce-fs); no proxy", task.id));
         None
@@ -2161,13 +2248,78 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
-    let profile = render_profile(task, port, agent_override, mode)?;
+    // EnforceFs has no proxy, and a MITM delivery (git) needs one: start an
+    // allow-all one that only those tools are pointed at, and only when the
+    // role turns such a delivery on.
+    let git_proxy = match &broker {
+        Some(b) if mode == SandboxMode::EnforceFs && crate::broker::role_wants_mitm(&b.role, &b.secrets) => {
+            proxy::start(vec!["^.*$".into()], task.id.clone(), false)
+                .map_err(|e| dlog(&format!("[sandbox/{}] git proxy failed to start: {e}", task.id)))
+                .ok()
+        }
+        _ => None,
+    };
+    let broker = broker.and_then(|b| start_broker(task, mode, &b, host_patterns, proxy.as_ref().or(git_proxy.as_ref())));
+
+    let mut profile = render_profile(task, port, agent_override, mode)?;
+    if let Some(b) = &broker { profile.push_str(&broker_profile_rules(b)); }
     fs::write(&profile_path, &profile)
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", task.id, profile_path.display()));
 
     let keychain = KeychainHold::new(&task.id, blocks_keychain(task, mode));
-    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode, keychain })
+    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode, keychain, broker, git_proxy })
+}
+
+/// Start the spawn's broker and hook it into the proxy git uses. A failure
+/// costs the agent its secrets, never the spawn: it gets no placeholder, so
+/// nothing is exposed.
+fn start_broker(task: &Task, mode: SandboxMode, b: &BrokerSetup, host_patterns: Vec<String>, proxy: Option<&proxy::ProxyHandle>) -> Option<crate::broker::BrokerHandle> {
+    let started = crate::broker::new_spawn_dir().and_then(|dir| crate::broker::start(crate::broker::StartArgs {
+        task_id: &task.id,
+        role: &b.role,
+        secrets: &b.secrets,
+        task_allows: &task.secret_allows,
+        host_patterns: if mode == SandboxMode::EnforceFs { Vec::new() } else { host_patterns },
+        allow_all_hosts: mode == SandboxMode::EnforceFs,
+        proxy_port: proxy.map(|p| p.port),
+        dir,
+    }, task.profile.clone()));
+    match started {
+        Ok(h) => {
+            if let Some(p) = proxy { p.attach_broker(h.mitm_ctx()); }
+            dlog(&format!("[sandbox/{}] broker up: role {} socket={:?} base_url_port={:?}", task.id, b.role.name, h.socket_path, h.base_url_port));
+            Some(h)
+        }
+        Err(e) => {
+            dlog(&format!("[sandbox/{}] broker failed to start, no secrets for this spawn: {e}", task.id));
+            None
+        }
+    }
+}
+
+/// Seatbelt rules for a brokered spawn, appended after the rest of the
+/// profile (so after the base-dir deny): read on its scratch dir (CA pem,
+/// bundle, the socket's dir), rw only on gh's config dir, outbound to its gh
+/// socket and to its base-URL endpoint's loopback port. The socket and CA
+/// files stay read-only, so the agent cannot unlink or swap them. None of
+/// these is the control-plane socket, so the control plane's final deny
+/// still holds.
+fn broker_profile_rules(b: &crate::broker::BrokerHandle) -> String {
+    let mut out = String::from("\n;; --- Credential broker: this spawn's scratch dir, gh socket, base-URL port ---\n");
+    for p in &b.ro_paths {
+        out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+    for p in &b.rw_paths {
+        out.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+    if let Some(sock) = &b.socket_path {
+        out.push_str(&format!("(allow network-outbound (remote unix-socket (path-literal \"{}\")))\n", sbpl_escape(&sock.to_string_lossy())));
+    }
+    if let Some(port) = b.base_url_port {
+        out.push_str(&format!("(allow network-outbound (remote ip \"localhost:{port}\"))\n"));
+    }
+    out
 }
 
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
@@ -2183,6 +2335,14 @@ pub fn wrap_command(
     new_args.push("-f".into());
     new_args.push(bundle.profile_path.to_string_lossy().into_owned());
     new_args.push("env".into());
+    // a brokered spawn must not inherit a real token from Termic's own env
+    // (`env -u` has to come before the assignments).
+    if let Some(b) = &bundle.broker {
+        for k in &b.strip_env {
+            new_args.push("-u".into());
+            new_args.push(k.clone());
+        }
+    }
     // Self-identifying env so agents (and tools they spawn) can map
     // EPERM filesystem errors and 403 X-Termic-Sandbox responses back
     // to "I'm in a Termic cage" instead of guessing macOS TCC. Most
@@ -2221,6 +2381,9 @@ pub fn wrap_command(
         // and is the norm, we can re-add it; until then routing of
         // node-internal fetch() traffic is the agent CLI's problem
         // (they typically use the http_proxy env above via undici).
+    }
+    if let Some(b) = &bundle.broker {
+        new_args.extend(b.env.iter().map(|(k, v)| format!("{k}={v}")));
     }
     new_args.push(original_cmd.into());
     new_args.extend(original_args.iter().cloned());
@@ -2571,6 +2734,8 @@ mod mode_env_tests {
             path_watcher: None,
             mode,
             keychain: KeychainHold { task_id: None },
+            broker: None,
+            git_proxy: None,
         }
     }
 
@@ -2589,6 +2754,44 @@ mod mode_env_tests {
             assert!(args.iter().any(|a| a == expect), "{mode:?}: {args:?}");
             assert!(args.iter().any(|a| a == "TERMIC_SANDBOX=1"));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn brokered_spawn_strips_real_tokens_and_gets_placeholders() {
+        let mut b = bundle(crate::SandboxMode::Enforce);
+        let (_, plain) = wrap_command(&b, "claude", &[]);
+        assert!(!plain.iter().any(|a| a == "-u" || a.starts_with("GH_TOKEN=")), "{plain:?}");
+
+        b.broker = Some(crate::broker::test_handle("t-wrap", Some(1234)));
+        let (_, args) = wrap_command(&b, "claude", &["--foo".into()]);
+        let env_at = args.iter().position(|a| a == "env").unwrap();
+        // `env -u` options before any assignment
+        assert_eq!(&args[env_at + 1..env_at + 9], &["-u", "GH_TOKEN", "-u", "GITHUB_TOKEN", "-u", "GH_ENTERPRISE_TOKEN", "-u", "GITHUB_ENTERPRISE_TOKEN"]);
+        let ph = args.iter().find_map(|a| a.strip_prefix("GH_TOKEN=")).unwrap();
+        assert!(ph.starts_with("termic_ph_"));
+        assert!(args.iter().any(|a| a.starts_with("GIT_CONFIG_COUNT=")));
+        assert_eq!(&args[args.len() - 2..], &["claude", "--foo"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn profile_allows_the_socket_only_when_brokered() {
+        let h = crate::broker::test_handle("t-prof", None);
+        let rules = broker_profile_rules(&h);
+        let sock = h.socket_path.as_ref().unwrap().to_string_lossy().into_owned();
+        assert!(rules.contains(&format!("(allow network-outbound (remote unix-socket (path-literal \"{sock}\")))")), "{rules}");
+        assert!(rules.contains(&format!("(allow file-read* file-write* (subpath \"{}\"))", h.rw_paths[0])), "{rules}");
+        // the rendered profile itself never mentions the broker: provision
+        // appends these rules only when a broker started.
+        let task = crate::Task {
+            id: "t-prof".into(),
+            path: std::env::temp_dir().to_string_lossy().into_owned(),
+            sandbox_block_keychain: true,
+            ..Default::default()
+        };
+        let p = render_profile_with(&task, 8080, "claude", &[], crate::SandboxMode::Enforce, &ControlPlanePaths { data_dir: None, socket: None }).unwrap();
+        assert!(!p.contains("Credential broker") && !p.contains(&sock));
     }
 }
 
@@ -3556,6 +3759,37 @@ mod tests {
 
     // ─── Keychain block ──────────────────────────────────────────────────
 
+    #[test]
+    #[cfg(unix)]
+    fn a_spawn_dir_is_read_only_to_its_agent_and_hidden_from_others() {
+        if !cage_available() { return; }
+        let mine = crate::broker::test_handle("t-cage-a", None);
+        let other = crate::broker::test_handle("t-cage-b", None);
+        let (my_dir, other_dir) = (mine.ro_paths[0].clone(), other.ro_paths[0].clone());
+        let base_deny = format!("(deny file-read* file-write* (subpath \"{}\"))", crate::broker::spawn_base_dir().unwrap().display());
+        let mut profile = keychain_profile(SandboxMode::EnforceFs, true);
+        assert!(profile.contains(&base_deny), "{profile}");
+        profile.push_str(&broker_profile_rules(&mine));
+        let run = |profile: &str, args: &[&str]| {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), profile).unwrap();
+            Command::new("/usr/bin/sandbox-exec").arg("-f").arg(f.path()).args(args).output().unwrap().status.success()
+        };
+        let cfg = |d: &str| format!("{d}/gh/config.yml");
+        let sock = |d: &str| format!("{d}/gh.sock");
+        // its own dir: readable, gh's config dir writable, the socket not removable.
+        assert!(run(&profile, &["/bin/cat", &cfg(&my_dir)]));
+        assert!(run(&profile, &["/usr/bin/touch", &format!("{my_dir}/gh/state.yml")]));
+        assert!(!run(&profile, &["/bin/rm", &sock(&my_dir)]));
+        assert!(std::path::Path::new(&sock(&my_dir)).exists());
+        // another spawn's dir: neither readable nor writable.
+        assert!(!run(&profile, &["/bin/cat", &cfg(&other_dir)]));
+        assert!(!run(&profile, &["/bin/rm", &sock(&other_dir)]));
+        // control: without the base deny the other dir is reachable, so the
+        // deny is what stops it.
+        assert!(run(&profile.replace(&base_deny, ""), &["/bin/cat", &cfg(&other_dir)]));
+    }
+
     fn keychain_profile(mode: SandboxMode, block: bool) -> String {
         keychain_profile_with(mode, block, Vec::new())
     }
@@ -3774,6 +4008,17 @@ mod watcher_tests {
         assert_eq!(owner_of(777, &rs, tree), None, "already exited");
         assert_eq!(owner_of(900, &rs, tree), None, "self-parented loop");
         assert_eq!(owner_of(300, &HashMap::new(), tree), None, "root unregistered");
+    }
+
+    #[test]
+    fn pid_chain_names_the_peer_and_its_parents() {
+        let exe = |p: u32| -> Option<String> {
+            match p { 1 => Some("/sbin/launchd".into()), 100 => Some("/bin/zsh".into()), 300 => Some("/opt/bin/gh".into()), _ => None }
+        };
+        assert_eq!(pid_chain(300, tree, exe), "pid 300 /opt/bin/gh, parents: 200 ? < 100 zsh < 1 launchd");
+        assert_eq!(pid_chain(400, tree, exe), "pid 400 (exited), parents: 1 launchd", "an orphan ends at launchd");
+        assert_eq!(pid_chain(777, tree, exe), "pid 777 (exited)", "gone before the check");
+        assert_eq!(pid_chain(900, tree, exe), "pid 900 (exited)", "self-parented loop stops");
     }
 
     #[test]

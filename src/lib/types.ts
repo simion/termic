@@ -136,6 +136,8 @@ export interface Project {
    *  Additive over `default_sandbox`; when undefined the dialog derives
    *  the default from `default_sandbox` (true → enforce). */
   default_sandbox_mode?: SandboxMode;
+  /** Secrets role new tasks start with (overrides the agent's default). */
+  default_role?: string | null;
   /** Extra writable subpaths added to the seatbelt profile, on top of
    *  the task path + agent config dirs + TMPDIR baked into the
    *  default. `$HOME` and `$WORKSPACE` are substituted at render time. */
@@ -377,6 +379,11 @@ export interface Task {
   sandbox_mode?: SandboxMode;
   /** Seatbelt cage cannot reach the macOS Keychain (Enforce / Enforce FS). */
   sandbox_block_keychain?: boolean;
+  /** Secrets role id. null/undefined = inherit project then agent default;
+   *  "" = explicit No secrets. Only applies while keychainBlocked(task). */
+  role?: string | null;
+  /** Allows saved from the Secrets popover with the "this task" scope. */
+  secret_allows?: TaskAllow[];
   /** Per-task YOLO (auto-approve) flag, applied to every agent
    *  launched here. Only meaningful when NOT enforce-sandboxed (Enforcing
    *  auto-enables YOLO since the cage is the boundary). Replaces the old
@@ -600,6 +607,8 @@ export interface CreateMultiArgs {
   sandbox_allowed_hosts?: string[];
   /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
   sandbox_block_keychain?: boolean;
+  /** Secrets role (`Task.role`). Only kept when the Keychain block applies. */
+  role?: string | null;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
    *  those as off regardless of what else was sent. */
@@ -646,6 +655,8 @@ export interface CreateTaskArgs {
   sandbox_allowed_hosts?: string[];
   /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
   sandbox_block_keychain?: boolean;
+  /** Secrets role (`Task.role`). Only kept when the Keychain block applies. */
+  role?: string | null;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
    *  those as off regardless of what else was sent. */
@@ -678,6 +689,8 @@ export interface CreateTaskArgs {
 export interface Agent {
   /** Stable key referenced by Task.cli. */
   id: string;
+  /** Secrets role this agent's tasks default to. */
+  default_role?: string | null;
   display_name: string;
   /** Binary or shell command to spawn. Independent of `id` so renames don't
    *  invalidate existing tasks. */
@@ -861,6 +874,9 @@ export interface Settings {
   repos_dir: string;
   welcomed: boolean;
   agents: Agent[];
+  /** Secrets (Keychain pointers, never values) and roles. secrets.rs. */
+  secrets?: SecretDef[];
+  roles?: Role[];
   /** Global sandbox defaults. Merged with the per-project lists when
    *  a task is created with sandbox enabled; pre-filled into the
    *  Edit Sandbox dialog when the user enables the cage from scratch. */
@@ -2246,3 +2262,91 @@ export interface SyncStatus {
   /** Repo profiles deleted on this machine, which a sync will not recreate. */
   ignored: SyncFolder[];
 }
+
+// ───────────── Secrets + roles (src-tauri/src/secrets.rs, broker.rs) ─────────────
+
+/** Where an item IS. "protected" is the data protection keychain (only
+ *  Termic's signed build reads it, owned items only); "generic" / "internet"
+ *  are the file-based login keychain. */
+export type KeychainKind = "protected" | "generic" | "internet";
+export type SecretRecipe = "github" | "api_key";
+/** How an API key secret reaches tools (secrets.rs `ApiKeyCfg`). */
+export interface ApiKeyCfg {
+  /** The one header the real value goes into: `authorization`, `x-api-key`. */
+  header: string;
+  /** Prefix before the value (`Bearer`), empty for none. */
+  scheme: string;
+  /** Env var holding the placeholder (`OPENAI_API_KEY`). */
+  env: string;
+  /** Env var aimed at the broker's local endpoint (`OPENAI_BASE_URL`), or empty. */
+  base_url_env: string;
+  /** The real base URL that env var would otherwise hold. */
+  base_url: string;
+}
+export interface SecretDef {
+  id: string;
+  name: string;
+  kind: KeychainKind;
+  /** Keychain service, e.g. `gh:github.com`. */
+  service: string;
+  /** Keychain account, always explicit. */
+  account: string;
+  recipe: SecretRecipe;
+  hosts: string[];
+  /** Read when `recipe` is `api_key`. */
+  api?: ApiKeyCfg;
+}
+export type RuleEffect = "allow" | "deny";
+/** methods: HTTP verbs, "*", "QUERY"/"MUTATION" (pattern = mutation name
+ *  glob), or "fetch"/"push" (pattern = owner/repo glob). HTTP pattern is a
+ *  path glob, `*` one segment, `**` any. */
+/** `disabled`: kept in the list, skipped when judging. Absent means on. */
+export interface Rule { effect: RuleEffect; methods: string[]; pattern: string; note: string; disabled?: boolean }
+export interface RuleSet { secret: string; host: string; rules: Rule[]; fallback: RuleEffect }
+export type RoleColour = "blue" | "purple" | "teal" | "amber" | "pink";
+export interface Role {
+  id: string;
+  name: string;
+  colour: RoleColour | string;
+  description: string;
+  /** Secret ids. */
+  secrets: string[];
+  rule_sets: RuleSet[];
+}
+export interface TaskAllow { secret: string; host: string; rule: Rule }
+
+/** The role a task's agent runs with. Mirrors secrets.rs `resolve_role`. */
+export function resolveRole(
+  task: (Parameters<typeof keychainBlocked>[0] & { role?: string | null; cli?: string }) | null | undefined,
+  project: { default_role?: string | null } | null | undefined,
+  agent: { default_role?: string | null } | null | undefined,
+  roles: Role[] | undefined,
+): Role | null {
+  if (!keychainBlocked(task)) return null;
+  const id = task?.role ?? project?.default_role ?? agent?.default_role;
+  if (!id) return null;
+  return roles?.find((r) => r.id === id) ?? null;
+}
+
+export type SecretStatus =
+  | { status: "readable" }
+  | { status: "locked" }
+  | { status: "missing" }
+  | { status: "denied" }
+  | { status: "error"; detail: string };
+
+/** `role`: the role id of the spawn that saw it, which can differ from the
+ *  task's saved role after a switch, or between two agents of one task. */
+export interface BrokerUsed { secret: string; host: string; role: string; methods: [string, number][]; last_seen_unix_ms: number }
+export interface BrokerBlocked { secret: string; host: string; role: string; method: string; path: string; rule: string; count: number; last_seen_unix_ms: number }
+export interface BrokerNoSecret { host: string; count: number; last_seen_unix_ms: number }
+export interface BrokerSuspicious {
+  kind: "placeholder_unbound_host" | "keychain_denied" | "wrong_peer" | string;
+  host: string; detail: string; count: number; last_seen_unix_ms: number;
+}
+export interface BrokerEvents { used: BrokerUsed[]; blocked: BrokerBlocked[]; no_secret: BrokerNoSecret[]; suspicious: BrokerSuspicious[] }
+/** `roles`: distinct role ids the task's live brokered spawns run with,
+ *  empty when none is live. */
+export interface BrokerCounts { blocked: number; suspicious: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[] }
+/** A real-looking token outside the broker (agent env or Termic's own env). */
+export interface SecretExposure { source: "agent_env" | "process_env"; agent_id: string | null; var_name: string; prefix: string }
