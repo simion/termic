@@ -1,4 +1,4 @@
-// Secrets tab (mock M1): health cards, the secrets table, the expanded row,
+// Secrets tab: health cards, the secrets table, the expanded row,
 // and the Add secret dialog.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";

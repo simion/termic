@@ -1,7 +1,7 @@
 // Secrets, task side: New Task / sandbox / edit / schedule role picker, the
 // footer chip and popover, the sidebar and title bar key, the uncaged notice.
 export default {
-  // role picker (M4)
+  // role picker
   roleLabel: "Role",
   experimental: "Experimental",
   roleHint: "Which secrets this task's agent may use. Switchable later from the task footer.",
@@ -13,7 +13,7 @@ export default {
   roleSwitchesCage: "Picking a role switches this task to Enforcing (FS) and blocks the Keychain: an agent that can reach your Keychain could read the real item itself.",
   disabledDocker: "Not available in Docker yet. Pick Enforcing or Enforcing (FS) above to give this task a role.",
 
-  // right column (M4)
+  // right column
   secretsForTask: "Secrets for this task",
   brokered: "Brokered.",
   brokeredBody: "The agent only ever sees placeholders.",
@@ -33,7 +33,7 @@ export default {
   keyTip: "Secrets role: {{role}}",
   keySuspiciousTip: "Secrets role: {{role}}. Something in this task tried to misuse a secret.",
 
-  // footer chip + popover (M5, M6)
+  // footer chip + popover
   chipTip: "Secrets role {{role}}: what the broker did for this task",
   chipBlocked: "{{count}} blocked",
   chipSuspicious: "{{count}} suspicious",
@@ -80,7 +80,7 @@ export default {
   nothingYet: "Nothing brokered yet.",
   popoverFooter: "Allow applies to the next request with no restart. Grant needs an agent restart, since a secret's delivery is set up at spawn.",
 
-  // uncaged notice (M6)
+  // uncaged notice
   keychainOpenSuffix: ", Keychain open",
   uncagedTitle: "No Keychain block, so no secrets",
   uncagedBody: "{{name}} runs with {{sandbox}}, so its role {{role}} does not apply and its agent gets no placeholders. Like any agent that can reach your Keychain, it can still read it directly.",

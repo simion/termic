@@ -1,4 +1,4 @@
-// Roles tab (mock M2): the roles x secrets matrix and the selected role's
+// Roles tab: the roles x secrets matrix and the selected role's
 // editor (name, colour, description, rule blocks per secret and host).
 
 import { useEffect, useMemo, useRef, useState } from "react";

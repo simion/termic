@@ -2263,7 +2263,7 @@ export interface SyncStatus {
   ignored: SyncFolder[];
 }
 
-// ───────────── Secrets + roles (src-tauri/src/secrets.rs, broker.rs) ─────────────
+// ───────────── Secrets + roles (src-tauri/src/secrets.rs, broker/) ─────────────
 
 /** Where an item IS. "protected" is the data protection keychain (only
  *  Termic's signed build reads it, owned items only); "generic" / "internet"

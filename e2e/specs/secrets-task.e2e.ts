@@ -1,4 +1,4 @@
-// Secrets, task side (plan 2.4, 2.5, 2.7; mocks M4, M5, M6). Drives the real
+// Secrets, task side. Drives the real
 // New Task dialog and footer: on an uncaged draft the role section says that
 // picking a role turns the cage on, and does; picking a role turns the
 // Keychain block on, leaving the

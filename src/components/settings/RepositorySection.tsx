@@ -923,7 +923,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       )}
 
       {/* Personal default only (projects.json). The .termic.yaml request
-          and the "On this Mac" check in mock M3 wait for that phase. */}
+          and an "On this Mac" check are not built yet. */}
       {subTab === "secrets" && (
         <ProjectRoleCards value={draft.default_role} onChange={v => patch("default_role", v)} />
       )}

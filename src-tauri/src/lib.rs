@@ -10076,7 +10076,7 @@ fn task_set_docker(
     Ok(killed)
 }
 
-// ───────────── secrets + broker (secrets.rs, broker.rs) ─────────────
+// ───────────── secrets + broker (secrets.rs, broker/) ─────────────
 //
 // No command here returns a secret's value: probe reports a status, gh
 // accounts are names from gh's non-secret hosts.yml, exposure reports a
@@ -22762,7 +22762,7 @@ pub struct Settings {
     /// Directory to scan for git repos when discovering. Empty = unset.
     pub repos_dir: String,
     /// Secrets (Keychain item pointers, never values) and the roles that
-    /// bundle them. See secrets.rs and spec/credential-broker/plan.md.
+    /// bundle them. See secrets.rs and docs/sandbox.md "Credential broker".
     pub secrets: Vec<secrets::SecretDef>,
     pub roles: Vec<secrets::Role>,
     /// True once the user has finished the welcome wizard.

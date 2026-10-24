@@ -1,6 +1,5 @@
-// Settings -> Secrets (mocks M1, M2, M3 in spec/credential-broker/plan.md):
-// add a secret, build a role from the Reviewer template, edit its rules, and
-// default an agent and a project to it. Asserts on the saved Settings, since
+// Settings -> Secrets: add a secret, build a role from the Reviewer
+// template, edit its rules, and default an agent and a project to it. Asserts on the saved Settings, since
 // that is what the broker reads at spawn.
 //
 // The broker's own commands (secret_probe, secrets_gh_accounts,

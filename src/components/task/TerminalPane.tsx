@@ -4208,7 +4208,7 @@ export function FooterBar({ task, sandboxWarning }: {
   // Keychain, so a block saved without a restart reads as pending. `null`
   // until a poll answers: "blocked" is a claim, so it is never the default.
   const [kcOpen, setKcOpen] = useState<number | null>(null);
-  // Secrets role (M5). Its counts ride the SAME tick, never a timer of their
+  // Secrets role. Its counts ride the SAME tick, never a timer of their
   // own, and only for the task on screen: the chip is all that reads them.
   // A role needs Enforce / Enforce FS, so the tick always runs when it can.
   const { role: secretsRole, configured: secretsConfigured } = useTaskRole(task);

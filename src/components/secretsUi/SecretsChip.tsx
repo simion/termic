@@ -1,4 +1,4 @@
-// Footer surfaces for Secrets (M5, M6): the "<Role> · N blocked" chip and its
+// Footer surfaces for Secrets: the "<Role> · N blocked" chip and its
 // popover, and the notice on a task whose role cannot apply because nothing
 // blocks its Keychain. FooterBar owns the 2s poll and hands counts down; the
 // popover fetches the event lists only while it is open.

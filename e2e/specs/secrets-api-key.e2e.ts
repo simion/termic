@@ -1,5 +1,4 @@
-// Settings -> Secrets, pasted values (spec/credential-broker-v2/plan.md
-// B1, B3, B5; spec/protected-keychain/plan.md C3, C4): pick a preset, paste
+// Settings -> Secrets, pasted values: pick a preset, paste
 // a key or a GitHub token, replace it, and check what is saved. The e2e
 // build keeps Termic-owned Keychain items in memory (broker/keychain.rs) and
 // reports the protected keychain as available, so every pasted value lands
