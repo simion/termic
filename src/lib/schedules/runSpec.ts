@@ -14,7 +14,11 @@ export interface RunSpec {
   cli: string;
   agentArgs: string[];
   yolo: boolean;
-  sandbox: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; blockKeychain?: boolean };
+  sandbox: {
+    enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; blockKeychain?: boolean;
+    /** Secrets role, stored as the parent stores it (null = inherit). */
+    role?: string | null;
+  };
   /** Agent id -> account name, applied with `taskSetAccount` before mount. */
   accounts: Record<string, string>;
   /** Multi-repo projects: which members to link. Undefined elsewhere. */
@@ -55,6 +59,9 @@ export function runSpecFromParent(parent: Task, project?: Pick<Project, "type"> 
           rwPaths: [...(parent.sandbox_rw_paths ?? [])],
           allowedHosts: [...(parent.sandbox_allowed_hosts ?? [])],
           blockKeychain: !!parent.sandbox_block_keychain,
+          // the parent's own value, not the resolved role: a run that
+          // inherits keeps following the project / agent default.
+          role: parent.role ?? null,
         },
     accounts: { ...(parent.accounts ?? {}) },
     memberPaths: project?.type === "multi"
