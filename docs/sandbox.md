@@ -541,8 +541,10 @@ blocks the Keychain.
 **gh** reads `http_unix_socket` from its config and sends plaintext HTTP
 to the socket; the broker dials verified TLS upstream (rustls + the
 platform verifier, aws-lc-rs). The peer is checked with `LOCAL_PEERPID`
-against the task's registered root pids (`sandbox::pid_in_task`); any
-other process gets 403 and a Suspicious `wrong_peer`. Hosts no secret
+against the task's registered root pids (`sandbox::pid_in_task`): its
+parent chain, or else its session id, since an orphan is reparented to
+launchd but keeps the session portable-pty `setsid()` started. Any other
+process gets 403 and a Suspicious `wrong_peer`. Hosts no secret
 covers are forwarded only if the task's allow-list matches (EnforceFs:
 any), with no substitution; a 401 from one is recorded as "no secret".
 
