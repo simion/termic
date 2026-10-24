@@ -2479,17 +2479,23 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 "#;
 
 /// The Keychain services a blocked task cannot reach, from
-/// `launchctl print gui/$UID` / `system` on macOS 26: the legacy file
-/// keychain (SecurityServer), every secd endpoint (`com.apple.securityd*`:
-/// the data-protection keychain on `.xpc`, the system keychain, CKKS / SOS
-/// sync), the keychain agents and sync helpers, and CryptoTokenKit
-/// (`com.apple.ctkd*`), which serves smart-card and token identities as
-/// keychain items. Keychain prompts stop because SecurityServer is
-/// unreachable. authd stays reachable, so this does not stop other
-/// password prompts. TLS trust evaluation goes through trustd and is
-/// unaffected.
+/// `launchctl print gui/$UID` / `system` on macOS 26: every secd endpoint
+/// (`com.apple.securityd*`: the data-protection keychain on `.xpc`, the
+/// system keychain, CKKS / SOS sync), the keychain agents and sync helpers,
+/// and CryptoTokenKit (`com.apple.ctkd*`), which serves smart-card and
+/// token identities as keychain items. Keychain prompts stop because the
+/// security agents are unreachable. authd stays reachable, so this does not
+/// stop other password prompts.
+///
+/// SecurityServer is deliberately NOT here. Secure Transport needs it to
+/// parse any server cert, so denying it broke system curl and Apple git
+/// against every host ("Couldn't understand the server certificate
+/// format"). The legacy login keychain is read by the client process, so
+/// the `~/Library/Keychains` dir deny is what keeps it out: with
+/// SecurityServer reachable and the dir denied, the login keychain drops
+/// off the search list and `security`, ctypes and git's helper all find
+/// nothing (measured, see docs/sandbox.md).
 const KEYCHAIN_MACH_DENY: &str = r#"(deny mach-lookup
-  (global-name "com.apple.SecurityServer")
   (global-name-prefix "com.apple.securityd")
   (global-name-prefix "com.apple.security.agent")
   (global-name "com.apple.security.keychain")
@@ -3813,7 +3819,7 @@ mod tests {
         let deny = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))", sbpl_escape(&home));
         for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
             let off = keychain_profile(mode, false);
-            assert!(!off.contains("com.apple.SecurityServer"), "{mode:?}: no deny unless the task asks");
+            assert!(!off.contains(KEYCHAIN_MACH_DENY), "{mode:?}: no deny unless the task asks");
             assert!(!off.contains(&deny), "{mode:?}");
 
             let on = keychain_profile(mode, true);
@@ -3824,37 +3830,41 @@ mod tests {
             assert!(d > a, "{mode:?}: dir deny must come after the runtime allow");
         }
         // Monitor never blocks.
-        assert!(!keychain_profile(SandboxMode::Monitor, true).contains("com.apple.SecurityServer"));
+        assert!(!keychain_profile(SandboxMode::Monitor, true).contains(KEYCHAIN_MACH_DENY));
+        // Secure Transport needs SecurityServer for every TLS handshake.
+        assert!(!KEYCHAIN_MACH_DENY.contains("com.apple.SecurityServer"), "denying SecurityServer breaks system curl and Apple git");
     }
 
     #[test]
-    fn keychain_block_cuts_off_securityd_in_the_cage() {
+    fn keychain_block_cuts_off_the_keychain_in_the_cage() {
         if !cage_available() || !Path::new("/usr/bin/security").exists() {
             return;
         }
-        // `security list-keychains` is a harmless securityd round trip: no
-        // item is read, so this never touches a real secret. (A lookup of a
-        // missing item is no good here: it exits 44 open AND blocked.)
-        let run = |profile: String| {
+        // `security list-keychains` reads no item, so this never touches a
+        // real secret. SecurityServer stays reachable in the block (Secure
+        // Transport needs it); what must go is the login keychain on the
+        // search list, which the dir deny takes off.
+        let listed = |profile: String| {
             let f = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(f.path(), profile).unwrap();
             Command::new("/usr/bin/sandbox-exec")
                 .arg("-f").arg(f.path())
                 .args(["/usr/bin/security", "list-keychains"])
                 .output()
-                .expect("spawn sandbox-exec security")
+                .expect("spawn sandbox-exec security");
+            String::from_utf8_lossy(&out.stdout).into_owned()
         };
         let blocked = keychain_profile(SandboxMode::EnforceFs, true);
-        // positive control: the unblocked cage reaches securityd.
-        let open = run(keychain_profile(SandboxMode::EnforceFs, false));
-        assert!(open.status.success(), "unblocked cage should reach securityd; stderr={}",
-                String::from_utf8_lossy(&open.stderr));
-        // the dir deny alone still reaches it, so the Mach deny is what
-        // cuts it off below, not the dir deny riding along.
-        let dir_only = run(blocked.replace(KEYCHAIN_MACH_DENY, ""));
-        assert!(dir_only.status.success(), "dir deny alone should still reach securityd; stderr={}",
-                String::from_utf8_lossy(&dir_only.stderr));
-        assert!(!run(blocked.clone()).status.success(), "blocked cage must not reach securityd");
+        // positive control: the unblocked cage sees the login keychain.
+        assert!(listed(keychain_profile(SandboxMode::EnforceFs, false)).contains("login.keychain"),
+                "unblocked cage should list the login keychain");
+        // the Mach deny alone still lists it, so the dir deny is what takes
+        // it off below.
+        let dir = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))",
+                          sbpl_escape(&dirs::home_dir().unwrap().to_string_lossy()));
+        assert!(listed(blocked.replace(&dir, "")).contains("login.keychain"),
+                "without the dir deny the login keychain should still be listed");
+        assert!(!listed(blocked.clone()).contains("login.keychain"), "blocked cage must not list the login keychain");
 
         // the dir deny on its own: listing the keychain dir works open and
         // fails blocked.
@@ -3862,7 +3872,7 @@ mod tests {
             let f = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(f.path(), profile).unwrap();
             let home = dirs::home_dir().unwrap();
-            Command::new("/usr/bin/sandbox-exec")
+            let out = Command::new("/usr/bin/sandbox-exec")
                 .arg("-f").arg(f.path())
                 .arg("/bin/ls").arg(home.join("Library/Keychains"))
                 .output().expect("spawn sandbox-exec ls").status.success()
