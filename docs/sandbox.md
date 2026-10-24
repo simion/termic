@@ -424,9 +424,34 @@ reachable, an unlocked keychain kept anywhere else the cage can read
 (`security create-keychain <path>`) is decrypted for the agent:
 measured 2026-10-23, a fake item in a temp-dir keychain leaked with the
 dir deny alone. So the block also emits `KEYCHAIN_FILE_DENY`, a
-read+write deny on any `*.keychain` / `*.keychain-db` outside `/System`
-and `/Library/Keychains` (roots and the System keychain). With it the
-item is not found, and Secure Transport curl and git still work.
+read+write deny on any `*.keychain` / `*.keychain-db`, extension in any
+case, outside `/System/Library/Keychains` and `/Library/Keychains` (roots
+and the System keychain). Not all of `/System`: `/System/Volumes/Data`
+is another path to every home dir.
+
+Measured 2026-10-23 against a real EnforceFs task profile, fake items in
+throwaway keychains, all three blocks (pre-2026-10-23 with the
+SecurityServer deny, the dir deny + lowercase rule, and the shipped one):
+
+| Probe | No block | Any of the three blocks |
+|---|---|---|
+| item in `~/Library/Keychains` | leaked | not found |
+| same, via `/System/Volumes/Data<path>` | | not found |
+| `ln` it out of `~/Library/Keychains` | linked | `ln` refused |
+| keychain in `$TMPDIR`, `.keychain-db` | leaked | not found |
+| keychain in `$TMPDIR`, `.KEYCHAIN-DB` | leaked | not found |
+| `security list-keychains` | login + System | login + System (old block: fails) |
+| curl / Apple git, Secure Transport | works | works (old block: fails) |
+
+Two things that table does not say. `list-keychains` still printing the
+login keychain is not a leak, items in it are not found, so it is no use
+as a test signal. And the lowercase-only rule also refused the
+`.KEYCHAIN-DB` read, for a reason not pinned down; the rule matches any
+case explicitly so the result does not rest on that. The limit: a
+keychain saved under a non-keychain name outside `~/Library/Keychains`
+is not caught, since the profile matches names and does not enumerate
+the user's keychains. `keychain_block_cuts_off_the_keychain_in_the_cage`
+repeats the inside, hard-link and both outside probes with controls.
 
 **Why the dir is not read-only for everyone.** With the services
 reachable and the dir read-only, `security add-generic-password` fails
