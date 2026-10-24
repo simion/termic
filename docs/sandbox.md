@@ -307,10 +307,12 @@ default. Whether the profile blocks comes from one function,
 When set, `render_profile_with` emits `KEYCHAIN_MACH_DENY` and a
 read+write deny on `~/Library/Keychains`. The Mach list is every
 Keychain service `launchctl print gui/$UID` / `system` shows on macOS
-26: SecurityServer, every `com.apple.securityd*` endpoint (secd: the
-data-protection keychain, the system keychain, CKKS / SOS sync), the
+26 except SecurityServer: every `com.apple.securityd*` endpoint (secd:
+the data-protection keychain, the system keychain, CKKS / SOS sync), the
 keychain agents and sync helpers, and every `com.apple.ctkd*`
-(CryptoTokenKit, smart-card and token identities). The dir deny is
+(CryptoTokenKit, smart-card and token identities). SecurityServer stays
+reachable because Secure Transport needs it for every TLS handshake (see
+"SecurityServer is not denied" below). The dir deny is
 emitted for the literal path and, when it differs, its resolved form,
 mirroring the runtime allow loop; otherwise a symlinked home keeps its
 resolved allow. Both come after every file allow, the control plane's
@@ -356,8 +358,8 @@ as complete:
   return 200; gh with a fake token gets its 401 with no x509 error;
   claude `/login`, codex and gemini start inside the blocked task. The
   extra names (the rest of `securityd*`, `ctkd*`, the sync helpers) are
-  defence in depth. `keychain_block_cuts_off_securityd_in_the_cage`
-  repeats the dir and data-protection probes with a positive control;
+  defence in depth. `keychain_block_cuts_off_the_keychain_in_the_cage`
+  repeats the search-list, dir and data-protection probes with a positive control;
   like every live cage test it needs an uncaged shell. Service names
   move between macOS releases: re-enumerate when a new one ships.
 - the header still allows every other `mach-lookup`, launchd included,
@@ -388,8 +390,34 @@ as complete:
   claims an agent cannot see a Keychain secret has to close these
   first, or say "cannot read it directly".
 
-TLS does not need the Keychain services in any stack tried (Codex and
-sandbox-runtime keep `SecurityServer` "for TLS"; not needed here).
+**SecurityServer is not denied.** It was, until 2026-10-23, and that
+broke Secure Transport everywhere in a blocked cage: system curl with
+`CURL_SSL_BACKEND=secure-transport` (or its default; Apple's curl lists
+Secure Transport first) and Apple git against any host failed with
+"Couldn't understand the server certificate format". Go, node, python
+urllib and curl on LibreSSL were unaffected, which is why the table
+above showed 200s. Forcing OpenSSL is not an answer: it trusts
+`/etc/ssl/cert.pem` instead of Apple's trust store, so it misses
+distrust decisions such as the October 2026 emSign removal. Codex and
+sandbox-runtime keep `SecurityServer` "for TLS"; this is that case.
+
+The legacy login keychain is read by the client process, with securityd
+only doing the crypto, so the `~/Library/Keychains` dir deny is what
+keeps it out. Measured 2026-10-23 on macOS 26.5 with fake items, the
+block as shipped vs the block minus SecurityServer (both with the dir
+deny):
+
+| Probe | Block + SecurityServer deny | Block, SecurityServer reachable |
+|---|---|---|
+| `security find-generic-password -w` | not found | not found |
+| python ctypes `SecKeychainFindGenericPassword` | -50 | -25300 (not found) |
+| `git credential-osxkeychain get` | nothing | nothing |
+| `security list-keychains` | fails | System.keychain only |
+| curl, Secure Transport | fails | 200 |
+| `/usr/bin/git ls-remote`, Secure Transport | fails | works |
+
+The System keychain stays visible; its items need admin authorization,
+and the security agents that would ask for it are still denied.
 
 **Why the dir is not read-only for everyone.** With the services
 reachable and the dir read-only, `security add-generic-password` fails
@@ -463,14 +491,12 @@ blocks the Keychain.
   inherited `GIT_CONFIG_COUNT`: `credential.helper=` (reset), a
   `credential.https://github.com.helper` answering `x-access-token` +
   the placeholder, and for `https://github.com/` `sslCAInfo`, `proxy`,
-  `proxyAuthMethod=basic` and `sslBackend=openssl`. The last is not
-  optional: Apple git defaults to Secure Transport (as does
-  `CURL_SSL_BACKEND=secure-transport`), which needs a
-  `com.apple.SecurityServer` lookup to take the broker's leaf. The
-  Keychain block denies that lookup, and git fails with "Couldn't
-  understand the server certificate format". The same git and cert pass
-  outside the cage, and `-c http.sslBackend=openssl` passes inside it.
-  Scoped to the URL (verified: a bogus scoped value breaks only that
+  `proxyAuthMethod=basic` and `sslBackend=openssl`. The last was added
+  when the Keychain block still denied `com.apple.SecurityServer`, which
+  Secure Transport needs (see "SecurityServer is not denied"). It stays:
+  this leg only trusts the spawn CA, and the broker verifies the real
+  github.com with the platform verifier, so Apple's trust store still
+  decides. Scoped to the URL (verified: a bogus scoped value breaks only that
   host), so every other host keeps the user's backend. A git whose curl
   lacks OpenSSL fails here instead (Apple git verified; Homebrew's curl is
   built on OpenSSL but was not tested);

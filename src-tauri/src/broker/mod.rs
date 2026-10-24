@@ -675,9 +675,9 @@ fn render_env(gh: Option<(&str, &Path)>, git: Option<GitEnv>, git_base: usize) -
             (format!("http.{url}.proxy"), g.proxy_url.to_string()),
             // send the proxy credentials up front instead of waiting for a 407.
             (format!("http.{url}.proxyAuthMethod"), "basic".into()),
-            // Apple git's default Secure Transport needs com.apple.SecurityServer
-            // to take the leaf, and the Keychain block denies it ("Couldn't
-            // understand the server certificate format"). Scoped to this URL,
+            // this leg only has to trust the spawn CA in sslCAInfo, and the
+            // broker verifies the real upstream with the platform verifier,
+            // so the host keeps Apple's trust either way. Scoped to this URL,
             // so every other host keeps the user's backend.
             (format!("http.{url}.sslBackend"), "openssl".into()),
         ];
