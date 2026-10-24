@@ -1,4 +1,4 @@
-//! Credential broker (spec/credential-broker/plan.md). Swaps a per-spawn
+//! Credential broker (docs/sandbox.md "Credential broker"). Swaps a per-spawn
 //! placeholder for the real secret on the way to a bound host, so a caged
 //! agent can USE a credential without ever holding it.
 //!

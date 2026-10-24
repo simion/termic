@@ -8,7 +8,7 @@
 // ponytail: marker, not pid, for this endpoint and both proxy deliveries
 // (docs/sandbox.md "marker-only deliveries"). A same-user process that reads
 // the agent's env could use them; a pid check via libproc's socket tables is
-// the upgrade if that ever matters (the plan's B2 open question).
+// the upgrade if that ever matters.
 
 use super::accept::{self, Acceptor};
 use super::{Spawn, Via, CLIENT_READ_TIMEOUT, CLIENT_WRITE_TIMEOUT};

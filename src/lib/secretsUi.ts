@@ -37,7 +37,7 @@ export function roleToStore(pick: string, def: { id: string } | null): string | 
 }
 
 /** The role this task WOULD run with if its Keychain were blocked: what the
- *  uncaged notice (M6) talks about. */
+ *  uncaged notice talks about. */
 export function configuredRole(
   task: { role?: string | null; cli?: string } | null | undefined,
   project: Pick<Project, "default_role"> | null | undefined,
@@ -77,7 +77,7 @@ export function brokerEnvPreview(secrets: SecretDef[]): { line: string; note: "p
 
 /** The allow rule the popover's Allow button saves for a blocked request,
  *  or null when the row must not offer one. GraphQL blocks arrive as method
- *  `MUTATION` with the mutation name as the path (plan 3.3), so the same
+ *  `MUTATION` with the mutation name as the path, so the same
  *  shape covers both.
  *
  *  The method and path are what the AGENT sent, and the pattern is a glob:

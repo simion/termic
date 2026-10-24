@@ -3357,7 +3357,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <span data-testid="task-mode-slot" className="flex shrink-0 items-center">{mark}</span>
                 );
               })()}
-              {/* Secrets role key (M5). Its own component with its own narrow
+              {/* Secrets role key. Its own component with its own narrow
                   selectors: nothing here polls, and a role change re-renders
                   only the key, never the row. */}
               <TaskRoleKey task={w} />

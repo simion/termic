@@ -1,5 +1,5 @@
 // Settings -> Secrets: the credential broker's management page
-// (spec/credential-broker/plan.md, mocks M1/M2). Secrets and roles are two
+// (docs/sandbox.md "Credential broker"). Secrets and roles are two
 // Settings fields, saved together through the shared read-modify-write patch
 // so this page can never revert another section's save.
 

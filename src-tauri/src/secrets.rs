@@ -1,5 +1,5 @@
 //! Secrets and roles: the data model behind the credential broker
-//! (spec/credential-broker/plan.md). A secret points at a Keychain item and
+//! (docs/sandbox.md "Credential broker"). A secret points at a Keychain item and
 //! never holds its value; a role is a set of secrets plus rules for what an
 //! agent may do with them. One role per task, resolved at spawn.
 //!

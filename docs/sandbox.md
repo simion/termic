@@ -718,8 +718,7 @@ no business in iCloud. No custom keychain (`SecKeychainCreate`): that
 API is deprecated, and Apple's direction for new code is the data
 protection keychain (TN3137). The cage blocks that keychain too (-25291
 above); the broker reads outside the cage, so nothing it relies on
-changes. Signing for it needs a Developer ID provisioning profile; see
-spec/protected-keychain/plan.md.
+changes. Signing for it needs a Developer ID provisioning profile.
 
 **Events** (per task, in memory, never a header value): Used (per secret
 and host, by method or fetch/push), Blocked, No secret, Suspicious

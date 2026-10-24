@@ -1,5 +1,5 @@
 // Role defaults outside the Secrets page: the per-agent select (Agents &
-// Terminals) and the project's "New tasks default to" cards (mock M3).
+// Terminals) and the project's "New tasks default to" cards.
 
 import { useTranslation } from "react-i18next";
 import type { Role } from "@/lib/types";

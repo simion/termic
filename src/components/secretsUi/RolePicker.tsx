@@ -1,5 +1,5 @@
 // Task-side Secrets pieces shared by the create / edit / sandbox / schedule
-// dialogs (M4) and the sidebar + title bar (M5 key).
+// dialogs and the sidebar + title bar key.
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -103,7 +103,7 @@ export function RolePicker({
   );
 }
 
-/** The New Task dialog's right-column summary for a picked role (M4). */
+/** The New Task dialog's right-column summary for a picked role. */
 export function SecretsForTask({ role, secrets }: { role: Role; secrets: SecretDef[] }) {
   const { t } = useTranslation("secrets");
   const mine = secrets.filter(s => role.secrets.includes(s.id));
