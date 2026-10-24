@@ -50,17 +50,21 @@ export function useBackendSettings() {
   /** Merge `fields` into the cached Settings and persist. Returns false when
    *  the write failed (or settings had not loaded yet) so a caller can revert
    *  its optimistic UI instead of showing state it did not save. */
-  const patch = useCallback(async (fields: Partial<Settings>): Promise<boolean> => {
+  /** Like `patch`, but resolves to Rust's refusal (null when saved), for a
+   *  section whose saves can fail validation and should say why. */
+  const patchOrError = useCallback(async (fields: Partial<Settings>): Promise<string | null> => {
     const cur = ref.current;
-    if (!cur) return false;
+    if (!cur) return "settings have not loaded";
     const run = patchChain.then(() => applyPatch(fields, cur, store));
     // Keep the chain alive even when this patch rejects, or one failure
     // would wedge every later save.
     patchChain = run.catch(() => {});
     return run;
   }, [store]);
+  const patch = useCallback(async (fields: Partial<Settings>): Promise<boolean> =>
+    (await patchOrError(fields)) === null, [patchOrError]);
 
-  return { settings, store, patch };
+  return { settings, store, patch, patchOrError };
 }
 
 /** One read-modify-write against the backend. Split out so the queue
@@ -69,7 +73,7 @@ async function applyPatch(
   fields: Partial<Settings>,
   cur: Settings,
   store: (s: Settings) => void,
-): Promise<boolean> {
+): Promise<string | null> {
   // Re-read so the merge starts from what is on disk, picking up any
   // field another section saved since this one mounted. A failed read
   // falls back to the cached copy: worst case is the old behaviour,
@@ -79,13 +83,13 @@ async function applyPatch(
   store(next);
   try {
     await settingsSave(next);
-    return true;
-  } catch {
+    return null;
+  } catch (e) {
     // Revert to what disk held a moment ago, NOT this section's
     // pre-patch snapshot: that snapshot may predate another section's
     // save, which is the staleness the re-read above exists to remove.
     store(base);
-    return false;
+    return String(e);
   }
 }
 

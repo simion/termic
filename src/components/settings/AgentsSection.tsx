@@ -10,6 +10,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { settingsLoad, agentsSave, agentsDefaults, projectUpdate } from "@/lib/ipc";
+import { AgentRoleField } from "./secretsSettings/RolePickers";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { agentOverrides, resolveAgent } from "@/lib/agents";
@@ -1195,6 +1196,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
       )}
 
       <div className="grid grid-cols-1 gap-4">
+        {!isTerminal && <AgentRoleField agentId={agent.id} value={agent.default_role} onChange={default_role => onPatch({ default_role })} />}
         <Field label={t("agents.card.commandLabel")} hint={isTerminal
           ? t("agents.card.commandHintTerminal")
           : t("agents.card.commandHintAgent")}>

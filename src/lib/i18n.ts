@@ -69,6 +69,7 @@ export const NAMESPACES = [
   "panels",   // src/components/task/* content panels (diff, git, PR, race)
   "chrome",   // root src/components/*, views, ui primitives
   "backend",  // user-visible strings from stores/hooks/lib (toasts, notifications)
+  "secrets",  // Secrets + roles: settings screens, task surfaces (credential broker)
 ] as const;
 export type Namespace = typeof NAMESPACES[number];
 

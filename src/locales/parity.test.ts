@@ -30,7 +30,7 @@ describe("locale parity (en vs zh-CN)", () => {
   // (sidebar, task, backend at the time of writing) are still parity-checked
   // below but allowed to be empty until their area is extracted; move each
   // into this list as its extraction lands, until it equals NAMESPACES.
-  const EXTRACTED: readonly string[] = ["common", "settings", "dialogs", "panels", "chrome", "sidebar", "task", "backend"];
+  const EXTRACTED: readonly string[] = ["common", "settings", "dialogs", "panels", "chrome", "sidebar", "task", "backend", "secrets"];
 
   for (const ns of NAMESPACES) {
     it(`namespace "${ns}" has identical keys`, () => {

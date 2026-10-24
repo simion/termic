@@ -8,7 +8,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -26,6 +26,9 @@ import { DockerSection } from "./DockerSection";
 // Lazy: it pulls in the prefs registry and the sync module, neither of which
 // belongs on the app-start path (Settings itself is imported by App).
 const SyncSection = lazy(() => import("./SyncSection"));
+// Lazy for the same reason: three tabs of broker management nobody needs
+// until they open the page.
+const SecretsSection = lazy(() => import("./secretsSettings/SecretsSection").then(m => ({ default: m.SecretsSection })));
 
 export function Settings() {
   const { t } = useTranslation("settings");
@@ -129,6 +132,10 @@ export function Settings() {
             discoverability than the label is worth. See docs/ui.md. */}
         <RailItem icon={<ShieldCheck className="h-4 w-4" />} label={t("rail.sandbox")} tabId="sandbox"
           active={tab === "sandbox"} onClick={() => openSettings("sandbox")} />
+        {/* Experimental in the sense docs/ui.md defines: nothing changes
+            until a task has a role, and No secrets is the way out. */}
+        <RailItem icon={<KeyRound className="h-4 w-4" />} label={t("rail.secrets")} badge={t("rail.badgeExp")} tabId="secrets"
+          active={tab === "secrets"} onClick={() => openSettings("secrets")} />
         <RailItem icon={<Container className="h-4 w-4" />} label={t("rail.docker")} badge={t("rail.badgeExp")} tabId="docker"
           active={tab === "docker"} onClick={() => openSettings("docker")} />
 
@@ -167,6 +174,7 @@ export function Settings() {
           {tab === "tasks"       && <TasksSection />}
           {tab === "notifications" && <NotificationsSection />}
           {tab === "sandbox"     && <SandboxSection />}
+          {tab === "secrets"     && <Suspense fallback={null}><SecretsSection /></Suspense>}
           {tab === "docker"      && <DockerSection />}
           {/* Agent access: the CLI and MCP are two presentations of the
               same verbs (docs/ideas/mcp.md), and other computers are a
