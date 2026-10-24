@@ -419,6 +419,15 @@ deny):
 The System keychain stays visible; its items need admin authorization,
 and the security agents that would ask for it are still denied.
 
+The dir deny only covers `~/Library/Keychains`. With SecurityServer
+reachable, an unlocked keychain kept anywhere else the cage can read
+(`security create-keychain <path>`) is decrypted for the agent:
+measured 2026-10-23, a fake item in a temp-dir keychain leaked with the
+dir deny alone. So the block also emits `KEYCHAIN_FILE_DENY`, a
+read+write deny on any `*.keychain` / `*.keychain-db` outside `/System`
+and `/Library/Keychains` (roots and the System keychain). With it the
+item is not found, and Secure Transport curl and git still work.
+
 **Why the dir is not read-only for everyone.** With the services
 reachable and the dir read-only, `security add-generic-password` fails
 (`SecKeychainItemCreateFromContent: UNIX[Operation not permitted]`): the

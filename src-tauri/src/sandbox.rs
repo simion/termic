@@ -1682,6 +1682,7 @@ pub(crate) fn render_profile_with(
         for p in keychain_dirs(&home) {
             out.push_str(&format!("(deny file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(&p)));
         }
+        out.push_str(KEYCHAIN_FILE_DENY);
     }
 
     // Every brokered spawn's scratch dir sits under one base in /private/tmp,
@@ -2505,6 +2506,20 @@ const KEYCHAIN_MACH_DENY: &str = r#"(deny mach-lookup
   (global-name "com.apple.security.kcsharing")
   (global-name "com.apple.security.cloudkeychainproxy")
   (global-name-prefix "com.apple.ctkd"))
+"#;
+
+/// Every keychain file outside the system's own, wherever it lives. With
+/// SecurityServer reachable, an unlocked keychain the cage can read (one
+/// made with `security create-keychain <path>`, kept outside
+/// `~/Library/Keychains`) would be decrypted for the agent; measured
+/// leaking without this rule and not with it. `/System` and
+/// `/Library/Keychains` stay readable: they hold the roots and the System
+/// keychain, whose items need admin auth the cage cannot get.
+const KEYCHAIN_FILE_DENY: &str = r#"(deny file-read* file-write*
+  (require-all
+    (regex #"\.keychain(-db)?$")
+    (require-not (subpath "/System"))
+    (require-not (subpath "/Library/Keychains"))))
 "#;
 
 /// Whether this profile cuts off the Keychain. The renderer emits the block
@@ -3824,6 +3839,8 @@ mod tests {
 
             let on = keychain_profile(mode, true);
             assert!(on.contains(KEYCHAIN_MACH_DENY), "{mode:?}: mach deny missing");
+            assert!(on.contains(KEYCHAIN_FILE_DENY), "{mode:?}: keychain file deny missing");
+            assert!(!off.contains(KEYCHAIN_FILE_DENY), "{mode:?}");
             // last match wins, so the deny is inert unless it follows the
             // runtime allow for the same dir.
             let (a, d) = (on.find(&allow).expect("runtime allow"), on.find(&deny).expect("dir deny"));
@@ -3847,7 +3864,7 @@ mod tests {
         let listed = |profile: String| {
             let f = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(f.path(), profile).unwrap();
-            Command::new("/usr/bin/sandbox-exec")
+            let out = Command::new("/usr/bin/sandbox-exec")
                 .arg("-f").arg(f.path())
                 .args(["/usr/bin/security", "list-keychains"])
                 .output()
@@ -3858,12 +3875,44 @@ mod tests {
         // positive control: the unblocked cage sees the login keychain.
         assert!(listed(keychain_profile(SandboxMode::EnforceFs, false)).contains("login.keychain"),
                 "unblocked cage should list the login keychain");
-        // the Mach deny alone still lists it, so the dir deny is what takes
-        // it off below.
+        // the Mach deny alone still lists it, so the file denies are what
+        // take it off below.
         let dir = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))",
                           sbpl_escape(&dirs::home_dir().unwrap().to_string_lossy()));
-        assert!(listed(blocked.replace(&dir, "")).contains("login.keychain"),
-                "without the dir deny the login keychain should still be listed");
+        let mach_only = blocked.replace(&dir, "").replace(KEYCHAIN_FILE_DENY, "");
+        assert!(listed(mach_only).contains("login.keychain"),
+                "without the file denies the login keychain should still be listed");
+
+        // a keychain outside ~/Library/Keychains: SecurityServer is
+        // reachable, so only KEYCHAIN_FILE_DENY keeps it out. Fake item in a
+        // throwaway keychain; create-keychain also puts it on the user's
+        // search list, so the guard takes it back off.
+        struct Kc(PathBuf);
+        impl Drop for Kc {
+            fn drop(&mut self) { let _ = Command::new("/usr/bin/security").arg("delete-keychain").arg(&self.0).output(); }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let kc = Kc(dir.path().join("probe.keychain-db"));
+        let sec = |args: &[&str]| Command::new("/usr/bin/security").args(args).arg(&kc.0).output().unwrap().status.success();
+        if sec(&["create-keychain", "-p", "pw"]) && sec(&["unlock-keychain", "-p", "pw"])
+            && sec(&["add-generic-password", "-a", "termic-probe", "-s", "termic-probe-ext", "-w", "fake-s3cret"])
+        {
+            let read = |profile: &str| {
+                let f = tempfile::NamedTempFile::new().unwrap();
+                std::fs::write(f.path(), profile).unwrap();
+                let out = Command::new("/usr/bin/sandbox-exec")
+                    .arg("-f").arg(f.path())
+                    .args(["/usr/bin/security", "find-generic-password", "-s", "termic-probe-ext", "-w"])
+                    .arg(&kc.0)
+                    .output().expect("spawn sandbox-exec security");
+                String::from_utf8_lossy(&out.stdout).contains("fake-s3cret")
+            };
+            // positive control: without the rule the cage reads it, so the
+            // assert below is not passing on an unreadable temp dir.
+            if read(&blocked.replace(KEYCHAIN_FILE_DENY, "")) {
+                assert!(!read(&blocked), "blocked cage must not read a keychain outside ~/Library/Keychains");
+            }
+        }
         assert!(!listed(blocked.clone()).contains("login.keychain"), "blocked cage must not list the login keychain");
 
         // the dir deny on its own: listing the keychain dir works open and
@@ -3872,7 +3921,7 @@ mod tests {
             let f = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(f.path(), profile).unwrap();
             let home = dirs::home_dir().unwrap();
-            let out = Command::new("/usr/bin/sandbox-exec")
+            Command::new("/usr/bin/sandbox-exec")
                 .arg("-f").arg(f.path())
                 .arg("/bin/ls").arg(home.join("Library/Keychains"))
                 .output().expect("spawn sandbox-exec ls").status.success()
@@ -3934,6 +3983,10 @@ print(sec.SecItemCopyMatching(d, C.byref(C.c_void_p())))
             let deny = p.rfind("(deny file-read* file-write* (subpath ").expect("dir deny");
             let last_allow = p.rfind("(allow file-").expect("file allows");
             assert!(deny > last_allow, "{mode:?}: a file allow follows the keychain deny");
+            // the any-path keychain file deny too, or a user allow on a dir
+            // holding an unlocked keychain would hand it to the agent.
+            let file_deny = p.rfind(KEYCHAIN_FILE_DENY).expect("keychain file deny");
+            assert!(file_deny > last_allow, "{mode:?}: a file allow follows the keychain file deny");
         }
     }
 
