@@ -775,6 +775,10 @@ export default {
       zoomIn: { label: "放大", hint: "放大整个应用（像浏览器缩放）" },
       zoomOut: { label: "缩小", hint: "缩小整个应用" },
       zoomReset: { label: "重置缩放", hint: "把应用恢复到 100%" },
+      previewGoToLine: {
+        label: "在 Markdown 预览中跳转到行",
+        hint: "把预览滚动到包含该源代码行的块。仅在预览获得焦点时生效；编辑器保留自己的「查找下一个」",
+      },
       addSelectionToAgent: {
         label: "把选中内容加入智能体",
         hint: "在选中的行上开一条评论。评论会排队，一次性作为一批发给智能体，所以你可以先标记好几处再发送。",

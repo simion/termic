@@ -4,18 +4,49 @@
 // keep-mounted rules; everything here is markdown-specific — the live buffer
 // feeding the preview, `file.md#heading` reveals, and the remote-image gate.
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditorView } from "@codemirror/view";
 import type { EditTab, ExternalTab, ScratchTab, Task } from "@/lib/types";
-import { EditorPane } from "./EditorPane";
+import { DiskChangedError, EditorPane, editorHandle } from "./EditorPane";
+import { editorEditTarget, previewSaveAction } from "./markdown/editTarget";
+import { useUI } from "@/store/ui";
+import { kbd } from "@/lib/platform";
 import { SourcePreviewShell, type SourceView } from "./SourcePreviewShell";
 import { useApp } from "@/store/app";
 import { usePrefs, resolveTheme } from "@/store/prefs";
+import { Hash } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
+import { lineRef, rangeText, type LineRange } from "@/lib/markdown/lines";
+import { OutlineToggle, ReviewMenu, useOutline } from "./markdown/ReviewMenu";
 
 const MarkdownPreview = lazy(() =>
   import("./MarkdownPreview").then(m => ({ default: m.MarkdownPreview })),
 );
+
+/** The toolbar's `L337-342` for a selection in the preview; a click copies the
+ *  reference. Holds the range itself, so dragging a selection across lines
+ *  re-renders this button and not the pane (the editor included). */
+function LineChip({ bind, initial, refPath }: {
+  bind: (set: (r: LineRange | null) => void) => void;
+  initial: LineRange | null;
+  refPath?: string;
+}) {
+  const { t } = useTranslation("panels");
+  const [r, setR] = useState(initial);
+  useEffect(() => bind(setR), [bind]);
+  if (!r) return null;
+  const ref = lineRef(refPath, r);
+  return (
+    <button
+      type="button"
+      data-testid="md-line-chip"
+      title={t("mdReader.copyRef", { ref })}
+      onClick={() => void copyToClipboard(ref, ref)}
+      className="mr-1 inline-flex h-[22px] items-center gap-1 rounded border border-[var(--color-border)] bg-[var(--color-bg-1)] px-2 font-mono text-[11.5px] tabular-nums text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+    ><Hash className="h-3 w-3" />L{rangeText(r)}</button>
+  );
+}
 
 export function MarkdownPane(
   { task, tab, visible, ownsFind, active = false }: {
@@ -100,6 +131,42 @@ export function MarkdownPane(
   // preview until the next real content update arrives.
   useEffect(() => () => { if (debounceRef.current != null) window.clearTimeout(debounceRef.current); }, [srcKey]);
 
+  // The preview's write path, through this buffer (docs/markdown.md,
+  // "Edits"). An external file is read-only, so its preview can look but not
+  // edit; a pad edits its buffer like any other and flushes itself. The save
+  // policy (prefs.markdownSavePreviewEdits) is read when an edit lands.
+  const canEditPreview = tab.type !== "external";
+  const isPad = tab.type === "scratch" && !tab.path;
+  const editTarget = useMemo(() => {
+    if (!editorView) return undefined;
+    const handle = () => editorHandle(editorView);
+    const name = filePath.split("/").pop() || filePath;
+    return editorEditTarget(editorView, {
+      canEdit: canEditPreview,
+      isDirty: () => handle()?.isDirty() ?? true,
+      onApplied: (label, wasDirty) => {
+        // re-render now rather than after the typing debounce: the edit was
+        // made ON the preview, so the reader is looking right at it
+        if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
+        setBuf({ path: srcKey, text: editorView.state.doc.toString() });
+        const what = label ?? t("mdEdit.edited");
+        const toast = useUI.getState().pushToast;
+        switch (previewSaveAction(usePrefs.getState().markdownSavePreviewEdits, wasDirty, !isPad)) {
+          case "save":
+            handle()?.persist()
+              ?.then(() => toast(t("mdEdit.saved", { what, name }), "success"))
+              .catch(e => toast(e instanceof DiskChangedError
+                ? t("mdEdit.diskChanged", { what }) : t("editor.saveFailed", { error: e }), "error"));
+            break;
+          case "kept": toast(t("mdEdit.kept", { what }), "info"); break;
+          case "unsaved": toast(t("mdEdit.unsaved", { what, combo: kbd("⌘S") }), "info"); break;
+        }
+      },
+      save: () => handle()?.save(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorView, srcKey, canEditPreview, isPad]);
+
   // A pending file.md#heading reveal is only consumable by the rendered
   // preview: a tab sitting in source view switches to preview (tab-local
   // mdView only; the global default-view pref is not touched). Without this
@@ -112,6 +179,13 @@ export function MarkdownPane(
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealHeading]);
+
+  // the review menu's prefs: one object for the layout (stable until a value
+  // changes). A change re-renders this pane (and its editor) in every
+  // markdown tab, once, on a pref click; the preview itself only restyles
+  // (CSS variables), it never re-parses
+  const reader = usePrefs(s => s.markdownReader);
+  const [outline] = useOutline(view === "split");
 
   // Subscribe so the preview/mermaid theme tracks app palette changes.
   const themeMode = usePrefs(s => s.themeMode);
@@ -128,6 +202,18 @@ export function MarkdownPane(
   // re-run (and, for the main render effect, rebuild innerHTML) on every
   // single re-render regardless of whether composition actually changed.
   const memberDirs = useMemo(() => task.composition?.map(m => m.dir_name), [task.composition]);
+  // the selection's lines: the chip holds the range, the pane only whether
+  // there is one (so the toolbar has no empty actions slot otherwise)
+  const selRef = useRef<{ r: LineRange | null; set: (r: LineRange | null) => void }>({ r: null, set: () => {} });
+  const [hasSel, setHasSel] = useState(false);
+  const bindChip = useCallback((set: (r: LineRange | null) => void) => { selRef.current.set = set; }, []);
+  const onSelectionLines = useCallback((r: LineRange | null) => {
+    selRef.current.r = r;
+    selRef.current.set(r);
+    setHasSel(!!r);
+  }, []);
+  const commentFile = tab.type === "edit" ? tab.path : undefined;
+
   const external = tab.type === "external";
   const ctx = { taskId: task.id, filePath, epoch: fsRev, memberDirs, external };
 
@@ -136,6 +222,11 @@ export function MarkdownPane(
       view={view}
       setView={setView}
       active={active}
+      actions={<>
+        {hasSel && view !== "source" && <LineChip bind={bindChip} initial={selRef.current.r} refPath={commentFile} />}
+        <OutlineToggle disabled={view === "source"} split={view === "split"} />
+        <ReviewMenu disabled={view === "source"} split={view === "split"} />
+      </>}
       editor={<EditorPane task={task} tab={tab} onContent={onContent} active={active && view !== "preview"} />}
       preview={({ showPreview, showEditor }) => (
         <Suspense fallback={<div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loadingPreview")}</div>}>
@@ -152,7 +243,11 @@ export function MarkdownPane(
             ownsFind={ownsFind && showPreview}
             editorVisible={showEditor}
             syncView={view === "split" ? editorView : null}
-            commentFile={tab.type === "edit" ? tab.path : undefined}
+            commentFile={commentFile}
+            edit={editTarget}
+            reader={reader}
+            outline={outline}
+            onSelectionLines={onSelectionLines}
             remoteImagesAllowed={remoteImagesAllowed}
             onUnblockRemoteImages={
               remoteImagesAllowed ? undefined

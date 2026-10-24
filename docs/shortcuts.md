@@ -544,6 +544,25 @@ element, which sits inside `[data-main-content]`, so the active tab closes).
 Close Window stays in File and Window with no shortcut. A ⌘W the page DOES
 handle never reaches the menu: the keydown `preventDefault` consumes it.
 
+## Go to line in a markdown preview (⌘G)
+
+`preview-go-to-line` is contextual: no `case` in `useShortcuts`.
+`MarkdownPreview` matches it in the same capture listener as its ⌘F and
+behind the same gate (`ownsFind`, no modal or Settings overlay on top,
+nothing else holding the keyboard, and in split view only once the reader
+has clicked into the preview). It opens a small input in find's slot; Enter
+scrolls to the innermost block holding the line (the next block from a
+blank line) and flashes it. Past the end of the file it says so and stays
+open.
+
+Not ⌘L, the go to line of Xcode and IntelliJ: that is `focus-terminal`
+here, and CodeMirror binds Mod-l to select line besides. Not ⌃G as such
+either: a Binding folds Ctrl into Cmd, so it cannot be written. ⌘G gets
+both for free, since the fold makes it match ⌃G on a Mac (VS Code's go to
+line) and Ctrl+G off it (VS Code's again). CodeMirror's Mod-g (find next)
+is untouched: the editor and the preview never hold focus at once, and the
+gate leaves a focused `.cm-editor` alone.
+
 ## ⌘W on an empty window closes the profile
 
 `close-tab` closes the innermost thing there is to close, and when a window

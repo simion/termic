@@ -38,6 +38,7 @@ import {
   type CompletionSoundId,
 } from "@/lib/notificationSounds";
 import { scoped } from "@/lib/profileScope";
+import { parseReaderSettings, sameReader, type ReaderSettings } from "@/lib/markdown/reader";
 import { encodeOpenWithPick, parseOpenWithPick } from "@/lib/openWith";
 import type { OpenWithPick } from "@/lib/types";
 import { applyLanguage, parseLanguagePref, LS_LANGUAGE, type LanguagePref } from "@/lib/i18n";
@@ -129,6 +130,12 @@ const LS_MD_VIEW       = "markdownDefaultView";
 const LS_SVG_VIEW      = "svgDefaultView";
 const LS_HTML_VIEW     = "htmlDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
+// JSON ReaderSettings (lib/markdown/reader.ts): one key, so the review menu's
+// six layout controls are one object with one identity to subscribe to.
+const LS_MD_READER = "markdownReader";
+const LS_MD_OUTLINE = "markdownOutline";
+const LS_MD_OUTLINE_SPLIT = "markdownOutlineSplit";
+const LS_MD_SAVE_EDITS = "markdownSavePreviewEdits";
 const LS_SIDEBAR_HOVER_REVEAL = "sidebarHoverReveal";
 const LS_PROFILE_SIDEBAR_WASH = "profileSidebarWash";
 const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
@@ -934,6 +941,19 @@ interface PrefsState {
    *  New markdown tabs open in this mode, and toggling a tab's view
    *  updates it — so the app remembers however you last looked at a doc. */
   markdownDefaultView: MarkdownView;
+  /** The markdown preview's reader settings (measure, wide content, type,
+   *  line numbers), from the review menu. Every preview reads it. Replaced
+   *  only when a value changes, so a selector on it is stable. */
+  markdownReader: ReaderSettings;
+  /** The outline rail in a markdown tab's preview-only view. OFF by default. */
+  markdownOutline: boolean;
+  /** The same in split view, its own switch: beside the editor the pane is
+   *  half as wide, and the rail would take a column of it. OFF by default. */
+  markdownOutlineSplit: boolean;
+  /** Write a checkbox or block edit made on the preview straight to disk,
+   *  unless the buffer was already dirty. ON by default (docs/markdown.md,
+   *  "Edits"). */
+  markdownSavePreviewEdits: boolean;
   /** Same three modes for SVG tabs (GH #247), tracked separately from
    *  markdown: clicking an .svg in the file tree has always shown the
    *  picture, so this defaults to "preview" even for someone whose markdown
@@ -1085,6 +1105,11 @@ interface PrefsState {
   setCtrlTabMode: (v: CtrlTabMode) => void;
   setRecentTabsGesture: (g: HoldGesture) => void;
   setMarkdownDefaultView: (v: MarkdownView) => void;
+  /** Merge into the reader settings (validated: see parseReaderSettings). */
+  setMarkdownReader: (patch: Partial<ReaderSettings>) => void;
+  setMarkdownOutline: (v: boolean) => void;
+  setMarkdownOutlineSplit: (v: boolean) => void;
+  setMarkdownSavePreviewEdits: (v: boolean) => void;
   setSvgDefaultView: (v: MarkdownView) => void;
   setHtmlDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
@@ -1376,6 +1401,10 @@ function readStoredPrefs() {
     const raw = lsGet(LS_MD_VIEW, "source");
     return raw === "preview" || raw === "split" ? raw : "source";
   })();
+  const initialMarkdownReader = (() => {
+    try { return parseReaderSettings(JSON.parse(lsGet(LS_MD_READER, "null"))); }
+    catch { return parseReaderSettings(null); }
+  })();
   const initialSvgView: MarkdownView = (() => {
     const raw = lsGet(LS_SVG_VIEW, "preview");
     return raw === "source" || raw === "split" ? raw : "preview";
@@ -1471,6 +1500,10 @@ function readStoredPrefs() {
     recentTabsGesture: storedRecentTabs.gesture,
     recentTabsGestureRefused: storedRecentTabs.refused,
     markdownDefaultView: initialMarkdownView,
+    markdownReader: initialMarkdownReader,
+    markdownOutline: lsGetBool(LS_MD_OUTLINE, false),
+    markdownOutlineSplit: lsGetBool(LS_MD_OUTLINE_SPLIT, false),
+    markdownSavePreviewEdits: lsGetBool(LS_MD_SAVE_EDITS, true),
     svgDefaultView: initialSvgView,
     htmlDefaultView: initialHtmlView,
     branchPrefix: initialBranchPrefix,
@@ -1961,6 +1994,28 @@ export const usePrefs = create<PrefsState>(set => ({
   setMarkdownDefaultView: (v) => {
     try { localStorage.setItem(LS_MD_VIEW, v); } catch {}
     set({ markdownDefaultView: v });
+  },
+  setMarkdownReader: (patch) => {
+    const cur = usePrefs.getState().markdownReader;
+    const next = parseReaderSettings({ ...cur, ...patch });
+    if (sameReader(cur, next)) return;  // bear trap 8
+    try { localStorage.setItem(LS_MD_READER, JSON.stringify(next)); } catch {}
+    set({ markdownReader: next });
+  },
+  setMarkdownOutline: (v) => {
+    if (usePrefs.getState().markdownOutline === v) return;
+    try { localStorage.setItem(LS_MD_OUTLINE, v ? "1" : "0"); } catch {}
+    set({ markdownOutline: v });
+  },
+  setMarkdownOutlineSplit: (v) => {
+    if (usePrefs.getState().markdownOutlineSplit === v) return;
+    try { localStorage.setItem(LS_MD_OUTLINE_SPLIT, v ? "1" : "0"); } catch {}
+    set({ markdownOutlineSplit: v });
+  },
+  setMarkdownSavePreviewEdits: (v) => {
+    if (usePrefs.getState().markdownSavePreviewEdits === v) return;
+    try { localStorage.setItem(LS_MD_SAVE_EDITS, v ? "1" : "0"); } catch {}
+    set({ markdownSavePreviewEdits: v });
   },
   setSvgDefaultView: (v) => {
     try { localStorage.setItem(LS_SVG_VIEW, v); } catch {}

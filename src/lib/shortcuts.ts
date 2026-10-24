@@ -72,7 +72,8 @@ export type ShortcutId =
   | "go-to-implementation"
   | "go-to-type-definition"
   | "file-structure"
-  | "search-everywhere";
+  | "search-everywhere"
+  | "preview-go-to-line";
 
 export type ShortcutGroup =
   | "Navigation" | "Code navigation" | "Tabs" | "Terminal" | "Git" | "General";
@@ -147,6 +148,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
   { id: "jump-next-waiting", group: "Navigation",
     defaultBinding: B("a", { cmd: true, shift: true }) },
+  // Contextual (markdown preview): handled in MarkdownPreview, and only while
+  // that preview owns the keyboard, the same gate as its find. ⌘L, Xcode's
+  // and IntelliJ's go to line, is focus-terminal here. A Binding folds Ctrl
+  // into Cmd, so this one chord is also ⌃G on a Mac (VS Code's go to line)
+  // and Ctrl+G elsewhere (VS Code's again). CodeMirror's Mod-g (find next)
+  // keeps the editor, which never shares focus with the preview.
+  { id: "preview-go-to-line", group: "Navigation",
+    defaultBinding: B("g", { cmd: true }) },
 
   // Tabs
   { id: "tab-prev", group: "Tabs",

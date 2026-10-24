@@ -25,6 +25,7 @@ export default {
     savedToast: "Saved {{name}}",
     saveFailed: "Save failed: {{error}}",
     diskChanged: "This file changed on disk. Reload discards your edits.",
+    diskChangedNotSaved: "Not saved: {{name}} changed on disk since it was opened. Reload, or Keep mine and save again.",
     reload: "Reload",
     keepMine: "Keep mine",
     openInDefaultApp: "Open in default app",
@@ -73,6 +74,56 @@ export default {
     waiting: "Waiting for output…",
   },
 
+  mdReader: {
+    lines: "Lines {{range}}",
+    copyRef: "Copy {{ref}}",
+    goToLine: "Go to line",
+    goToHint: "Lines 1-{{last}}, Enter to jump",
+    goToNaN: "Type a line number",
+    goToPastEnd: "The file ends at line {{last}}",
+  },
+
+  // the preview toolbar's review menu (Aa) and outline (task/markdown)
+  mdReview: {
+    settings: "Reader settings",
+    layout: "Layout",
+    textWidth: "Text width",
+    narrow: "Narrow",
+    readable: "Readable",
+    wide: "Wide",
+    full: "Full",
+    wideContent: "Tables, code",
+    wideContentLabel: "Wide content width",
+    wideText: "Text",
+    wideWide: "Wide",
+    wideFull: "Full pane",
+    wideHint: "Tables, code blocks and diagrams can run wider than the text, then scroll.",
+    type: "Type",
+    size: "Size",
+    smaller: "Smaller",
+    larger: "Larger",
+    font: "Font",
+    sans: "Sans",
+    serif: "Serif",
+    mono: "Mono",
+    leading: "Line spacing",
+    compact: "Compact",
+    normal: "Normal",
+    relaxed: "Relaxed",
+    review: "Review",
+    lineNumbers: "Line numbers",
+    lnOff: "Off",
+    lnHover: "Hover",
+    lnAlways: "Always",
+    outline: "Outline",
+    saveEdits: "Save edits",
+    saveHint: "Checkbox and block edits save right away, unless the file already has other unsaved changes.",
+    applies: "Applies to every markdown preview",
+    reset: "Reset to defaults",
+    toggleOutline: "Toggle outline",
+    noHeadings: "No headings",
+  },
+
   mdPreview: {
     addComment: "Comment",
     openFailed: "Couldn't open {{path}}: {{error}}",
@@ -90,6 +141,66 @@ export default {
     prevMatch: "Previous match (Shift+Enter)",
     nextMatch: "Next match (Enter)",
     closeFind: "Close (Esc)",
+  },
+
+  // edits made on the rendered preview (components/task/markdown). `what`
+  // is one of the labels below, already formatted.
+  mdEdit: {
+    edited: "Edited",
+    undone: "Undone",
+    redone: "Redone",
+    saved: "{{what}}. Saved {{name}}",
+    kept: "{{what}}. Not saved: the file has other unsaved changes",
+    unsaved: "{{what}}. Unsaved, {{combo}} to save",
+    diskChanged: "{{what}}. Not saved: the file changed on disk. Open the editor to reload or keep yours.",
+    checked: "Checked off line {{line}}",
+    unchecked: "Unchecked line {{line}}",
+    taskConflict: "Line {{line}} changed since the preview showed it. Nothing was written.",
+    editedRange: "Edited {{range}}",
+    editing: "Editing {{range}}",
+    editBlock: "Edit {{range}}",
+    lineOne: "line {{line}}",
+    lineRange: "lines {{start}}-{{end}}",
+    hint: "{{save}} save, Esc cancel",
+    conflict: "These lines changed in the file while you were editing. Your text is kept.",
+    takeTheirs: "Take theirs",
+    useMine: "Use mine",
+    lost: "These lines moved in the file while you were editing, and where they went is not certain. Nothing will be written: copy your text.",
+    copyMine: "Copy mine",
+    copyMineLabel: "Your edit",
+    cancel: "Cancel",
+    save: "Save",
+  },
+  // markdown preview extensions (lib/markdown/extensions)
+  mdExt: {
+    alert: {
+      note: "Note",
+      tip: "Tip",
+      important: "Important",
+      warning: "Warning",
+      caution: "Caution",
+    },
+    frontMatter: {
+      label: "Front matter",
+      raw: "Raw YAML",
+    },
+    code: {
+      copy: "Copy",
+      copyTip: "Copy code",
+      // the noun in the "Copied {{label}}" toast
+      label: "code",
+    },
+    headingLink: {
+      tip: "Copy link to this heading",
+      // the noun in the "Copied {{label}}" toast
+      label: "link",
+    },
+    footnote: {
+      back: "Back to the reference",
+    },
+    math: {
+      error: "Math error: {{message}}",
+    },
   },
 
   previewPane: {

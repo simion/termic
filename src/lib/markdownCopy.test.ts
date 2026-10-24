@@ -37,6 +37,12 @@ describe("clipboardHtmlForRange", () => {
     expect(html).toBe("<ul><li>ne</li><li>tw</li></ul>");
   });
 
+  it("keeps a task list's checkboxes and their state, not our line stamp", () => {
+    const h = host('<ul><li class="task-list-item task-list-item-done" data-src-line="3"><input type="checkbox" class="task-list-item-checkbox" checked="" disabled="" data-task-line="3">done</li></ul>');
+    expect(clipboardHtmlForRange(selectAll(h), h))
+      .toBe('<ul><li><input type="checkbox" checked="" disabled="">done</li></ul>');
+  });
+
   it("does not wrap words selected inside one paragraph in a new block", () => {
     const h = host("<h2>Heading</h2><p>some words here</p>");
     const t = h.querySelector("p")!.firstChild!;
@@ -47,6 +53,12 @@ describe("clipboardHtmlForRange", () => {
     const h = host('<pre><code class="language-ts">const a = 1;\nconst b = 2;\n</code></pre>');
     const t = h.querySelector("code")!.firstChild!;
     expect(clipboardHtmlForRange(rangeOver(t, 0, t, 12), h)).toBe("<pre><code>const a = 1;</code></pre>");
+  });
+
+  it("drops the breakout wrapper around a table, keeping the table", () => {
+    const h = host('<p>a</p><div class="md-wide"><table><tbody><tr><td>x</td></tr></tbody></table></div><p>b</p>');
+    expect(clipboardHtmlForRange(selectAll(h), h))
+      .toBe("<p>a</p><table><tbody><tr><td>x</td></tr></tbody></table><p>b</p>");
   });
 
   it("keeps table structure for selected rows", () => {

@@ -98,6 +98,7 @@ export function DirListingPane(
   // MarkdownPane: the pref is the default, a per-tab override unblocks
   // just this document. See docs/sandbox.md "Known gap".
   const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
+  const reader = usePrefs(s => s.markdownReader);
   const remoteImagesAllowed = tab.remoteImagesUnblocked ?? loadRemoteImages;
   const themeDark = resolveTheme(usePrefs(s => s.themeMode)) !== "light";
   const memberDirs = useMemo(() => task.composition?.map(m => m.dir_name), [task.composition]);
@@ -239,6 +240,8 @@ export function DirListingPane(
                     ownsFind={ownsFind && visible}
                     themeDark={themeDark}
                     ctx={{ taskId: task.id, filePath: readmePath, epoch: fsRev, memberDirs, hostDirTabId: tab.id }}
+                    refPath={readmePath}
+                    reader={reader}
                     remoteImagesAllowed={remoteImagesAllowed}
                     onUnblockRemoteImages={
                       remoteImagesAllowed ? undefined

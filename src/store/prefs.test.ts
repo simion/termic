@@ -1107,3 +1107,61 @@ describe("newTaskButtonShown", () => {
     expect(parseNewTaskButton("bogus")).toBe("auto");
   });
 });
+
+describe("prefs: markdown review menu", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("defaults: reader defaults, outline off, save preview edits on", async () => {
+    const { usePrefs } = await import("./prefs");
+    const { READER_DEFAULTS } = await import("@/lib/markdown/reader");
+    const s = usePrefs.getState();
+    expect(s.markdownReader).toEqual(READER_DEFAULTS);
+    expect(s.markdownOutline).toBe(false);
+    expect(s.markdownOutlineSplit).toBe(false);
+    expect(s.markdownSavePreviewEdits).toBe(true);
+  });
+
+  it("loads a stored reader blob, validating each field", async () => {
+    localStorage.setItem("markdownReader", JSON.stringify({ measure: "wide", size: 40, font: "nope" }));
+    localStorage.setItem("markdownOutline", "1");
+    localStorage.setItem("markdownSavePreviewEdits", "0");
+    const { usePrefs } = await import("./prefs");
+    const s = usePrefs.getState();
+    expect(s.markdownReader).toMatchObject({ measure: "wide", size: 24, font: "sans" });
+    expect(s.markdownOutline).toBe(true);
+    expect(s.markdownSavePreviewEdits).toBe(false);
+  });
+
+  it("a corrupt blob is the defaults", async () => {
+    localStorage.setItem("markdownReader", "{not json");
+    const { usePrefs } = await import("./prefs");
+    const { READER_DEFAULTS } = await import("@/lib/markdown/reader");
+    expect(usePrefs.getState().markdownReader).toEqual(READER_DEFAULTS);
+  });
+
+  it("setters persist, and an unchanged value never notifies (bear trap 8)", async () => {
+    const { usePrefs } = await import("./prefs");
+    let n = 0;
+    const off = usePrefs.subscribe(() => { n++; });
+    const s = usePrefs.getState();
+    s.setMarkdownReader({ size: 18 });
+    s.setMarkdownReader({ size: 18 });
+    s.setMarkdownReader({ size: 99 });   // clamped to 24: a change
+    s.setMarkdownReader({ size: 30 });   // clamped to 24 again: none
+    s.setMarkdownOutline(true);
+    s.setMarkdownOutline(true);
+    s.setMarkdownOutlineSplit(false);    // already the default
+    s.setMarkdownOutlineSplit(true);
+    s.setMarkdownSavePreviewEdits(true); // already the default
+    off();
+    expect(n).toBe(4);
+    expect(localStorage.getItem("markdownOutlineSplit")).toBe("1");
+    expect(JSON.parse(localStorage.getItem("markdownReader")!).size).toBe(24);
+    expect(localStorage.getItem("markdownOutline")).toBe("1");
+    expect(localStorage.getItem("markdownSavePreviewEdits")).toBeNull();
+  });
+});

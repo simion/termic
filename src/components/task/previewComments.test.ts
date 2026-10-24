@@ -41,9 +41,10 @@ function rangeOver(a: Node, b: Node) {
 }
 
 describe("preview source lines", () => {
-  it("stamps top-level blocks, fences on the <pre>", () => {
+  it("stamps top-level blocks, fences on the <pre> inside its breakout wrapper", () => {
     const host = render();
-    const lines = Array.from(host.children).map(el => [el.tagName, (el as HTMLElement).dataset.srcLine, (el as HTMLElement).dataset.srcEnd]);
+    const lines = Array.from(host.querySelectorAll(":scope > [data-src-line], :scope > .md-wide > [data-src-line]"))
+      .map(el => [el.tagName, (el as HTMLElement).dataset.srcLine, (el as HTMLElement).dataset.srcEnd]);
     expect(lines).toEqual([["H2", "2", "2"], ["P", "3", "4"], ["UL", "6", "7"], ["PRE", "9", "11"]]);
     expect(host.querySelector("code")?.hasAttribute("data-src-line")).toBe(false);
   });
@@ -129,10 +130,17 @@ describe("placeSlots", () => {
   const marked = (host: HTMLElement) =>
     Array.from(host.querySelectorAll("[data-tc-commented]")).map(el => el.tagName);
 
+  it("puts a slot on a wide block after its wrapper, and marks the block inside", () => {
+    const host = render();
+    placeSlots(host, [slot(10, 10)]);
+    expect(order(host)).toEqual(["H2", "P", "UL", "DIV", "slot"]);
+    expect(marked(host)).toEqual(["PRE"]);
+  });
+
   it("puts a slot after the block its range ends on and marks what it covers", () => {
     const host = render();
     placeSlots(host, [slot(3, 4)]);
-    expect(order(host)).toEqual(["H2", "P", "slot", "UL", "PRE"]);
+    expect(order(host)).toEqual(["H2", "P", "slot", "UL", "DIV"]);
     expect(marked(host)).toEqual(["P"]);
   });
 
@@ -140,7 +148,7 @@ describe("placeSlots", () => {
     const host = render();
     placeSlots(host, [slot(7, 7)]);
     expect(marked(host)).toEqual(["LI"]);
-    expect(order(host)).toEqual(["H2", "P", "UL", "slot", "PRE"]);
+    expect(order(host)).toEqual(["H2", "P", "UL", "slot", "DIV"]);
   });
 
   it("stacks slots on one block in line order, and leaves a draft unmarked", () => {

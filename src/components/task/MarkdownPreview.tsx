@@ -1,15 +1,8 @@
-// Rendered Markdown view for .md/.markdown/.mdx files. Parses with markdown-it
-// and renders ```mermaid fenced blocks as SVG diagrams via mermaid
-// (securityLevel: "strict").
-//
-// Raw HTML is PARSED but then filtered through a DOMPurify allowlist (see
-// ALLOWED_TAGS / ALLOWED_ATTR below) before it reaches the DOM. It used to be
-// dropped wholesale, which was safe but meant the single most common README
-// header on GitHub, `<div align="center">` around an `<img>`, rendered as
-// literal angle-bracket text: termic could not display its own README. The
-// WKWebView has Tauri IPC reach, so a malicious README must never inject
-// script; deny-by-default plus the CSP (script-src 'self', no 'unsafe-inline')
-// is what keeps that true, not the absence of an HTML parser.
+// Rendered Markdown view for .md/.markdown/.mdx files. The pipeline itself
+// (markdown-it, the sanitizer allowlist, the trust/claim pass, mermaid and
+// the other extensions) lives in lib/markdown; see docs/markdown.md. This
+// component owns the DOM it renders into, and everything interactive on top:
+// images, links, find, reveal, copy, comments and scroll sync.
 //
 // Images and links: when a task `ctx` is provided, relative image srcs
 // are read over IPC (worktree-contained, image extensions only) and swapped
@@ -40,147 +33,39 @@
 // (see TaskView) and mermaid is further dynamic-imported on first render
 // so the chunk only lands when a markdown file is actually previewed.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorView } from "@codemirror/view";
-import MarkdownIt from "markdown-it";
-import DOMPurify from "dompurify";
 import { Check, ImageOff, ChevronUp, ChevronDown, X } from "lucide-react";
 import { fileReadExternal, openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
 import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveExternalHref, resolveTaskHref } from "@/lib/markdownPaths";
 import { navigateDirTab, openDirTab } from "@/lib/dirTabs";
 import { useApp } from "@/store/app";
-import { clipboardHtmlForRange, SLOT_ATTR } from "@/lib/markdownCopy";
+import { clipboardHtmlForRange } from "@/lib/markdownCopy";
+import { SLOT_ATTR } from "@/lib/markdown/trust";
+import { captureViewState, claim, hydrate, renderDoc, restoreViewState } from "@/lib/markdown/engine";
+import type { DocModel, Heading } from "@/lib/markdown/model";
+import { taskChange, type PreviewEditTarget } from "@/lib/markdown/edit";
+import { IS_MAC } from "@/lib/platform";
+import { lastLine, type LineRange } from "@/lib/markdown/lines";
+import { READER_DEFAULTS, readerClass, readerStyle, type ReaderSettings } from "@/lib/markdown/reader";
+import { revealInDetails } from "@/lib/markdown/extensions/details";
+import { findHeading } from "@/lib/markdown/extensions/headingLinks";
 import { useUI } from "@/store/ui";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { TerminalExitedBanner } from "./TerminalExitedBanner";
 import { useScrollSync } from "./markdownScrollSync";
-import { usePreviewComments } from "./previewComments";
+import { narrowSelection, selectionLines, usePreviewComments } from "./previewComments";
+import { inChrome, rebuildWithSlots } from "./markdown/previewSlots";
+import { useBlockEditor } from "./markdown/blockEditor";
+import { useLineGutter } from "./markdown/lineGutter";
+import { GoToLineBar, revealLine } from "./markdown/GoToLine";
+import { OutlineRail } from "./markdown/Outline";
+import { usePrefs } from "@/store/prefs";
+import { bindingMatches } from "@/lib/shortcuts";
 
-// Monotonic id source for mermaid render targets. Math.random/Date.now are
-// avoided elsewhere in this codebase; a plain counter is deterministic enough.
-let mermaidSeq = 0;
-
-/** Everything the preview is allowed to render, whether markdown-it emitted it
- *  or a README hand-wrote it. Deny-by-default: anything absent is dropped, so
- *  `script`, `iframe`, `object`, `form`, `style` and friends never appear by
- *  virtue of not being listed. Most of this list is just markdown-it's own
- *  output (`p`, `li`, `pre`, `table`, …) — cutting it down would break ordinary
- *  markdown, not just raw HTML. The genuinely new entries are the ones GitHub
- *  READMEs lean on: div, img, br, details, summary, sub, sup, kbd, span. */
-const ALLOWED_TAGS = [
-  "p", "br", "hr", "div", "span", "blockquote",
-  "h1", "h2", "h3", "h4", "h5", "h6",
-  "em", "strong", "s", "del", "ins", "mark", "sub", "sup", "kbd",
-  "ul", "ol", "li", "dl", "dt", "dd",
-  "pre", "code", "a", "img",
-  "table", "thead", "tbody", "tfoot", "tr", "th", "td",
-  "details", "summary",
-];
-
-/** No `style` (CSS injection), no `on*` (DOMPurify strips those anyway, and the
- *  CSP has no 'unsafe-inline' so they could not fire regardless), no `srcset`.
- *  `class` is allowed because markdown-it stamps `language-*` on code blocks; a
- *  README setting its own class is inert without `style`. `data-mermaid` is
- *  listed explicitly rather than via ALLOW_DATA_ATTR so the data-* surface stays
- *  exactly one attribute wide. It grants nothing new: a ```mermaid fence already
- *  renders author-controlled diagram source (securityLevel: "strict").
- *  `data-src-line` / `data-src-end` are the source line range stamped by the
- *  `src_lines` core rule below (scroll sync, and the lines a preview comment
- *  cites and quotes to the agent). A document can write them too, so ours
- *  carry a nonce and claimDocument() drops every one that does not. */
-const ALLOWED_ATTR = [
-  "href", "src", "alt", "title", "align",
-  "width", "height", "class", "colspan", "rowspan", "start",
-  "data-mermaid", "data-src-line", "data-src-end",
-];
-
-/** markdown-it renders, DOMPurify decides what survives. Runs on the ASSEMBLED
- *  html, not per-token: markdown-it emits `<div align="center">` and its
- *  `</div>` as two separate html_block tokens, so sanitizing them in isolation
- *  would auto-close the opener and drop the closer, destroying the wrapper. This
- *  is how GitHub does it too.
- *
- *  DOMPurify's URI check still blocks `javascript:` in href/src, and the CSP
- *  (script-src 'self', no 'unsafe-inline') independently prevents inline script
- *  and event handlers from ever executing. Three gates, not one. */
-export function renderSanitized(text: string): string {
-  return DOMPurify.sanitize(md.render(text), {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
-  });
-}
-
-// One markdown-it instance, reused across renders. html:true lets the GitHub
-// README idiom (`<div align="center">` wrapping an `<img>`) render at all; every
-// tag then has to survive the allowlist above. linkify autolinks bare URLs; we
-// intercept ```mermaid fences below.
-const md = new MarkdownIt({ html: true, linkify: true, typographer: false, breaks: false });
-// stamp every rendered block with the 1-based inclusive source lines it came
-// from, so the preview can be mapped back onto the editor (scroll sync, and
-// which lines a comment made on rendered text points at). Raw HTML in the
-// document passes through with whatever data-src-* it wrote, so a stamp of
-// ours is prefixed with a per-load nonce the document cannot know.
-const SRC_STAMP = `${crypto.randomUUID()}:`;
-md.core.ruler.push("src_lines", (state) => {
-  const lines = state.src.split("\n");
-  for (const t of state.tokens) {
-    if (!t.map || !t.block || t.nesting < 0 || t.type === "inline") continue;
-    // a list item's map runs through the blank line after it; trim that so
-    // a comment on it does not claim (and quote) an empty line.
-    let end = t.map[1];
-    while (end > t.map[0] + 1 && !lines[end - 1]?.trim()) end--;
-    t.attrSet("data-src-line", SRC_STAMP + (t.map[0] + 1));
-    t.attrSet("data-src-end", SRC_STAMP + end);
-  }
-});
-
-/** Run on every piece of document content once it is in the preview (the
- *  sanitized render, and each mermaid SVG, which has its own sanitizer):
- *  unwrap our line stamps to the bare number and drop any the document wrote
- *  itself, and strip the comment UI's `data-tc-*` markers and `tc-*` classes
- *  so a document cannot pass for it (or be skipped by find and copy). */
-export function claimDocument(root: ParentNode): void {
-  for (const el of Array.from(root.querySelectorAll("[data-src-line], [data-src-end]"))) {
-    for (const a of ["data-src-line", "data-src-end"]) {
-      const v = el.getAttribute(a);
-      if (v == null) continue;
-      if (v.startsWith(SRC_STAMP)) el.setAttribute(a, v.slice(SRC_STAMP.length));
-      else el.removeAttribute(a);
-    }
-  }
-  for (const el of Array.from(root.querySelectorAll(`[${SLOT_ATTR}], [data-tc-commented]`))) {
-    el.removeAttribute(SLOT_ATTR);
-    el.removeAttribute("data-tc-commented");
-  }
-  for (const el of Array.from(root.querySelectorAll('[class*="tc-"]'))) {
-    for (const c of Array.from(el.classList)) if (c.startsWith("tc-")) el.classList.remove(c);
-  }
-}
-const defaultFence = md.renderer.rules.fence!;
-md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  const tok = tokens[idx];
-  const info = tok.info.trim().split(/\s+/)[0]?.toLowerCase();
-  const at = tok.attrGet("data-src-line");
-  const lines = at ? ` data-src-line="${at}" data-src-end="${tok.attrGet("data-src-end")}"` : "";
-  if (info === "mermaid") {
-    // Stash the diagram source URI-encoded in a data attr; rendered to SVG
-    // after the HTML is injected (mermaid.render is async).
-    return `<div class="mermaid-block"${lines} data-mermaid="${encodeURIComponent(tok.content)}"></div>`;
-  }
-  // the default fence puts token attrs on the inner <code>; the lines belong
-  // on the <pre>, which is the block that actually sits in the flow.
-  tok.attrs = tok.attrs?.filter(([k]) => k !== "data-src-line" && k !== "data-src-end") ?? null;
-  return defaultFence(tokens, idx, options, env, self).replace(/^<pre/, `<pre${lines}`);
-};
-
-// mermaid is imported lazily so the (large) chunk only loads on first preview.
-let mermaidMod: typeof import("mermaid").default | null = null;
-async function getMermaid() {
-  if (!mermaidMod) mermaidMod = (await import("mermaid")).default;
-  return mermaidMod;
-}
+// moved to lib/markdown/engine; re-exported for existing importers and tests
+export { claimDocument, renderSanitized } from "@/lib/markdown/engine";
 
 /** Task context for resolving relative images/links. Absent (e.g. the
  *  Changelog dialog) → relative targets stay inert. `filePath` is the
@@ -449,11 +334,8 @@ export function remoteImageBannerKind(
 
 /** Find a heading element by `#fragment`. markdown-it doesn't emit heading ids
  *  (and injecting ids could collide with app DOM ids), so match headings by
- *  GitHub-style slug of their text. Duplicate slugs are disambiguated with a
- *  set of slugs already assigned (not a per-base occurrence counter): a
- *  literal heading "Usage 1" claims "usage-1" for itself, so a LATER
- *  duplicate "Usage" heading must skip past it to "usage-2" rather than
- *  colliding on "usage-1" too. Returns null when the fragment is malformed
+ *  GitHub-style slug of their text, duplicates disambiguated the way GitHub
+ *  does (see headingSlugger). Returns null when the fragment is malformed
  *  or matches nothing. */
 function findHeadingBySlug(host: HTMLElement | null, fragment: string): HTMLElement | null {
   if (!host) return null;
@@ -464,28 +346,12 @@ function findHeadingBySlug(host: HTMLElement | null, fragment: string): HTMLElem
     return null; // malformed percent-encoding
   }
   if (!want) return null;
-  const used = new Set<string>();
-  for (const h of Array.from(host.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"))) {
-    const base = headingSlug(h.textContent || "");
-    let slug = base;
-    for (let n = 1; used.has(slug); n++) slug = `${base}-${n}`;
-    used.add(slug);
-    if (slug === want) return h;
-  }
-  return null;
+  return findHeading(host, (_h, s) => s === want)?.el ?? null;
 }
 
 /** Scroll the preview to a `#fragment` link target (in-page anchor / self-link). */
 function scrollToHeading(host: HTMLElement | null, fragment: string) {
   findHeadingBySlug(host, fragment)?.scrollIntoView({ block: "start" });
-}
-
-function renderMermaidError(el: HTMLElement, message: string, src: string) {
-  el.innerHTML = "";
-  const pre = document.createElement("pre");
-  pre.className = "mermaid-error";
-  pre.textContent = `${i18n.t("panels:mdPreview.mermaidError", { message })}\n\n${src}`;
-  el.appendChild(pre);
 }
 
 /** Tracks whether the image cache still owes a navigation-triggered
@@ -663,8 +529,9 @@ function findRegex(query: string): RegExp {
  *  mapping left for the engine to get wrong, and inserting one invalidates
  *  paint by itself.
  *
- *  Skips mermaid subtrees: their rendered SVG text isn't meaningfully
- *  searchable, and splitting nodes inside one would corrupt the diagram.
+ *  Skips mermaid and math subtrees: their rendered SVG / MathML text isn't
+ *  meaningfully searchable, and splitting nodes inside one would corrupt it
+ *  (a math placeholder is replaced after this runs, too).
  *  Exported for tests. */
 export function markFindMatches(host: HTMLElement, query: string): HTMLElement[] {
   // Unconditionally, and BEFORE the empty-query bail: clearing the search box
@@ -677,7 +544,7 @@ export function markFindMatches(host: HTMLElement, query: string): HTMLElement[]
     acceptNode(node) {
       if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
       for (let el = node.parentElement; el && el !== host; el = el.parentElement) {
-        if (el.classList.contains("mermaid-block") || el.hasAttribute(SLOT_ATTR)) return NodeFilter.FILTER_REJECT;
+        if (el.matches(".mermaid-block, .math-block, .math-inline") || el.hasAttribute(SLOT_ATTR)) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
@@ -709,8 +576,16 @@ export function markFindMatches(host: HTMLElement, query: string): HTMLElement[]
   return Array.from(host.querySelectorAll<HTMLElement>(`mark.${FIND_MARK_CLASS}`));
 }
 
-/** Scroll `scroller` so `el` is centered, but only if it's off-screen. */
+/** Scroll `scroller` so `el` is centered, but only if it's off-screen. First
+ *  any box between them that scrolls sideways (a wide table or code block,
+ *  see the breakout extension): a match in a column scrolled out of view
+ *  would otherwise be "current" and invisible. */
 function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
+  for (let box = el.parentElement; box && box !== scroller; box = box.parentElement) {
+    if (box.scrollWidth <= box.clientWidth) continue;
+    const m = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    if (m.left < b.left || m.right > b.right) box.scrollLeft += m.left - b.left - b.width / 2 + m.width / 2;
+  }
   const r = el.getBoundingClientRect();
   const s = scroller.getBoundingClientRect();
   if (r.top >= s.top && r.bottom <= s.bottom) return; // already visible
@@ -720,8 +595,9 @@ function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
 
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
-    ownsFind, editorVisible = false, syncView = null, commentFile,
-    remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
+    ownsFind, editorVisible = false, syncView = null, commentFile, edit,
+    remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages,
+    reader = READER_DEFAULTS, refPath = commentFile, onSelectionLines, outline = false }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
      *  `file.md#heading` link that opened this tab). Cleared by the owner
@@ -760,6 +636,10 @@ export function MarkdownPreview(
     /** Task-relative path of the file, when it is a task file that takes
      *  review comments (needs `ctx` for the task id). Absent = no comments. */
     commentFile?: string;
+    /** Where edits made ON the preview go (task checkboxes, block edits):
+     *  the markdown tab's editor buffer. Absent, or `canEdit` false, and the
+     *  preview is read-only (diff view, listings, Changelog, external files). */
+    edit?: PreviewEditTarget;
     /** Whether remote (http/https) images may load (issue #69). Defaults to
      *  true for callers with no untrusted-markdown threat model (the
      *  Changelog dialog renders termic's own bundled release notes).
@@ -776,9 +656,24 @@ export function MarkdownPreview(
      *  justAllowedGlobally below); the callback here does nothing but
      *  flip the pref. */
     onAlwaysLoadRemoteImages?: () => void;
+    /** Reader settings: measure, wide-content width, type, line numbers.
+     *  Applied as CSS variables and a class on the host, so a change never
+     *  re-parses or rebuilds the document. Defaults when absent. */
+    reader?: ReaderSettings;
+    /** Task-relative path a copied line reference names (`path:337-342`).
+     *  Defaults to `commentFile`; absent = the reference is the range alone. */
+    refPath?: string;
+    /** The source lines a selection inside the preview covers, narrowed to
+     *  what it actually selects (the same range a comment on it would get),
+     *  or null once there is none. Called only when the range changes. */
+    onSelectionLines?: (r: LineRange | null) => void;
+    /** Show the outline rail (h1-h3, current section highlighted) at the
+     *  preview's left. Only the markdown tab offers it. */
+    outline?: boolean;
   },
 ) {
   const { t } = useTranslation("panels");
+  const canEdit = !!edit?.canEdit;
   const hostRef = useRef<HTMLDivElement>(null);
   const imgCacheRef = useRef<ImgCache | null>(null);
   if (!imgCacheRef.current) imgCacheRef.current = { map: new Map(), bytes: 0, inflight: new Map() };
@@ -803,6 +698,14 @@ export function MarkdownPreview(
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const realignSync = useScrollSync(scrollerRef, hostRef, syncView, visible, editorVisible);
+  const gutterLayerRef = useRef<HTMLDivElement>(null);
+  const gutter = useLineGutter({
+    scrollerRef, hostRef, layerRef: gutterLayerRef, mode: reader.lineNumbers, refPath,
+    // an editable preview's numbers carry the block editor's pencil.
+    // blockEditor is declared below; this only runs on a click
+    onEdit: canEdit ? el => { blockEditor.open(el); } : undefined,
+    layoutKey: `${reader.measure}|${reader.wide}|${reader.size}|${reader.font}|${reader.leading}`,
+  });
   const comments = usePreviewComments({
     hostRef, scrollerRef, taskId: commentFile ? ctx?.taskId : undefined, file: commentFile, text,
     focusPane: () => containerRef.current?.focus({ preventScroll: true }),
@@ -836,6 +739,8 @@ export function MarkdownPreview(
     findIndexRef.current = n;
     setFindIndex(n);
     marks.forEach((m, k) => m.classList.toggle(FIND_CURRENT_CLASS, k === n));
+    // a match inside a collapsed <details> has no box to scroll to
+    revealInDetails(marks[n]);
     const scroller = hostRef.current?.parentElement;
     if (scroller) scrollMarkIntoView(scroller, marks[n]);
   };
@@ -898,7 +803,28 @@ export function MarkdownPreview(
     setFindIndex(0);
   };
 
+  // go to line (preview-go-to-line). Shares find's slot at the top right, so
+  // opening one closes the other.
+  const [gotoOpen, setGotoOpen] = useState(false);
+  const gotoInputRef = useRef<HTMLInputElement>(null);
+  const gotoBinding = usePrefs(s => s.shortcuts["preview-go-to-line"]);
+  const openGoto = () => {
+    if (findOpenRef.current) closeFind();
+    setGotoOpen(true);
+    requestAnimationFrame(() => gotoInputRef.current?.focus());
+  };
+  const closeGoto = (refocus: boolean) => {
+    setGotoOpen(false);
+    if (refocus) containerRef.current?.focus({ preventScroll: true });
+  };
+  const goToLine = (n: number) => {
+    closeGoto(true);
+    const host = hostRef.current, scroller = scrollerRef.current;
+    if (host && scroller) revealLine(host, scroller, n);
+  };
+
   const openFind = () => {
+    setGotoOpen(false);
     setFindOpen(true);
     findOpenRef.current = true;
     // Select any existing query so the next keystroke replaces it, matching
@@ -927,12 +853,18 @@ export function MarkdownPreview(
   // hold the keyboard right this second", which the store can't see.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      if (e.key !== "f" && e.key !== "F") return;
+      const find = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === "f" || e.key === "F");
+      // go to line rides the same gate: CodeMirror binds Mod-g (find next)
+      // and Mod-l, so the preview may only take it while it owns the keys
+      const goto = !find && bindingMatches(e, gotoBinding);
+      if (!find && !goto) return;
       if (!ownsFind) return;
       const c = containerRef.current;
       if (!c) return;
       const ae = document.activeElement as HTMLElement | null;
+      // a field in a slot (the block editor, a comment composer) keeps its
+      // own keys: taking ⌘F / ⌘G there would also blur, and so commit, it
+      if (inChrome(ae)) return;
       const focusHere = !!ae && c.contains(ae);
 
       // A modal owns the keyboard while it's open and the tab underneath is
@@ -959,17 +891,19 @@ export function MarkdownPreview(
 
       e.preventDefault();
       e.stopPropagation();
-      openFind();
+      if (find) openFind(); else openGoto();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownsFind, editorVisible]);
+  }, [ownsFind, editorVisible, gotoBinding]);
 
   // A recycled tab now points at a different file: close find so its matches
   // don't linger over unrelated content.
   useEffect(() => {
+    setGotoOpen(false);
     if (findOpen) closeFind();
+    blockEditor.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx?.filePath]);
   // The marks need no unmount cleanup: they live in this preview's own subtree,
@@ -977,7 +911,51 @@ export function MarkdownPreview(
   // timer does, so it can't fire into a torn-down tree.
   useEffect(() => () => { if (findTimerRef.current !== null) clearTimeout(findTimerRef.current); }, []);
 
-  // Main imperative effect: parse → inject → hydrate images + mermaid.
+  // the selection's source lines, for the toolbar's line chip. selectionchange
+  // fires per pointer move while dragging; the work is a closest() at each
+  // end, a scan of the source up to the block (sliceLines, no split of the
+  // document) and a match over that block, and the callback only hears changes.
+  const selLinesRef = useRef({ cb: onSelectionLines, text });
+  selLinesRef.current = { cb: onSelectionLines, text };
+  const wantsSelLines = !!onSelectionLines;
+  useEffect(() => {
+    if (!wantsSelLines) return;
+    let last = "";
+    const emit = (r: LineRange | null) => {
+      const key = r ? `${r.startLine}-${r.endLine}` : "";
+      if (key === last) return;
+      last = key;
+      selLinesRef.current.cb?.(r);
+    };
+    const onSel = () => {
+      const host = hostRef.current, sel = window.getSelection();
+      if (!host || !sel || sel.isCollapsed || !sel.rangeCount) return emit(null);
+      const range = sel.getRangeAt(0);
+      const common = range.commonAncestorContainer;
+      if (!host.contains(common)) return emit(null);
+      // a selection in app chrome (the block editor) is not document lines
+      if (inChrome(common instanceof Element ? common : common.parentElement)) return emit(null);
+      const lines = selectionLines(host, range);
+      if (!lines) return emit(null);
+      const n = narrowSelection(selLinesRef.current.text, lines.startLine, lines.endLine, sel.toString());
+      emit({ startLine: n.startLine, endLine: n.endLine });
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => { document.removeEventListener("selectionchange", onSel); emit(null); };
+  }, [wantsSelLines]);
+
+  /** The model of what is on screen, from the same parse. Only the outline
+   *  reads it; line numbers, go to line and block edits read the DOM stamps. */
+  const modelRef = useRef<DocModel | null>(null);
+  // the outline rail's update, while it is open: called after every rebuild
+  const outlineSinkRef = useRef<((h: readonly Heading[]) => void) | null>(null);
+  const bindOutline = useCallback((fn: ((h: readonly Heading[]) => void) | null) => { outlineSinkRef.current = fn; }, []);
+  const blockEditor = useBlockEditor({
+    hostRef, edit, text,
+    focusPane: () => containerRef.current?.focus({ preventScroll: true }),
+  });
+
+  // Main imperative effect: parse → inject → hydrate images + extensions.
   // Re-runs when the buffer text or the theme changes — deliberately NOT on
   // ctx.epoch: an agent settle must not rebuild the DOM or re-render mermaid
   // (see the epoch effect below). `alive` cancels a stale run when a newer
@@ -991,17 +969,21 @@ export function MarkdownPreview(
     if (!host) return;
     let alive = true;
     const isNavigation = consumeNavRevalidate(navRevalidateRef.current!, ctx?.filePath, text);
-    // Toggle linkify right before the (synchronous) render. Callers like the
-    // Changelog dialog pass linkify=false so bare filenames (CLAUDE.md, *.app)
-    // don't autolink; explicit [text](url) links still render. The md instance
-    // is shared, but set+render are atomic per effect run so there's no bleed.
-    md.set({ linkify });
-    comments.rebuild(() => {
-      host.innerHTML = renderSanitized(text || "");
-      claimDocument(host);
-    });
+    // reader state (open <details>, ...) read off the DOM about to be replaced
+    const saved = captureViewState(host);
+    rebuildWithSlots(host, () => {
+      // linkify=false (Changelog dialog) keeps bare filenames (CLAUDE.md,
+      // *.app) from autolinking; explicit [text](url) links still render.
+      const doc = renderDoc(text || "", { linkify });
+      host.innerHTML = doc.html;
+      claim(host);
+      restoreViewState(host, saved);
+      modelRef.current = doc.model;
+    }, () => { comments.place(); blockEditor.place(); });
+    outlineSinkRef.current?.(modelRef.current?.headings ?? []);
     // the blocks moved under a still editor: re-align to it
     realignSync();
+    gutter.refresh();
     hydrateTaskImages(host, ctx, imgCacheRef.current!, { revalidatePositive: isNavigation });
     setHasBlockedRemoteImages(gateRemoteImages(host, remoteImagesAllowed));
     // innerHTML above threw away every <mark>, so re-run the search against the
@@ -1012,44 +994,12 @@ export function MarkdownPreview(
     // not the state, because a tab recycled onto another file closes find in
     // this same commit while the state here still says open.
     if (findOpenRef.current && findQueryRef.current) runFind(findQueryRef.current, true);
-    const blocks = Array.from(host.querySelectorAll<HTMLElement>(".mermaid-block"));
-    if (blocks.length === 0) return () => { alive = false; };
-
-    (async () => {
-      let mermaid: typeof import("mermaid").default;
-      try {
-        mermaid = await getMermaid();
-        if (!alive) return;
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: themeDark ? "dark" : "default",
-        });
-      } catch (e) {
-        // Import or init failed — surface it on every block instead of
-        // leaving silent gaps, and log so it reaches the debug log.
-        console.error("[markdown-preview] mermaid load/init failed:", e);
-        if (alive) blocks.forEach(el => renderMermaidError(el, String(e), decodeURIComponent(el.dataset.mermaid || "")));
-        return;
-      }
-      for (const el of blocks) {
-        if (!alive) return;
-        const src = decodeURIComponent(el.dataset.mermaid || "");
-        try {
-          const { svg } = await mermaid.render(`mmd-${mermaidSeq++}`, src);
-          if (!alive) return;
-          el.innerHTML = svg;
-          claimDocument(el);
-        } catch (e) {
-          console.error("[markdown-preview] mermaid render failed:", e);
-          if (!alive) return;
-          renderMermaidError(el, String(e), src);
-        }
-      }
-    })();
-    return () => { alive = false; };
+    // extension passes (mermaid, ...). Async ones check isAlive before
+    // touching the DOM; cleanups run before the next rebuild or on unmount.
+    const unhydrate = hydrate(host, { themeDark, canEdit, isAlive: () => alive, claim, filePath: ctx?.filePath, scroller: scrollerRef.current });
+    return () => { alive = false; unhydrate(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, themeDark, linkify, ctx?.taskId, ctx?.filePath, ctx?.memberDirs, remoteImagesAllowed]);
+  }, [text, themeDark, linkify, ctx?.taskId, ctx?.filePath, ctx?.memberDirs, remoteImagesAllowed, canEdit]);
 
   // fsRevision bump = images may have changed on disk. Revalidate ONLY the
   // images (cached bytes stay on screen until a fresh read lands; a cheap
@@ -1192,9 +1142,15 @@ export function MarkdownPreview(
   // non-markdown tab has no MarkdownPane to ever consume it. Targets an editor
   // can't render (images, archives) reveal in the OS file manager instead.
   async function onClick(e: React.MouseEvent) {
+    const box = (e.target as HTMLElement).closest<HTMLInputElement>("input[data-task-line]");
+    if (box) { onTaskClick(e, box); return; }
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
     e.preventDefault();
+    // app chrome inside a document's <a> (a code block's Copy, a heading's
+    // link button, the block editor) is not a click on the link: a raw <a>
+    // left open around a section would otherwise fire its URL from them
+    if (inChrome(e.target)) return;
     const href = a.getAttribute("href");
     if (!href) return;
     if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) { openPath(href); return; }
@@ -1256,6 +1212,17 @@ export function MarkdownPreview(
     });
   }
 
+  /** A task checkbox: the browser has already flipped it, so a refused edit
+   *  (the line is not that task any more) puts it back with preventDefault. */
+  function onTaskClick(e: React.MouseEvent, box: HTMLInputElement) {
+    const line = Number(box.dataset.taskLine);
+    const change = edit?.canEdit ? taskChange(text, edit.text(), line) : null;
+    const label = t(box.checked ? "mdEdit.checked" : "mdEdit.unchecked", { line });
+    if (change && edit!.apply(change, label) === "applied") return;
+    e.preventDefault();
+    if (edit?.canEdit) useUI.getState().pushToast(t("mdEdit.taskConflict", { line }), "warning");
+  }
+
   /** A link inside an external document. Its target is an absolute path: a
    *  file inside the task opens as an ordinary tab, anything else opens the
    *  way ⌘-clicking an absolute path in a terminal does (read-only external
@@ -1311,6 +1278,21 @@ export function MarkdownPreview(
     for (const el of cards) el.style.display = "";
   }
 
+  // ⌘Z / ⇧⌘Z / ⌘S while the preview has focus go to the buffer it edits, so
+  // a checkbox click is undone where it was made. A text field inside the
+  // preview (find, a comment composer, the block editor) keeps its own.
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (!edit?.canEdit || !(IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey) || e.altKey) return;
+    if ((e.target as HTMLElement).closest('textarea, [contenteditable], .cm-editor, input:not([type="checkbox"])')) return;
+    const k = e.key.toLowerCase();
+    if (k === "z") edit[e.shiftKey ? "redo" : "undo"]();
+    else if (k === "y" && !IS_MAC && !e.shiftKey) edit.redo();
+    else if (k === "s" && !e.shiftKey) edit.save();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
   function handleAlways() {
     onAlwaysLoadRemoteImages?.();
     setJustAllowedGlobally(true);
@@ -1322,6 +1304,7 @@ export function MarkdownPreview(
     <div
       ref={containerRef}
       tabIndex={-1}
+      onKeyDown={onKeyDown}
       className="relative flex h-full flex-col bg-[var(--color-bg)] outline-none"
     >
       {findOpen && (
@@ -1337,6 +1320,9 @@ export function MarkdownPreview(
           onPrev={() => { flushFind(); gotoMatch(findIndexRef.current - 1); }}
           onClose={closeFind}
         />
+      )}
+      {gotoOpen && (
+        <GoToLineBar inputRef={gotoInputRef} last={lastLine(text)} onGo={goToLine} onClose={closeGoto} />
       )}
       {bannerKind === "blocked" && onUnblockRemoteImages && (
         <TerminalExitedBanner
@@ -1359,20 +1345,39 @@ export function MarkdownPreview(
           center
         />
       )}
+      <div className="flex min-h-0 flex-1">
+      {outline && (
+        <OutlineRail initial={modelRef.current?.headings} bind={bindOutline} hostRef={hostRef} scrollerRef={scrollerRef} />
+      )}
       <div
         ref={scrollerRef}
-        className="relative min-h-0 flex-1 overflow-auto"
+        className="relative min-h-0 min-w-0 flex-1 overflow-auto"
         onMouseUp={comments.onMouseUp}
         // Pull focus onto the pane when the reader clicks into it (WKWebView
         // won't do this for non-editable content on its own). Makes the
         // split-view Cmd+F check work and blurs the editor so it stops
         // claiming Cmd+F. preventScroll so focusing never nudges the viewport;
         // the click's own selection/caret is untouched.
-        onMouseDown={() => containerRef.current?.focus({ preventScroll: true })}
+        // A slot's own fields (a comment composer, the block editor) take
+        // focus themselves, and bouncing it through here would blur them.
+        onMouseDown={(e) => {
+          if (!inChrome(e.target)) containerRef.current?.focus({ preventScroll: true });
+        }}
       >
+        {/* line numbers: filled by useLineGutter, outside the document so
+            find, copy and the rebuild never see them */}
+        <div ref={gutterLayerRef} className="md-gl-layer" />
         {/* data-selectable: the app chrome is user-select:none, and a
             rendered document is the one pane you read like a web page. */}
-        <div ref={hostRef} data-selectable className="markdown-body" onClick={onClick} onCopy={onCopy} />
+        <div
+          ref={hostRef}
+          data-selectable
+          className={`markdown-body ${readerClass(reader)}`}
+          style={readerStyle(reader) as React.CSSProperties}
+          onClick={onClick}
+          onDoubleClick={blockEditor.onDoubleClick}
+          onCopy={onCopy}
+        />
         {comments.pill && (
           <button
             type="button"
@@ -1384,6 +1389,7 @@ export function MarkdownPreview(
             className="tc-add-comment-btn absolute z-10"
           >＋ {t("mdPreview.addComment")}</button>
         )}
+      </div>
       </div>
     </div>
   );

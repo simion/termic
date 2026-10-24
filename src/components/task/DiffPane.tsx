@@ -490,6 +490,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   const showingPreview = !!previewKind && newView === "preview";
   const themeDark = !appIsLight;
   const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
+  const reader = usePrefs(s => s.markdownReader);
   const memberDirs = useMemo(() => task.composition?.map(m => m.dir_name), [task.composition]);
 
   return (
@@ -663,6 +664,8 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
                 text={newText.text}
                 themeDark={themeDark}
                 ctx={{ taskId: task.id, filePath: tab.path, epoch: fsRev, memberDirs }}
+                refPath={tab.path}
+                reader={reader}
                 ownsFind={false}
                 remoteImagesAllowed={loadRemoteImages}
                 onAlwaysLoadRemoteImages={loadRemoteImages ? undefined : () => usePrefs.getState().setLoadRemoteImages(true)}

@@ -123,3 +123,28 @@ export function headingSlug(text: string): string {
     .replace(/\s+/g, "-")
     .replace(/[^\p{L}\p{N}\-_]/gu, "");
 }
+
+/** Slugs for a document's headings in order, with GitHub's duplicate
+ *  disambiguation. Tracks the set of slugs already assigned (not a per-base
+ *  occurrence counter): a literal heading "Usage 1" claims "usage-1" for
+ *  itself, so a LATER duplicate "Usage" must skip past it to "usage-2"
+ *  rather than colliding on "usage-1" too. Call once per heading, in
+ *  document order. */
+export function headingSlugger(): (text: string) => string {
+  const used = new Set<string>();
+  // resume each base's probe where it last stopped: every suffix below it is
+  // already in `used` (which only grows), so this is the same answer as
+  // probing from 1, without going quadratic on many duplicates.
+  const next = new Map<string, number>();
+  return (text) => {
+    const base = headingSlug(text);
+    let slug = base;
+    if (used.has(slug)) {
+      let n = next.get(base) ?? 1;
+      while (used.has(slug = `${base}-${n}`)) n++;
+      next.set(base, n + 1);
+    }
+    used.add(slug);
+    return slug;
+  };
+}

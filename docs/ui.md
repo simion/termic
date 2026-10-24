@@ -1900,13 +1900,155 @@ Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+
 
 **GitHub's typography, the theme's colours.** `.markdown-body` in `index.css`
 ports Primer's markdown stylesheet: 16px block spacing, GitHub's heading
-scale, 85% monospace code with a 6px radius, zebra table rows, and a 980px
-measure centered in the pane. The one deliberate departure is the base size,
-system font at 14px/1.5 instead of GitHub's 16px, which read as too large
-next to the app's 13-14px chrome. Headings and code are `em`, so they follow.
-Colours map onto theme tokens (links use `--color-palette-blue`), so the
-document sits on the app surface under every theme. The old Inter 14px/1.65
-across the full pane width read as heavy on a wide window.
+scale, 85% monospace code with a 6px radius, zebra table rows. Headings and
+code are `em`, so they follow the base size. Colours map onto theme tokens
+(links use `--color-palette-blue`), so the document sits on the app surface
+under every theme.
+
+**Reader layout: a measure in characters, wide content allowed out.** The
+type and widths are reader settings (`ReaderSettings` in
+`lib/markdown/reader.ts`, the `reader` prop on `MarkdownPreview`), applied
+as CSS variables (`--md-size`, `--md-leading`, `--md-font`, `--md-measure`,
+`--md-measure-min`, `--md-wide-max`) plus an `md-ln-*` class on the host, so
+a change restyles without a re-parse or a document rebuild. Defaults: 16px,
+1.6, the system sans, a 72ch measure, wide content at the full pane.
+
+Why those defaults: the reading-measure consensus is 45-75 characters
+(Bringhurst ~66, Baymard 50-75, WCAG 1.4.8 at most 80), line height
+1.4-1.6 (WCAG 1.4.8 asks for at least 1.5), left-aligned rather than
+justified. Serif versus sans on screen has no settled answer, which is why
+the font is a reader choice. The old preview was 14px across a 980px
+column, ~130-140 characters a line. Justify, letter and word spacing and
+per-file overrides were left out on purpose. Line numbers are per BLOCK,
+never per visual line: every tool that maps rendered markdown back to
+source does it per block (VS Code's `data-line`, GitHub's rich diff), and
+a visual line number means nothing once the width or font changes.
+
+- The column is the whole pane, and every TOP-LEVEL block is capped at the
+  measure and centered (`.markdown-body > *`, `margin-inline: auto`). The
+  measure is in `ch` because a readable line is a character count, not a
+  pixel width; 980px at 14px and at 19px are different lines. Any rule that
+  sets a top-level block's inline margin (the blockquote's) would undo the
+  centering, so those carry a `> blockquote` override.
+- The three width variables are registered with `@property` as lengths, so
+  `ch` resolves once on `.markdown-body`, in the body font. Unregistered, a
+  custom property is substituted as text and `72ch` re-resolves on each child
+  in ITS font: a 2em `h1` got a measure twice the paragraph's.
+- The left padding is the line-number gutter's room; `md-ln-off` gives it
+  back.
+- Wide content breaks out (the `breakout` extension, docs/markdown.md): a
+  top-level table, code block, mermaid diagram or image-only paragraph sits
+  in a `.md-wide` wrapper with `width: max-content; min-width:
+  var(--md-measure-min); max-width: var(--md-wide-max); margin-inline:
+  auto`. Content is left-aligned inside, so a table narrower than the
+  measure lines up with the prose's left edge, and a wider one grows
+  symmetrically up to the cap, then scrolls inside its own box (pre and
+  table are their own scroll boxes), never the page. The wrapper stays
+  `overflow: visible`: the commented-block stripe hangs outside the inner
+  block's left edge and a scrolling wrapper would clip it. A mermaid
+  wrapper (`md-wide-fill`) takes the whole cap, since an SVG has no
+  max-content width to size it by. Find scrolls a sideways-scrolled box to
+  its current match before scrolling the pane.
+
+**Line numbers per block, in a gutter that never runs on scroll.**
+`useLineGutter` (`components/task/markdown/lineGutter.ts`), mode from
+`reader.lineNumbers`: Hover (default) numbers the innermost stamped block
+under the pointer (the list item, not the list; the table row), Always
+numbers every leaf block, Off draws nothing. A number is the block's first
+source line beside its first rendered line; hovering it opens the range
+(`337-342`) and its actions to its right, and a click copies `path:337-342`
+(`refPath`, the task-relative file, else the bare range) with the copy toast.
+The document's padding, the gaps between blocks and a list's own box keep
+the current block, so the pointer can travel from a block to its number
+without losing it. Numbers are per block on purpose: a per-visual-line
+number means nothing once the width or font changes.
+
+- One overlay layer (`.md-gl-layer`) beside the host, outside the document,
+  so find, copy and the innerHTML rebuild never see it. It sits at the
+  scroller's content origin and the labels scroll with the document: there
+  is NO scroll listener.
+- Positions are computed on a rebuild, a ResizeObserver hit on the host
+  (late images, mermaid, the pane, a reader setting reflowing the text), a
+  reader setting change and a `<details>` toggle, coalesced into one frame,
+  every read before any write. Hover measures one block when the hovered
+  block changes; in Always mode a hover only flips a class.
+- A number's buttons (copy, and on an editable preview the pencil, which
+  opens the block editor on that block, the table for a row) are built the
+  first time the pointer reaches it, not per paint: Always mode has a label
+  per leaf block and repaints on every rebuild. There is no caller-supplied
+  action list; the pencil is `useLineGutter`'s `onEdit`, which
+  `MarkdownPreview` passes whenever its `edit` target can edit.
+
+**Review menu (`Aa`).** `ReviewMenu` (`components/task/markdown/ReviewMenu.tsx`)
+on the markdown tab's preview toolbar, after the line chip and the outline
+button, left of Editor / Preview / Split; a Radix popover (`ui/Popover`),
+so Esc and a click outside close it. Disabled, with the outline button, in
+Editor-only view. Every control is a global pref ("Applies to every
+markdown preview"), and all four keys sync (`prefsRegistry.ts`):
+
+- `markdownReader` (one JSON key, the whole `ReaderSettings`): Layout:
+  Text width Narrow 60ch / Readable 72ch (default) / Wide 100ch / Full;
+  Tables, code Text (the measure) / Wide (120ch, never under the measure) /
+  Full pane (default). Type: Size 12-24px stepper (16), Font Sans (default)
+  / Serif / Mono, each option drawn in its own face, Line spacing Compact
+  1.4 / Normal 1.6 / Relaxed 1.8. Review: Line numbers Off / Hover
+  (default) / Always. Loaded values go through `parseReaderSettings`
+  (unknown value -> its default, size clamped), and the setter bails when
+  nothing changed (performance.md bear trap 8), so a selector on it is
+  stable. MarkdownPane, DiffPane and DirListingPane each subscribe to that
+  one object; the Changelog dialog keeps its own fixed settings.
+- `markdownOutline` (off): the outline, below, in Preview view.
+  `markdownOutlineSplit` (off) is the same switch for Split view, kept
+  apart because beside the editor the pane is half as wide and the rail
+  would take a column of it. The toolbar button and the menu's switch act
+  on whichever the current view reads (`useOutline(split)` in
+  ReviewMenu.tsx).
+- `markdownSavePreviewEdits` (on): the save policy, docs/markdown.md
+  "Edits". Read when an edit lands, so it is no subscription at all.
+- Reset to defaults puts all four back.
+
+No `⌘+` / `⌘-` / `⌘0` for the preview: those are the app's zoom
+(`zoom-in` / `zoom-out` / `zoom-reset`). The stepper is the way.
+
+**Outline.** `OutlineRail` (`components/task/markdown/Outline.tsx`), a 232px
+rail at the preview's left, inside the preview pane, in a markdown tab
+only (the `outline` prop on `MarkdownPreview`; diff, listing and Changelog
+previews never show it). Toggled by the toolbar's list-tree button or the
+menu's switch, the same pref. It lists h1-h3 from `DocModel.headings` (the
+parse's own list, not a DOM walk), h1 bold and h3 indented, each with its
+source line faint on the right. A click scrolls that heading to the top,
+found by its trusted `data-src-line` stamp, so duplicate titles and a
+document's raw-HTML headings cannot be confused with it. In split view the
+rail narrows the preview, which the scroll sync's ResizeObserver already
+treats as a reflow; sync is vertical only.
+
+- Current section: the last heading at or above 80px from the top, the last
+  one once scrolled to the bottom. Heading offsets are cached and measured
+  on a rebuild, a ResizeObserver hit on the document or the scroller (a
+  reader setting reflowing, late images, the pane) and a `<details>`
+  toggle, one frame each. The scroll handler is rAF-throttled and reads
+  `scrollTop` only: no layout reads on scroll.
+- The preview hands the rail each rebuild's headings through a callback,
+  and the list re-renders only when they changed, so typing in a paragraph
+  re-renders neither the rail nor the preview.
+
+**A selection's lines on the toolbar.** Selecting in the preview puts
+`L337-342` on the preview toolbar (`LineChip` in `MarkdownPane`, through
+`SourcePreviewShell`'s `actions`); a click copies `path:337-342`. The range
+is the one a comment on that selection would get (`selectionLines`, then
+`narrowSelection`), reported by `MarkdownPreview`'s `onSelectionLines` only
+when it changes. The chip holds the range in its own state and the pane
+only "is there one", so dragging a selection across lines re-renders the
+chip, not the pane and its editor. Comment cards already carry their range
+in `.tc-comment-loc`.
+
+**Go to line** (`preview-go-to-line`, ⌘G, docs/shortcuts.md). An input in
+find's slot (`GoToLineBar` in `components/task/markdown/GoToLine.tsx`;
+opening one closes the other); Enter lands on the innermost laid-out block
+holding the line, or the next block from a blank line, scrolls it to 30%
+down the pane and flashes it (`.md-flash`, a still outline under reduced
+motion). A line past the end of the file is reported in the bar, which
+stays open.
 
 **Selectable, and copies as clean rich text.** The host carries
 `data-selectable` (the chrome is `user-select: none`). ⌘C is handled by
@@ -1925,14 +2067,16 @@ external tab from a ⌘-click) gets the same source / split / preview shell.
 anything else as another external tab. Relative images are not loaded, see
 docs/sandbox.md "Known gap".
 
-**Every block knows its source lines.** markdown-it's `src_lines` core rule
+**Every block knows its source lines.** The `srcLines` extension's core rule
+(`src/lib/markdown/extensions/srcLines.ts`, pipeline in docs/markdown.md)
 stamps `data-src-line` / `data-src-end` (1-based, inclusive, trailing blank
 lines trimmed) on each rendered block; a fence carries them on its `<pre>`.
 Raw HTML in a document passes through with whatever `data-src-*` it wrote,
 and those values decide which lines a comment quotes to the agent, so ours
-carry a per-load nonce and `claimDocument()` unwraps ours and drops the
-rest. It runs on everything that enters the preview, the render and each
-mermaid SVG (mermaid sanitizes its labels itself and keeps `data-*`). Two
+carry a per-load nonce and `claim()` (`lib/markdown/trust.ts`) unwraps ours
+and drops the rest. It runs on everything that enters the preview, the
+render and each mermaid SVG (mermaid sanitizes its labels itself and keeps
+`data-*`). Two
 features read them:
 
 - **Split-view scroll sync** (`useScrollSync` in `components/task/markdownScrollSync.ts`).

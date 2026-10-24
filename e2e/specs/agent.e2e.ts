@@ -202,7 +202,10 @@ describe("terminal IME", () => {
       await browser.waitUntil(async () => {
         const logs = await cliRpc({ cmd: "logs", task: taskName });
         echo = logs.data?.data ?? "";
-        return echo.includes(`FAKE-AGENT echo: ${prefix}`);
+        // wait for the whole line, not just its start: the echo can land
+        // across two reads, and the assertion below needs its \r\n
+        const at = echo.indexOf(`FAKE-AGENT echo: ${prefix}`);
+        return at >= 0 && echo.indexOf("\r\n", at) >= 0;
       }, { timeoutMsg: "the fixture never echoed the native composition" });
       expect(echo).toContain(`FAKE-AGENT echo: ${prefix}${committed}\r\n`);
     });

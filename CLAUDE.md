@@ -240,6 +240,7 @@ Deeper references — read when working in that area:
 - [docs/windows.md](docs/windows.md) — the Windows port: building with make under Git Bash, what works differently (Docker-only sandbox, Git Bash scripts, process trees, loopback CLI transport), what is not there yet
 - [docs/shortcuts.md](docs/shortcuts.md) — shortcut system architecture, adding shortcuts, glyph rendering
 - [docs/themes.md](docs/themes.md) — custom theme file format (`~/.config/termic/themes/*.json`), ui/terminal key reference
+- [docs/markdown.md](docs/markdown.md): the markdown preview pipeline (parse, model, sanitize, claim, hydrate), the extension contract, trust rules, the preview edit path
 - [docs/lsp.md](docs/lsp.md) — language servers: the rules a new one must obey, and `make lsp-smoke`
 - [docs/ui.md](docs/ui.md) — UI conventions, window chrome/drag, right-panel footer, settled detection
 - [docs/guide.md](docs/guide.md) — guides (multi-step walkthroughs, the welcome tour is one) and tips (one situation, shown once): how to add either (`useTip` / `useOfferGuide` + a registry entry), what is remembered, what the layer guarantees

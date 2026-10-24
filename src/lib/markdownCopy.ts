@@ -10,17 +10,13 @@
 //
 // DOM-only, no Tauri, so it is unit-testable under happy-dom.
 
-/** Marks app UI living inside the rendered preview's document (the
- *  review-comment slots, components/task/previewComments), which find, copy
- *  and selection all skip. Defined here because copy is the lowest layer that
- *  has to know it. A document cannot forge one: the preview's sanitizer
- *  strips unlisted `data-*`, and MarkdownPreview's claimDocument() strips it
- *  from mermaid output, which has its own sanitizer. */
-export const SLOT_ATTR = "data-tc-slot";
+import { WIDE_CLASS } from "@/lib/markdown/extensions/breakout";
+import { SLOT_ATTR } from "@/lib/markdown/trust";
+
 
 /** The `<mark>` around the text a review comment quotes (previewComments).
  *  Overlay like find's, so copy unwraps it. A document's own `tc-*` classes
- *  are stripped by claimDocument(). */
+ *  are stripped by the claim pass (lib/markdown/trust). */
 export const QUOTE_CLASS = "tc-md-quote";
 
 /** Attributes that survive, per tag. Everything else (class, style, data-*,
@@ -54,6 +50,12 @@ function clean(root: Node): void {
     // review-comment cards are app UI, not the document
     if (el.hasAttribute(SLOT_ATTR)) {
       el.remove();
+      continue;
+    }
+    // the breakout wrapper is layout, not structure: a paste gets the table
+    // or code block it holds, not a <div> around it
+    if (tag === "DIV" && el.classList.contains(WIDE_CLASS)) {
+      el.replaceWith(...Array.from(el.childNodes));
       continue;
     }
     // Find-in-preview and comment-quote highlights are termic's overlay, not

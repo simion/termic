@@ -704,6 +704,7 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
     "go-to-type-definition": "needs a language server (codenav.e2e.ts)",
     "file-structure": "needs a language server (codenav.e2e.ts)",
     "add-selection-to-agent": "needs a selection in an editor (editor.e2e.ts)",
+    "preview-go-to-line": "needs a markdown preview to own the keyboard (markdown-reader.e2e.ts)",
     "create-pr": "needs a branch with a remote (git.e2e.ts)",
     "stage-file": "handled by the Git panel on its selected row (git.e2e.ts)",
     "discard-file": "handled by the Git panel on its selected row (git.e2e.ts)",

@@ -15,6 +15,7 @@ import { useUpdate } from "@/store/update";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Loader2 } from "lucide-react";
+import { READER_DEFAULTS, type ReaderSettings } from "@/lib/markdown/reader";
 
 // markdown-it + mermaid are heavy; load the renderer only when the dialog
 // actually shows notes (same lazy split the editor preview uses).
@@ -25,6 +26,9 @@ const MarkdownPreview = lazy(() =>
 // Drop CHANGELOG.md's leading "# Changelog" title + intro paragraph — the
 // dialog has its own "Changelog" title bar. Render from the first version
 // heading onward (mirrors the /changelog page on termic.dev).
+// release notes are read, not reviewed: no line numbers
+const CHANGELOG_READER: ReaderSettings = { ...READER_DEFAULTS, lineNumbers: "off" };
+
 function stripHeader(md: string): string {
   const i = md.search(/^## \[/m);
   return i >= 0 ? md.slice(i) : md;
@@ -90,7 +94,7 @@ export function ChangelogDialog() {
                 it exists. A markdown tab underneath still says `ownsFind`, but
                 its listener stands down while a focus trap it isn't inside
                 holds the keyboard, and picks its search back up when we close. */}
-            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} ownsFind />
+            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} ownsFind reader={CHANGELOG_READER} />
           </Suspense>
         </div>
       )}

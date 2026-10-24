@@ -169,14 +169,34 @@ describe("editor open", () => {
     expect(out!.text).toBe("See the docs");
   });
 
-  it("sets the preview in GitHub's type: 14px, 1.5 leading, a 980px measure", async () => {
+  it("sets the preview at 16px / 1.6 with a 72ch measure, same for an h1 as for a paragraph", async () => {
     const m = await browser.execute(() => {
       const host = [...document.querySelectorAll(".markdown-body")]
         .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
       const cs = getComputedStyle(host);
-      return { size: cs.fontSize, lh: cs.lineHeight, max: cs.maxWidth };
+      const probe = document.createElement("span");
+      probe.style.font = cs.font;
+      probe.textContent = "0".repeat(72);
+      document.body.appendChild(probe);
+      const ch72 = probe.getBoundingClientRect().width;
+      probe.remove();
+      // the fixture README is a lone heading: a paragraph is probed beside it
+      const p = host.appendChild(document.createElement("p"));
+      const h1 = host.querySelector(":scope > h1") as HTMLElement;
+      const out = {
+        size: cs.fontSize, lh: cs.lineHeight, max: cs.maxWidth,
+        // the measure resolves in the BODY font, once (@property), so a 2em
+        // heading is not given a measure twice as wide
+        pMax: Math.round(parseFloat(getComputedStyle(p).maxWidth)),
+        h1Max: Math.round(parseFloat(getComputedStyle(h1).maxWidth)),
+        ch72: Math.round(ch72),
+      };
+      p.remove();
+      return out;
     });
-    expect(m).toEqual({ size: "14px", lh: "21px", max: "980px" });
+    expect({ size: m.size, lh: m.lh, max: m.max }).toEqual({ size: "16px", lh: "25.6px", max: "none" });
+    expect(m.h1Max).toBe(m.pMax);
+    expect(Math.abs(m.pMax - m.ch72)).toBeLessThanOrEqual(2);
   });
 
   it("previews a markdown file outside the task, and follows its relative links", async () => {

@@ -795,6 +795,10 @@ export default {
       zoomIn: { label: "Zoom in", hint: "Scale the whole app up (like browser zoom)" },
       zoomOut: { label: "Zoom out", hint: "Scale the whole app down" },
       zoomReset: { label: "Reset zoom", hint: "Return the app to 100%" },
+      previewGoToLine: {
+        label: "Go to line in a markdown preview",
+        hint: "Scrolls the preview to the block holding a source line. Only while the preview has focus; the editor keeps its own find next",
+      },
       addSelectionToAgent: {
         label: "Add selection to agent",
         hint: "Opens a comment on the selected lines. Comments queue up and go to the agent as one batch, so you can mark several places before sending.",

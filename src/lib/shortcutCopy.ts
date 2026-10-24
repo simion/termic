@@ -78,6 +78,7 @@ const DEF_KEY: Record<ShortcutId, string> = {
   "go-to-implementation": "goToImplementation",
   "go-to-type-definition": "goToTypeDefinition",
   "file-structure": "fileStructure",
+  "preview-go-to-line": "previewGoToLine",
   "search-everywhere": "searchEverywhere",
 };
 

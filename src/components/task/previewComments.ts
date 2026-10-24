@@ -4,28 +4,24 @@
 // shows up beside its source in the editor too, and the editor keeps it
 // anchored through edits.
 //
-// Each box lives in a slot <div> that placeSlots() keeps after the block its
-// range ends on, inside the preview's innerHTML-built document. The slots
-// outlive a rebuild of that document, and are marked SLOT_ATTR so find, copy
-// and selection leave them out.
+// Each box lives in a slot (markdown/previewSlots) that placeSlots() keeps
+// after the block its range ends on, inside the preview's innerHTML-built
+// document. The slots outlive a rebuild of that document, and are marked
+// SLOT_ATTR so find, copy and selection leave them out.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useReviewComments, type ReviewComment } from "@/store/reviewComments";
-import { QUOTE_CLASS, SLOT_ATTR } from "@/lib/markdownCopy";
+import { QUOTE_CLASS } from "@/lib/markdownCopy";
+import { SLOT_ATTR } from "@/lib/markdown/trust";
 import { buildCard, buildComposer, type ComposerSpec } from "./commentBoxes";
+import { innermostBlocks, keepAfter, newSlot } from "./markdown/previewSlots";
+import { elRange, sliceLines } from "@/lib/markdown/lines";
 
 const COMMENTED_ATTR = "data-tc-commented";
 
 /** A draft in the preview always has a line range (no whole-file comments). */
 type PreviewDraft = ComposerSpec & { startLine: number; endLine: number };
-
-/** The source line range of a stamped block (`data-src-line`/`-end`, see
- *  MarkdownPreview's `src_lines` rule). */
-function span(el: HTMLElement): [number, number] {
-  const s = Number(el.dataset.srcLine);
-  return [s, Number(el.dataset.srcEnd) || s];
-}
 
 /** Map a selection inside the rendered preview onto source lines, using the
  *  innermost stamped block at each end (a list item, not the whole list). */
@@ -34,9 +30,8 @@ export function selectionLines(host: HTMLElement, range: Range): { startLine: nu
     (n.nodeType === Node.ELEMENT_NODE ? n as Element : n.parentElement)?.closest<HTMLElement>("[data-src-line]");
   const s = blockOf(range.startContainer), e = blockOf(range.endContainer);
   if (!s || !e || !host.contains(s) || !host.contains(e)) return null;
-  const startLine = span(s)[0];
-  const endLine = Math.max(startLine, span(e)[1]);
-  return startLine ? { startLine, endLine } : null;
+  const a = elRange(s), b = elRange(e);
+  return a && b ? { startLine: a.startLine, endLine: Math.max(a.startLine, b.endLine) } : null;
 }
 
 /** A literal matcher for `s` where every whitespace run matches any
@@ -61,7 +56,7 @@ function looseRegex(s: string): RegExp | null {
 export function narrowSelection(
   text: string, startLine: number, endLine: number, selected: string,
 ): { startLine: number; endLine: number; quote: string } {
-  const src = text.split("\n").slice(startLine - 1, endLine).join("\n");
+  const src = sliceLines(text, startLine, endLine);
   const quote = selected.trim();
   const m = looseRegex(quote)?.exec(src);
   if (!m) return { startLine, endLine, quote: quote || src };
@@ -82,7 +77,7 @@ function markQuote(blocks: HTMLElement[], quote: string): boolean {
   for (const b of blocks) {
     if (hay) hay += "\n";
     const walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT, {
-      acceptNode: n => n.parentElement?.closest(`[${SLOT_ATTR}], .mermaid-block`)
+      acceptNode: n => n.parentElement?.closest(`[${SLOT_ATTR}], .mermaid-block, .math-block, .math-inline`)
         ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -155,18 +150,12 @@ export function placeSlots(host: HTMLElement, slots: Slot[]): void {
   // slots sharing a block stack behind each other, in line order
   let prevBlock: Element | null | undefined, prevSlot: Element | null = null;
   for (const s of slots) {
-    const hits = stamped.filter(el => { const [a, b] = span(el); return a <= s.endLine && b >= s.startLine; });
-    // in document order a block's stamped descendants follow it directly, so
-    // a hit is innermost unless the next hit is inside it
-    const leaves = hits.filter((el, i) => !hits[i + 1] || !el.contains(hits[i + 1]));
+    const leaves = innermostBlocks(stamped, s.startLine, s.endLine);
     const quoted = !!s.quote && markQuote(leaves, s.quote);
     if (s.mark && !quoted) for (const el of leaves) lit.add(el);
-    let after: Element | null = leaves[leaves.length - 1] ?? stamped.filter(el => span(el)[0] <= s.endLine).pop() ?? null;
+    let after: Element | null = leaves[leaves.length - 1] ?? stamped.filter(el => (elRange(el)?.startLine ?? Infinity) <= s.endLine).pop() ?? null;
     while (after && after.parentElement !== host) after = after.parentElement;
-    const ref = after === prevBlock ? prevSlot : after;
-    if (ref ? ref.nextSibling !== s.el : host.firstChild !== s.el) {
-      if (ref) ref.after(s.el); else host.prepend(s.el);
-    }
+    keepAfter(host, s.el, after === prevBlock ? prevSlot : after);
     prevBlock = after;
     prevSlot = s.el;
   }
@@ -198,7 +187,7 @@ export function usePreviewComments({ hostRef, scrollerRef, taskId, file, text, f
   }, [comments, draft]);
 
   // key -> slot element, and what its box was built from (rebuilt on change)
-  const slotsRef = useRef(new Map<string, { el: HTMLDivElement; from: ReviewComment | PreviewDraft }>());
+  const slotsRef = useRef(new Map<string, { el: HTMLElement; from: ReviewComment | PreviewDraft }>());
   const live = useRef({ comments, draft, taskId, file, focusPane });
   live.current = { comments, draft, taskId, file, focusPane };
 
@@ -230,8 +219,7 @@ export function usePreviewComments({ hostRef, scrollerRef, taskId, file, text, f
     for (const w of wanted) {
       let s = map.get(w.key);
       if (!s) {
-        const el = document.createElement("div");
-        el.setAttribute(SLOT_ATTR, "");
+        const el = newSlot();
         map.set(w.key, s = { el, from: w.from });
         el.appendChild(w.build());
       } else if (s.from !== w.from) {
@@ -245,22 +233,6 @@ export function usePreviewComments({ hostRef, scrollerRef, taskId, file, text, f
   // focuses (its own setTimeout), and before paint.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useLayoutEffect(place, [comments, draft]);
-
-  /** Replace the host's document. It detaches every slot, and a detached
-   *  textarea drops focus, so put the slots and an open composer's caret
-   *  back afterwards. */
-  function rebuild(render: () => void) {
-    const host = hostRef.current;
-    const active = document.activeElement;
-    const caret = host && active instanceof HTMLTextAreaElement && host.contains(active)
-      ? { el: active, from: active.selectionStart, to: active.selectionEnd } : null;
-    render();
-    place();
-    if (caret) {
-      caret.el.focus({ preventScroll: true });
-      caret.el.setSelectionRange(caret.from, caret.to);
-    }
-  }
 
   function onMouseUp() {
     const host = hostRef.current, scroller = scrollerRef.current;
@@ -298,5 +270,7 @@ export function usePreviewComments({ hostRef, scrollerRef, taskId, file, text, f
   /** The slot elements now in the document (for copy to leave out). */
   const slotEls = () => Array.from(slotsRef.current.values(), s => s.el).filter(el => el.isConnected);
 
-  return { pill, openDraft, onMouseUp, rebuild, slotEls };
+  /** `place` puts the slots back after a rebuild (previewSlots
+   *  rebuildWithSlots). */
+  return { pill, openDraft, onMouseUp, place, slotEls };
 }
