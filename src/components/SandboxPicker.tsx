@@ -62,7 +62,7 @@ export function SandboxPicker({
               onClick={() => onChange(id)}
               title={unsupported ? t("sandbox.picker.macOnly") : sandboxModeText(id, t).desc}
               className={cn(
-                "flex flex-col items-start gap-1 rounded-md border text-left transition-colors",
+                "flex flex-col items-start gap-1 rounded-md border text-left",
                 compact ? "px-3 py-2" : "px-3 py-2.5",
                 active ? "bg-[var(--color-bg-2)]" : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-accent-soft)]",
                 unsupported && "opacity-40 cursor-not-allowed",
@@ -102,7 +102,7 @@ export function SandboxPicker({
             onClick={() => onChange("docker")}
             title={title}
             className={cn(
-              "flex flex-col items-start gap-1 rounded-md border text-left transition-colors",
+              "flex flex-col items-start gap-1 rounded-md border text-left",
               compact ? "px-3 py-2" : "px-3 py-2.5",
               active ? "bg-[var(--color-bg-2)]" : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-accent-soft)]",
               disabled && "opacity-40 cursor-not-allowed",

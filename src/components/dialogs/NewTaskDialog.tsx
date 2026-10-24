@@ -28,6 +28,9 @@ import { cn } from "@/lib/utils";
 import { yoloModeName } from "@/lib/yoloModeName";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X, GitPullRequest} from "lucide-react";
 import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
+import { RolePicker, SecretsForTask, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
+import { useSecrets, ensureSecretsSync } from "@/store/secrets";
+import { roleDefault, roleToStore } from "@/lib/secretsUi";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
@@ -79,6 +82,7 @@ function growPrompt(el: HTMLTextAreaElement | null) {
 
 export function NewTaskDialog() {
   const { t } = useTranslation("dialogs");
+  ensureSecretsSync();
   const projectId = useUI(s => s.newTaskProjectId);
   // Subscribed, not read imperatively: this is what makes a re-open (a second
   // deep link) re-run the reset effect below. Scalar, so an unrelated store
@@ -151,6 +155,11 @@ export function NewTaskDialog() {
   // Keychain block for THIS task. Not remembered across opens and off on
   // every open, same as the Sandbox dialog's default.
   const [blockKc, setBlockKc] = useState(false);
+  // Secrets role pick ("" = No secrets). Only sent while the Keychain block
+  // applies: a role without it protects nothing (plan, "No Keychain block,
+  // no secrets"). Picking a role turns the block on; clearing the block or
+  // leaving Enforce / Enforce FS clears the role.
+  const [rolePick, setRolePick] = useState("");
   // YOLO for THIS task, seeded on open from the project's default, then the
   // app-wide one (Settings → Sandbox). Unlike the sandbox picker it does NOT
   // remember the last pick: that habit is not scoped to a project, so ticking
@@ -383,6 +392,23 @@ export function NewTaskDialog() {
   // tick left behind by switching to Monitor never rides along.
   const kcRow = sandbox && sandboxMode !== "monitor";
   const blockKcArg = kcRow && blockKc;
+  const roles = useSecrets(s => s.roles);
+  const secretDefs = useSecrets(s => s.secrets);
+  const roleDef = roleDefault(project, agents.find(a => a.id === cli));
+  const roleDisabled = roleDisabledReason(t, { docker: dockerWanted, mode: sandboxMode, seatbelt: osSandboxOk !== false });
+  // What the task gets: the pick, but only while the block applies.
+  const roleEff = roleDisabled === null && blockKcArg ? rolePick : "";
+  // Not blocked: null, so the task inherits a default that applies once the
+  // block is turned on (the footer's uncaged notice offers exactly that).
+  const roleArg = roleDisabled === null && blockKcArg ? roleToStore(roleEff, roleDef) : null;
+  const roleObj = roleEff ? roles.find(r => r.id === roleEff) ?? null : null;
+  const pickRole = (id: string) => { setRolePick(id); if (id) setBlockKc(true); };
+  const chooseBlockKc = (v: boolean) => { setBlockKc(v); if (!v) setRolePick(""); };
+  const chooseSelection = (next: SandboxSelection) => {
+    setSelection(next);
+    const f = selectionToFields(next);
+    if (f.docker || (f.mode !== "enforce" && f.mode !== "enforce-fs")) setRolePick("");
+  };
   // YOLO is moot inside a cage (spawn turns it on, `isTaskCaged`) and has no
   // meaning when the default tab is not an agent, so the checkbox shows the
   // first as "auto" and hides for the second.
@@ -636,14 +662,12 @@ export function NewTaskDialog() {
       : null;
     const projectDefault = p?.default_cli || "";
     setAgentUnknown(seed?.agent && !seededAgent ? seed.agent : null);
-    if (seededAgent) {
-      setCli(seededAgent);
-    } else if (projectDefault && isUsable(projectDefault)) {
-      setCli(projectDefault);
-    } else {
-      const firstInstalled = list.find(a => !a.disabled && isInstalled(a.id))?.id;
-      setCli(firstInstalled ?? "shell");
-    }
+    const cli0 = seededAgent
+      ? seededAgent
+      : projectDefault && isUsable(projectDefault)
+        ? projectDefault
+        : list.find(a => !a.disabled && isInstalled(a.id))?.id ?? "shell";
+    setCli(cli0);
     // Sandbox toggle defaults to project's preference OR the global
     // default (Settings → Sandbox). Either being true checks the box.
     // The user can still flip for THIS task - but once Create
@@ -657,8 +681,17 @@ export function NewTaskDialog() {
     const projectDefaultSandbox: SandboxSelection | null =
       p?.default_sandbox_mode ?? (p?.default_sandbox ? "enforce" : null);
     const globalDefault = usePrefs.getState().globalDefaultSandboxKind;
-    setSelection(readLastSandbox() ?? projectDefaultSandbox ?? globalDefault);
-    setBlockKc(false);
+    const sel0 = readLastSandbox() ?? projectDefaultSandbox ?? globalDefault;
+    setSelection(sel0);
+    // A default role (project's, then the agent's) starts picked, and with
+    // it the Keychain block it needs, but only when the seeded sandbox can
+    // carry a role at all.
+    const role0 = roleDefault(p, list.find(a => a.id === cli0));
+    const sel0f = selectionToFields(sel0);
+    const roleOk0 = !!role0 && !sel0f.docker && (sel0f.mode === "enforce" || sel0f.mode === "enforce-fs")
+      && useSecrets.getState().roles.some(r => r.id === role0.id);
+    setRolePick(roleOk0 ? role0!.id : "");
+    setBlockKc(roleOk0);
     const yoloDefault = projectYoloDefault(p, usePrefs.getState().defaultYolo);
     yoloDefaultRef.current = yoloDefault;
     const promptFromLink = !!seed?.prompt;
@@ -1338,7 +1371,7 @@ export function NewTaskDialog() {
         projectId, importSelected, name.trim(), cli,
         {
           enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts),
-          blockKeychain: blockKcArg,
+          blockKeychain: blockKcArg, role: roleArg,
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
         undefined, // no externally-started session id from this dialog
@@ -1376,7 +1409,7 @@ export function NewTaskDialog() {
         projectId, cli, name.trim(),
         {
           enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts),
-          blockKeychain: blockKcArg,
+          blockKeychain: blockKcArg, role: roleArg,
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
         undefined,
@@ -1479,6 +1512,7 @@ export function NewTaskDialog() {
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
           sandbox_block_keychain: blockKcArg,
+          role: roleArg,
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           resume_override: resumeOverrideArg(),
@@ -1506,6 +1540,7 @@ export function NewTaskDialog() {
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
           sandbox_block_keychain: blockKcArg,
+          role: roleArg,
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           yolo: yoloArg,
@@ -2226,14 +2261,14 @@ export function NewTaskDialog() {
           <SandboxPicker
           onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
             value={selection}
-            onChange={setSelection}
+            onChange={chooseSelection}
             seatbeltUnavailable={osSandboxOk === false}
             dockerOffered={dockerOffered}
             compact
           />
           {kcRow && (
             <div className="mt-2">
-              <KeychainBlockField checked={blockKc} onChange={setBlockKc} compact />
+              <KeychainBlockField checked={blockKc} onChange={chooseBlockKc} compact />
             </div>
           )}
           {selection === "docker" && (
@@ -2248,6 +2283,19 @@ export function NewTaskDialog() {
             </div>
           )}
         </Field>
+        )}
+
+        {/* Secrets role (M4). Hidden until a role exists in Settings. */}
+        {canSandbox && roles.length > 0 && (
+          <RolePicker
+            roles={roles}
+            secrets={secretDefs}
+            value={roleEff}
+            onChange={withRoleCage(dockerWanted ? "off" : sandboxMode, chooseSelection, pickRole)}
+            def={roleDef}
+            disabledReason={roleDisabled}
+            note={roleCageNote(t, { docker: dockerWanted, mode: sandboxMode })}
+          />
         )}
 
         {/* YOLO, seeded from the defaults (this project's, then Settings →
@@ -2638,6 +2686,7 @@ export function NewTaskDialog() {
       {/* Right column: sandbox config, an equal-width second pane (flex-1, so
           it matches the left; the dialog is sized to 2x base). Rendered ONLY
           when a cage is enabled, so there's no ghost width/height when off. */}
+      {roleObj && <SecretsForTask role={roleObj} secrets={secretDefs} />}
       {sandbox && (
         <div className="flex min-w-0 flex-col gap-3">
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">

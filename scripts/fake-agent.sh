@@ -125,6 +125,8 @@ set_title "✳ ${name}"
 #   #hookdone   a plain hook turn that ENDS: 133;C then 133;D, nothing
 #               outstanding. What claude writes when its `Stop` payload has an
 #               empty `background_tasks`, and the only one of these that rings.
+#   #sh CMD     run CMD with bash inside the agent's cage and env, as a
+#               tool call would (the broker spec's gh-socket request).
 #   #bel        emit a REAL bell, distinct from the BEL that terminates an OSC.
 #   #iip        emit an inline PNG, then Pi's alternate-screen redraw.
 #   #hookattn   reproduce a claude PERMISSION PROMPT with termic's agent hook
@@ -293,6 +295,14 @@ while IFS= read -r line; do
     esac
   fi
   case "$line" in
+    "#sh "*)
+      # run a shell line as the agent would (inside its cage, with its env):
+      # the broker spec sends a request through gh's socket this way, so the
+      # peer check, the spawn dir's profile rules and the placeholder are the
+      # real ones. Its output goes to the canvas like any tool call's.
+      bash -c "${line#\#sh }"
+      set_title "✳ ${name}"
+      continue ;;
     "#pending "*)
       spin
       # Order matters: the status line must be the LAST thing painted, so it
