@@ -7,8 +7,12 @@
 // depend on them: the Add dialog's Keychain fields are filled by hand, and
 // the status/activity assertions accept the "can't check" state.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { dataDir } from "../../wdio.conf.js";
 import {
-  clickPresent, pointerDrag, pointerRelease, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitGone, waitVisible,
+  archiveTask, clickPresent, openTask, pointerDrag, pointerRelease, requireTermicApi, setInputValue, snap, waitForAgentReady,
+  waitForAppShell, waitForText, waitGone, waitTaskUnmounted, waitVisible,
 } from "../helpers";
 
 const settingsLoad = () => browser.execute(() => window.__termic!.invoke("settings_load"));
@@ -433,5 +437,164 @@ describe("settings: secrets and roles", () => {
     });
     await waitSaved(s => s.secrets.length === 1 && s.roles[0].secrets.length === 0 && s.roles[0].rule_sets.length === 0,
       "the secret was not removed from settings and the role");
+  });
+});
+
+// "Kept out of agents": env vars Termic's own environment holds that agent
+// tabs do not inherit (env_guard.rs). wdio.conf.ts launches the app with a
+// synthetic token in TERMIC_E2E_FAKE_PAT, which the value check detects.
+describe("settings: env vars kept out of agents", () => {
+  const PAT = "TERMIC_E2E_FAKE_PAT";
+  const row = (name: string) => `[data-testid="kept-out-row-${name}"]`;
+  const statusText = (name: string) => browser.execute((n) =>
+    document.querySelector(`[data-testid="kept-out-status-${n}"]`)?.textContent ?? "", name);
+  const passEnv = (s: any) => s.agents.find((a: any) => a.id === "fakeagent")?.pass_env ?? [];
+  let original: any;
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    original = await settingsLoad();
+    await browser.execute(async (s: any) => {
+      const t = window.__termic!;
+      const agents = s.agents.map((a: any) => ({ ...a, pass_env: [] }));
+      await t.invoke("settings_save", { s: { ...s, env_guard: [], agents } });
+      await t.useApp.getState().loadAll();
+      t.useApp.getState().openSettings("secrets");
+    }, original);
+  });
+
+  after(async () => {
+    await browser.execute(async (s) => {
+      const t = window.__termic!;
+      await t.invoke("settings_save", { s });
+      await t.useApp.getState().loadAll();
+      t.useApp.getState().closeSettings();
+    }, original);
+  });
+
+  it("lists a detected token by name only", async () => {
+    await waitVisible(row(PAT));
+    const card = await browser.execute(() => document.querySelector('[data-testid="secrets-kept-out"]')!.textContent ?? "");
+    expect(card).toContain("detected");
+    expect(card).not.toContain("e2eFakeToken");
+    expect(card).not.toContain("ghp_");
+    expect(await statusText(PAT)).toBe("kept out of caged agents");
+    await snap("secrets-kept-out.png");
+  });
+
+  it("switches a var to all agents and back", async () => {
+    await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="all"]`);
+    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: PAT, all: true }]), "the all-agents scope never saved");
+    expect(await statusText(PAT)).toBe("kept out of all agents");
+    await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="caged"]`);
+    // caged is a detected var's default, so no rule is left behind
+    await waitSaved(s => (s.env_guard ?? []).length === 0, "the caged scope left a rule");
+  });
+
+  it("refuses a bad name, then adds one that defaults to all agents", async () => {
+    await setInputValue('[data-testid="kept-out-add-input"]', "1BAD");
+    await clickPresent('[data-testid="kept-out-add"]');
+    await waitForText("Letters, digits and underscores only");
+    expect((await settingsLoad() as any).env_guard ?? []).toEqual([]);
+    await setInputValue('[data-testid="kept-out-add-input"]', "STRIPE_SECRET_KEY");
+    await clickPresent('[data-testid="kept-out-add"]');
+    await waitVisible(row("STRIPE_SECRET_KEY"));
+    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: "STRIPE_SECRET_KEY", all: true }]), "the added name never saved");
+    expect(await statusText("STRIPE_SECRET_KEY")).toBe("not set right now · kept out of all agents");
+    await snap("secrets-kept-out-added.png");
+  });
+
+  it("removes an added name", async () => {
+    await clickPresent('[data-testid="kept-out-remove-STRIPE_SECRET_KEY"]');
+    await waitGone(row("STRIPE_SECRET_KEY"));
+    await waitSaved(s => (s.env_guard ?? []).length === 0, "the removed name is still saved");
+  });
+
+  it("passes a var through to one agent, and takes it back", async () => {
+    await clickPresent(`[data-testid="kept-out-pass-${PAT}"]`);
+    await clickPresent(`[data-testid="kept-out-pass-${PAT}-fakeagent"]`);
+    await waitSaved(s => passEnv(s).includes(PAT), "the pass-through never saved");
+    // the fixture has ~20 agents: the list scrolls rather than running off the window
+    const fits = await browser.execute((n) => {
+      const r = document.querySelector(`[data-testid="kept-out-pass-list-${n}"]`)!.closest("[data-radix-popper-content-wrapper]")!.getBoundingClientRect();
+      return r.bottom <= window.innerHeight;
+    }, PAT);
+    expect(fits).toBe(true);
+    await browser.waitUntil(async () => (await statusText(PAT)).includes("passed to FakeAgent"),
+      { timeout: 10_000, timeoutMsg: "the row never said it was passed" });
+    await snap("secrets-kept-out-pass.png");
+    await clickPresent(`[data-testid="kept-out-pass-${PAT}-fakeagent"]`);
+    await waitSaved(s => !passEnv(s).includes(PAT), "the pass-through was never taken back");
+    await browser.keys("Escape");
+  });
+
+  it("opens Add secret for a detected token", async () => {
+    await clickPresent(`[data-testid="kept-out-add-secret-${PAT}"]`);
+    await waitVisible('[data-testid="add-secret-dialog"]');
+    await waitForText(`Adding ${PAT} as a secret`);
+    await browser.keys("Escape");
+    await waitGone('[data-testid="add-secret-dialog"]');
+  });
+
+  it("toggles the pass-through from the agent's card", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
+    await clickPresent('[data-agent-id="fakeagent"]');
+    await clickPresent('[data-testid="agent-fold-env-fakeagent"] > button');
+    const toggle = `[data-testid="agent-inherited-toggle-fakeagent-${PAT}"]`;
+    await waitVisible(toggle);
+    await waitForText("kept out · caged only");
+    await clickPresent(toggle);
+    await waitSaved(s => passEnv(s).includes(PAT), "the card's pass-through never saved");
+    await waitForText("Keep out");
+    await browser.execute((s) => document.querySelector(s)!.scrollIntoView({ block: "center" }), '[data-testid="agent-inherited-env-fakeagent"]');
+    await snap("agent-inherited-env.png");
+    await clickPresent(toggle);
+    await waitSaved(s => !passEnv(s).includes(PAT), "the card's keep-out never saved");
+  });
+
+  // What the SPAWNED agent received, read from the fixture agent's log
+  // (terminal output is a WebGL canvas). The fixture logs "set" or nothing,
+  // never the value. The task is uncaged, so only an all-agents rule applies.
+  it("an uncaged agent loses an all-agents var, and gets it when passed through", async () => {
+    const spawns = (taskId: string) => readFileSync(join(dataDir, "e2e-agent-login.log"), "utf8").trim().split("\n")
+      .filter(l => l.startsWith(taskId + "\t"));
+    const lastSpawn = (taskId: string) => spawns(taskId).length;
+    const received = (taskId: string) => spawns(taskId).at(-1)?.split("\t").includes(`${PAT}=set`) ?? false;
+    const setGuard = (all: boolean, pass: string[]) => browser.execute(async (n, a, p) => {
+      const t = window.__termic!;
+      await t.invoke("env_guard_save", { rules: a ? [{ name: n, all: true }] : [] });
+      await t.invoke("agent_set_pass_env", { agentId: "fakeagent", names: p });
+    }, PAT, all, pass);
+    const spawn = async (taskId: string | null): Promise<string> => {
+      if (taskId) {
+        const before = lastSpawn(taskId);
+        await browser.execute((id) => { const s = window.__termic!.useApp.getState(); s.stopTask(id); s.setActiveTask(null); }, taskId);
+        await waitTaskUnmounted(taskId);
+        await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+        await browser.waitUntil(async () => lastSpawn(taskId) > before, { timeout: 30_000, timeoutMsg: "the agent never respawned" });
+        return taskId;
+      }
+      const id = await openTask("kept-out env");
+      await waitForAgentReady(id);
+      return id;
+    };
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    let taskId = "";
+    try {
+      // control: caged-only, so an uncaged agent still inherits it
+      await setGuard(false, []);
+      taskId = await spawn(null);
+      expect(received(taskId)).toBe(true);
+      await setGuard(true, []);
+      await spawn(taskId);
+      expect(received(taskId)).toBe(false);
+      await setGuard(true, [PAT]);
+      await spawn(taskId);
+      expect(received(taskId)).toBe(true);
+    } finally {
+      await setGuard(false, []);
+      if (taskId) await archiveTask(taskId);
+    }
   });
 });

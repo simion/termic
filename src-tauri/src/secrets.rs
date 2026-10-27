@@ -121,7 +121,7 @@ fn env_reserved(name: &str) -> bool {
     EXACT.contains(&u.as_str()) || PREFIX.iter().any(|p| u.starts_with(p))
 }
 
-fn env_name_ok(name: &str) -> bool {
+pub(crate) fn env_name_ok(name: &str) -> bool {
     let mut b = name.bytes();
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
@@ -476,14 +476,12 @@ pub fn gh_accounts_from_hosts_yml(text: &str) -> Result<Vec<GhAccount>, String> 
 
 // ───────────────────────── tokens outside the broker ─────────────────────────
 
-/// A real-looking token sitting in an env the agent would inherit. `prefix`
-/// is the token's type prefix (`ghp_`), never any of the value.
+/// A real-looking token typed into an agent's configured `env` /
+/// `docker_env`. `prefix` is the token's type prefix (`ghp_`), never any of
+/// the value.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct SecretExposure {
-    /// `agent_env` (an agent's configured `env` / `docker_env`) or
-    /// `process_env` (Termic's own, which caged spawns inherit).
-    pub source: &'static str,
-    pub agent_id: Option<String>,
+    pub agent_id: String,
     pub var_name: String,
     pub prefix: &'static str,
 }
@@ -502,22 +500,14 @@ pub fn token_prefix(value: &str) -> Option<&'static str> {
     (rest.len() >= 20 && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).then_some(*p)
 }
 
-/// Every real-looking token in the agents' configured env and in `process`.
-/// `agents` is (agent id, var, value).
-pub fn scan_exposed<'a>(
-    agents: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
-    process: impl IntoIterator<Item = (String, String)>,
-) -> Vec<SecretExposure> {
+/// Every real-looking token in the agents' configured env. `agents` is
+/// (agent id, var, value).
+pub fn scan_exposed<'a>(agents: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Vec<SecretExposure> {
     let mut out: Vec<SecretExposure> = agents
         .into_iter()
-        .filter_map(|(id, k, v)| {
-            token_prefix(v).map(|prefix| SecretExposure { source: "agent_env", agent_id: Some(id.into()), var_name: k.into(), prefix })
-        })
+        .filter_map(|(id, k, v)| token_prefix(v).map(|prefix| SecretExposure { agent_id: id.into(), var_name: k.into(), prefix }))
         .collect();
-    out.extend(process.into_iter().filter_map(|(k, v)| {
-        token_prefix(&v).map(|prefix| SecretExposure { source: "process_env", agent_id: None, var_name: k, prefix })
-    }));
-    out.sort_by(|a, b| (a.source, &a.agent_id, &a.var_name).cmp(&(b.source, &b.agent_id, &b.var_name)));
+    out.sort_by(|a, b| (&a.agent_id, &a.var_name).cmp(&(&b.agent_id, &b.var_name)));
     out.dedup();
     out
 }
@@ -726,12 +716,10 @@ ghe.acme.com:
             ("codex", "X", "ghp_"),
             ("codex", "PAT", pat),
         ];
-        let process = vec![("GITHUB_TOKEN".to_string(), format!(" {tok}\n")), ("HOME".to_string(), "/Users/alice".to_string())];
-        let got = scan_exposed(agents, process);
-        assert_eq!(got.len(), 3, "{got:?}");
-        assert_eq!(got[0], SecretExposure { source: "agent_env", agent_id: Some("claude".into()), var_name: "GH_TOKEN".into(), prefix: "ghp_" });
+        let got = scan_exposed(agents);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], SecretExposure { agent_id: "claude".into(), var_name: "GH_TOKEN".into(), prefix: "ghp_" });
         assert_eq!(got[1].prefix, "github_pat_");
-        assert_eq!(got[2], SecretExposure { source: "process_env", agent_id: None, var_name: "GITHUB_TOKEN".into(), prefix: "ghp_" });
         let json = serde_json::to_string(&got).unwrap();
         assert!(!json.contains("0123456789"), "a value leaked: {json}");
     }

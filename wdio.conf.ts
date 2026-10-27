@@ -122,6 +122,10 @@ export const config: WebdriverIO.Config = {
     // forced and the enable script is a stub (sudo_touchid.rs). Honoured only
     // by the `e2e`-feature binary.
     process.env.TERMIC_E2E_FAKE_SUDO = "1";
+    // A token-shaped var in the app's own environment, for the "Kept out of
+    // agents" list (secrets-settings.e2e.ts). Synthetic: the shape is a
+    // GitHub classic token, the characters spell out that it is not one.
+    process.env.TERMIC_E2E_FAKE_PAT = "ghp_" + "e2eFakeTokenNotReal0".repeat(2);
     // Purge accumulated tasks so every run starts lean (specs create their own;
     // archived tasks otherwise pile up across runs and bloat loadAll/sidebar).
     try {

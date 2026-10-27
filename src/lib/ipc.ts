@@ -1621,6 +1621,15 @@ export const secretForgetUnsaved = (id: string) =>
   invoke<void>("secret_forget", { id });
 export const secretsExposed = () =>
   invoke<import("./types").SecretExposure[]>("secrets_exposed");
+/** Env vars agent tabs do not inherit (Settings > Secrets). Names only. */
+export const envGuardList = () =>
+  invoke<import("./types").KeptOutVar[]>("env_guard_list");
+/** Replace the kept-out rules; resolves to the fresh list. */
+export const envGuardSave = (rules: import("./types").EnvGuardRule[]) =>
+  invoke<import("./types").KeptOutVar[]>("env_guard_save", { rules });
+/** One agent's pass-through names (read-modify-write on disk). */
+export const agentSetPassEnv = (agentId: string, names: string[]) =>
+  invoke<void>("agent_set_pass_env", { agentId, names });
 /** role: role id, "" for explicit No secrets, null to inherit. */
 export const taskSetRole = (id: string, role: string | null) =>
   invoke<void>("task_set_role", { id, role });

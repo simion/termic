@@ -1378,3 +1378,18 @@ Two traps from reproducing it, both of which cost a wrong conclusion first:
   "The log contains my message" passed on a line from the previous run. Count
   the lines before the action and wait for the count to grow.
 
+## A PTY's env starts as Termic's whole env: skipping a var does not drop it
+
+`portable_pty::CommandBuilder::new` seeds the builder with every variable of
+the current process (`get_base_env`), before `pty_spawn` copies anything. So a
+copy loop that `continue`s past a var leaves the inherited copy in place, and
+the child gets it anyway. The other agent session's markers
+(`CLAUDE_CODE_SESSION_ID`, the messaging socket and token) reached every
+spawned agent this way for as long as the skip existed, and the kept-out env
+list (sandbox.md "Env vars kept out of agents") did nothing until it was
+caught by an e2e case reading what the spawned process received.
+
+Drop a var with `env_remove`, which `inherit_env` (lib.rs) does for every var
+its predicate names; `inherit_env_removes_what_it_drops` pins it, with the
+control that the builder really does start with the var. A unit test of the
+predicate alone cannot catch this: the predicate was right the whole time.

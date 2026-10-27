@@ -37,6 +37,7 @@ pub mod codex_trust;
 mod sandbox;
 mod proxy;
 mod secrets;
+mod env_guard;
 mod broker;
 mod proc_ctl;
 mod fs_link;
@@ -4418,10 +4419,27 @@ fn pty_spawn(
     // An explicit list, not a `CLAUDE_*` prefix sweep: `CLAUDE_CONFIG_DIR` is
     // a legitimate setting a user relocates a cloned agent with, and dropping
     // it would silently point a second account back at the first.
-    for (k, v) in std::env::vars() {
-        if agent_session_marker(&k) { continue }
-        cmd.env(k, v);
-    }
+    //
+    // MINUS what Settings > Secrets keeps out of agent tabs (env_guard.rs).
+    // Agent TABS only: a registry terminal carries an agent_id too, and
+    // terminals see everything. Docker needs nothing: its container gets no
+    // host env.
+    let is_agent_spawn = args.role.as_ref().map(|r| r.kind == "agent").unwrap_or(false)
+        || args.agent_id.is_some();
+    let is_agent_tab = args.role.as_ref().is_some_and(|r| r.kind == "agent");
+    let guard = (is_agent_tab && !is_docker).then(|| {
+        let s = load_settings_in(&spawn_profile);
+        let agent_id = args.agent_id.clone()
+            .or_else(|| spawn_task.as_ref().map(|t| t.cli.clone()))
+            .unwrap_or_default();
+        let pass = s.agents.iter().find(|a| a.id == agent_id).map(|a| a.pass_env.clone()).unwrap_or_default();
+        let own = env_guard::own_login(docker::base_agent_id(&s.agents, &agent_id));
+        // the task's INTENDED cage, so a failed provision still keeps them out
+        let caged = spawn_task.as_ref().is_some_and(|t| t.effective_sandbox_mode() != SandboxMode::Off);
+        env_guard::Guard::new(&s.env_guard, &pass, own, caged)
+    });
+    let kept_out = |k: &str, v: &str| guard.as_ref().is_some_and(|g| g.keeps_out(k, v));
+    inherit_env(&mut cmd, |k, v| agent_session_marker(k) || kept_out(k, v));
     // MINUS a Linux AppImage's own library environment, which would make
     // every system binary in the terminal load OUR bundled libraries (on
     // Ubuntu 25.10+ that kills `env` and `ls`). See appimage_env.rs.
@@ -4450,6 +4468,7 @@ fn pty_spawn(
     // filter what a compromised agent could exfiltrate with it.
     if sandbox_bundle.is_none() && !is_docker {
         for (k, v) in login_inject {
+            if kept_out(&k, &v) { continue }
             cmd.env(k, v);
         }
     } else if is_docker {
@@ -4507,8 +4526,6 @@ fn pty_spawn(
     // the shapes relocate XDG_DATA_HOME / XDG_CONFIG_HOME, which every
     // XDG-aware tool in that interactive shell reads, so the user's own
     // commands would start writing into an account's login store.
-    let is_agent_spawn = args.role.as_ref().map(|r| r.kind == "agent").unwrap_or(false)
-        || args.agent_id.is_some();
     if !is_docker_spawn && is_agent_spawn {
         let agent_id = args.agent_id.clone()
             .or_else(|| spawn_task.as_ref().map(|t| t.cli.clone()))
@@ -10154,9 +10171,10 @@ async fn secrets_gh_accounts() -> Result<Vec<secrets::GhAccount>, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Real-looking GitHub tokens outside the broker: in an agent's configured
-/// `env` / `docker_env`, or in Termic's own environment (which caged spawns
-/// inherit). Names and prefixes only.
+/// Real-looking tokens typed into an agent's configured `env` /
+/// `docker_env`, which every task of that agent reads. Names and prefixes
+/// only. Termic's own environment is the kept-out list's job instead
+/// (`env_guard_list`).
 #[tauri::command]
 async fn secrets_exposed(window: tauri::Window) -> Result<Vec<secrets::SecretExposure>, String> {
     let profile = window_profile(&window);
@@ -10165,12 +10183,63 @@ async fn secrets_exposed(window: tauri::Window) -> Result<Vec<secrets::SecretExp
         let configured = agents.iter().flat_map(|a| {
             a.env.iter().chain(a.docker_env.iter()).map(move |(k, v)| (a.id.as_str(), k.as_str(), v.as_str()))
         });
-        let process = std::env::vars_os()
-            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
-        secrets::scan_exposed(configured, process)
+        secrets::scan_exposed(configured)
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// The kept-out list for Settings > Secrets: what Termic's own environment
+/// holds that agent tabs will not inherit, plus every name the user added.
+/// Names only, never a value.
+fn env_guard_rows(s: &Settings) -> Vec<env_guard::KeptOut> {
+    let agents: Vec<(String, &[&str])> = s.agents.iter()
+        .map(|a| (a.id.clone(), env_guard::own_login(docker::base_agent_id(&s.agents, &a.id))))
+        .collect();
+    let env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+    env_guard::list(&s.env_guard, &agents, env)
+}
+
+#[tauri::command]
+async fn env_guard_list(window: tauri::Window) -> Result<Vec<env_guard::KeptOut>, String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || env_guard_rows(&load_settings_in(&profile)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Replace the kept-out rules (read-modify-write, so no other field moves)
+/// and return the fresh list.
+#[tauri::command]
+async fn env_guard_save(window: tauri::Window, rules: Vec<env_guard::Rule>) -> Result<Vec<env_guard::KeptOut>, String> {
+    env_guard::validate(&rules)?;
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = load_settings_in(&profile);
+        s.env_guard = rules;
+        save_settings_in(&profile, &s)?;
+        Ok(env_guard_rows(&s))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Set one agent's pass-through names, for the Secrets page (the agent card
+/// saves through `agents_save` with the rest of the agent).
+#[tauri::command]
+async fn agent_set_pass_env(window: tauri::Window, agent_id: String, names: Vec<String>) -> Result<(), String> {
+    if let Some(bad) = names.iter().find(|n| !secrets::env_name_ok(n)) {
+        return Err(format!("{bad:?} is not an environment variable name"));
+    }
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = load_settings_in(&profile);
+        let a = s.agents.iter_mut().find(|a| a.id == agent_id).ok_or_else(|| format!("no agent {agent_id}"))?;
+        a.pass_env = names;
+        save_settings_in(&profile, &s)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Why `checked_role` refused, from what is SAVED: the dialog draft can
@@ -22765,6 +22834,9 @@ pub struct Settings {
     /// bundle them. See secrets.rs and docs/sandbox.md "Credential broker".
     pub secrets: Vec<secrets::SecretDef>,
     pub roles: Vec<secrets::Role>,
+    /// Env var names the user added to, or rescoped on, the kept-out list.
+    /// See env_guard.rs.
+    pub env_guard: Vec<env_guard::Rule>,
     /// True once the user has finished the welcome wizard.
     pub welcomed: bool,
     /// Registered agent CLIs (claude/gemini/codex defaults + user customs).
@@ -23146,6 +23218,10 @@ pub struct Agent {
     /// says it rather than termic guessing.
     #[serde(default)]
     pub docker_env: std::collections::HashMap<String, String>,
+    /// Kept-out env var names this agent inherits anyway (see env_guard.rs).
+    /// Names only: the value comes from Termic's own environment.
+    #[serde(default)]
+    pub pass_env: Vec<String>,
     /// Paths joined into the task sandbox allow-list whenever this
     /// agent's CLI is launched. The sandbox is allowlist-only (default-deny
     /// reads + writes outside this set); per-agent paths cover the dirs the
@@ -23368,6 +23444,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 // Covers $HOME/.claude/, $HOME/.claude.json,
                 // $HOME/.claude.lock, $HOME/.claude.json.lock, and
@@ -23440,6 +23517,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 "$HOME/.codex".into(),
                 "$HOME/.config/codex".into(),
@@ -23498,6 +23576,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             // Antigravity is a Gemini-family CLI and actually keeps its
             // per-project state under ~/.gemini (the `.antigravitycli/`
             // dir it drops in a repo just symlinks into
@@ -23558,6 +23637,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 "$HOME/.copilot".into(),
                 "$HOME/.config/copilot".into(),
@@ -23614,6 +23694,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 "$HOME/.grok".into(),
                 "$HOME/.config/grok".into(),
@@ -23670,6 +23751,7 @@ fn default_agents() -> Vec<Agent> {
             },
             env: std::collections::HashMap::new(),
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec!["$HOME/.pi".into()],
             sandbox_allowed_hosts: vec![],
             work_done: true,
@@ -23714,6 +23796,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 "$HOME/.config/opencode".into(),
                 "$HOME/.local/share/opencode".into(),
@@ -23795,6 +23878,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 // Auth + enterprise config.
                 "$HOME/.config/muse".into(),
@@ -23916,6 +24000,7 @@ fn default_agents() -> Vec<Agent> {
             },
             env: std::collections::HashMap::new(),
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 // Config, auth.json and cli-config.json. The resolver is
                 // CURSOR_CONFIG_DIR, then XDG_CONFIG_HOME/cursor, then this.
@@ -24001,6 +24086,7 @@ fn default_agents() -> Vec<Agent> {
             env: std::collections::HashMap::new(),
             // Empty = a Docker spawn uses `env` above, unchanged.
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 // User-level plans, extensions and argv state.
                 "$HOME/.devin".into(),
@@ -24114,6 +24200,7 @@ fn default_agents() -> Vec<Agent> {
             },
             env: std::collections::HashMap::new(),
             docker_env: std::collections::HashMap::new(),
+            pass_env: Vec::new(),
             sandbox_allowed_paths: vec![
                 // Everything omp keeps: the agent dir (agent.db credentials,
                 // sessions, extensions, cache) lives under ~/.omp. The binary
@@ -24633,6 +24720,15 @@ fn docker_env_for(
 /// A new marker from a future agent version lands here, not in a wildcard. The
 /// failure it prevents is quiet (a wrong session id looks like nothing until an
 /// agent reads someone else's project), so the list is worth keeping honest.
+/// Termic's own env into `cmd`, minus what `drop` names. `CommandBuilder::new`
+/// already starts from the whole process env, so a dropped var has to be
+/// REMOVED: skipping it here would leave the inherited copy in place.
+fn inherit_env(cmd: &mut CommandBuilder, drop: impl Fn(&str, &str) -> bool) {
+    for (k, v) in std::env::vars() {
+        if drop(&k, &v) { cmd.env_remove(&k) } else { cmd.env(k, v) }
+    }
+}
+
 fn agent_session_marker(key: &str) -> bool {
     matches!(
         key,
@@ -27097,7 +27193,7 @@ pub fn run() {
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
             tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
-            task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed,
+            task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed, env_guard_list, env_guard_save, agent_set_pass_env,
             broker_counts, broker_events, broker_all_events, broker_set_paused, broker_allow,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
@@ -31795,6 +31891,21 @@ mod tests {
         for k in ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "CLAUDE_CODE_NO_FLICKER", "PATH"] {
             assert!(!agent_session_marker(k), "{k} must still be inherited");
         }
+    }
+
+    /// A dropped var must be gone from the builder, not just left uncopied:
+    /// `CommandBuilder::new` already holds the whole process env, which is
+    /// how the session markers above reached spawned agents anyway.
+    #[test]
+    fn inherit_env_removes_what_it_drops() {
+        let name = "TERMIC_TEST_INHERIT_ENV_DROPPED";
+        std::env::set_var(name, "x");
+        let mut cmd = CommandBuilder::new("true");
+        assert!(cmd.get_env(name).is_some(), "control: the builder starts from the process env");
+        inherit_env(&mut cmd, |k, _| k == name);
+        assert!(cmd.get_env(name).is_none());
+        assert!(cmd.get_env("PATH").is_some(), "everything else is kept");
+        std::env::remove_var(name);
     }
 
     #[test]

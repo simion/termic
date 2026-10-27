@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { API_KEY_PRESETS, GITHUB_HOSTS, OWNED_ACCOUNT, apiKeyProblem, deliveredAs, ownedService, secretProblem, storedIn, tasksByRole } from "./model";
 import type { SecretPreset } from "./model";
 import { Eyebrow, HostChips, RoleDot } from "./parts";
+import { KeptOutCard } from "./KeptOut";
 import type { SecretsModel } from "./SecretsSection";
 
 type Probe = SecretStatus | { status: "checking" };
@@ -31,7 +32,7 @@ export function SecretsTab({ model, onShowActivity }: { model: SecretsModel; onS
   const [probes, setProbes] = useState<Record<string, Probe>>({});
   const [exposed, setExposed] = useState<SecretExposure[]>([]);
   const [open, setOpen] = useState<string | null>(null);
-  const [adding, setAdding] = useState<{ fromVar?: string } | null>(null);
+  const [adding, setAdding] = useState<{ fromVar?: string; preset?: SecretPreset } | null>(null);
   const [replacing, setReplacing] = useState<SecretDef | null>(null);
   // null = unknown (not answered yet, or the IPC failed): say nothing.
   const [protectedOk, setProtectedOk] = useState<boolean | null>(null);
@@ -110,11 +111,12 @@ export function SecretsTab({ model, onShowActivity }: { model: SecretsModel; onS
       )}
       <p className="text-[13px] text-[var(--color-fg-dim)]">{t("manage.secrets.intro")}</p>
 
-      <div className={cn("grid gap-3", exposed.length > 0 && "grid-cols-2")}>
+      <div className="flex flex-col gap-3">
         <HealthCard secrets={secrets} probes={probes} />
         {exposed.length > 0 && (
           <ExposedCard exposed={exposed} onAdd={v => setAdding({ fromVar: v })} />
         )}
+        <KeptOutCard onAddSecret={(v, preset) => setAdding({ fromVar: v, preset })} />
       </div>
 
       <div className="flex items-center justify-between">
@@ -207,6 +209,7 @@ export function SecretsTab({ model, onShowActivity }: { model: SecretsModel; onS
         <AddSecretDialog
           existing={secrets}
           fromVar={adding.fromVar}
+          fromPreset={adding.preset}
           onClose={() => setAdding(null)}
           protectedOk={protectedOk}
           onAdd={async s => {
@@ -381,7 +384,7 @@ function ExposedCard({ exposed, onAdd }: { exposed: SecretExposure[]; onAdd: (va
   const { t } = useTranslation("secrets");
   const agents = useApp(s => s.agents);
   const first = exposed[0];
-  const agentName = agents.find(a => a.id === first.agent_id)?.display_name ?? first.agent_id ?? "";
+  const agentName = agents.find(a => a.id === first.agent_id)?.display_name ?? first.agent_id;
   return (
     <div data-testid="secrets-exposed" className="flex gap-3 rounded-lg border border-[var(--color-warn)]/50 bg-[var(--color-warn)]/10 px-4 py-3.5">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warn)]" />
@@ -392,9 +395,7 @@ function ExposedCard({ exposed, onAdd }: { exposed: SecretExposure[]; onAdd: (va
             : t("manage.secrets.exposed.title_other", { count: exposed.length })}
         </div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          {first.source === "agent_env"
-            ? t("manage.secrets.exposed.agentEnv", { agent: agentName, var: first.var_name })
-            : t("manage.secrets.exposed.processEnv", { var: first.var_name })}
+          {t("manage.secrets.exposed.agentEnv", { agent: agentName, var: first.var_name })}
         </div>
         <button
           type="button"
@@ -503,12 +504,14 @@ function SavedTo({ protectedOk }: { protectedOk: boolean | null }) {
   );
 }
 
-function AddSecretDialog({ existing, fromVar, protectedOk, onClose, onAdd }: {
-  existing: SecretDef[]; fromVar?: string; protectedOk: boolean | null;
+function AddSecretDialog({ existing, fromVar, fromPreset, protectedOk, onClose, onAdd }: {
+  existing: SecretDef[]; fromVar?: string; fromPreset?: SecretPreset; protectedOk: boolean | null;
   onClose: () => void; onAdd: (s: SecretDef) => Promise<boolean>;
 }) {
   const { t } = useTranslation("secrets");
-  const [preset, setPreset] = useState<SecretPreset>("github");
+  // opened from a detected API key: start on its preset, not GitHub's
+  const initKey = fromPreset && fromPreset !== "github" ? API_KEY_PRESETS[fromPreset] : null;
+  const [preset, setPreset] = useState<SecretPreset>(fromPreset ?? "github");
   const [accounts, setAccounts] = useState<{ host: string; user: string; active: boolean }[] | null>(null);
   // null until gh's accounts load (or the user picks), so the body does not
   // flash one source and then swap to the other.
@@ -516,15 +519,15 @@ function AddSecretDialog({ existing, fromVar, protectedOk, onClose, onAdd }: {
   const sourceTouched = useRef(false);
   const [service, setService] = useState("gh:github.com");
   const [account, setAccount] = useState("");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initKey?.name ?? "");
   const [nameTouched, setNameTouched] = useState(false);
-  const [hosts, setHosts] = useState<string[]>(GITHUB_HOSTS);
+  const [hosts, setHosts] = useState<string[]>(initKey?.hosts ?? GITHUB_HOSTS);
   const [tried, setTried] = useState(false);
   // a pasted value's id is minted up front because it names the Keychain
   // item the value is written to before the secret is saved.
   const [id] = useState(() => crypto.randomUUID());
   const [value, setValue] = useState("");
-  const [api, setApi] = useState<ApiKeyCfg>(API_KEY_PRESETS.openai.api);
+  const [api, setApi] = useState<ApiKeyCfg>((initKey ?? API_KEY_PRESETS.openai).api);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const isKey = preset !== "github";
