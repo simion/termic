@@ -130,6 +130,8 @@ pub(crate) const SETTINGS_LOCAL: &[&str] = &[
     // arrival and block every settings save there. Both stay local in v1;
     // syncing them is a later call, and would belong in the SAFETY lists.
     "secrets", "roles",
+    // Names THIS machine's environment, which another Mac does not share.
+    "env_guard",
 ];
 
 pub(crate) const AGENT_SYNC: &[&str] = &[
@@ -146,6 +148,8 @@ pub(crate) const AGENT_SYNC: &[&str] = &[
 pub(crate) const AGENT_LOCAL: &[&str] = &[
     // Never. These are where people put API keys.
     "env", "docker_env",
+    // Names env vars THIS machine has (see env_guard in SETTINGS_LOCAL).
+    "pass_env",
     // The login that already existed on THIS machine.
     "adopted_account",
     // Often hides a CLI that is not installed here.
@@ -3677,6 +3681,7 @@ mod tests {
             capabilities: AgentCapabilities::default(),
             env: hm("API_KEY", "s3cret-token"),
             docker_env: hm("API_KEY", "s3cret-docker"),
+            pass_env: vec!["GITHUB_TOKEN".into()],
             sandbox_allowed_paths: vec!["$HOME/.my".into()],
             sandbox_allowed_hosts: vec!["api.acme.com".into()],
             work_done: true,
@@ -3695,6 +3700,7 @@ mod tests {
             customizations_enabled: Some(true),
             roles: Vec::new(),
             secrets: Vec::new(),
+            env_guard: vec![crate::env_guard::Rule { name: "STRIPE_SECRET_KEY".into(), all: true }],
             repos_dir: "/Users/u/src".into(),
             welcomed: true,
             agents: vec![full_agent()],

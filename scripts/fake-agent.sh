@@ -57,12 +57,15 @@ trap 'set_title "✳ ${name}"; printf "\nFAKE-AGENT exiting\n"; exit 0' INT TERM
 # Guarded on TERMIC_DATA_DIR, which only the e2e/automation seam sets, so a
 # real run writes nothing.
 if [ -n "${TERMIC_DATA_DIR:-}" ]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' \
+  # TERMIC_E2E_FAKE_PAT logs only whether it arrived, never its value
+  # (the kept-out env case in secrets-settings.e2e.ts).
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${TERMIC_TASK_ID:-}" \
     "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-}" \
     "CODEX_HOME=${CODEX_HOME:-}" \
     "GEMINI_CLI_HOME=${GEMINI_CLI_HOME:-}" \
     "XDG_DATA_HOME=${XDG_DATA_HOME:-}" \
+    "TERMIC_E2E_FAKE_PAT=${TERMIC_E2E_FAKE_PAT:+set}" \
     >> "${TERMIC_DATA_DIR}/e2e-agent-login.log" 2>/dev/null || true
   # And the ARGV, for the same reason and with the same trick. The resume
   # block is composed frontend-side and only ever exists as a spawned

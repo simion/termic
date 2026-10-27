@@ -58,7 +58,6 @@ export default {
       title_one: "{{count}} real token outside the broker",
       title_other: "{{count}} real tokens outside the broker",
       agentEnv: "{{agent}}'s environment sets {{var}}, which every {{agent}} task can read.",
-      processEnv: "Termic was started with {{var}} set, so every caged agent inherits it.",
       action: "Add as a secret",
     },
     row: {
@@ -122,6 +121,35 @@ export default {
     saveFailedWhy: "Couldn't save, so your last change was not kept: {{why}}",
   },
 
+  keptOut: {
+    title: "Kept out of agents · {{n}}",
+    body: "Environment variables Termic won't hand to agent tabs. Your own terminals and scripts still see them. Pass one through when a single agent needs it.",
+    reason: {
+      builtin: "built-in",
+      detected: "detected",
+      added: "added by you",
+    },
+    notSet: "not set right now",
+    scopeCaged: "kept out of caged agents",
+    scopeAll: "kept out of all agents",
+    passedTo: "passed to {{agents}}",
+    ownLogin: "{{agents}} signs in with it, so gets it",
+    scopeLabel: "Keep out of",
+    caged: "Caged",
+    allAgents: "All agents",
+    addSecret: "Add as a secret",
+    passThrough: "Pass through",
+    passTitle: "Pass {{name}} through to:",
+    passNote: "The agent can read the real value. A caged one can send it to any host its role allows. A secret keeps it out entirely.",
+    done: "Done",
+    remove: "Remove {{name}}",
+    addLabel: "Variable name",
+    addPlaceholder: "Add a variable name, like STRIPE_SECRET_KEY",
+    add: "Add",
+    badName: "Letters, digits and underscores only, not starting with a digit.",
+    saveFailed: "Couldn't save the kept-out list: {{why}}",
+  },
+
   add: {
     title: "Add secret",
     description: "Use a login gh already keeps on this Mac. Termic reads it only on its way to the hosts below.",
@@ -176,7 +204,7 @@ export default {
       header: "Name the header, like authorization or x-api-key.",
       baseUrl: "Fill in both base URL fields, with a URL on one of the hosts below, or leave both empty.",
     },
-    fromExposed: "Found {{var}} outside the broker. Add the matching gh login here, then remove {{var}} from where it is set.",
+    fromExposed: "Adding {{var}} as a secret means agents get a placeholder instead of the real value. Once it works, remove {{var}} from where it is set.",
     submit: "Add secret",
   },
 

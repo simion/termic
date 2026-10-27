@@ -481,6 +481,43 @@ then it is opt-in. A stopgap that needs no termic change:
 `gh auth login --insecure-storage` and `credential.helper store` move
 those two credentials into files the cage already denies.
 
+## Env vars kept out of agents
+
+Termic launched from a shell (`make beta`, `open` from a terminal) inherits
+that shell's exports, and every agent it spawns inherits them in turn. A
+`GITHUB_TOKEN` exported for the user's own `gh` then sits in a caged agent's
+environment, where the cage cannot stop it leaving through an allow-listed
+host. A Dock launch gets launchd's bare env and has nothing to keep out. Code:
+`src-tauri/src/env_guard.rs`, applied in `pty_spawn`; UI: Settings > Secrets,
+"Kept out of agents", and the "Inherited from Termic" list on each agent's
+card.
+
+**What is on the list.** A name in `env_guard::BUILTIN` (credentials with no
+recognisable value shape: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, ...), a
+value `secrets::token_prefix` recognises under ANY name, or a name the user
+added (`Settings.env_guard`). The UI only ever sees names: `env_guard_list`
+reports why a var is listed, never any part of its value.
+
+**Who it is kept from.** Caged agents by default. A rule with `all` keeps a
+var from every agent tab, caged or not, including the login-shell delta an
+uncaged spawn otherwise gets; a name the user adds starts at `all`. "Caged"
+is the task's intended mode (`effective_sandbox_mode() != Off`), so a
+provision that failed and fell back to an unsandboxed spawn still keeps
+caged-only vars out.
+
+**What always wins.** `Agent.pass_env` (the user passed that var to that
+agent) and the agent's own login var (`env_guard::own_login`, by base agent
+id, so a clone inherits it: `ANTHROPIC_API_KEY` for claude, `OPENAI_API_KEY`
+for codex, ...). The per-spawn overlay (`Agent.env`, a task's `.env`) is
+applied after the inherited env, so a value typed there arrives regardless.
+The broker's own `env -u` in `wrap_command` runs after all of this, so a
+brokered spawn never gets the real GitHub token even when it is passed
+through.
+
+**Out of scope.** The AuxTerminal, scripts and shell tabs see everything:
+they are the user's, not the threat model. Docker needs nothing, since a
+container never gets host env (only `TERM` and the relocation vars).
+
 ## Credential broker (Secrets roles)
 
 A task with a Secrets role lets its caged agent USE a GitHub login or

@@ -803,6 +803,9 @@ export interface Agent {
    *  that is not mounted in the container, and termic cannot infer which
    *  variables those are for a cloned agent. */
   docker_env?: Record<string, string>;
+  /** Kept-out env var names this agent inherits anyway (env_guard.rs).
+   *  Names only. */
+  pass_env?: string[];
   /** Paths joined into every sandbox built for a task using this
    *  agent. Cannot be removed per-task — to drop one, edit the
    *  agent in Settings → Agents (affects every task using it).
@@ -877,6 +880,8 @@ export interface Settings {
   /** Secrets (Keychain pointers, never values) and roles. secrets.rs. */
   secrets?: SecretDef[];
   roles?: Role[];
+  /** Kept-out env rules: names the user added or rescoped. env_guard.rs. */
+  env_guard?: EnvGuardRule[];
   /** Global sandbox defaults. Merged with the per-project lists when
    *  a task is created with sandbox enabled; pre-filled into the
    *  Edit Sandbox dialog when the user enables the cage from scratch. */
@@ -2348,5 +2353,18 @@ export interface BrokerEvents { used: BrokerUsed[]; blocked: BrokerBlocked[]; no
 /** `roles`: distinct role ids the task's live brokered spawns run with,
  *  empty when none is live. */
 export interface BrokerCounts { blocked: number; suspicious: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[] }
-/** A real-looking token outside the broker (agent env or Termic's own env). */
-export interface SecretExposure { source: "agent_env" | "process_env"; agent_id: string | null; var_name: string; prefix: string }
+/** A real-looking token typed into an agent's configured env. */
+export interface SecretExposure { agent_id: string; var_name: string; prefix: string }
+/** `all`: kept from uncaged agents too, not just caged ones. */
+export interface EnvGuardRule { name: string; all: boolean }
+/** One kept-out env var (env_guard.rs `KeptOut`). Names only, never a value.
+ *  `preset`: the Add secret preset a detected token fits. `own_login_of`:
+ *  agent ids that read it for their own login, so always get it. */
+export interface KeptOutVar {
+  name: string;
+  reason: "builtin" | "detected" | "added";
+  set: boolean;
+  all: boolean;
+  preset: "github" | "openai" | "anthropic" | null;
+  own_login_of: string[];
+}

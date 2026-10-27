@@ -58,7 +58,6 @@ export default {
       title_one: "{{count}} 个真实令牌在代理之外",
       title_other: "{{count}} 个真实令牌在代理之外",
       agentEnv: "{{agent}} 的环境变量设置了 {{var}}，每个 {{agent}} 任务都能读取它。",
-      processEnv: "Termic 启动时设置了 {{var}}，所以每个受限的智能体都会继承它。",
       action: "添加为密钥",
     },
     row: {
@@ -122,6 +121,35 @@ export default {
     saveFailedWhy: "保存失败，你的上一次更改没有保留：{{why}}",
   },
 
+  keptOut: {
+    title: "不交给智能体的变量 · {{n}}",
+    body: "Termic 不会把这些环境变量交给智能体标签页。你自己的终端和脚本仍然能看到它们。某个智能体确实需要时，可以单独放行给它。",
+    reason: {
+      builtin: "内置",
+      detected: "检测到",
+      added: "你添加的",
+    },
+    notSet: "当前未设置",
+    scopeCaged: "不交给受限的智能体",
+    scopeAll: "不交给任何智能体",
+    passedTo: "已放行给 {{agents}}",
+    ownLogin: "{{agents}} 用它登录，所以会拿到它",
+    scopeLabel: "不交给",
+    caged: "受限的",
+    allAgents: "所有智能体",
+    addSecret: "添加为密钥",
+    passThrough: "放行",
+    passTitle: "把 {{name}} 放行给：",
+    passNote: "智能体能读到真实值。受限的智能体可以把它发往其角色允许的任何主机。改成密钥则完全不会交给智能体。",
+    done: "完成",
+    remove: "移除 {{name}}",
+    addLabel: "变量名",
+    addPlaceholder: "添加变量名，例如 STRIPE_SECRET_KEY",
+    add: "添加",
+    badName: "只能包含字母、数字和下划线，且不能以数字开头。",
+    saveFailed: "无法保存该列表：{{why}}",
+  },
+
   add: {
     title: "添加密钥",
     description: "使用 gh 已经在这台 Mac 上保存的登录。Termic 只在发往下方主机时读取它。",
@@ -176,7 +204,7 @@ export default {
       header: "请填写请求头名称，例如 authorization 或 x-api-key。",
       baseUrl: "请同时填写两个 Base URL 字段，且 URL 位于下方某个主机上；或者两项都留空。",
     },
-    fromExposed: "在代理之外发现了 {{var}}。在这里添加对应的 gh 登录，然后从设置 {{var}} 的地方删除它。",
+    fromExposed: "把 {{var}} 添加为密钥后，智能体只会拿到占位符，而不是真实值。确认可用后，从设置 {{var}} 的地方删除它。",
     submit: "添加密钥",
   },
 
