@@ -635,6 +635,13 @@ unnamed, the lead's live name, so renaming the orchestrator renames the
 group until someone names it. Founding colours skip red first (`blue`,
 `teal`, ... `red` last): a red caption on a fresh group reads as an error.
 
+The keys that step through tasks (⌥⌘↑/↓, ⌥↑/↓, ⇧⌘A) walk this drawn
+order, not the store's (`sidebarTaskOrder`). The two differ for exactly
+the task a group exists for: one an agent created, which draws in its
+creator's block but sorts to the bottom of the project as its newest
+task, so walking the store went from the creator to the row below the
+block and reached the new task last.
+
 Editing: right-click the caption for the swatch row, Rename group and
 Ungroup tasks (the project-folder menu body, `GroupActionsMenuItems`).
 A task row's menu has Move to group, the project row's submenu for tasks:
