@@ -2352,7 +2352,7 @@ export interface BrokerSuspicious {
 export interface BrokerEvents { used: BrokerUsed[]; blocked: BrokerBlocked[]; no_secret: BrokerNoSecret[]; suspicious: BrokerSuspicious[] }
 /** `roles`: distinct role ids the task's live brokered spawns run with,
  *  empty when none is live. */
-export interface BrokerCounts { blocked: number; suspicious: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[] }
+export interface BrokerCounts { blocked: number; suspicious: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[]; stale: boolean }
 /** A real-looking token typed into an agent's configured env. */
 export interface SecretExposure { agent_id: string; var_name: string; prefix: string }
 /** `all`: kept from uncaged agents too, not just caged ones. */

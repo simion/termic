@@ -53,6 +53,7 @@ export default {
   notLiveYet: "No running agent holds this role yet. It applies the next time the agent starts.",
   pendingRestart: "applies on restart",
   pendingBanner: "{{saved}} applies when the agent restarts. The running agent still uses {{running}}.",
+  staleBanner: "{{role}} changed since the agent started. Its secrets apply when the agent restarts.",
   saveTo: "Save allowances to:",
   savingTo: "Saving to",
   scopeTask: "This task",

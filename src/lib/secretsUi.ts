@@ -100,5 +100,5 @@ export function suspiciousKey(kind: string): string {
 
 export const sameCounts = (a: BrokerCounts | null, b: BrokerCounts) =>
   !!a && a.blocked === b.blocked && a.suspicious === b.suspicious && a.no_secret === b.no_secret
-  && a.used === b.used && a.paused === b.paused && a.live === b.live
+  && a.used === b.used && a.paused === b.paused && a.live === b.live && a.stale === b.stale
   && a.roles.length === b.roles.length && a.roles.every((r, i) => r === b.roles[i]);

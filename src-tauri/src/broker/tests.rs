@@ -112,6 +112,7 @@ fn deps(up: &Upstream, peer_ok: bool) -> Deps {
         peer_ok: Arc::new(move |_, _| peer_ok),
         read_secret: Arc::new(|_| Ok(Arc::new(Secret::new(REAL.into())))),
         live: Arc::new(|_, _| None),
+        profile: None,
     }
 }
 
@@ -692,4 +693,25 @@ fn drop_does_not_hang_when_the_socket_was_unlinked() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || { drop(h); let _ = tx.send(()); });
     rx.recv_timeout(std::time::Duration::from_secs(5)).expect("BrokerHandle drop hung after the socket was unlinked");
+}
+
+#[test]
+fn bindings_changed_flags_only_what_a_spawn_baked_in() {
+    let up = upstream("200 OK");
+    let started = reviewer();
+    let h = start_for("t-stale", &started, &up, true, None, false);
+    let sp = &h.spawn;
+    let ch = |roles: &[Role], secrets: &[SecretDef]| bindings_changed(sp, roles, secrets);
+
+    assert!(!ch(&[started.clone()], &[secret()]), "unchanged");
+    assert!(!ch(&[role(vec![])], &[secret()]), "rules are read live");
+    assert!(!ch(&[started.clone()], &[SecretDef { name: "renamed".into(), ..secret() }]), "a rename bakes nothing in");
+    assert!(!ch(&[], &[secret()]), "a deleted role already revokes live");
+
+    let other = SecretDef { id: "gh2".into(), account: "bob".into(), ..secret() };
+    let swapped = Role { secrets: vec!["gh2".into()], ..started.clone() };
+    assert!(ch(&[swapped], &[secret(), other.clone()]), "secret swapped");
+    let added = Role { secrets: vec!["gh".into(), "gh2".into()], ..started.clone() };
+    assert!(ch(&[added], &[secret(), other]), "secret added");
+    assert!(ch(&[started.clone()], &[SecretDef { hosts: vec!["api.github.com".into()], ..secret() }]), "hosts edited");
 }

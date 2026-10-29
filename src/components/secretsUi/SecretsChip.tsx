@@ -68,7 +68,10 @@ export function SecretsChip({ task, role: saved, counts }: { task: ChipTask; rol
   // agent. Saved resolution only stands in while nothing is live.
   const live = counts?.roles ?? [];
   const role = (live.length ? roles.find(r => r.id === live[0]) : undefined) ?? saved;
-  const pending = live.length > 0 && !live.includes(saved.id);
+  const switched = live.length > 0 && !live.includes(saved.id);
+  // the same role, edited since the agent started: secret bindings are set
+  // up at spawn, so a swapped or added secret only lands on restart.
+  const pending = switched || !!counts?.stale;
   const [open, setOpen] = useState(false);
   const [events, setEvents] = useState<BrokerEvents>(EMPTY_EVENTS);
   const [scope, setScope] = useState<"task" | "role">("role");
@@ -227,7 +230,7 @@ export function SecretsChip({ task, role: saved, counts }: { task: ChipTask; rol
           )}
           {pending && (
             <div data-testid="secrets-pending-banner" className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg-dim)]">
-              <span className="flex-1">{t("task.pendingBanner", { saved: saved.name, running: role.name })}</span>
+              <span className="flex-1">{switched ? t("task.pendingBanner", { saved: saved.name, running: role.name }) : t("task.staleBanner", { role: role.name })}</span>
               <button
                 type="button"
                 onClick={() => { setOpen(false); restartTaskAgents(task.id); }}

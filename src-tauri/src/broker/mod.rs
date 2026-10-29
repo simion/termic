@@ -97,7 +97,7 @@ impl Drop for BrokerHandle {
             drop(self.base_url.take());
         }
         let _ = std::fs::remove_dir_all(&self.dir);
-        live_add(&self.task_id, &self.spawn.role.id, false);
+        live_add(&self.task_id, &self.spawn, false);
     }
 }
 
@@ -203,6 +203,9 @@ pub(crate) struct Deps {
     pub(crate) peer_ok: PeerCheck,
     pub(crate) read_secret: SecretReader,
     pub(crate) live: LiveRules,
+    /// Where `stale` reads the role and secrets as they are now. None in
+    /// tests, which never report stale.
+    pub(crate) profile: Option<crate::profiles::ProfileId>,
 }
 
 type PeerCheck = Arc<dyn Fn(&str, u32) -> bool + Send + Sync>;
@@ -215,6 +218,7 @@ impl Deps {
             connector: mitm::system_connector(),
             peer_ok: Arc::new(crate::sandbox::pid_in_task),
             read_secret: Arc::new(keychain::read),
+            profile: Some(profile.clone()),
             live: Arc::new(move |task, role| live_rules(&profile, task, role)),
         }
     }
@@ -840,7 +844,7 @@ fn start_inner(args: StartArgs<'_>, deps: Deps) -> Result<BrokerHandle> {
         env.extend(env_proxy_env(&url, &bundle, &node_ca));
     }
 
-    live_add(args.task_id, &spawn.role.id, true);
+    live_add(args.task_id, &spawn, true);
     Ok(BrokerHandle {
         task_id: args.task_id.to_string(),
         env,
@@ -968,6 +972,9 @@ pub struct BrokerCounts {
     /// The roles those spawns run, distinct and sorted: what is enforced
     /// now, which can differ from the task's saved role until a restart.
     pub roles: Vec<String>,
+    /// A live spawn's role now binds different secrets than it started
+    /// with. Bindings are set up at spawn, so that edit needs a restart.
+    pub stale: bool,
 }
 
 /// Per-task events, same shape as proxy.rs's DENY_TRACKER. Keyed so a
@@ -1005,8 +1012,8 @@ impl TaskEvents {
 
 static EVENTS: OnceLock<Mutex<HashMap<String, TaskEvents>>> = OnceLock::new();
 static PAUSED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-/// task -> the role id of each live brokered spawn (one entry per spawn).
-static LIVE: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+/// task -> each live brokered spawn.
+static LIVE: OnceLock<Mutex<HashMap<String, Vec<Arc<Spawn>>>>> = OnceLock::new();
 
 const MAX_ROWS: usize = 200;
 /// Longest path / host / detail kept in an event row.
@@ -1085,16 +1092,40 @@ pub(crate) fn record_suspicious(task_id: &str, kind: &str, host: &str, detail: &
     })
 }
 
-/// A spawn of `task_id` running `role` started (`up`) or ended.
-fn live_add(task_id: &str, role: &str, up: bool) {
+/// A spawn of `task_id` started (`up`) or ended.
+fn live_add(task_id: &str, spawn: &Arc<Spawn>, up: bool) {
     let mut g = LIVE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    let roles = g.entry(task_id.to_string()).or_default();
+    let spawns = g.entry(task_id.to_string()).or_default();
     if up {
-        roles.push(role.to_string());
-    } else if let Some(i) = roles.iter().position(|r| r == role) {
-        roles.swap_remove(i);
+        spawns.push(spawn.clone());
+    } else if let Some(i) = spawns.iter().position(|s| Arc::ptr_eq(s, spawn)) {
+        spawns.swap_remove(i);
     }
-    if roles.is_empty() { g.remove(task_id); }
+    if spawns.is_empty() { g.remove(task_id); }
+}
+
+/// Whether `role` as saved now would bind other secrets than `sp` started
+/// with: one added, swapped, or edited in a way the spawn baked in (hosts,
+/// Keychain item, delivery). Rules are read live, so they never count. A
+/// role that is gone is not stale: it already revokes everything live.
+fn bindings_changed(sp: &Spawn, roles: &[Role], secrets: &[SecretDef]) -> bool {
+    let Some(role) = roles.iter().find(|r| r.id == sp.role.id) else { return false };
+    // the display name is not baked into anything.
+    let key = |defs: Vec<&SecretDef>| {
+        let mut v: Vec<SecretDef> = defs.into_iter().map(|s| SecretDef { name: String::new(), ..s.clone() }).collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    };
+    key(role_bindings(role, secrets).collect()) != key(sp.bindings.iter().map(|b| &b.secret).collect())
+}
+
+fn stale(spawns: &[Arc<Spawn>]) -> bool {
+    // ponytail: one settings parse per poll while a brokered agent is live
+    // (the chip polls every 2s, live_rules already parses per request).
+    // every spawn of a task shares its profile.
+    let Some(p) = spawns.iter().find_map(|sp| sp.deps.profile.as_ref()) else { return false };
+    let s = crate::load_settings_in(p);
+    spawns.iter().any(|sp| bindings_changed(sp, &s.roles, &s.secrets))
 }
 
 fn is_paused(task_id: &str) -> bool {
@@ -1123,12 +1154,14 @@ pub fn counts(task_id: &str) -> BrokerCounts {
         })
         .unwrap_or_default();
     c.paused = is_paused(task_id);
-    if let Some(roles) = LIVE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).get(task_id) {
-        c.live = roles.len() as u64;
-        c.roles = roles.clone();
-        c.roles.sort();
-        c.roles.dedup();
-    }
+    let spawns = LIVE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+        .get(task_id).cloned().unwrap_or_default();
+    c.live = spawns.len() as u64;
+    c.roles = spawns.iter().map(|s| s.role.id.clone()).collect();
+    c.roles.sort();
+    c.roles.dedup();
+    // outside the lock: it reads settings from disk.
+    c.stale = stale(&spawns);
     c
 }
 
@@ -1180,6 +1213,7 @@ pub(crate) fn test_handle(task_id: &str, proxy_port: Option<u16>) -> BrokerHandl
         peer_ok: Arc::new(|_, _| true),
         read_secret: Arc::new(|_| Err(SecretStatus::Missing)),
         live: Arc::new(|_, _| None),
+        profile: None,
     };
     let s = SecretDef { id: "gh".into(), name: "gh".into(), service: "gh:github.com".into(), account: "alice".into(),
         hosts: crate::secrets::Recipe::Github.default_hosts(), ..Default::default() };
