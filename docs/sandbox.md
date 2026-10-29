@@ -669,7 +669,10 @@ from disk, so edits apply to the next request; the spawn-time role is the
 fallback if the role was deleted). The binding (which secrets the agent
 holds placeholders for) is fixed at spawn, so a secret taken off the live
 role, or deleted, is refused 403 `secret-revoked` from the next request:
-its rule sets went with it, and judging it would allow. A deleted role (or
+its rule sets went with it, and judging it would allow. The other way
+round (a secret added or swapped onto the role, or a bound secret's hosts
+or Keychain item edited) only lands on restart, so `broker_counts`
+reports `stale` and the footer chip shows the restart banner. A deleted role (or
 settings that fail to parse) reads as a role with no secrets, so it
 revokes everything instead of falling back to the spawn-time rules. Task allows
 first, then the role's rule set for (secret, host), first match, then its

@@ -49,6 +49,7 @@ export default {
   notLiveYet: "尚无运行中的智能体持有此角色。它将在智能体下次启动时生效。",
   pendingRestart: "重启后生效",
   pendingBanner: "{{saved}} 将在智能体重启后生效。正在运行的智能体仍在使用 {{running}}。",
+  staleBanner: "{{role}} 在智能体启动后已更改。其密钥将在智能体重启后生效。",
   saveTo: "允许项保存到：",
   savingTo: "保存到",
   scopeTask: "此任务",

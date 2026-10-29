@@ -357,6 +357,26 @@ import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, waitFo
     await waitGone('[data-testid="secrets-pending-banner"]');
     await waitGone(`${chip} [data-testid="secrets-chip-pending"]`);
 
+    // swapping the secret on the role the agent RUNS is the same story with
+    // no switch: bindings are set up at spawn, so it reads as pending until
+    // a restart, and a swap back clears it.
+    const setReviewerSecret = (sid: string) => browser.execute(async (sid) => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      await t.ipc.settingsSave({ ...s, roles: s.roles.map((r: any) => r.id === "reviewer" ? { ...r, secrets: [sid] } : r) } as any);
+    }, sid);
+    await setReviewerSecret("gh-maintain");
+    await browser.waitUntil(() => counts().then(c => c.stale === true),
+      { timeout: 5_000, timeoutMsg: "the broker never reported the swapped secret as stale" });
+    await waitVisible(`${chip}[data-saved-role="reviewer"][data-role="reviewer"] [data-testid="secrets-chip-pending"]`);
+    await waitVisible('[data-testid="secrets-pending-banner"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="secrets-pending-banner"]')?.textContent ?? ""))
+      .toContain("Reviewer changed since the agent started");
+    await snap("secrets-popover-stale.png");
+    await setReviewerSecret("gh-review");
+    await waitGone('[data-testid="secrets-pending-banner"]');
+    await waitGone(`${chip} [data-testid="secrets-chip-pending"]`);
+
     await browser.keys("Escape");
     await waitGone('[data-testid="secrets-popover"]');
     await browser.execute((id, tab) => window.__termic!.useApp.getState().closeTab(id, tab), taskId!, shellTab);
