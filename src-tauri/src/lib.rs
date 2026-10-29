@@ -88,6 +88,7 @@ mod profiles;
 mod schedules;
 mod sudo_touchid;
 mod caffeinate;
+mod panic_log;
 #[cfg(test)]
 mod test_support;
 use sandbox::SandboxBundle;
@@ -26360,6 +26361,11 @@ fn focused_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 pub fn run() {
     if caffeinate::run_guard_if_requested() { return; }
     let _ = BOOT.set(Instant::now());
+    // Before anything that can panic: a GUI app has no stderr, so without
+    // this a panic that aborts the process leaves a crash report with no message.
+    if let Ok(dir) = global_dir() {
+        panic_log::install(dir.join("logs").join("panic.log"));
+    }
     // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. It's the FAST path on
     // AMD/Intel (X11 and Wayland) and MUST stay on there: disabling it drops
     // the whole webview onto a slow copy/software compositing path and makes
