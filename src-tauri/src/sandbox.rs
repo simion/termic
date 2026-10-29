@@ -2383,7 +2383,7 @@ pub fn wrap_command(
             crate::SandboxMode::EnforceFs => "enforce-fs",
         }
     ));
-    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage.".into());
+    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage. `gh` saying it is not logged in (`gh auth login`) = same cause: the cage hides ~/.config/gh, so the user is still logged in and logging in again will not help. `gh` gets credentials only from a Secrets role on the task (Settings > Secrets), so say that instead.".into());
     if let Some(proxy) = &bundle.proxy {
         let url = format!("http://127.0.0.1:{}", proxy.port);
         new_args.push(format!("http_proxy={url}"));
@@ -2798,6 +2798,8 @@ mod mode_env_tests {
             assert_eq!(cmd, "sandbox-exec");
             assert!(args.iter().any(|a| a == expect), "{mode:?}: {args:?}");
             assert!(args.iter().any(|a| a == "TERMIC_SANDBOX=1"));
+            // a caged gh reports "not logged in"; agents misread that without this hint
+            assert!(args.iter().any(|a| a.starts_with("TERMIC_SANDBOX_HELP=") && a.contains("gh auth login")), "{args:?}");
         }
     }
 
