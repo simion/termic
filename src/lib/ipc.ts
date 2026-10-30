@@ -157,6 +157,9 @@ export const taskOpenRepo = (
   sandbox?: {
     enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; docker?: boolean;
     blockKeychain?: boolean;
+    /** Secrets role (`Task.role`); Rust keeps it only when the Keychain
+     *  block applies. */
+    role?: string | null;
     /** `Task.docker_extra_mounts` override; unset falls back to
      *  `Settings.docker_default_extra_mounts` (only meaningful with `docker`). */
     dockerExtraMounts?: string[];
@@ -182,6 +185,7 @@ export const taskOpenRepo = (
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
     sandboxBlockKeychain: sandbox?.blockKeychain,
+    role: sandbox?.role,
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, agentArgs, yolo,
@@ -201,6 +205,7 @@ export const taskImportWorktree = (
   sandbox?: {
     enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; docker?: boolean;
     blockKeychain?: boolean;
+    role?: string | null;
     dockerExtraMounts?: string[];
   },
   /** Externally-started session the agent resumes on first spawn (GH #169). */
@@ -219,6 +224,7 @@ export const taskImportWorktree = (
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
     sandboxBlockKeychain: sandbox?.blockKeychain,
+    role: sandbox?.role,
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, yolo, agentArgs,
@@ -1592,3 +1598,56 @@ export const syncDismissNotices = () => invoke<void>("sync_dismiss_notices");
 export const syncDisconnect = () => invoke<void>("sync_disconnect");
 export const syncRestoreFolder = (folder: string, prefs: SyncPrefsSnapshot) =>
   invoke<SyncRunResult>("sync_restore_folder", { folder, prefs });
+
+// ───────────── Secrets + broker (lib.rs secrets_* / broker_* commands) ─────────────
+// Secrets and roles themselves are Settings fields (settingsSave); project and
+// agent defaults ride on projectUpdate / agentsSave. No command returns a
+// secret's value.
+export const secretProbe = (id: string) =>
+  invoke<import("./types").SecretStatus>("secret_probe", { id });
+/** Save a pasted value as the Termic-owned Keychain item for `id`, labelled
+ *  with the secret's `name`. Write-only. Resolves to the kind it wrote:
+ *  "protected" on a signed build, "generic" (login keychain) where the
+ *  protected keychain is unavailable. */
+export const secretStore = (id: string, name: string, value: string) =>
+  invoke<"protected" | "generic">("secret_store", { id, name, value });
+/** Whether this build can write the protected (data protection) keychain. */
+export const secretsProtectedAvailable = () =>
+  invoke<boolean>("secrets_protected_available");
+/** The add dialog's cleanup: deletes the Termic-owned item for `id` only
+ *  when no SAVED secret has that id (a no-op otherwise, by design). Not a
+ *  way to delete a saved secret's item: removing the secret does that. */
+export const secretForgetUnsaved = (id: string) =>
+  invoke<void>("secret_forget", { id });
+export const secretsExposed = () =>
+  invoke<import("./types").SecretExposure[]>("secrets_exposed");
+/** Env vars agent tabs do not inherit (Settings > Secrets). Names only. */
+export const envGuardList = () =>
+  invoke<import("./types").KeptOutVar[]>("env_guard_list");
+/** Replace the kept-out rules; resolves to the fresh list. */
+export const envGuardSave = (rules: import("./types").EnvGuardRule[]) =>
+  invoke<import("./types").KeptOutVar[]>("env_guard_save", { rules });
+/** One agent's pass-through names (read-modify-write on disk). */
+export const agentSetPassEnv = (agentId: string, names: string[]) =>
+  invoke<void>("agent_set_pass_env", { agentId, names });
+/** role: role id, "" for explicit No secrets, null to inherit. */
+export const taskSetRole = (id: string, role: string | null) =>
+  invoke<void>("task_set_role", { id, role });
+export const brokerCounts = (id: string) =>
+  invoke<import("./types").BrokerCounts>("broker_counts", { id });
+export const brokerEvents = (id: string) =>
+  invoke<import("./types").BrokerEvents>("broker_events", { id });
+export const brokerAllEvents = () =>
+  invoke<[string, import("./types").BrokerEvents][]>("broker_all_events");
+export const brokerSetPaused = (id: string, paused: boolean) =>
+  invoke<void>("broker_set_paused", { id, paused });
+/** Save an allow from the popover. scope "task" -> Task.secret_allows,
+ *  "role" -> `role`'s rule set for (secret, host), prepended. `role` is the
+ *  blocked entry's role (what the spawn ran), required for scope "role" and
+ *  ignored for "task". Rust also clears the matching blocked rows. */
+export const brokerAllow = (id: string, scope: "task" | "role", secret: string, host: string, rule: import("./types").Rule, role: string | null) =>
+  invoke<void>("broker_allow", { id, scope, secret, host, rule, role });
+/** gh's logged-in accounts per host, from its non-secret hosts.yml, for the
+ *  "Add GitHub secret" preset. Never a token. */
+export const secretsGhAccounts = () =>
+  invoke<{ host: string; user: string; active: boolean }[]>("secrets_gh_accounts");

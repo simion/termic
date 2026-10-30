@@ -107,6 +107,17 @@ socket2 = { version = "0.6", features = ["all"] }
 # in the tree via rustls (reqwest, the updater), so pinning it direct does
 # not change resolution, and it saves a TLS stack plus certificates.
 ring = "0.17"
+# Credential broker (broker/): strict HTTP/1.1 parsing on the gh socket and
+# the MITM path, and TLS both ways (rustls over sync streams, the platform
+# verifier upstream, the aws-lc-rs provider reqwest already uses). All
+# three are already in the tree via reqwest, so pinning them direct does
+# not change resolution.
+httparse = "1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+# Mints the per-spawn CA (name-constrained to the bound hosts) and its leaves
+# for the git MITM. New, and the only crate the broker adds.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Optional: only pulled in by the `e2e` feature (WebdriverIO harness).
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 spake2 = "0.4"
@@ -159,6 +170,10 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRe
 # WKWebViewConfiguration to disable Apple Intelligence Writing Tools / Campo (GH #355).
 # Already in the tree via tauri/wry.
 objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration"] }
+# Keychain reads for the credential broker (broker/keychain.rs). Already in
+# the tree via rustls-platform-verifier, so this adds no build time.
+# OSX_10_15 unlocks the data protection keychain (`use_protected_keychain`).
+security-framework = { version = "3", features = ["OSX_10_15"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", features = ["blocking-api"] }

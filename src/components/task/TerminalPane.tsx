@@ -7,6 +7,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { AlertTriangle, TerminalSquare, Copy, Check, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
+import { AllowScopePicker } from "@/components/ui/AllowScopePicker";
 import { useUI } from "@/store/ui";
 import { isArchiving } from "@/store/archivingTasks";
 import { EMPTY_TABS, isUserWatching, useApp } from "@/store/app";
@@ -58,7 +59,10 @@ import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptRe
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
-import { effectiveSandboxMode, isTaskCaged, keychainBlocked } from "@/lib/types";
+import { effectiveSandboxMode, isTaskCaged, keychainBlocked, type BrokerCounts } from "@/lib/types";
+import { SecretsChip, NoKeychainChip } from "@/components/secretsUi/SecretsChip";
+import { useSecrets, useTaskRole } from "@/store/secrets";
+import { sameCounts } from "@/lib/secretsUi";
 import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
@@ -4161,7 +4165,7 @@ const captureArmedRef = useRef(false);
 }
 
 export function FooterBar({ task, sandboxWarning }: {
-  task: { id: string; cli?: string; path?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[]; sandbox_block_keychain?: boolean; docker_sandbox_enabled?: boolean };
+  task: { id: string; project_id: string; name: string; branch: string; role?: string | null; cli?: string; path?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[]; sandbox_block_keychain?: boolean; docker_sandbox_enabled?: boolean };
   sandboxWarning: string | null;
 }) {
   const { t } = useTranslation("task");
@@ -4204,8 +4208,16 @@ export function FooterBar({ task, sandboxWarning }: {
   // Keychain, so a block saved without a restart reads as pending. `null`
   // until a poll answers: "blocked" is a claim, so it is never the default.
   const [kcOpen, setKcOpen] = useState<number | null>(null);
+  // Secrets role. Its counts ride the SAME tick, never a timer of their
+  // own, and only for the task on screen: the chip is all that reads them.
+  // A role needs Enforce / Enforce FS, so the tick always runs when it can.
+  const { role: secretsRole, configured: secretsConfigured } = useTaskRole(task);
+  const [brokerCounts, setBrokerCounts] = useState<BrokerCounts | null>(null);
+  const brokerPoll = useRef(false);
+  brokerPoll.current = !!secretsRole && isActiveTask;
   useEffect(() => {
     setKcOpen(null);
+    setBrokerCounts(null);
     if (mode === "off") { setTotal(0); return; }
     let cancelled = false;
     const fetchCounts = mode === "monitor" ? ipc.sandboxAccessCounts : ipc.sandboxDenyCounts;
@@ -4213,6 +4225,15 @@ export function FooterBar({ task, sandboxWarning }: {
       fetchCounts(task.id)
         .then(c => { if (!cancelled) { setTotal(c.network + c.path); setKcOpen(c.keychain_open); } })
         .catch(() => { if (!cancelled) setKcOpen(null); });
+      if (brokerPoll.current) {
+        ipc.brokerCounts(task.id)
+          .then(c => {
+            if (cancelled) return;
+            setBrokerCounts(prev => (sameCounts(prev, c) ? prev : c));
+            useSecrets.getState().setSuspicious(task.id, c.suspicious > 0);
+          })
+          .catch(() => {});
+      }
     };
     tick();
     const id = window.setInterval(tick, 2000);
@@ -4295,15 +4316,15 @@ export function FooterBar({ task, sandboxWarning }: {
           <span className="@max-[680px]:hidden">{t("footer.terminal")}</span>
         </button>
       )}
-      {/* Right group: the blocked-hosts chip on the LEFT, the sandbox status
-          as the rightmost item. Click the chip to see WHICH hosts got
-          blocked; it's a sibling of the edit button so its click doesn't
-          bubble to "open Edit dialog." Chip only shows when sandboxed + we've
-          actually seen denies. */}
+      {/* Right group: the sandbox status is the rightmost item, with its
+          "N blocked" count right after its label. Click the count to see
+          WHICH hosts got blocked; it's a sibling of the edit button so its
+          click doesn't bubble to "open Edit dialog." The count only shows
+          when sandboxed + we've actually seen denies. */}
       <div className="ml-auto flex items-center gap-1.5">
         {/* Subscription usage (GH #277). Leftmost of the right group, so the
-            two things that can APPEAR (usage, "N blocked") grow leftwards and
-            the sandbox status stays pinned as the rightmost item. It self-hides
+            things that can APPEAR (usage, the secrets chip) grow leftwards and
+            the sandbox status stays the rightmost item. It self-hides
             until an account has actually reported, so an agent with no usage
             feed costs this row no width at all. */}
         {/* GH #278. Immediately left of the usage chip and one unit with it:
@@ -4348,17 +4369,25 @@ export function FooterBar({ task, sandboxWarning }: {
             </span>
           )}
         </div>
-        {mode !== "off" && total > 0 && (
-          <DeniedHostsPopover taskId={task.id} cli={task.cli ?? "claude"} count={total} mode={mode} />
-        )}
-        <button
-          type="button"
-          onClick={() => useUI.getState().openSandbox(task.id)}
-          title={sandboxWarning ?? (task.sandbox_enabled ? t("footer.editSandboxTip") : t("footer.enableSandboxTip"))}
-          className="flex items-center gap-1.5 truncate hover:text-[var(--color-fg)]"
-        >
-          {sandboxNode}
-        </button>
+        {secretsRole
+          ? <SecretsChip task={task} role={secretsRole} counts={brokerCounts} />
+          : secretsConfigured && !task.docker_sandbox_enabled && <NoKeychainChip task={task} role={secretsConfigured} />}
+        {/* reads "<icon> Sandbox: mode · N blocked", the same shape as the
+            secrets chip beside it, so each count sits after the thing it
+            belongs to. Two buttons: the label edits, the count explains. */}
+        <div className="flex min-w-0 items-center">
+          <button
+            type="button"
+            onClick={() => useUI.getState().openSandbox(task.id)}
+            title={sandboxWarning ?? (task.sandbox_enabled ? t("footer.editSandboxTip") : t("footer.enableSandboxTip"))}
+            className="flex items-center gap-1.5 truncate hover:text-[var(--color-fg)]"
+          >
+            {sandboxNode}
+          </button>
+          {mode !== "off" && total > 0 && (
+            <DeniedHostsPopover taskId={task.id} cli={task.cli ?? "claude"} count={total} mode={mode} />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -4382,11 +4411,6 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
   const allowScope = usePrefs(s => s.allowScope);
   const setAllowScope = usePrefs(s => s.setAllowScope);
   const scopeChosen = allowScope !== null;
-  // Once a scope is set, the 3-row radio collapses to a single row to save
-  // space; click it to expand and change. Until one is chosen it stays open
-  // (the choice is mandatory before any Allow button works).
-  const [scopeEditing, setScopeEditing] = useState(false);
-  const scopeExpanded = !scopeChosen || scopeEditing;
   // Task dirs to optionally hide from the activity log — the agent
   // touches them constantly and they're always allowed anyway, so they're
   // pure noise. Default ON. Primitive selectors keep the snapshot stable.
@@ -4541,12 +4565,13 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
-          className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
+          data-testid="sandbox-denied-chip"
+          className="ml-1 shrink-0 rounded px-1 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
           title={monitor
             ? t(count === 1 ? "denied.accessesLoggedTipOne" : "denied.accessesLoggedTipOther", { count })
             : t(count === 1 ? "denied.blockedTipOne" : "denied.blockedTipOther", { count })}
         >
-          {monitor
+          · {monitor
             ? t(count === 1 ? "denied.accessesBadgeOne" : "denied.accessesBadgeOther", { count })
             : t("denied.blockedBadge", { count })}
         </button>
@@ -4564,67 +4589,20 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
           monitor ? "min-w-[580px] max-h-[520px]" : "min-w-[440px] max-h-[400px]",
         )}
       >
-          {/* Scope selector — where "Allow" writes. Mandatory on first
-              use (no preselection); the choice becomes the app-wide
-              default and is remembered. */}
-          <div className={cn(
-            "mb-2 rounded-md border px-2 py-1.5",
-            scopeChosen ? "border-[var(--color-border-soft)]" : "border-[var(--color-warn)]/60",
-          )}>
-            {scopeExpanded ? (<>
-              <div className={cn(
-                "mb-1 flex items-center gap-1.5 text-[11px]",
-                scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
-              )}>
-                <span>{scopeChosen
-                  ? t(fsOnly ? "denied.saveTo" : "denied.saveToDomains")
-                  : t(fsOnly ? "denied.pickTo" : "denied.pickToDomains")}</span>
-              </div>
-              {/* Radio list — one per line with a short explanation.
-                  Picking a scope collapses this back to the summary row. */}
-              <div className="flex flex-col gap-0.5">
-                {SCOPES.map(s => {
-                  const active = allowScope === s.id;
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => { setAllowScope(s.id); setScopeEditing(false); }}
-                      className={cn(
-                        "flex items-center gap-2 rounded px-1.5 py-1 text-left transition-colors",
-                        active ? "bg-[var(--color-accent)]/10" : "hover:bg-[var(--color-hover)]",
-                      )}
-                    >
-                      <span className={cn(
-                        "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
-                        active ? "border-[var(--color-accent)]" : "border-[var(--color-border)]",
-                      )}>
-                        {active && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />}
-                      </span>
-                      <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className={cn("shrink-0 text-[12px] font-medium", active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{s.label}</span>
-                        <span className="truncate text-[11px] text-[var(--color-fg-faint)]">{s.hint}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>) : (
-              /* Collapsed summary: one row with the chosen scope; click to change. */
-              <button
-                type="button"
-                onClick={() => setScopeEditing(true)}
-                className="flex w-full items-center gap-1.5 rounded text-left text-[11px] text-[var(--color-fg-faint)] transition-colors hover:text-[var(--color-fg-dim)]"
-                title={t("denied.changeScopeTip")}
-              >
-                <span>{t("denied.savingTo")}</span>
-                <span className="font-medium text-[var(--color-fg-dim)]">{SCOPES.find(s => s.id === allowScope)?.label}</span>
-                <span className="ml-auto inline-flex items-center gap-0.5 text-[var(--color-fg-faint)]">
-                  {t("denied.change")}
-                  <ChevronDown className="h-3 w-3" />
-                </span>
-              </button>
-            )}
+          {/* where "Allow" writes. Mandatory on first use (no preselection);
+              the choice becomes the app-wide default and is remembered. */}
+          <div className="mb-2">
+            <AllowScopePicker
+              options={SCOPES}
+              value={allowScope}
+              onChange={setAllowScope}
+              heading={scopeChosen
+                ? t(fsOnly ? "denied.saveTo" : "denied.saveToDomains")
+                : t(fsOnly ? "denied.pickTo" : "denied.pickToDomains")}
+              savingTo={t("denied.savingTo")}
+              change={t("denied.change")}
+              changeTip={t("denied.changeScopeTip")}
+            />
           </div>
           {monitor && (
             <MonitorActivity

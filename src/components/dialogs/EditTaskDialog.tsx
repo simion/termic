@@ -20,15 +20,17 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { defaultCliFirst, visibleCliIds, isTerminalCli } from "@/lib/agents";
-import { taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride, taskSetSandbox, taskSetDocker, taskUpdateMembers, sandboxAvailable, settingsLoad, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
+import { taskSetRole, taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride, taskSetSandbox, taskSetDocker, taskUpdateMembers, sandboxAvailable, settingsLoad, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
 import { readMemberModes, seedMemberMode, persistMemberMode } from "./memberModes";
 import { cn } from "@/lib/utils";
 import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Settings, type Task, type TaskMember } from "@/lib/types";
 import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
+import { RolePicker, roleCageNote, roleDisabledReason, useRoleDraft, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { memberSandboxUnion } from "@/lib/projectSandboxDefault";
 import { ListField } from "@/components/settings/Controls";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
+import { restartTaskAgents } from "@/lib/accountRestart";
 import { AlertTriangle, GitBranch, History, Link2, Loader2, Zap } from "lucide-react";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
@@ -267,9 +269,18 @@ export function EditTaskDialog() {
   // only for the enforcing modes, so changing the mode here always shows
   // whether the block will apply.
   const kcRow = !selDocker && (selMode === "enforce" || selMode === "enforce-fs");
+  // Secrets role: needs the block, which needs an enforcing mode.
+  const role = useRoleDraft(task, project, agents.find(a => a.id === cli) ?? null, kcRow, blockKc, setBlockKc, open ? taskId : null);
+  const roleDisabled = roleDisabledReason(t, { docker: selDocker, mode: selMode, seatbelt: osSandboxOk !== false });
+  const chooseSel = (next: SandboxSelection) => {
+    setSel(next);
+    const f = selectionToFields(next);
+    if (f.docker || (f.mode !== "enforce" && f.mode !== "enforce-fs")) role.clear();
+  };
   const sandboxDirty = !!task && (
     sel !== selNow ||
     (kcRow && blockKc !== !!task.sandbox_block_keychain) ||
+    role.dirty ||
     !arrEq(lines(sbRw), task.sandbox_rw_paths ?? []) ||
     !arrEq(lines(sbHosts), task.sandbox_allowed_hosts ?? []) ||
     !arrEq(lines(dockerMounts), task.docker_extra_mounts ?? [])
@@ -370,11 +381,14 @@ export function EditTaskDialog() {
             // Seatbelt→seatbelt only — a docker transition already killed
             // and auto-respawned the agents, so no restart is owed.
             useUI.getState().pushToast(t("editTask.sandboxSavedToast"), "success", {
-              action: { label: t("editTask.restartAgents"), onClick: () => useApp.getState().stopTask(task.id) },
+              action: { label: t("editTask.restartAgents"), onClick: () => { restartTaskAgents(task.id); } },
             });
           }
         }
       }
+      // role after the sandbox calls: Rust refuses a role until the task
+      // blocks the Keychain, which the calls above may only now have set.
+      if (role.dirty) await taskSetRole(task.id, role.store);
       if (removing.length > 0 || adding.length > 0) {
         const add: CreateMultiMember[] = adding.map(r => ({
           root_path: r.root_path,
@@ -798,7 +812,7 @@ export function EditTaskDialog() {
             <SandboxPicker
               onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
               value={sel}
-              onChange={setSel}
+              onChange={chooseSel}
               seatbeltUnavailable={osSandboxOk === false}
               dockerOffered={dockerOffered}
               compact
@@ -815,6 +829,19 @@ export function EditTaskDialog() {
               </div>
             )}
           </Field>
+
+          {role.roles.length > 0 && (
+            <RolePicker
+              roles={role.roles}
+              secrets={role.secrets}
+              value={role.value}
+              onChange={withRoleCage(selMode, chooseSel, role.onPick)}
+              def={role.def}
+              disabledReason={roleDisabled}
+              note={roleCageNote(t, { docker: selDocker, mode: selMode })}
+              compact
+            />
+          )}
 
           {yoloApplies && (
             <Field
@@ -902,7 +929,7 @@ export function EditTaskDialog() {
                 {t("editTask.networkUnrestricted")}
               </p>
             )}
-            {kcRow && <KeychainBlockField checked={blockKc} onChange={setBlockKc} />}
+            {kcRow && <KeychainBlockField checked={blockKc} onChange={role.onBlock} />}
           </div>
         )}
         </div>{/* end columns row */}

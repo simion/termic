@@ -307,10 +307,12 @@ default. Whether the profile blocks comes from one function,
 When set, `render_profile_with` emits `KEYCHAIN_MACH_DENY` and a
 read+write deny on `~/Library/Keychains`. The Mach list is every
 Keychain service `launchctl print gui/$UID` / `system` shows on macOS
-26: SecurityServer, every `com.apple.securityd*` endpoint (secd: the
-data-protection keychain, the system keychain, CKKS / SOS sync), the
+26 except SecurityServer: every `com.apple.securityd*` endpoint (secd:
+the data-protection keychain, the system keychain, CKKS / SOS sync), the
 keychain agents and sync helpers, and every `com.apple.ctkd*`
-(CryptoTokenKit, smart-card and token identities). The dir deny is
+(CryptoTokenKit, smart-card and token identities). SecurityServer stays
+reachable because Secure Transport needs it for every TLS handshake (see
+"SecurityServer is not denied" below). The dir deny is
 emitted for the literal path and, when it differs, its resolved form,
 mirroring the runtime allow loop; otherwise a symlinked home keeps its
 resolved allow. Both come after every file allow, the control plane's
@@ -356,8 +358,8 @@ as complete:
   return 200; gh with a fake token gets its 401 with no x509 error;
   claude `/login`, codex and gemini start inside the blocked task. The
   extra names (the rest of `securityd*`, `ctkd*`, the sync helpers) are
-  defence in depth. `keychain_block_cuts_off_securityd_in_the_cage`
-  repeats the dir and data-protection probes with a positive control;
+  defence in depth. `keychain_block_cuts_off_the_keychain_in_the_cage`
+  repeats the search-list, dir and data-protection probes with a positive control;
   like every live cage test it needs an uncaged shell. Service names
   move between macOS releases: re-enumerate when a new one ships.
 - the header still allows every other `mach-lookup`, launchd included,
@@ -388,8 +390,68 @@ as complete:
   claims an agent cannot see a Keychain secret has to close these
   first, or say "cannot read it directly".
 
-TLS does not need the Keychain services in any stack tried (Codex and
-sandbox-runtime keep `SecurityServer` "for TLS"; not needed here).
+**SecurityServer is not denied.** It was, until 2026-10-23, and that
+broke Secure Transport everywhere in a blocked cage: system curl with
+`CURL_SSL_BACKEND=secure-transport` (or its default; Apple's curl lists
+Secure Transport first) and Apple git against any host failed with
+"Couldn't understand the server certificate format". Go, node, python
+urllib and curl on LibreSSL were unaffected, which is why the table
+above showed 200s. Forcing OpenSSL is not an answer: it trusts
+`/etc/ssl/cert.pem` instead of Apple's trust store, so it misses
+distrust decisions such as the October 2026 emSign removal. Codex and
+sandbox-runtime keep `SecurityServer` "for TLS"; this is that case.
+
+The legacy login keychain is read by the client process, with securityd
+only doing the crypto, so the `~/Library/Keychains` dir deny is what
+keeps it out. Measured 2026-10-23 on macOS 26.5 with fake items, the
+block as shipped vs the block minus SecurityServer (both with the dir
+deny):
+
+| Probe | Block + SecurityServer deny | Block, SecurityServer reachable |
+|---|---|---|
+| `security find-generic-password -w` | not found | not found |
+| python ctypes `SecKeychainFindGenericPassword` | -50 | -25300 (not found) |
+| `git credential-osxkeychain get` | nothing | nothing |
+| `security list-keychains` | fails | System.keychain only |
+| curl, Secure Transport | fails | 200 |
+| `/usr/bin/git ls-remote`, Secure Transport | fails | works |
+
+The System keychain stays visible; its items need admin authorization,
+and the security agents that would ask for it are still denied.
+
+The dir deny only covers `~/Library/Keychains`. With SecurityServer
+reachable, an unlocked keychain kept anywhere else the cage can read
+(`security create-keychain <path>`) is decrypted for the agent:
+measured 2026-10-23, a fake item in a temp-dir keychain leaked with the
+dir deny alone. So the block also emits `KEYCHAIN_FILE_DENY`, a
+read+write deny on any `*.keychain` / `*.keychain-db`, extension in any
+case, outside `/System/Library/Keychains` and `/Library/Keychains` (roots
+and the System keychain). Not all of `/System`: `/System/Volumes/Data`
+is another path to every home dir.
+
+Measured 2026-10-23 against a real EnforceFs task profile, fake items in
+throwaway keychains, all three blocks (pre-2026-10-23 with the
+SecurityServer deny, the dir deny + lowercase rule, and the shipped one):
+
+| Probe | No block | Any of the three blocks |
+|---|---|---|
+| item in `~/Library/Keychains` | leaked | not found |
+| same, via `/System/Volumes/Data<path>` | | not found |
+| `ln` it out of `~/Library/Keychains` | linked | `ln` refused |
+| keychain in `$TMPDIR`, `.keychain-db` | leaked | not found |
+| keychain in `$TMPDIR`, `.KEYCHAIN-DB` | leaked | not found |
+| `security list-keychains` | login + System | login + System (old block: fails) |
+| curl / Apple git, Secure Transport | works | works (old block: fails) |
+
+Two things that table does not say. `list-keychains` still printing the
+login keychain is not a leak, items in it are not found, so it is no use
+as a test signal. And the lowercase-only rule also refused the
+`.KEYCHAIN-DB` read, for a reason not pinned down; the rule matches any
+case explicitly so the result does not rest on that. The limit: a
+keychain saved under a non-keychain name outside `~/Library/Keychains`
+is not caught, since the profile matches names and does not enumerate
+the user's keychains. `keychain_block_cuts_off_the_keychain_in_the_cage`
+repeats the inside, hard-link and both outside probes with controls.
 
 **Why the dir is not read-only for everyone.** With the services
 reachable and the dir read-only, `security add-generic-password` fails
@@ -418,6 +480,308 @@ posture once every built-in agent has a measured file fallback; until
 then it is opt-in. A stopgap that needs no termic change:
 `gh auth login --insecure-storage` and `credential.helper store` move
 those two credentials into files the cage already denies.
+
+## Env vars kept out of agents
+
+Termic launched from a shell (`make beta`, `open` from a terminal) inherits
+that shell's exports, and every agent it spawns inherits them in turn. A
+`GITHUB_TOKEN` exported for the user's own `gh` then sits in a caged agent's
+environment, where the cage cannot stop it leaving through an allow-listed
+host. A Dock launch gets launchd's bare env and has nothing to keep out. Code:
+`src-tauri/src/env_guard.rs`, applied in `pty_spawn`; UI: Settings > Secrets,
+"Kept out of agents", and the "Inherited from Termic" list on each agent's
+card.
+
+**What is on the list.** A name in `env_guard::BUILTIN` (credentials with no
+recognisable value shape: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, ...), a
+value `secrets::token_prefix` recognises under ANY name, or a name the user
+added (`Settings.env_guard`). The UI only ever sees names: `env_guard_list`
+reports why a var is listed, never any part of its value.
+
+**Who it is kept from.** Caged agents by default. A rule with `all` keeps a
+var from every agent tab, caged or not, including the login-shell delta an
+uncaged spawn otherwise gets; a name the user adds starts at `all`. "Caged"
+is the task's intended mode (`effective_sandbox_mode() != Off`), so a
+provision that failed and fell back to an unsandboxed spawn still keeps
+caged-only vars out.
+
+**What always wins.** `Agent.pass_env` (the user passed that var to that
+agent) and the agent's own login var (`env_guard::own_login`, by base agent
+id, so a clone inherits it: `ANTHROPIC_API_KEY` for claude, `OPENAI_API_KEY`
+for codex, ...). The per-spawn overlay (`Agent.env`, a task's `.env`) is
+applied after the inherited env, so a value typed there arrives regardless.
+The broker's own `env -u` in `wrap_command` runs after all of this, so a
+brokered spawn never gets the real GitHub token even when it is passed
+through.
+
+**Out of scope.** The AuxTerminal, scripts and shell tabs see everything:
+they are the user's, not the threat model. Docker needs nothing, since a
+container never gets host env (only `TERM` and the relocation vars).
+
+## Credential broker (Secrets roles)
+
+A task with a Secrets role lets its caged agent USE a GitHub login or
+an API key without ever holding it. Code: `src-tauri/src/broker/`, wired in
+`sandbox::provision` / `wrap_command`, MITM hook in `proxy.rs`.
+
+**When it applies.** Seatbelt Enforce or EnforceFs, the Keychain block
+on (`sandbox::blocks_keychain`), and a role resolved (task, then
+project default, then agent default; `lib.rs` `spawn_broker_setup`). An
+agent that can read the Keychain can read the real token itself, so
+without the block the spawn is exactly what it would be with no role.
+Only agent PTYs: the AuxTerminal and scripts never reach `provision`.
+Docker never gets a role (no proxy there yet). So picking a role in a
+task dialog (New Task, Edit, Sandbox, Schedule) moves an uncaged or
+Monitor draft to Enforcing (FS) and ticks the block, and the picker says
+so before the click; the Sandbox and Edit dialogs save the sandbox
+before the role, because `task_set_role` refuses a role until the task
+blocks the Keychain.
+
+**Per agent spawn**, owned by the `SandboxBundle` and dropped with it:
+
+- a placeholder per secret, `termic_ph_` + 32 hex chars;
+- a dir `/private/tmp/termic-<uid>/<12 hex>/` (0700; the base dir is
+  refused if it is a symlink or not ours) holding `gh/config.yml`,
+  `gh.sock` (0600) and, for git, `ca.pem`. Short because macOS caps a
+  socket path at 104 bytes. Drop unlinks the socket and removes the dir,
+  and a broker that fails to start removes its dir too;
+- every Enforce / EnforceFs profile denies the whole base
+  `/private/tmp/termic-<uid>` after the runtime allows (which open
+  `/private/tmp` read+write). All agents run as one uid, so without it one
+  task's agent could rewrite another's gh config (repoint its socket, set
+  a pager that runs inside it), swap its CA bundle, or unlink its socket;
+- a brokered profile then re-opens only its own dir, appended last: read on
+  the dir, rw only on `gh/` (gh's config dir), outbound to its socket. The
+  socket and CA files stay read-only, so the agent cannot unlink or swap
+  them. Those rules follow the control-plane deny (different path, so that
+  deny still holds);
+- env: `env -u` for `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+  `GITHUB_ENTERPRISE_TOKEN` (they would otherwise be inherited from
+  Termic's own env), then `GH_TOKEN=<placeholder>`, `GH_CONFIG_DIR`,
+  `GH_NO_UPDATE_NOTIFIER=1`, and env-only git config appended after any
+  inherited `GIT_CONFIG_COUNT`: `credential.helper=` (reset), a
+  `credential.https://github.com.helper` answering `x-access-token` +
+  the placeholder, and for `https://github.com/` `sslCAInfo`, `proxy`,
+  `proxyAuthMethod=basic` and `sslBackend=openssl`. The last was added
+  when the Keychain block still denied `com.apple.SecurityServer`, which
+  Secure Transport needs (see "SecurityServer is not denied"). It stays:
+  this leg only trusts the spawn CA, and the broker verifies the real
+  github.com with the platform verifier, so Apple's trust store still
+  decides. Scoped to the URL (verified: a bogus scoped value breaks only that
+  host), so every other host keeps the user's backend. A git whose curl
+  lacks OpenSSL fails here instead (Apple git verified; Homebrew's curl is
+  built on OpenSSL but was not tested);
+- for an API key: `env -u` its own env vars too (Termic's env may hold
+  the real `OPENAI_API_KEY`), then `<env>=<placeholder>`, its base-URL
+  var at the endpoint below, and the env-proxy vars below.
+
+**gh** reads `http_unix_socket` from its config and sends plaintext HTTP
+to the socket; the broker dials verified TLS upstream (rustls + the
+platform verifier, aws-lc-rs). The peer is checked with `LOCAL_PEERPID`
+against the task's registered root pids (`sandbox::pid_in_task`): its
+parent chain, or else its session id, since an orphan is reparented to
+launchd but keeps the session portable-pty `setsid()` started. Any other
+process gets 403 and a Suspicious `wrong_peer`. Hosts no secret
+covers are forwarded only if the task's allow-list matches (EnforceFs:
+any), with no substitution; a 401 from one is recorded as "no secret".
+
+**git** is pointed at the task's proxy with credentials only it has
+(`http.https://github.com/.proxy=http://termic:<marker>@127.0.0.1:<port>`,
+sent up front because of `proxyAuthMethod=basic`; verified with Apple
+git 2.50.1). A CONNECT to a bound host on 443 carrying them is
+terminated with a leaf from a per-spawn CA name-constrained to the
+bound hosts (key in memory only), ALPN http/1.1. Every other CONNECT,
+including other tools going to github.com, is the blind tunnel it
+always was, so nothing else ever sees the CA. In Enforce this is the
+existing proxy; EnforceFs has none, so a role with a MITM delivery
+(git, or an API key's env proxy) starts an allow-all one.
+
+**API keys** (recipe `api_key`) reach the broker two ways, and the
+real value goes into the one header the secret names (`authorization:
+Bearer`, `x-api-key`):
+
+- **Base URL.** `OPENAI_BASE_URL` (whatever var the secret names) is
+  `http://127.0.0.1:<port>/<marker>/<host><path>`, a per-spawn plaintext
+  loopback listener (`broker/baseurl.rs`) the profile allows outbound
+  to. The broker strips `/<marker>/<host>`, sets `Host`, and dials
+  verified TLS to that host; a host the secret is not bound to over
+  this route is a 403 `not-bound`, so the endpoint never forwards
+  elsewhere. No CA is involved, so this reaches Go and Rust clients
+  the MITM cannot. TCP has no `LOCAL_PEERPID`: the random marker is the
+  peer check, and a request without it is a 403 and a Suspicious
+  `wrong_peer`. See "Marker-only deliveries" below.
+- **Env proxy.** `HTTPS_PROXY` / `https_proxy` carry a SECOND set of
+  proxy credentials, distinct from git's, and `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` point at a bundle of the trust
+  the agent would have had (the first of those vars already set in
+  Termic's or the login shell's env, so a corporate CA survives, else
+  `/etc/ssl/cert.pem`) plus the spawn CA (those vars replace the trust
+  store), and `NODE_EXTRA_CA_CERTS` at any extra certs it already named
+  plus the CA (it adds). A CONNECT is
+  MITM'd only when its credentials match the delivery that binds the
+  host: git's never open an API key's host and HTTPS_PROXY's never open
+  github.com, because a Go tool on `HTTPS_PROXY` ignores the CA vars on
+  macOS and would fail TLS against a host it used to tunnel to.
+  `NO_PROXY` covers loopback, so base-URL requests go direct.
+
+**Marker-only deliveries.** The gh socket checks the peer pid; the other
+three cannot (TCP has no `LOCAL_PEERPID`): the base-URL endpoint checks
+its path marker, and git's proxy and the env proxy check their proxy
+credentials, each a random 128-bit value in the agent's env and argv
+only. EnforceFs allows all network, so any same-user process that learns
+a marker (another process's env) can spend that spawn's secret under its
+role. The same process can also crowd the base-URL endpoint out by holding
+its 64 connection slots (each freed after 15s idle); the gh socket checks
+the pid before a connection takes a slot, so it cannot be crowded this
+way. Mapping the TCP peer to a pid (libproc socket tables) and running
+`pid_in_task` is the upgrade, not built.
+
+**Substitution** happens in one spot per delivery and only when the
+broker dials a bound host itself: `Authorization: token|Bearer <ph>` on
+gh's socket, the Basic password (re-encoded) on git's MITM, never the
+other way round, and an API key's named header on its two deliveries
+(present exactly once, or nothing is swapped). Any other header keeps
+the placeholder. Deliveries,
+their spot, the env each recipe strips and which classifiers its rules
+get (GraphQL, git) are one table per recipe in `broker/recipe.rs`. A spawn's placeholder seen anywhere (headers, decoded Basic,
+the URL) on a host its secret is not bound to, or in a plain-HTTP proxy
+request, is refused 403 and recorded Suspicious
+`placeholder_unbound_host`. A CONNECT tunnel to an unbound host is
+opaque TLS, so attempts there are not seen (the placeholder is worthless
+there anyway).
+
+**Requests are parsed strictly**: HTTP/1.1, one per connection,
+`Connection: close` forced, origin-form only, exactly one Host, at most
+one Authorization, no CL+TE, no TE but exactly `chunked` (passed through
+untouched, framing checked so nothing after the body rides along), head
+capped at the proxy's 16 KiB. Paths GitHub might read differently than
+the rule glob are refused 400 before any rule runs: encoded `/` or `\`,
+a raw `\`, `.` / `..` segments (raw or `%2E`), `//`, a literal `*`,
+and `#` / `;` (a server that cuts the path at a fragment or a matrix
+parameter would run a route the rules did not see).
+Escapes of unreserved characters (`%6D` for `m`) are decoded first, and
+the decoded path is what both the rules and upstream see; a path whose
+decode would build a new escape (`%%36D`) is refused.
+Redirects are never followed: a 3xx goes back to the client.
+
+**Rules** are read per request (the task's own file + settings re-read
+from disk, so edits apply to the next request; the spawn-time role is the
+fallback if the role was deleted). The binding (which secrets the agent
+holds placeholders for) is fixed at spawn, so a secret taken off the live
+role, or deleted, is refused 403 `secret-revoked` from the next request:
+its rule sets went with it, and judging it would allow. The other way
+round (a secret added or swapped onto the role, or a bound secret's hosts
+or Keychain item edited) only lands on restart, so `broker_counts`
+reports `stale` and the footer chip shows the restart banner. A deleted role (or
+settings that fail to parse) reads as a role with no secrets, so it
+revokes everything instead of falling back to the spawn-time rules. Task allows
+first, then the role's rule set for (secret, host), first match, then its
+fallback. A (secret, host) with no rule set takes the role's default: deny
+when any of the role's sets falls back to deny (the role was written
+deny-by-default, like the Reviewer template, so a host added later never
+opens up), allow otherwise. A popover allow that creates a set gives it
+that default as its fallback. A mutation the classifier cannot name
+(unparsed, an unknown fragment, past the depth or visit caps, a non-POST
+`/graphql`, an empty mutation) is denied unless a rule allows `MUTATION *`,
+whatever the fallback and the task allows: it could hide the very mutation
+a named DENY is there for, and the popover refuses to allow one by name.
+Host matching ignores case, and
+`settings_save` refuses a host that is not a lowercase DNS name, a rule
+with no method, and an empty pattern on anything but `QUERY` (an empty
+pattern matches every path). A rule with `disabled` set stays in the list
+and is skipped. `TRACE`, `TRACK`, `CONNECT`, and a method spelled like a
+pseudo-verb (`QUERY`, `push`) are refused 405 on bound hosts: the first
+two echo the request, swapped header included, and the last would be
+judged as that pseudo-verb. A bound host with its own echo or debug route
+would still hand the value back; nothing in the broker can see that.
+Methods are HTTP verbs, `*`, `QUERY` / `MUTATION` for `POST /graphql`
+(body buffered up to 1 MiB, larger is 413; mutation names are the
+top-level fields, resolved through aliases and fragments; anything that
+does not parse, or holds no operation, counts as an unknown mutation, and
+so does one nested deeper than 64 selection sets or needing more than
+10,000 visits to expand its fragments, so a hostile body cannot overflow a
+thread's stack or fan out exponentially; comments end at `\r` as well as
+`\n`), or `fetch` / `push` for
+git (`git-upload-pack` / `git-receive-pack`, pattern globs
+`owner/repo`). Globs: `*` one segment, `**` any, case-insensitive
+(GitHub resolves owner and repo that way, so `ACME/prod` must hit a rule
+written for `acme/prod`); a trailing `/` is dropped before matching.
+Matching is asymmetric so a rule is always read the strict way. An
+ALLOW matches only what a request does (`QUERY`, `MUTATION <name>`,
+`fetch` / `push <repo>`, or a plain HTTP verb and path), and its `*`
+method means any HTTP verb, never a pseudo-verb: `ALLOW * /**` or
+`ALLOW POST /**` cannot let a mutation or a push through. A DENY also
+matches the HTTP request carrying a GraphQL or git operation, and its
+`*` matches everything: `DENY POST /graphql` still stops GraphQL. Any non-POST
+request to `/graphql` is an unknown mutation, a doubled `service=` on
+`info/refs` is a push if any value is receive-pack, and method overrides
+(`X-HTTP-Method-Override` and friends, `_method=`) are refused with a
+400, so upstream never runs a verb the rules did not judge. A deny is a 403 with
+`X-Termic-Secrets: blocked-by-role` and the body
+`blocked by Termic role "<name>" (<METHOD> <path>)`.
+
+**The Keychain read** (`security-framework`, explicit account, gh's
+`go-keyring-base64:` unwrapped) is cached 60s in memory. gh's items
+(`gh:*` generic passwords) are the exception: they are read through
+`/usr/bin/security find-generic-password -w`, because go-keyring writes
+them with that tool and so their ACL trusts it, not Termic. Read that
+way there is no "Termic wants to access" prompt on any build, and it
+opens nothing a same-user process could not already do. `security`
+exits with the low byte of the OSStatus (44 is not found). A locked,
+missing or denied item fails closed with a 503 naming the secret, and
+so does a value holding a control character (it would split the header
+it lands in). A pasted value (an API key, or a GitHub token for a secret
+that does not point at a gh login) is written by `secret_store` as a
+generic password `termic:<id>` / `termic`, the only items Termic owns,
+labelled `Termic: <secret name>` (the label is what the access prompt
+and Keychain Access show; the service stays the id, so a rename does not
+lose the item, and the label catches up on the next Replace value);
+removing the secret deletes it. The e2e build keeps those items in
+memory.
+
+**Where owned items live.** `secret_store` writes to the data protection
+keychain first (`kSecUseDataProtectionKeychain`), where access is by code
+signature and keychain access group, not a per-item ACL: Termic's signed
+build reads with no "wants to access" prompt, and no other same-user
+process can ask for the item at all (in the login keychain one can, and
+the user may click Allow). A build without the entitlement (`tauri dev`,
+contributor and ad-hoc builds) gets errSecMissingEntitlement (-34018) and
+falls back to the login keychain; that error and only that one, so a
+locked keychain is still reported instead of quietly moving stores. The
+secret saves the kind the write returned (`protected` or `generic`), and
+reads and deletes go to that store. After a write the other store's copy
+of `termic:<id>` is deleted, so a Replace on a build that changed stores
+leaves one item; removing a secret deletes from both.
+`secrets_protected_available` reports which case this build is in. Items
+are written without `kSecAttrSynchronizable`: an agent-scoped token has
+no business in iCloud. No custom keychain (`SecKeychainCreate`): that
+API is deprecated, and Apple's direction for new code is the data
+protection keychain (TN3137). The cage blocks that keychain too (-25291
+above); the broker reads outside the cage, so nothing it relies on
+changes. Signing for it needs a Developer ID provisioning profile.
+
+**Events** (per task, in memory, never a header value): Used (per secret
+and host, by method or fetch/push), Blocked, No secret, Suspicious
+(`placeholder_unbound_host`, `wrong_peer`, and `keychain_denied`: a
+brokered task's path deny under `~/Library/Keychains`). Used and Blocked
+rows name the role the spawn runs, which is the role a role-scoped Allow
+lands on (not the task's saved role, which a switch or a second agent can
+make differ), and `broker_counts.roles` lists the roles live spawns run.
+Each map keeps at most 200 rows (oldest evicted) and clips fields to 512
+bytes, since paths and hosts are agent-chosen. Cleared at `provision` only
+when none of the task's agents still holds a broker, so a second tab or a
+restart keeps a running agent's evidence; an Allow clears the rows it
+covers. Pause refuses every brokered request of the task until resumed,
+live.
+
+**Listeners** (gh socket, base URL) share one accept loop
+(`broker/accept.rs`): shutdown is a self-pipe, never a connection to the
+listener's own path, so an unlinked socket cannot hang the drop; an accept
+error backs off 50ms instead of spinning; at most 64 connections per
+listener, and the gh socket's pid check runs before a connection takes
+one. Client sockets time out after 15s idle while sending the request
+(60s on writes), upstream ones after 120s / 60s. The
+per-spawn CA and its leaves are valid from a day ago to 90 days out.
 
 ## Known gap: Monitor mode reaches the CLI control plane
 

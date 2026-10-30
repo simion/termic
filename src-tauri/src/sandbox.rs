@@ -80,6 +80,22 @@ pub struct SandboxBundle {
     /// saved (see `keychain_open_count`).
     #[allow(dead_code)]
     pub keychain: KeychainHold,
+    /// This spawn's credential broker (gh socket, placeholders, git MITM
+    /// state), when its role resolved. Dropping it stops the socket.
+    pub broker: Option<crate::broker::BrokerHandle>,
+    /// EnforceFs only: the proxy the MITM deliveries are pointed at, so they
+    /// have somewhere to run. git reaches it through its URL-scoped
+    /// `http.<url>.proxy`; an API key's env proxy sets `HTTPS_PROXY` for the
+    /// whole agent, with credentials only that delivery holds.
+    #[allow(dead_code)]
+    pub git_proxy: Option<proxy::ProxyHandle>,
+}
+
+/// The role a spawn runs with plus the secrets it can name, resolved in
+/// lib.rs (`spawn_broker_setup`).
+pub struct BrokerSetup {
+    pub role: crate::secrets::Role,
+    pub secrets: Vec<crate::secrets::SecretDef>,
 }
 
 /// Live agent PTYs per task that can reach the Keychain.
@@ -618,6 +634,19 @@ fn ppid_of(pid: u32) -> Option<u32> {
 #[cfg(not(target_os = "macos"))]
 fn ppid_of(_pid: u32) -> Option<u32> { None }
 
+/// Session id for a live PID. portable-pty `setsid()`s every PTY child, so
+/// an agent root's pid is its session id, and its descendants keep it after
+/// they are orphaned to launchd. It can't be forged into another task:
+/// `setsid` only ever starts a session numbered after the caller.
+#[cfg(unix)]
+fn sid_of(pid: u32) -> Option<u32> {
+    // SAFETY: getsid only reads the kernel's process table.
+    let s = unsafe { libc::getsid(pid as libc::pid_t) };
+    (s > 0).then_some(s as u32)
+}
+#[cfg(not(unix))]
+fn sid_of(_pid: u32) -> Option<u32> { None }
+
 /// Executable path for a PID, the popover's fallback when the log-parsed
 /// process name is empty or a bare version string. A path, not the
 /// kernel's short name: that is capped at 15 chars and, for claude's
@@ -633,17 +662,60 @@ fn exe_of(_pid: u32) -> Option<String> { None }
 
 /// Which task owns `pid`: walk up the PPID chain until a registered root
 /// (`roots`: root pid -> task id) turns up. Depth 20 guards against
-/// pathological pid loops (shouldn't happen on macOS).
-fn owner_of(mut pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> Option<u32>) -> Option<Arc<str>> {
+/// pathological pid loops (shouldn't happen on macOS). A process whose
+/// parent exited is reparented to launchd and breaks the walk, so the
+/// session id (see `sid_of`) is the fallback.
+fn owner_of(pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> Option<u32>, sid: impl Fn(u32) -> Option<u32>) -> Option<Arc<str>> {
+    let mut cur = pid;
     for _ in 0..20 {
-        if let Some(task) = roots.get(&pid) { return Some(task.clone()); }
-        if pid <= 1 { return None; }
-        match ppid(pid) {
-            Some(p) if p != pid => pid = p,
-            _ => return None,
+        if let Some(task) = roots.get(&cur) { return Some(task.clone()); }
+        if cur <= 1 { break; }
+        match ppid(cur) {
+            Some(p) if p != cur => cur = p,
+            _ => break,
         }
     }
-    None
+    sid(pid).and_then(|s| roots.get(&s).cloned())
+}
+
+/// Whether `pid` descends from one of `task_id`'s registered agent roots:
+/// the credential broker's peer check on its gh socket.
+pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
+    let roots: HashMap<u32, Arc<str>> = match sandbox_pids().lock() {
+        Ok(g) => match g.get(task_id) {
+            Some(ps) => {
+                let t: Arc<str> = task_id.into();
+                ps.iter().map(|p| (*p, t.clone())).collect()
+            }
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    owner_of(pid, &roots, ppid_of, sid_of).is_some()
+}
+
+/// `pid`'s executable and its parent chain, for logging a peer that
+/// failed `pid_in_task`. An orphan ends at `1 launchd`; a process that
+/// already exited reads `(exited)`.
+pub(crate) fn describe_pid(pid: u32) -> String {
+    pid_chain(pid, ppid_of, exe_of)
+}
+
+fn pid_chain(pid: u32, ppid: impl Fn(u32) -> Option<u32>, exe: impl Fn(u32) -> Option<String>) -> String {
+    let name = |p: u32| exe(p).map(|e| e.rsplit('/').next().unwrap_or(&e).to_string()).unwrap_or_else(|| "?".into());
+    let mut out = format!("pid {pid} {}", exe(pid).unwrap_or_else(|| "(exited)".into()));
+    let mut parents = Vec::new();
+    let mut cur = pid;
+    // same depth cap as owner_of, so the log shows exactly what the walk saw.
+    for _ in 0..20 {
+        match ppid(cur) {
+            Some(p) if p != cur => { parents.push(format!("{p} {}", name(p))); cur = p; }
+            _ => break,
+        }
+        if cur <= 1 { break; }
+    }
+    if !parents.is_empty() { out.push_str(&format!(", parents: {}", parents.join(" < "))); }
+    out
 }
 
 /// What the router learned about one pid.
@@ -672,12 +744,13 @@ struct Router {
     roots: HashMap<u32, Arc<str>>,
     cache: HashMap<u32, Proc>,
     ppid: fn(u32) -> Option<u32>,
+    sid: fn(u32) -> Option<u32>,
     exe: fn(u32) -> Option<String>,
 }
 
 impl Router {
-    fn new(ppid: fn(u32) -> Option<u32>, exe: fn(u32) -> Option<String>) -> Self {
-        Router { gen: u64::MAX, roots: HashMap::new(), cache: HashMap::new(), ppid, exe }
+    fn new(ppid: fn(u32) -> Option<u32>, sid: fn(u32) -> Option<u32>, exe: fn(u32) -> Option<String>) -> Self {
+        Router { gen: u64::MAX, roots: HashMap::new(), cache: HashMap::new(), ppid, sid, exe }
     }
 }
 
@@ -704,7 +777,7 @@ impl Resolve for Router {
             if live.is_none() || live == Some(hit.ppid) { return hit.owner.clone(); }
         }
         let parent = live?;
-        let owner = owner_of(parent, &self.roots, self.ppid);
+        let owner = owner_of(parent, &self.roots, self.ppid, self.sid);
         self.cache.insert(pid, Proc { ppid: parent, owner: owner.clone(), exe: Default::default() });
         owner
     }
@@ -888,7 +961,7 @@ fn spawn_stream(gen: u64) -> Option<Child> {
     let stream_pid = child.id();
     dlog(&format!("[sandbox] path watcher started (log stream {stream_pid}, gen {gen})"));
     std::thread::spawn(move || {
-        let mut router = Router::new(ppid_of, exe_of);
+        let mut router = Router::new(ppid_of, sid_of, exe_of);
         for line in BufReader::new(stdout).lines().flatten() {
             dispatch_line(&line, &mut router);
         }
@@ -958,6 +1031,16 @@ fn handle_deny_line(line: &str, pid: u32, ws_id: &str, ws_path: &str, r: &mut im
     // config (privacy concern) or just stat()-ing to check if it exists.
     dlog(&format!("[sandbox/{ws_id}] DENY {proc}({pid}) {op} {path}"));
     incr_path_deny(ws_id, &path, pid, &proc);
+    // a brokered agent reaching for the Keychain is trying to get around
+    // its placeholder: surface it as Suspicious too.
+    if crate::broker::is_brokered(ws_id) && under_keychain(&path) {
+        crate::broker::record_keychain_denied(ws_id, &path);
+    }
+}
+
+fn under_keychain(path: &str) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    keychain_dirs(&home.to_string_lossy()).iter().any(|d| under(path, d))
 }
 
 /// Pick the absolute path out of a Sandbox deny log line.
@@ -1616,6 +1699,20 @@ pub(crate) fn render_profile_with(
         for p in keychain_dirs(&home) {
             out.push_str(&format!("(deny file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(&p)));
         }
+        out.push_str(KEYCHAIN_FILE_DENY);
+    }
+
+    // Every brokered spawn's scratch dir sits under one base in /private/tmp,
+    // which the runtime allow above opens read+write, and every agent runs as
+    // the same uid. Without this, one task's agent could rewrite another's gh
+    // config (point its socket elsewhere, set a pager that runs inside it),
+    // swap its CA bundle, or unlink its socket. Emitted after every file
+    // allow; a brokered spawn re-opens only its own dir (`broker_profile_rules`).
+    if matches!(mode, SandboxMode::Enforce | SandboxMode::EnforceFs) {
+        if let Some(base) = crate::broker::spawn_base_dir() {
+            out.push_str("\n;; --- Broker scratch dirs: no task reaches another's ---\n");
+            out.push_str(&format!("(deny file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(&base.to_string_lossy())));
+        }
     }
 
     // Control-plane socket deny, emitted per-branch below: it must be the
@@ -2100,7 +2197,12 @@ pub fn host_patterns_for(task: &Task, agent_override: Option<&str>) -> Vec<Strin
 ///
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
-pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -> Result<SandboxBundle> {
+///
+/// `broker` is the spawn's resolved Secrets role. It only takes effect when
+/// this profile also blocks the Keychain (an agent that can read the
+/// Keychain can read the real token itself); otherwise the spawn is exactly
+/// what it would be without one.
+pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode, broker: Option<BrokerSetup>) -> Result<SandboxBundle> {
     let monitor = mode == SandboxMode::Monitor;
     // Hard-fail early on platforms where Seatbelt doesn't exist.
     // The frontend should be gating on sandbox_available(), but
@@ -2123,6 +2225,7 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     clear_path_access(&task.id);
     crate::proxy::clear_network_denies(&task.id);
     crate::proxy::clear_network_access(&task.id);
+    crate::broker::clear_events(&task.id);
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", task.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", task.id));
@@ -2144,6 +2247,8 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     // hostname allow-list, no http_proxy injection (wrap_command only
     // injects it when `proxy` is Some). The seatbelt profile allows all
     // network directly. Every other mode runs the filtering/logging proxy.
+    let broker = broker.filter(|_| blocks_keychain(task, mode));
+    let host_patterns = patterns.clone();
     let proxy = if mode == SandboxMode::EnforceFs {
         dlog(&format!("[sandbox/{}] network sandbox OFF (enforce-fs); no proxy", task.id));
         None
@@ -2161,13 +2266,78 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
-    let profile = render_profile(task, port, agent_override, mode)?;
+    // EnforceFs has no proxy, and a MITM delivery (git) needs one: start an
+    // allow-all one that only those tools are pointed at, and only when the
+    // role turns such a delivery on.
+    let git_proxy = match &broker {
+        Some(b) if mode == SandboxMode::EnforceFs && crate::broker::role_wants_mitm(&b.role, &b.secrets) => {
+            proxy::start(vec!["^.*$".into()], task.id.clone(), false)
+                .map_err(|e| dlog(&format!("[sandbox/{}] git proxy failed to start: {e}", task.id)))
+                .ok()
+        }
+        _ => None,
+    };
+    let broker = broker.and_then(|b| start_broker(task, mode, &b, host_patterns, proxy.as_ref().or(git_proxy.as_ref())));
+
+    let mut profile = render_profile(task, port, agent_override, mode)?;
+    if let Some(b) = &broker { profile.push_str(&broker_profile_rules(b)); }
     fs::write(&profile_path, &profile)
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", task.id, profile_path.display()));
 
     let keychain = KeychainHold::new(&task.id, blocks_keychain(task, mode));
-    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode, keychain })
+    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode, keychain, broker, git_proxy })
+}
+
+/// Start the spawn's broker and hook it into the proxy git uses. A failure
+/// costs the agent its secrets, never the spawn: it gets no placeholder, so
+/// nothing is exposed.
+fn start_broker(task: &Task, mode: SandboxMode, b: &BrokerSetup, host_patterns: Vec<String>, proxy: Option<&proxy::ProxyHandle>) -> Option<crate::broker::BrokerHandle> {
+    let started = crate::broker::new_spawn_dir().and_then(|dir| crate::broker::start(crate::broker::StartArgs {
+        task_id: &task.id,
+        role: &b.role,
+        secrets: &b.secrets,
+        task_allows: &task.secret_allows,
+        host_patterns: if mode == SandboxMode::EnforceFs { Vec::new() } else { host_patterns },
+        allow_all_hosts: mode == SandboxMode::EnforceFs,
+        proxy_port: proxy.map(|p| p.port),
+        dir,
+    }, task.profile.clone()));
+    match started {
+        Ok(h) => {
+            if let Some(p) = proxy { p.attach_broker(h.mitm_ctx()); }
+            dlog(&format!("[sandbox/{}] broker up: role {} socket={:?} base_url_port={:?}", task.id, b.role.name, h.socket_path, h.base_url_port));
+            Some(h)
+        }
+        Err(e) => {
+            dlog(&format!("[sandbox/{}] broker failed to start, no secrets for this spawn: {e}", task.id));
+            None
+        }
+    }
+}
+
+/// Seatbelt rules for a brokered spawn, appended after the rest of the
+/// profile (so after the base-dir deny): read on its scratch dir (CA pem,
+/// bundle, the socket's dir), rw only on gh's config dir, outbound to its gh
+/// socket and to its base-URL endpoint's loopback port. The socket and CA
+/// files stay read-only, so the agent cannot unlink or swap them. None of
+/// these is the control-plane socket, so the control plane's final deny
+/// still holds.
+fn broker_profile_rules(b: &crate::broker::BrokerHandle) -> String {
+    let mut out = String::from("\n;; --- Credential broker: this spawn's scratch dir, gh socket, base-URL port ---\n");
+    for p in &b.ro_paths {
+        out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+    for p in &b.rw_paths {
+        out.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+    if let Some(sock) = &b.socket_path {
+        out.push_str(&format!("(allow network-outbound (remote unix-socket (path-literal \"{}\")))\n", sbpl_escape(&sock.to_string_lossy())));
+    }
+    if let Some(port) = b.base_url_port {
+        out.push_str(&format!("(allow network-outbound (remote ip \"localhost:{port}\"))\n"));
+    }
+    out
 }
 
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
@@ -2183,6 +2353,14 @@ pub fn wrap_command(
     new_args.push("-f".into());
     new_args.push(bundle.profile_path.to_string_lossy().into_owned());
     new_args.push("env".into());
+    // a brokered spawn must not inherit a real token from Termic's own env
+    // (`env -u` has to come before the assignments).
+    if let Some(b) = &bundle.broker {
+        for k in &b.strip_env {
+            new_args.push("-u".into());
+            new_args.push(k.clone());
+        }
+    }
     // Self-identifying env so agents (and tools they spawn) can map
     // EPERM filesystem errors and 403 X-Termic-Sandbox responses back
     // to "I'm in a Termic cage" instead of guessing macOS TCC. Most
@@ -2205,7 +2383,7 @@ pub fn wrap_command(
             crate::SandboxMode::EnforceFs => "enforce-fs",
         }
     ));
-    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage.".into());
+    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage. `gh` saying it is not logged in (`gh auth login`) = same cause: the cage hides ~/.config/gh, so the user is still logged in and logging in again will not help. `gh` gets credentials only from a Secrets role on the task (Settings > Secrets), so say that instead.".into());
     if let Some(proxy) = &bundle.proxy {
         let url = format!("http://127.0.0.1:{}", proxy.port);
         new_args.push(format!("http_proxy={url}"));
@@ -2221,6 +2399,9 @@ pub fn wrap_command(
         // and is the norm, we can re-add it; until then routing of
         // node-internal fetch() traffic is the agent CLI's problem
         // (they typically use the http_proxy env above via undici).
+    }
+    if let Some(b) = &bundle.broker {
+        new_args.extend(b.env.iter().map(|(k, v)| format!("{k}={v}")));
     }
     new_args.push(original_cmd.into());
     new_args.extend(original_args.iter().cloned());
@@ -2316,17 +2497,23 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 "#;
 
 /// The Keychain services a blocked task cannot reach, from
-/// `launchctl print gui/$UID` / `system` on macOS 26: the legacy file
-/// keychain (SecurityServer), every secd endpoint (`com.apple.securityd*`:
-/// the data-protection keychain on `.xpc`, the system keychain, CKKS / SOS
-/// sync), the keychain agents and sync helpers, and CryptoTokenKit
-/// (`com.apple.ctkd*`), which serves smart-card and token identities as
-/// keychain items. Keychain prompts stop because SecurityServer is
-/// unreachable. authd stays reachable, so this does not stop other
-/// password prompts. TLS trust evaluation goes through trustd and is
-/// unaffected.
+/// `launchctl print gui/$UID` / `system` on macOS 26: every secd endpoint
+/// (`com.apple.securityd*`: the data-protection keychain on `.xpc`, the
+/// system keychain, CKKS / SOS sync), the keychain agents and sync helpers,
+/// and CryptoTokenKit (`com.apple.ctkd*`), which serves smart-card and
+/// token identities as keychain items. Keychain prompts stop because the
+/// security agents are unreachable. authd stays reachable, so this does not
+/// stop other password prompts.
+///
+/// SecurityServer is deliberately NOT here. Secure Transport needs it to
+/// parse any server cert, so denying it broke system curl and Apple git
+/// against every host ("Couldn't understand the server certificate
+/// format"). The legacy login keychain is read by the client process, so
+/// the `~/Library/Keychains` dir deny is what keeps it out: with
+/// SecurityServer reachable and the dir denied, the login keychain drops
+/// off the search list and `security`, ctypes and git's helper all find
+/// nothing (measured, see docs/sandbox.md).
 const KEYCHAIN_MACH_DENY: &str = r#"(deny mach-lookup
-  (global-name "com.apple.SecurityServer")
   (global-name-prefix "com.apple.securityd")
   (global-name-prefix "com.apple.security.agent")
   (global-name "com.apple.security.keychain")
@@ -2336,6 +2523,27 @@ const KEYCHAIN_MACH_DENY: &str = r#"(deny mach-lookup
   (global-name "com.apple.security.kcsharing")
   (global-name "com.apple.security.cloudkeychainproxy")
   (global-name-prefix "com.apple.ctkd"))
+"#;
+
+/// Every keychain file outside the system's own, wherever it lives. With
+/// SecurityServer reachable, an unlocked keychain the cage can read (one
+/// made with `security create-keychain <path>`, kept outside
+/// `~/Library/Keychains`) would be decrypted for the agent; measured
+/// leaking without this rule and not with it.
+///
+/// The extension matches in any case (APFS is case-insensitive, so
+/// `x.KEYCHAIN-DB` is as real as `x.keychain-db`). Only the two dirs that
+/// hold the roots and the System keychain are exempt, not all of `/System`,
+/// whose `/System/Volumes/Data` is another path to every home dir. A
+/// keychain saved under a non-keychain name is not caught here: name
+/// matching is all a profile rendered without enumerating the user's
+/// keychains can do. Hard links out of `~/Library/Keychains` need no rule
+/// of their own: the dir deny already refuses `ln` (measured).
+const KEYCHAIN_FILE_DENY: &str = r#"(deny file-read* file-write*
+  (require-all
+    (regex #"\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$")
+    (require-not (subpath "/System/Library/Keychains"))
+    (require-not (subpath "/Library/Keychains"))))
 "#;
 
 /// Whether this profile cuts off the Keychain. The renderer emits the block
@@ -2571,6 +2779,8 @@ mod mode_env_tests {
             path_watcher: None,
             mode,
             keychain: KeychainHold { task_id: None },
+            broker: None,
+            git_proxy: None,
         }
     }
 
@@ -2588,7 +2798,47 @@ mod mode_env_tests {
             assert_eq!(cmd, "sandbox-exec");
             assert!(args.iter().any(|a| a == expect), "{mode:?}: {args:?}");
             assert!(args.iter().any(|a| a == "TERMIC_SANDBOX=1"));
+            // a caged gh reports "not logged in"; agents misread that without this hint
+            assert!(args.iter().any(|a| a.starts_with("TERMIC_SANDBOX_HELP=") && a.contains("gh auth login")), "{args:?}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn brokered_spawn_strips_real_tokens_and_gets_placeholders() {
+        let mut b = bundle(crate::SandboxMode::Enforce);
+        let (_, plain) = wrap_command(&b, "claude", &[]);
+        assert!(!plain.iter().any(|a| a == "-u" || a.starts_with("GH_TOKEN=")), "{plain:?}");
+
+        b.broker = Some(crate::broker::test_handle("t-wrap", Some(1234)));
+        let (_, args) = wrap_command(&b, "claude", &["--foo".into()]);
+        let env_at = args.iter().position(|a| a == "env").unwrap();
+        // `env -u` options before any assignment
+        assert_eq!(&args[env_at + 1..env_at + 9], &["-u", "GH_TOKEN", "-u", "GITHUB_TOKEN", "-u", "GH_ENTERPRISE_TOKEN", "-u", "GITHUB_ENTERPRISE_TOKEN"]);
+        let ph = args.iter().find_map(|a| a.strip_prefix("GH_TOKEN=")).unwrap();
+        assert!(ph.starts_with("termic_ph_"));
+        assert!(args.iter().any(|a| a.starts_with("GIT_CONFIG_COUNT=")));
+        assert_eq!(&args[args.len() - 2..], &["claude", "--foo"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn profile_allows_the_socket_only_when_brokered() {
+        let h = crate::broker::test_handle("t-prof", None);
+        let rules = broker_profile_rules(&h);
+        let sock = h.socket_path.as_ref().unwrap().to_string_lossy().into_owned();
+        assert!(rules.contains(&format!("(allow network-outbound (remote unix-socket (path-literal \"{sock}\")))")), "{rules}");
+        assert!(rules.contains(&format!("(allow file-read* file-write* (subpath \"{}\"))", h.rw_paths[0])), "{rules}");
+        // the rendered profile itself never mentions the broker: provision
+        // appends these rules only when a broker started.
+        let task = crate::Task {
+            id: "t-prof".into(),
+            path: std::env::temp_dir().to_string_lossy().into_owned(),
+            sandbox_block_keychain: true,
+            ..Default::default()
+        };
+        let p = render_profile_with(&task, 8080, "claude", &[], crate::SandboxMode::Enforce, &ControlPlanePaths { data_dir: None, socket: None }).unwrap();
+        assert!(!p.contains("Credential broker") && !p.contains(&sock));
     }
 }
 
@@ -3556,6 +3806,37 @@ mod tests {
 
     // ─── Keychain block ──────────────────────────────────────────────────
 
+    #[test]
+    #[cfg(unix)]
+    fn a_spawn_dir_is_read_only_to_its_agent_and_hidden_from_others() {
+        if !cage_available() { return; }
+        let mine = crate::broker::test_handle("t-cage-a", None);
+        let other = crate::broker::test_handle("t-cage-b", None);
+        let (my_dir, other_dir) = (mine.ro_paths[0].clone(), other.ro_paths[0].clone());
+        let base_deny = format!("(deny file-read* file-write* (subpath \"{}\"))", crate::broker::spawn_base_dir().unwrap().display());
+        let mut profile = keychain_profile(SandboxMode::EnforceFs, true);
+        assert!(profile.contains(&base_deny), "{profile}");
+        profile.push_str(&broker_profile_rules(&mine));
+        let run = |profile: &str, args: &[&str]| {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), profile).unwrap();
+            Command::new("/usr/bin/sandbox-exec").arg("-f").arg(f.path()).args(args).output().unwrap().status.success()
+        };
+        let cfg = |d: &str| format!("{d}/gh/config.yml");
+        let sock = |d: &str| format!("{d}/gh.sock");
+        // its own dir: readable, gh's config dir writable, the socket not removable.
+        assert!(run(&profile, &["/bin/cat", &cfg(&my_dir)]));
+        assert!(run(&profile, &["/usr/bin/touch", &format!("{my_dir}/gh/state.yml")]));
+        assert!(!run(&profile, &["/bin/rm", &sock(&my_dir)]));
+        assert!(std::path::Path::new(&sock(&my_dir)).exists());
+        // another spawn's dir: neither readable nor writable.
+        assert!(!run(&profile, &["/bin/cat", &cfg(&other_dir)]));
+        assert!(!run(&profile, &["/bin/rm", &sock(&other_dir)]));
+        // control: without the base deny the other dir is reachable, so the
+        // deny is what stops it.
+        assert!(run(&profile.replace(&base_deny, ""), &["/bin/cat", &cfg(&other_dir)]));
+    }
+
     fn keychain_profile(mode: SandboxMode, block: bool) -> String {
         keychain_profile_with(mode, block, Vec::new())
     }
@@ -3579,48 +3860,88 @@ mod tests {
         let deny = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))", sbpl_escape(&home));
         for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
             let off = keychain_profile(mode, false);
-            assert!(!off.contains("com.apple.SecurityServer"), "{mode:?}: no deny unless the task asks");
+            assert!(!off.contains(KEYCHAIN_MACH_DENY), "{mode:?}: no deny unless the task asks");
             assert!(!off.contains(&deny), "{mode:?}");
 
             let on = keychain_profile(mode, true);
             assert!(on.contains(KEYCHAIN_MACH_DENY), "{mode:?}: mach deny missing");
+            assert!(on.contains(KEYCHAIN_FILE_DENY), "{mode:?}: keychain file deny missing");
+            assert!(!off.contains(KEYCHAIN_FILE_DENY), "{mode:?}");
             // last match wins, so the deny is inert unless it follows the
             // runtime allow for the same dir.
             let (a, d) = (on.find(&allow).expect("runtime allow"), on.find(&deny).expect("dir deny"));
             assert!(d > a, "{mode:?}: dir deny must come after the runtime allow");
         }
         // Monitor never blocks.
-        assert!(!keychain_profile(SandboxMode::Monitor, true).contains("com.apple.SecurityServer"));
+        assert!(!keychain_profile(SandboxMode::Monitor, true).contains(KEYCHAIN_MACH_DENY));
+        // Secure Transport needs SecurityServer for every TLS handshake.
+        assert!(!KEYCHAIN_MACH_DENY.contains("com.apple.SecurityServer"), "denying SecurityServer breaks system curl and Apple git");
+        // `/System/Volumes/Data` reaches every home dir, so all of `/System`
+        // must never be exempt from the keychain file deny.
+        assert!(!KEYCHAIN_FILE_DENY.contains("(subpath \"/System\")"), "exempt only the system keychain dirs");
     }
 
     #[test]
-    fn keychain_block_cuts_off_securityd_in_the_cage() {
+    fn keychain_block_cuts_off_the_keychain_in_the_cage() {
         if !cage_available() || !Path::new("/usr/bin/security").exists() {
             return;
         }
-        // `security list-keychains` is a harmless securityd round trip: no
-        // item is read, so this never touches a real secret. (A lookup of a
-        // missing item is no good here: it exits 44 open AND blocked.)
-        let run = |profile: String| {
+        // every probe reads a FAKE item from a throwaway keychain, never a
+        // real secret. `security list-keychains` is no signal here: the
+        // blocked cage still prints the login keychain's path, yet reads
+        // from it find nothing (measured 2026-10-23, docs/sandbox.md).
+        // create-keychain also puts each one on the user's search list, so
+        // the guard takes it back off, panics included.
+        struct Kc(PathBuf);
+        impl Drop for Kc {
+            fn drop(&mut self) { let _ = Command::new("/usr/bin/security").arg("delete-keychain").arg(&self.0).output(); }
+        }
+        fn make(path: PathBuf) -> Option<Kc> {
+            let kc = Kc(path);
+            let sec = |args: &[&str]| Command::new("/usr/bin/security").args(args).arg(&kc.0).output().is_ok_and(|o| o.status.success());
+            (sec(&["create-keychain", "-p", "pw"]) && sec(&["unlock-keychain", "-p", "pw"])
+                && sec(&["add-generic-password", "-a", "termic-probe", "-s", "termic-probe", "-w", "fake-s3cret"])).then_some(kc)
+        }
+        let caged = |profile: &str, args: &[&std::ffi::OsStr]| {
             let f = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(f.path(), profile).unwrap();
-            Command::new("/usr/bin/sandbox-exec")
-                .arg("-f").arg(f.path())
-                .args(["/usr/bin/security", "list-keychains"])
-                .output()
-                .expect("spawn sandbox-exec security")
+            Command::new("/usr/bin/sandbox-exec").arg("-f").arg(f.path()).args(args)
+                .output().expect("spawn sandbox-exec")
+        };
+        let read = |profile: &str, kc: &Path| {
+            let out = caged(profile, &["/usr/bin/security".as_ref(), "find-generic-password".as_ref(),
+                "-s".as_ref(), "termic-probe".as_ref(), "-w".as_ref(), kc.as_os_str()]);
+            String::from_utf8_lossy(&out.stdout).contains("fake-s3cret")
         };
         let blocked = keychain_profile(SandboxMode::EnforceFs, true);
-        // positive control: the unblocked cage reaches securityd.
-        let open = run(keychain_profile(SandboxMode::EnforceFs, false));
-        assert!(open.status.success(), "unblocked cage should reach securityd; stderr={}",
-                String::from_utf8_lossy(&open.stderr));
-        // the dir deny alone still reaches it, so the Mach deny is what
-        // cuts it off below, not the dir deny riding along.
-        let dir_only = run(blocked.replace(KEYCHAIN_MACH_DENY, ""));
-        assert!(dir_only.status.success(), "dir deny alone should still reach securityd; stderr={}",
-                String::from_utf8_lossy(&dir_only.stderr));
-        assert!(!run(blocked.clone()).status.success(), "blocked cage must not reach securityd");
+        let home = dirs::home_dir().unwrap();
+        let dir_deny = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))",
+                               sbpl_escape(&home.to_string_lossy()));
+        let tmp = tempfile::tempdir().unwrap();
+
+        // in ~/Library/Keychains, beside the login keychain. SecurityServer
+        // is reachable in the block (Secure Transport needs it), so the
+        // file denies are all that keep this out: the control proves it.
+        let inside = home.join(format!("Library/Keychains/termic-probe-{}.keychain-db", std::process::id()));
+        if let Some(kc) = make(inside) {
+            let mach_only = blocked.replace(&dir_deny, "").replace(KEYCHAIN_FILE_DENY, "");
+            assert!(read(&mach_only, &kc.0), "control: without the file denies the cage should read it");
+            assert!(!read(&blocked, &kc.0), "blocked cage must not read a keychain in ~/Library/Keychains");
+            // a hard link out under a non-keychain name would dodge both
+            // denies, so the link itself has to be refused.
+            let link = tmp.path().join("not-a-keychain.db");
+            let ln = caged(&blocked, &["/bin/ln".as_ref(), kc.0.as_os_str(), link.as_os_str()]);
+            assert!(!ln.status.success() && !link.exists(), "blocked cage must not hard-link a keychain out");
+        }
+
+        // outside ~/Library/Keychains, in a dir the cage can read (TMPDIR):
+        // only KEYCHAIN_FILE_DENY keeps these out, in either case.
+        for name in ["probe.keychain-db", "probe2.KEYCHAIN-DB"] {
+            if let Some(kc) = make(tmp.path().join(name)) {
+                assert!(read(&blocked.replace(KEYCHAIN_FILE_DENY, ""), &kc.0), "control: without the rule the cage should read {name}");
+                assert!(!read(&blocked, &kc.0), "blocked cage must not read {name} outside ~/Library/Keychains");
+            }
+        }
 
         // the dir deny on its own: listing the keychain dir works open and
         // fails blocked.
@@ -3690,6 +4011,10 @@ print(sec.SecItemCopyMatching(d, C.byref(C.c_void_p())))
             let deny = p.rfind("(deny file-read* file-write* (subpath ").expect("dir deny");
             let last_allow = p.rfind("(allow file-").expect("file allows");
             assert!(deny > last_allow, "{mode:?}: a file allow follows the keychain deny");
+            // the any-path keychain file deny too, or a user allow on a dir
+            // holding an unlocked keychain would hand it to the agent.
+            let file_deny = p.rfind(KEYCHAIN_FILE_DENY).expect("keychain file deny");
+            assert!(file_deny > last_allow, "{mode:?}: a file allow follows the keychain file deny");
         }
     }
 
@@ -3768,19 +4093,42 @@ mod watcher_tests {
     #[test]
     fn owner_of_walks_to_the_registered_root() {
         let rs = roots(&[(100, "a"), (400_000, "b")]);
-        assert_eq!(owner_of(100, &rs, tree).as_deref(), Some("a"), "the root itself");
-        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"), "a grandchild");
-        assert_eq!(owner_of(400, &rs, tree), None, "unrelated, reaches launchd");
-        assert_eq!(owner_of(777, &rs, tree), None, "already exited");
-        assert_eq!(owner_of(900, &rs, tree), None, "self-parented loop");
-        assert_eq!(owner_of(300, &HashMap::new(), tree), None, "root unregistered");
+        assert_eq!(owner_of(100, &rs, tree, no_sid).as_deref(), Some("a"), "the root itself");
+        assert_eq!(owner_of(300, &rs, tree, no_sid).as_deref(), Some("a"), "a grandchild");
+        assert_eq!(owner_of(400, &rs, tree, no_sid), None, "unrelated, reaches launchd");
+        assert_eq!(owner_of(777, &rs, tree, no_sid), None, "already exited");
+        assert_eq!(owner_of(900, &rs, tree, no_sid), None, "self-parented loop");
+        assert_eq!(owner_of(300, &HashMap::new(), tree, no_sid), None, "root unregistered");
+    }
+
+    fn no_sid(_: u32) -> Option<u32> { None }
+
+    #[test]
+    fn owner_of_falls_back_to_the_session_for_an_orphan() {
+        // 400's parent exited, so it hangs off launchd but kept a's session.
+        let rs = roots(&[(100, "a")]);
+        let sid = |p: u32| match p { 400 => Some(100), 500 => Some(500), _ => None };
+        assert_eq!(owner_of(400, &rs, tree, sid).as_deref(), Some("a"), "orphan in a's session");
+        assert_eq!(owner_of(500, &rs, tree, sid), None, "its own session (setsid)");
+        assert_eq!(owner_of(400, &HashMap::new(), tree, sid), None, "root unregistered");
+    }
+
+    #[test]
+    fn pid_chain_names_the_peer_and_its_parents() {
+        let exe = |p: u32| -> Option<String> {
+            match p { 1 => Some("/sbin/launchd".into()), 100 => Some("/bin/zsh".into()), 300 => Some("/opt/bin/gh".into()), _ => None }
+        };
+        assert_eq!(pid_chain(300, tree, exe), "pid 300 /opt/bin/gh, parents: 200 ? < 100 zsh < 1 launchd");
+        assert_eq!(pid_chain(400, tree, exe), "pid 400 (exited), parents: 1 launchd", "an orphan ends at launchd");
+        assert_eq!(pid_chain(777, tree, exe), "pid 777 (exited)", "gone before the check");
+        assert_eq!(pid_chain(900, tree, exe), "pid 900 (exited)", "self-parented loop stops");
     }
 
     #[test]
     fn owner_of_tells_two_tasks_apart() {
         let rs = roots(&[(100, "a"), (400, "b")]);
-        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"));
-        assert_eq!(owner_of(400, &rs, tree).as_deref(), Some("b"));
+        assert_eq!(owner_of(300, &rs, tree, no_sid).as_deref(), Some("a"));
+        assert_eq!(owner_of(400, &rs, tree, no_sid).as_deref(), Some("b"));
     }
 
     #[cfg(unix)]
@@ -3865,7 +4213,7 @@ mod watcher_tests {
     #[test]
     fn router_caches_and_revalidates() {
         let calls = || RT_CALLS.load(Ordering::Relaxed);
-        let mut r = Router::new(rt_tree, |_| None);
+        let mut r = Router::new(rt_tree, |_| None, |_| None);
         register_root_pid("rt-a", 7100);
         assert_eq!(r.owner(7300).as_deref(), Some("rt-a"));
         let before = calls();

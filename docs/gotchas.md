@@ -443,6 +443,19 @@ a defence.
 change. That is what `transition-colors` was wanted for anyway; it just also
 covers `border-color`, which is the broken one.
 
+**A themed background freezes too.** `ui/Checkbox` swaps
+`bg-[var(--color-bg)]` for `bg-[var(--color-accent-deep)]`, and the roles
+matrix (`e2e/specs/secrets-api-key.e2e.ts`) showed checked boxes still
+computing the unchecked background after three seconds, under both
+`transition-colors` and `transition-[color,background-color]`. Dropping the
+transition fixed it; each transition put it back. So for a control whose
+FILL carries the state, drop the transition: a 150ms fade on a checkbox is
+not worth a box that never fills. The sandbox mode cards (`SandboxPicker`)
+and role cards (`RolePicker`) froze the same way when picking a role moved
+the selection programmatically: OFF and No secrets kept the selected border
+1.5s later. Both dropped the transition; `secrets-task.e2e.ts` asserts the
+painted border.
+
 This is easy to miss in review because the JSX is obviously correct, and easy
 to miss in tests because `aria-checked` (the thing a spec naturally asserts) is
 right. It took a screenshot to notice and a computed-style assertion to prove.
@@ -1365,3 +1378,18 @@ Two traps from reproducing it, both of which cost a wrong conclusion first:
   "The log contains my message" passed on a line from the previous run. Count
   the lines before the action and wait for the count to grow.
 
+## A PTY's env starts as Termic's whole env: skipping a var does not drop it
+
+`portable_pty::CommandBuilder::new` seeds the builder with every variable of
+the current process (`get_base_env`), before `pty_spawn` copies anything. So a
+copy loop that `continue`s past a var leaves the inherited copy in place, and
+the child gets it anyway. The other agent session's markers
+(`CLAUDE_CODE_SESSION_ID`, the messaging socket and token) reached every
+spawned agent this way for as long as the skip existed, and the kept-out env
+list (sandbox.md "Env vars kept out of agents") did nothing until it was
+caught by an e2e case reading what the spawned process received.
+
+Drop a var with `env_remove`, which `inherit_env` (lib.rs) does for every var
+its predicate names; `inherit_env_removes_what_it_drops` pins it, with the
+control that the builder really does start with the var. A unit test of the
+predicate alone cannot catch this: the predicate was right the whole time.
