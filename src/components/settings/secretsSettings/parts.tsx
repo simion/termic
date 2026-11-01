@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type InputHTMLAttributes } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, X } from "lucide-react";
 import { Input } from "@/components/ui/Input";
+import { Tip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
 import { roleColourVar } from "./model";
 
@@ -119,4 +120,23 @@ export function TabStrip<T extends string>({ tabs, value, onChange, attr }: {
 /** 11.5px uppercase label over a group, as in the mocks. */
 export function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={cn("text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]", className)}>{children}</div>;
+}
+
+/** A small "i" glyph that shows `text` on hover or keyboard focus. Clicking
+ *  it does nothing, so one sitting inside a `<label>` does not toggle the
+ *  control the label belongs to. Newlines in `text` are kept. */
+export function InfoTip({ text, side }: { text: string; side?: "top" | "right" | "bottom" | "left" }) {
+  return (
+    <Tip side={side} content={<span className="block max-w-[320px] whitespace-pre-line">{text}</span>}>
+      <span
+        tabIndex={0}
+        role="img"
+        aria-label={text}
+        onClick={e => e.preventDefault()}
+        className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help select-none items-center justify-center rounded-full border border-[var(--color-border)] font-serif text-[10px] italic leading-none text-[var(--color-fg-faint)] outline-none hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)] focus-visible:border-[var(--color-accent)] focus-visible:text-[var(--color-fg)]"
+      >
+        i
+      </span>
+    </Tip>
+  );
 }
