@@ -268,7 +268,8 @@ describe("settings: secrets and roles", () => {
 
   it("creates a Reviewer role from a starter: reads GraphQL, refuses push", async () => {
     await secretsTab("roles");
-    await waitForText("A role is the set of secrets an agent may use");
+    // the intro now lives in the heading tip, so its text is in the aria-label
+    await waitVisible(`[aria-label^="A role is the set of secrets an agent may use"]`);
     await clickPresent('[data-testid="roles-new"]');
     await waitVisible('[data-testid="new-role"]');
     await clickPresent('[data-starter="reviewer"]');
