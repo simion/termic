@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { crossProjectStrays, flattenSegments, groupBadgeKinds, groupColorCss, groupLabel, groupMemberByName, layoutTaskList, liveGroups, nextGroupColor, GROUP_FALLBACK_COLOR } from "./taskGroups";
+import { crossProjectStrays, flattenSegments, groupBadgeKinds, groupColorCss, groupLabel, groupMemberByName, layoutTaskList, liveGroups, nextGroupColor, sidebarTaskOrder, GROUP_FALLBACK_COLOR } from "./taskGroups";
 import type { Tab } from "./types";
-import type { Task, TaskGroup } from "./types";
+import type { Project, Task, TaskGroup } from "./types";
 
 const t = (id: string, group?: TaskGroup, extra: Partial<Task> = {}): Task =>
   ({ id, name: id, project_id: "p", archived: false, group, ...extra }) as Task;
@@ -109,6 +109,38 @@ describe("layoutTaskList", () => {
   it("flattens to display order for the reorder write", () => {
     const list = [t("o", G("o")), t("y"), t("c1", G("o"))];
     expect(flattenSegments(layoutTaskList(list)).map(x => x.id)).toEqual(["o", "c1", "y"]);
+  });
+});
+
+describe("sidebarTaskOrder", () => {
+  const P = (id: string, group?: string): Project => ({ id, name: id, group }) as Project;
+
+  // The reported case. `a` was open, its agent ran `termic new` and created
+  // `d`. Rust sorts `d` last (newest, never dragged), and the spawn put it in
+  // `a`'s group, so the sidebar draws it straight under `a`. ⌥⌘↓ from `a`
+  // went to `b`, and `d` came last, after `c`.
+  it("walks a task an agent created right after its creator, as the sidebar draws it", () => {
+    const tasks = [t("a", G("a")), t("b"), t("c"), t("d", G("a"))];
+    expect(sidebarTaskOrder([P("p")], tasks).map(x => x.id)).toEqual(["a", "d", "b", "c"]);
+  });
+
+  it("is store order while a project has no group", () => {
+    const tasks = [t("a"), t("b"), t("c")];
+    expect(sidebarTaskOrder([P("p")], tasks).map(x => x.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("goes project by project in folder order, and leaves archived tasks out", () => {
+    // Store order x, y, z, with x and z in one folder: drawn x, z, y.
+    const projects = [P("x", "WORK"), P("y"), P("z", "WORK")];
+    const tasks = [
+      t("y1", undefined, { project_id: "y" }),
+      t("z1", undefined, { project_id: "z" }),
+      t("x1", G("x1"), { project_id: "x" }),
+      t("x2", undefined, { project_id: "x" }),
+      t("gone", G("x1"), { project_id: "x", archived: true }),
+      t("x3", G("x1"), { project_id: "x" }),
+    ];
+    expect(sidebarTaskOrder(projects, tasks).map(x => x.id)).toEqual(["x1", "x3", "x2", "z1", "y1"]);
   });
 });
 

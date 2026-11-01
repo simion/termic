@@ -49,8 +49,8 @@ import {
   type HoldGesture, type ShortcutId,
 } from "@/lib/shortcuts";
 import { isTerminalCloseCombo } from "@/lib/terminalFind";
-import { visualProjectOrder } from "@/lib/projectGroups";
 import { taskHasOpenAgent } from "@/lib/taskBoardState";
+import { sidebarTaskOrder } from "@/lib/taskGroups";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
@@ -192,13 +192,10 @@ export function useShortcuts() {
       // Task nav cycles only AWAKE tasks — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
       // visual grouping (group folder → its projects; project → its
-      // tasks → next project …) or the jumps feel random. Computed
-      // lazily; only some commands need it.
-      const awakeTasks = () => visualProjectOrder(state.projects).flatMap(p =>
-        state.tasks.filter(w =>
-          w.project_id === p.id && !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
-        ),
-      );
+      // tasks, a task group gathered into one block → next project …) or
+      // the jumps feel random. Computed lazily; only some commands need it.
+      const awakeTasks = () => sidebarTaskOrder(state.projects, state.tasks)
+        .filter(w => (state.tabs[w.id]?.length ?? 0) > 0);
 
       switch (cmd) {
         // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
@@ -208,20 +205,17 @@ export function useShortcuts() {
         case "sidebar-next": {
           type Row = { taskId: string; tabId?: string };
           const rows: Row[] = [];
-          for (const p of visualProjectOrder(state.projects)) {
-            for (const w of state.tasks) {
-              if (w.project_id !== p.id || w.archived) continue;
-              rows.push({ taskId: w.id });
-              const taskTabs = state.tabs[w.id] ?? [];
-              // Exclude pane tabs from sidebar rows — they live in split panes.
-              const terminalTabs = taskTabs.filter(
-                t => t.type === "terminal" && !(t as TerminalTab).paneId,
-              );
-              const explicit = state.collapsedTasks[w.id];
-              const collapsed = explicit ?? (terminalTabs.length <= 1);
-              if (!collapsed) {
-                for (const t of terminalTabs) rows.push({ taskId: w.id, tabId: t.id });
-              }
+          for (const w of sidebarTaskOrder(state.projects, state.tasks)) {
+            rows.push({ taskId: w.id });
+            const taskTabs = state.tabs[w.id] ?? [];
+            // Exclude pane tabs from sidebar rows — they live in split panes.
+            const terminalTabs = taskTabs.filter(
+              t => t.type === "terminal" && !(t as TerminalTab).paneId,
+            );
+            const explicit = state.collapsedTasks[w.id];
+            const collapsed = explicit ?? (terminalTabs.length <= 1);
+            if (!collapsed) {
+              for (const t of terminalTabs) rows.push({ taskId: w.id, tabId: t.id });
             }
           }
           if (rows.length <= 1) return;

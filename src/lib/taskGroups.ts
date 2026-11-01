@@ -4,7 +4,8 @@
 // to DRAW one lives here, so the rules are testable without a DOM.
 
 import { ACCENTS, accentCss } from "@/lib/accents";
-import type { Tab, Task, TaskGroup } from "@/lib/types";
+import { visualProjectOrder } from "@/lib/projectGroups";
+import type { Project, Tab, Task, TaskGroup } from "@/lib/types";
 import { taskDelegatedWork, taskWorkBadge, type WorkStatePrefs } from "@/lib/taskWorkState";
 
 /** What colour a group without one draws its rail in. Same neutral an
@@ -148,6 +149,32 @@ export function layoutTaskList(
  *  the stored order matches what the user saw. */
 export const flattenSegments = (segs: TaskListSegment[]): Task[] =>
   segs.flatMap(s => (s.kind === "task" ? [s.task] : s.tasks));
+
+/** Every live task in the order the sidebar tree draws it: projects in their
+ *  visual order (folders gathered), and inside each project the blocks
+ *  `layoutTaskList` gathers, flattened. What the task-switching keys walk
+ *  (⌥⌘↑/↓, ⌥↑/↓, ⇧⌘A), so "next" is the next row on screen.
+ *
+ *  Store order stops being display order once a project has a group. A task
+ *  an agent creates through the CLI or MCP joins its creator's group and draws
+ *  right under it, but it is the project's newest task, so Rust sorts it to
+ *  the bottom of the list: walking the store order went from the creator to
+ *  the row below its group, and reached the new task last.
+ *
+ *  No `crossProjectStrays` here, unlike the sidebar: a stray is its group's
+ *  only member in its project, so its block sits exactly where its row would
+ *  and drawing it ungrouped moves nothing. */
+export function sidebarTaskOrder(projects: Project[], tasks: Task[]): Task[] {
+  const byProject = new Map<string, Task[]>();
+  for (const t of tasks) {
+    if (t.archived) continue;
+    const list = byProject.get(t.project_id);
+    if (list) list.push(t);
+    else byProject.set(t.project_id, [t]);
+  }
+  return visualProjectOrder(projects).flatMap(p =>
+    flattenSegments(layoutTaskList(byProject.get(p.id) ?? [])));
+}
 
 /** One mark a collapsed group's caption can carry, in the order drawn. */
 export type GroupBadgeKind = "attention" | "done" | "partial" | "marked" | "working" | "delegated";

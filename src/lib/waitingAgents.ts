@@ -8,11 +8,14 @@
 
 import { useApp, type AppState } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
+import { sidebarTaskOrder } from "@/lib/taskGroups";
 import type { TerminalTab } from "@/lib/types";
 
-/** Awake tasks in sidebar order: not archived + opened at least once
- *  (≥1 tab). MUST mirror useShortcuts' awakeTasks so the pill and the
- *  keyboard jump cycle in the same order the user sees. */
+/** Awake tasks: not archived + opened at least once (≥1 tab), in project
+ *  order. Enough for the counts below, which run as selectors on every store
+ *  write and which no order changes. The jump, where order IS the behaviour,
+ *  walks `sidebarTaskOrder` instead: the order the user sees, and the one
+ *  useShortcuts' task keys walk. */
 function awakeTasks(s: AppState) {
   return s.projects.flatMap(p =>
     s.tasks.filter(w =>
@@ -80,7 +83,7 @@ export function waitingElsewhere(s: AppState): boolean {
 export function jumpToNextWaiting(): boolean {
   if (!usePrefs.getState().settledHighlight) return false;
   const s = useApp.getState();
-  const task = awakeTasks(s);
+  const task = sidebarTaskOrder(s.projects, s.tasks).filter(w => (s.tabs[w.id]?.length ?? 0) > 0);
   if (!task.some(w => taskIsWaiting(s, w.id))) return false;
   const start = task.findIndex(w => w.id === s.activeTaskId);
   // Scan begins AFTER the current task, wrapping around.
