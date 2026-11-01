@@ -2317,6 +2317,22 @@ export interface Role {
   /** Secret ids. */
   secrets: string[];
   rule_sets: RuleSet[];
+  /** Settings' checkbox ("Simple") state per secret id. Opaque to the
+   *  backend, which reads only `rule_sets` (compiled from this by
+   *  secretsSettings/simpleRole.ts). A secret with no entry is edited in Rules. */
+  simple?: Record<string, SimpleCfg>;
+}
+/** What a GitHub secret may do on a role, as checkboxes. `other` holds a level
+ *  per host the compile has no capability rules for (every host of an API key,
+ *  hosts added to a GitHub secret beyond its three). */
+export interface SimpleCfg {
+  /** Repo scope: "" all, "acme" (acme/*), "acme/widget". */
+  scope: string;
+  fallback: RuleEffect;
+  /** Deny calls that hand out access outlasting the task. */
+  guard: boolean;
+  caps: string[];
+  other: Record<string, "all" | "read" | "deny">;
 }
 export interface TaskAllow { secret: string; host: string; rule: Rule }
 

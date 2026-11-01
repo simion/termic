@@ -237,6 +237,11 @@ pub struct Role {
     /// Secret ids.
     pub secrets: Vec<String>,
     pub rule_sets: Vec<RuleSet>,
+    /// Settings' checkbox ("Simple") state per secret id, so the editor can
+    /// re-open it. Opaque here: the broker reads only `rule_sets`, which the
+    /// UI compiles from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simple: Option<serde_json::Value>,
 }
 
 impl Role {
@@ -624,6 +629,17 @@ mod tests {
         // another host is its own set.
         allow_on_role(&mut r, "s", "github.com", allow("/c"));
         assert_eq!(r.rule_sets.len(), 2);
+    }
+
+    #[test]
+    fn simple_state_round_trips_and_stays_absent_when_unset() {
+        let mut r = role("r");
+        let plain = serde_json::to_string(&r).unwrap();
+        assert!(!plain.contains("simple"), "a role without checkbox state must not grow the key: {plain}");
+        assert_eq!(serde_json::from_str::<Role>(&plain).unwrap(), r);
+        r.simple = Some(serde_json::json!({ "gh": { "scope": "acme", "fallback": "deny", "guard": true, "caps": ["read"], "other": {} } }));
+        let back: Role = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]
