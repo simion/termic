@@ -23,10 +23,12 @@ export const ENV_TAB_HIGHLIGHT = "secrets-tab:env";
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** The rules that reproduce `rows`: every added name, and every scope
- *  widened to all agents. A caged-only built-in or detected var needs none. */
+/** The rules that reproduce `rows`: every added name, every scope widened
+ *  to all agents, and every unset row. A caged-only var that IS set needs no
+ *  rule, but an unset one is only listed because of its rule, so dropping it
+ *  would make the row vanish (e.g. adding GITHUB_TOKEN, then picking Caged). */
 const rulesOf = (rows: KeptOutVar[]): EnvGuardRule[] =>
-  rows.filter(r => r.reason === "added" || r.all).map(r => ({ name: r.name, all: r.all }));
+  rows.filter(r => r.reason === "added" || r.all || !r.set).map(r => ({ name: r.name, all: r.all }));
 
 const agentName = (agents: Agent[], id: string) => agents.find(a => a.id === id)?.display_name || id;
 
@@ -96,7 +98,7 @@ export function KeptOutCard({ onAddSecret }: { onAddSecret: (name: string, prese
               <div key={r.name} data-testid={`kept-out-row-${r.name}`} className={cn("flex min-h-[52px] items-center gap-3 py-1.5", i > 0 && "border-t border-[var(--color-border-soft)]")}>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <code className="font-mono text-[12px] text-[var(--color-fg)]">{r.name}</code>
+                    <code className={cn("font-mono text-[12px]", r.set ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{r.name}</code>
                     <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-px text-[11px] text-[var(--color-fg-dim)]">
                       {t(`manage.keptOut.reason.${r.reason}`)}
                     </span>
@@ -155,7 +157,7 @@ export function KeptOutCard({ onAddSecret }: { onAddSecret: (name: string, prese
                   </PopoverContent>
                 </PopoverRoot>
                 <div className="w-7 shrink-0">
-                  {r.reason === "added" && (
+                  {(r.reason === "added" || !r.set) && (
                     <Button variant="icon" size="icon" aria-label={t("manage.keptOut.remove", { name: r.name })} data-testid={`kept-out-remove-${r.name}`}
                       onClick={() => void save(rulesOf(rows.filter(x => x.name !== r.name)))}>
                       <X className="h-3.5 w-3.5" />

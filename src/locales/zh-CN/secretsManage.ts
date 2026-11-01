@@ -148,7 +148,7 @@ export default {
       detected: "检测到",
       added: "你添加的",
     },
-    notSet: "当前未设置。",
+    notSet: "当前未设置。一旦设置，也会被挡在外面。",
     hiddenCaged: "不交给受限的智能体标签页。未受限的仍会拿到。",
     hiddenAll: "不交给任何智能体标签页。",
     passedTo: "{{agents}} 会拿到真实值。",

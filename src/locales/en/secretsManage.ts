@@ -149,7 +149,7 @@ export default {
       detected: "detected",
       added: "added by you",
     },
-    notSet: "Not set right now.",
+    notSet: "Not set right now. Kept out if it ever is.",
     hiddenCaged: "Hidden from caged agent tabs. Uncaged ones still get it.",
     hiddenAll: "Hidden from every agent tab.",
     passedTo: "{{agents}} gets the real value.",

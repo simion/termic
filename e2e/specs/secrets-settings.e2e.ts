@@ -898,7 +898,7 @@ describe("settings: env vars kept out of agents", () => {
     await clickPresent('[data-testid="kept-out-add"]');
     await waitVisible(row("STRIPE_SECRET_KEY"));
     await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: "STRIPE_SECRET_KEY", all: true }]), "the added name never saved");
-    expect(await statusText("STRIPE_SECRET_KEY")).toBe("Not set right now.");
+    expect(await statusText("STRIPE_SECRET_KEY")).toBe("Not set right now. Kept out if it ever is.");
     expect(await browser.execute(() => document.querySelector('[data-testid="kept-out-scope-STRIPE_SECRET_KEY"] [data-value="all"]')?.getAttribute("aria-pressed"))).toBe("true");
     await snap("secrets-kept-out-added.png");
   });
@@ -907,6 +907,25 @@ describe("settings: env vars kept out of agents", () => {
     await clickPresent('[data-testid="kept-out-remove-STRIPE_SECRET_KEY"]');
     await waitGone(row("STRIPE_SECRET_KEY"));
     await waitSaved(s => (s.env_guard ?? []).length === 0, "the removed name is still saved");
+  });
+
+  it("keeps an unset built-in on the list when it goes back to caged", async () => {
+    // HF_TOKEN is built in and unset here, so only its rule lists it: the
+    // caged default must not drop that rule and make the row vanish.
+    const HF = "HF_TOKEN";
+    await setInputValue('[data-testid="kept-out-add-input"]', HF);
+    await clickPresent('[data-testid="kept-out-add"]');
+    await waitVisible(row(HF));
+    await clickPresent(`[data-testid="kept-out-scope-${HF}"] [data-value="caged"]`);
+    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: HF, all: false }]), "the caged scope dropped the unset built-in");
+    await waitVisible(row(HF));
+    expect(await browser.execute((n) => document.querySelector(`[data-testid="kept-out-scope-${n}"] [data-value="caged"]`)?.getAttribute("aria-pressed"), HF)).toBe("true");
+    expect(await statusText(HF)).toBe("Not set right now. Kept out if it ever is.");
+    await snap("secrets-kept-out-unset-builtin.png");
+    // and it can be removed, or it would be stuck there
+    await clickPresent(`[data-testid="kept-out-remove-${HF}"]`);
+    await waitGone(row(HF));
+    await waitSaved(s => (s.env_guard ?? []).length === 0, "the removed built-in is still saved");
   });
 
   it("passes a var through to one agent, and takes it back", async () => {
