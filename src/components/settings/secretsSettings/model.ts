@@ -389,8 +389,10 @@ export function roleFromTemplate(tpl: RoleTemplate, id: string, secret: SecretDe
   };
   const git: RuleSet = {
     secret: secret.id, host: GIT_HOST, fallback: "deny", rules: [
-      r("allow", ["fetch"], "*", t("manage.tpl.note.fetch")),
-      r("deny", ["push"], "*", t("manage.tpl.note.push")),
+      // "**", not "*": a git pattern is an owner/repo glob, and "*" stops at
+      // the slash, so it matched no repo and both fell to the fallback.
+      r("allow", ["fetch"], "**", t("manage.tpl.note.fetch")),
+      r("deny", ["push"], "**", t("manage.tpl.note.push")),
     ],
   };
   // every other host (uploads.github.com by default, or anything the user

@@ -168,7 +168,7 @@ describe("secrets model", () => {
     expect(api.rules.some(x => x.effect === "allow" && x.methods.includes("QUERY"))).toBe(true);
     expect(api.rules.some(x => x.effect === "deny" && x.methods.includes("MUTATION") && x.pattern === "mergePullRequest")).toBe(true);
     const git = r.rule_sets.find(s => s.host === "github.com")!;
-    expect(git.rules.map(x => [x.effect, x.methods[0]])).toEqual([["allow", "fetch"], ["deny", "push"]]);
+    expect(git.rules.map(x => [x.effect, x.methods[0], x.pattern])).toEqual([["allow", "fetch", "**"], ["deny", "push", "**"]]);
     // a set per host: a host with no set would allow everything.
     expect(r.rule_sets.map(s => s.host)).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
     const up = r.rule_sets.find(s => s.host === "uploads.github.com")!;
