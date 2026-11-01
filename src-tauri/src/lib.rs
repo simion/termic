@@ -10322,6 +10322,21 @@ fn broker_set_paused(id: String, paused: bool) {
     broker::set_paused(&id, paused);
 }
 
+/// Settings > Secrets request tester: judge a typed request on `role` as
+/// passed (the editor's copy, saved or not) with the broker's own rule walk,
+/// so the tester and the broker cannot disagree. Reads settings only for
+/// the secret's recipe (which decides GraphQL / git classification).
+#[tauri::command]
+async fn secrets_test_request(window: tauri::Window, role: secrets::Role, secret: String, host: String, method: String, target: String) -> Result<broker::TestResult, String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let recipe = load_settings_in(&profile).secrets.iter().find(|s| s.id == secret).map(|s| s.recipe).ok_or("no such secret")?;
+        broker::test_request(&role, recipe, &secret, &host, &method, &target)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Save an allow from the task's Secrets popover. `task` scope lands on
 /// `Task::secret_allows`; `role` scope goes first in `role`'s rule set for
 /// (secret, host), shared by every task on that role. `role` is the one the
@@ -27353,7 +27368,7 @@ pub fn run() {
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
             tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
-            task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed, env_guard_list, env_guard_save, agent_set_pass_env,
+            task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed, secrets_test_request, env_guard_list, env_guard_save, agent_set_pass_env,
             broker_counts, broker_events, broker_all_events, broker_set_paused, broker_allow,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,

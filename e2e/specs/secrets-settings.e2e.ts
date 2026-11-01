@@ -371,12 +371,13 @@ describe("settings: secrets and roles", () => {
     await waitSaved(s => rulesOf(s)[0].pattern === r0.pattern && rulesOf(s)[1].pattern === r1.pattern, "the order never came back");
   });
 
-  it("refuses an empty pattern or method instead of saving a match-all rule", async () => {
+  it("refuses an empty pattern instead of saving a match-all rule", async () => {
+    // (an empty method list cannot be built: the verb picker keeps the last
+    // verb on, which the picker case below checks.)
     const row = '[data-testid="rules-api.github.com"] [data-rule-index="0"]';
     const rule0 = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "api.github.com").rules[0];
     const before = rule0(await settingsLoad());
     await typeAndCommit(`${row} [data-field="pattern"]`, "   ");
-    await typeAndCommit(`${row} [data-field="methods"]`, " , ");
     // a refusal has nothing to wait for, so save something real after it:
     // saves run in order, so once this lands any earlier one would have too.
     await typeAndCommit(`${row} [data-field="note"]`, "e2e marker");
@@ -398,6 +399,111 @@ describe("settings: secrets and roles", () => {
     // on again: the flag is dropped, not stored as false.
     await waitSaved(s => !("disabled" in rule0(s)) || rule0(s).disabled === false, "the rule never turned back on");
     await waitGone(`${row}[data-rule-disabled]`);
+  });
+
+  // the uploads block starts as the Reviewer template left it: ALLOW GET,
+  // HEAD /**, fallback deny. The three cases below build on each other.
+  const uploads = '[data-testid="rules-uploads.github.com"]';
+  const uploadRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "uploads.github.com").rules;
+  /** Radix dismisses on an Escape keydown at the document. */
+  const closePicker = async () => {
+    await browser.execute(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await waitGone('[data-testid="verb-picker"]');
+  };
+  const pickerVerbs = () => browser.execute(() =>
+    [...document.querySelectorAll('[data-testid="verb-picker"] [data-verb]')].map(e => e.getAttribute("data-verb")));
+
+  it("picks a rule's verbs from the popover, a custom verb included", async () => {
+    // each block offers the verbs its requests can have.
+    await clickPresent('[data-testid="rules-github.com"] [data-rule-index="0"] [data-field="methods"]');
+    await waitVisible('[data-testid="verb-picker"]');
+    expect(await pickerVerbs()).toEqual(["fetch", "push"]);
+    await closePicker();
+    await clickPresent('[data-testid="rules-api.github.com"] [data-rule-index="0"] [data-field="methods"]');
+    await waitVisible('[data-testid="verb-picker"]');
+    expect(await pickerVerbs()).toEqual(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "QUERY", "MUTATION", "*"]);
+    await snap("secrets-verb-picker.png");
+    await closePicker();
+
+    const before = uploadRules(await settingsLoad()).length;
+    await clickPresent(`${uploads}-add`);
+    const row = `${uploads} [data-rule-index="${before}"]`;
+    await waitVisible(row);
+    await typeAndCommit(`${row} [data-field="pattern"]`, "/repos/*/*/releases/*/assets");
+    await waitSaved(s => uploadRules(s)[before]?.pattern === "/repos/*/*/releases/*/assets", "the new rule never saved");
+    await clickPresent(`${row} [data-field="methods"]`);
+    await waitVisible('[data-testid="verb-picker"]');
+    // a plain HTTP host: no GraphQL or git verbs.
+    expect(await pickerVerbs()).toEqual(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "*"]);
+    await clickPresent('[data-testid="verb-picker"] [data-verb="POST"]');
+    await waitSaved(s => uploadRules(s)[before].methods.join() === "GET,POST", "POST never toggled on");
+    await clickPresent('[data-testid="verb-picker"] [data-verb="GET"]');
+    await waitSaved(s => uploadRules(s)[before].methods.join() === "POST", "GET never toggled off");
+    // the last verb stays on: a rule with no method would match nothing.
+    await clickPresent('[data-testid="verb-picker"] [data-verb="POST"]');
+    // a verb that is not a token is refused in place, and nothing saves.
+    await typeAndCommit('[data-testid="verb-custom"]', "G/T");
+    await waitVisible('[data-testid="verb-custom"][aria-invalid="true"]');
+    await typeAndCommit('[data-testid="verb-custom"]', "propfind");
+    await waitSaved(s => uploadRules(s)[before].methods.join() === "POST,PROPFIND", "the custom verb never saved");
+    await waitVisible('[data-testid="verb-picker"] [data-verb="PROPFIND"][aria-pressed="true"]');
+    await snap("secrets-verb-custom.png");
+    await closePicker();
+    // the row's button shows the chosen verbs.
+    expect(await browser.execute((s: string) => document.querySelector(s)!.textContent, `${row} [data-field="methods"]`)).toBe("POSTPROPFIND");
+  });
+
+  it("the request tester names the deciding rule, or the fallback", async () => {
+    const secretId = (await settingsLoad()).secrets.find((x: any) => x.name === "gh-review").id;
+    const verdict = () => browser.execute(() => {
+      const v = document.querySelector('[data-testid="rule-tester-verdict"]');
+      return { effect: v?.getAttribute("data-effect") ?? null, text: v?.textContent ?? "" };
+    });
+    const tryRequest = async (q: string, effect: string, hit: string) => {
+      await setInputValue('[data-testid="rule-tester-input"]', q);
+      await browser.waitUntil(async () => (await verdict()).effect === effect
+        && await browser.execute((s: string) => !!document.querySelector(s), `${hit}[data-rule-hit]`),
+      { timeout: 5_000, timeoutMsg: `${q}: never ${effect} by ${hit}` });
+      // exactly one line lights up across every block.
+      expect(await browser.execute(() => document.querySelectorAll("[data-rule-hit]").length)).toBe(1);
+    };
+    await setSelect('[data-testid="rule-tester-block"]', `${secretId}@uploads.github.com`);
+    await tryRequest("GET /repos/acme/widget/releases/assets/1", "allow", `${uploads} [data-rule-index="0"]`);
+    expect((await verdict()).text).toContain("by rule 1 on uploads.github.com (download, never upload)");
+    await tryRequest("PROPFIND /repos/acme/widget/releases/9/assets", "allow", `${uploads} [data-rule-index="1"]`);
+    await tryRequest("DELETE /repos/acme/widget", "deny", `${uploads} [data-rule-fallback]`);
+    expect((await verdict()).text).toContain("falls to the block's last line");
+    await snap("secrets-tester-fallback.png");
+    // git: pseudo-verbs are judged as what they are.
+    await setSelect('[data-testid="rule-tester-block"]', `${secretId}@github.com`);
+    await tryRequest("push acme/widget", "deny", '[data-testid="rules-github.com"] [data-rule-index="1"]');
+    await tryRequest("fetch acme/widget", "allow", '[data-testid="rules-github.com"] [data-rule-index="0"]');
+    // a line that is not a request says why, and lights nothing.
+    await setInputValue('[data-testid="rule-tester-input"]', "push");
+    await browser.waitUntil(async () => (await verdict()).text.includes("owner/repo"),
+      { timeout: 5_000, timeoutMsg: "a bare push never explained itself" });
+    expect(await browser.execute(() => document.querySelectorAll("[data-rule-hit]").length)).toBe(0);
+    await setSelect('[data-testid="rule-tester-block"]', `${secretId}@uploads.github.com`);
+    await tryRequest("PROPFIND /repos/acme/widget/releases/9/assets", "allow", `${uploads} [data-rule-index="1"]`);
+  });
+
+  it("sorts a block by specificity, and the tester follows the move", async () => {
+    const [broad, narrow] = uploadRules(await settingsLoad());
+    expect(broad.pattern).toBe("/**");
+    await clickPresent(`${uploads}-sort`);
+    await waitSaved(s => uploadRules(s)[0].pattern === narrow.pattern && uploadRules(s)[1].pattern === broad.pattern,
+      "the sort never saved");
+    expect(uploadRules(await settingsLoad())).toEqual([narrow, broad]);
+    // the tester re-judges on the new order: the same request, now rule 1.
+    await browser.waitUntil(() => browser.execute((s: string) => !!document.querySelector(s), `${uploads} [data-rule-index="0"][data-rule-hit]`),
+      { timeout: 5_000, timeoutMsg: "the tester did not follow the sort" });
+    await snap("secrets-sorted.png");
+    // a rule that is off is not sorted, so one enabled rule leaves nothing to sort.
+    await clickPresent(`${uploads} [data-rule-index="1"] button[aria-label="Turn rule off (kept, but skipped)"]`);
+    await waitSaved(s => uploadRules(s)[1].disabled === true, "the off switch never saved");
+    await waitVisible(`${uploads}-sort[disabled]`);
+    await clickPresent(`${uploads} [data-rule-index="1"] button[aria-label="Turn rule on"]`);
+    await waitSaved(s => !uploadRules(s)[1].disabled, "the rule never turned back on");
   });
 
   it("duplicates a role with its secrets and rules", async () => {

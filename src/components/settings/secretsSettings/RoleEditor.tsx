@@ -1,13 +1,15 @@
 // The selected role's editor: name, colour, description, the rule blocks
 // per secret and host, duplicate and delete.
 
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Braces, Copy, Trash2 } from "lucide-react";
 import type { Role, SecretDef } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { ROLE_COLOURS, loginTakeovers, putRuleSet, roleColourVar, ruleBlocksFor, ruleSetFor } from "./model";
-import { CommitInput } from "./parts";
+import { CommitInput, InfoTip } from "./parts";
+import { RequestTester, blockKey, type TesterHit } from "./RequestTester";
 import { RuleBlock } from "./RuleBlock";
 
 export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, onDelete, onJson }: {
@@ -18,6 +20,7 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
 }) {
   const { t } = useTranslation("secrets");
   const blocks = ruleBlocksFor(role, secrets);
+  const [hit, setHit] = useState<TesterHit | null>(null);
   return (
     <div className="flex flex-col gap-5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] p-5" data-testid="role-editor">
       <div className="flex flex-wrap items-start gap-6">
@@ -71,17 +74,26 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
       {blocks.length === 0 && (
         <div className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.noSecrets")}</div>
       )}
+      {blocks.length > 0 && (
+        <>
+          <RequestTester role={role} blocks={blocks} onHit={setHit} />
+          <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            {t("manage.editor.order")}
+            <InfoTip text={t("manage.editor.orderTip")} />
+          </span>
+        </>
+      )}
       {blocks.map(b => (
         <RuleBlock
-          key={`${b.secret.id}@${b.host}`}
+          key={blockKey(b.secret.id, b.host)}
           title={t(b.kind === "git" ? "manage.editor.rulesGit" : "manage.editor.rulesApi", { secret: b.secret.name, host: b.host })}
           kind={b.kind}
           set={ruleSetFor(role, b.secret.id, b.host)}
           inherited={!role.rule_sets.some(r => r.secret === b.secret.id && r.host === b.host)}
+          hit={hit?.key === blockKey(b.secret.id, b.host) ? hit.at : undefined}
           onChange={set => onSave(putRuleSet(role, set))}
         />
       ))}
-      {blocks.length > 0 && <p className="text-[12px] text-[var(--color-fg-faint)]">{t("manage.editor.methodsHelp")}</p>}
 
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.footer")}</p>
       <div className="flex gap-2">

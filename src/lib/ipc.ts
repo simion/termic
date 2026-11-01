@@ -1649,6 +1649,13 @@ export const brokerSetPaused = (id: string, paused: boolean) =>
  *  ignored for "task". Rust also clears the matching blocked rows. */
 export const brokerAllow = (id: string, scope: "task" | "role", secret: string, host: string, rule: import("./types").Rule, role: string | null) =>
   invoke<void>("broker_allow", { id, scope, secret, host, rule, role });
+/** Judge a typed request on `role` (unsaved is fine) with the broker's own
+ *  rule walk. `method` is an HTTP verb (`target` a path) or QUERY /
+ *  MUTATION name / fetch owner/repo / push owner/repo. Rejects on a request
+ *  it cannot parse. */
+export interface TestRequestResult { effect: import("./types").RuleEffect; rule_index: number | null; from_fallback: boolean; detail: string }
+export const secretsTestRequest = (role: import("./types").Role, secret: string, host: string, method: string, target: string) =>
+  invoke<TestRequestResult>("secrets_test_request", { role, secret, host, method, target });
 /** gh's logged-in accounts per host, from its non-secret hosts.yml, for the
  *  "Add GitHub secret" preset. Never a token. */
 export const secretsGhAccounts = () =>

@@ -184,18 +184,90 @@ export function deliveries(s: Pick<SecretDef, "recipe" | "hosts" | "api">): { ro
   }
 }
 
+/** What a rule block's requests are: plain HTTP, the GitHub API (HTTP plus
+ *  GraphQL QUERY / MUTATION), or git (fetch / push). */
+export type BlockKind = "http" | "api" | "git";
+
 /** The (secret, host) rule blocks the editor shows for a role, one per host
  *  of each of its secrets. Every host gets one: a (secret, host) with no rule
  *  set allows everything, so a host without a block would be an unrestricted
- *  policy nobody can see. github.com carries git; every other host is HTTP. */
-export function ruleBlocksFor(role: Role, secrets: SecretDef[]): { secret: SecretDef; host: string; kind: "http" | "git" }[] {
-  const out: { secret: SecretDef; host: string; kind: "http" | "git" }[] = [];
+ *  policy nobody can see. For a GitHub secret github.com carries git and
+ *  api.github.com GraphQL; every other host is HTTP. */
+export function ruleBlocksFor(role: Role, secrets: SecretDef[]): { secret: SecretDef; host: string; kind: BlockKind }[] {
+  const out: { secret: SecretDef; host: string; kind: BlockKind }[] = [];
   for (const id of role.secrets) {
     const s = secrets.find(x => x.id === id);
     if (!s) continue;
-    for (const host of s.hosts) out.push({ secret: s, host, kind: s.recipe === "github" && host === GIT_HOST ? "git" : "http" });
+    for (const host of s.hosts) {
+      const gh = s.recipe === "github";
+      out.push({ secret: s, host, kind: gh && host === GIT_HOST ? "git" : gh && host === API_HOST ? "api" : "http" });
+    }
   }
   return out;
+}
+
+export const HTTP_VERBS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+/** The verb picker's groups for a block kind. `*` (every HTTP verb) is
+ *  offered on its own for every kind but git. */
+export function verbGroups(kind: BlockKind): { label: "http" | "graphql" | "git"; verbs: string[] }[] {
+  if (kind === "git") return [{ label: "git", verbs: ["fetch", "push"] }];
+  const http = { label: "http" as const, verbs: HTTP_VERBS };
+  return kind === "api" ? [http, { label: "graphql", verbs: ["QUERY", "MUTATION"] }] : [http];
+}
+
+/** A verb typed into the picker, normalised (upper case, but git's fetch and
+ *  push stay lower, as rules.rs spells them), or null when it is not a verb.
+ *  Letters, digits, `-`, `.`, `_`: every real method, and a subset of the
+ *  HTTP token rules.rs accepts. `*` is not typed: it has its own button. */
+export function normaliseVerb(v: string): string | null {
+  const t = v.trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(t)) return null;
+  return /^(fetch|push)$/i.test(t) ? t.toLowerCase() : t.toUpperCase();
+}
+
+/** Toggle one verb in a rule's methods. `*` and the named verbs exclude each
+ *  other (`*` already covers every HTTP verb), and the last verb cannot be
+ *  toggled off: a rule with no method matches nothing and secrets.rs refuses
+ *  it. */
+export function toggleVerb(methods: string[], verb: string): string[] {
+  if (verb === "*") return methods.includes("*") ? methods : ["*"];
+  const rest = methods.filter(m => m !== "*");
+  const next = rest.includes(verb) ? rest.filter(m => m !== verb) : [...rest, verb];
+  return next.length ? next : methods;
+}
+
+/** How broad a rule's pattern is, smallest first: `**` count, then `*`
+ *  count, then a SHORTER literal prefix (the text before the first `*`,
+ *  leading `/` ignored). An empty pattern (a QUERY rule) counts as `**`. */
+function breadth(r: Rule): [number, number, number] {
+  const p = r.pattern.trim().replace(/^\/+/, "") || "**";
+  const dbl = p.split("**").length - 1;
+  const single = p.replaceAll("**", "").split("*").length - 1;
+  const star = p.indexOf("*");
+  return [dbl, single, -(star < 0 ? p.length : star)];
+}
+
+/** "Sort by specificity": the new order of `rules`, as indices into it. Most
+ *  specific pattern first (see `breadth`), deny before allow on a tie, else
+ *  the old order. Disabled rules stay where they are; the enabled ones are
+ *  sorted into the remaining slots. */
+export function specificityOrder(rules: Rule[]): number[] {
+  const key = (i: number) => [...breadth(rules[i]), rules[i].effect === "deny" ? 0 : 1];
+  const sorted = rules.map((_, i) => i).filter(i => !rules[i].disabled).sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    for (let j = 0; j < ka.length; j++) if (ka[j] !== kb[j]) return ka[j] - kb[j];
+    return a - b;
+  });
+  let k = 0;
+  return rules.map((r, i) => r.disabled ? i : sorted[k++]);
+}
+
+/** Split a tester line into the command's method and target: `GET /x`,
+ *  `MUTATION addComment`, `push acme/widget`, `QUERY`. */
+export function splitRequest(q: string): { method: string; target: string } {
+  const t = q.trim();
+  const sp = t.search(/\s/);
+  return sp < 0 ? { method: t, target: "" } : { method: t.slice(0, sp), target: t.slice(sp).trim() };
 }
 
 /** Hosts reached by two of a role's secrets. Mirrors secrets.rs `validate`:

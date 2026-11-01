@@ -127,7 +127,20 @@ pub(crate) fn describe(rule: &Rule) -> String {
 /// the role's default (`Role::default_effect`): deny on a role written
 /// deny-by-default, so a host it has no rules for never opens up.
 pub(crate) fn evaluate(secret: &str, host: &str, method: &str, path: &str, op: &Op, role: &Role, allows: &[TaskAllow]) -> Verdict {
+    trace(secret, host, method, path, op, role, allows).verdict
+}
+
+/// A verdict plus what decided it, for Settings' request tester. `rule` is
+/// the index into the (secret, host) set's `rules`; `fallback` means no rule
+/// matched and the set's fallback (with no set, the role default) decided.
+/// Neither: a task allow, or the unnamed-mutation refusal.
+pub(crate) struct Trace { pub verdict: Verdict, pub rule: Option<usize>, pub fallback: bool, pub detail: String }
+
+/// `evaluate`, keeping what decided. A request with several subjects (a
+/// batch of mutations) reports the one that denied, else the last allowed.
+pub(crate) fn trace(secret: &str, host: &str, method: &str, path: &str, op: &Op, role: &Role, allows: &[TaskAllow]) -> Trace {
     let set = role.rule_sets.iter().find(|s| s.secret == secret && s.host.eq_ignore_ascii_case(host));
+    let mut last = Trace { verdict: Verdict::Allow, rule: None, fallback: false, detail: String::new() };
     for sub in subjects(method, path, op) {
         // a mutation the classifier could not name (`<unparsed>`, `<empty>`,
         // ...) may hide any mutation, so a named DENY cannot be trusted to
@@ -135,27 +148,86 @@ pub(crate) fn evaluate(secret: &str, host: &str, method: &str, path: &str, op: &
         // fallback or a task allow.
         let unnamed = sub.sem.0.eq_ignore_ascii_case("MUTATION") && sub.sem.1.starts_with('<');
         if !unnamed && allows.iter().any(|a| a.secret == secret && a.host.eq_ignore_ascii_case(host) && a.rule.effect == Effect::Allow && rule_matches(&a.rule, &sub)) {
+            last = Trace { verdict: Verdict::Allow, rule: None, fallback: false, detail: "task allow".into() };
             continue;
         }
-        let (effect, text) = match set {
-            None => (role.default_effect(), format!("no rules for {host}: role denies by default")),
+        let (effect, text, rule, fallback) = match set {
+            None => {
+                let e = role.default_effect();
+                (e, format!("no rules for {host}: role {} by default", if e == Effect::Deny { "denies" } else { "allows" }), None, true)
+            }
             Some(set) => {
-                let hit = set.rules.iter().find(|r| {
+                let hit = set.rules.iter().position(|r| {
                     !r.disabled && rule_matches(r, &sub) && (!unnamed || r.effect == Effect::Deny || matches!(r.pattern.trim(), "" | "*" | "**"))
                 });
                 match (hit, unnamed) {
-                    (Some(r), _) => (r.effect, describe(r)),
-                    (None, true) => (Effect::Deny, "an unnamed mutation needs ALLOW MUTATION *".to_string()),
-                    (None, false) => (set.fallback, format!("fallback {}", match set.fallback { Effect::Allow => "ALLOW", Effect::Deny => "DENY" })),
+                    (Some(i), _) => (set.rules[i].effect, describe(&set.rules[i]), Some(i), false),
+                    (None, true) => (Effect::Deny, "an unnamed mutation needs ALLOW MUTATION *".to_string(), None, false),
+                    (None, false) => (set.fallback, format!("fallback {}", match set.fallback { Effect::Allow => "ALLOW", Effect::Deny => "DENY" }), None, true),
                 }
             }
         };
         if effect == Effect::Deny {
             let (verb, target) = sub.sem;
-            return Verdict::Deny { rule: text, verb: verb.to_string(), target: target.to_string() };
+            return Trace { verdict: Verdict::Deny { rule: text.clone(), verb: verb.to_string(), target: target.to_string() }, rule, fallback, detail: text };
         }
+        last = Trace { verdict: Verdict::Allow, rule, fallback, detail: text };
     }
-    Verdict::Allow
+    last
+}
+
+/// What `secrets_test_request` returns.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct TestResult { pub effect: Effect, pub rule_index: Option<usize>, pub from_fallback: bool, pub detail: String }
+
+/// Settings' request tester: judge a typed request on a role (saved or not)
+/// the way the broker would. `method` is an HTTP verb (then `target` is
+/// `path[?query]`, classified like a real request for the secret's recipe)
+/// or a pseudo-verb: `QUERY`, `MUTATION name`, `fetch owner/repo`, `push
+/// owner/repo`. No task allows: this tests the role alone.
+pub(crate) fn test_request(role: &Role, recipe: crate::secrets::Recipe, secret: &str, host: &str, method: &str, target: &str) -> Result<TestResult, String> {
+    let (method, target) = (method.trim(), target.trim());
+    if method.is_empty() { return Err("type a request, like GET /user".into()); }
+    let is = |v: &str| method.eq_ignore_ascii_case(v);
+    // the broker's 405 for methods it never forwards (`handle` in mod.rs).
+    if ["TRACE", "TRACK", "CONNECT"].iter().any(|m| is(m)) {
+        return Ok(TestResult { effect: Effect::Deny, rule_index: None, from_fallback: false, detail: format!("Termic refuses {method} on brokered hosts") });
+    }
+    let (op, verb, path) = if is("QUERY") {
+        (Op::Graphql { mutations: vec![] }, "POST".to_string(), "/graphql".to_string())
+    } else if is("MUTATION") {
+        if target.is_empty() { return Err("name the mutation, like MUTATION addComment".into()); }
+        (Op::Graphql { mutations: vec![target.to_string()] }, "POST".into(), "/graphql".into())
+    } else if is("fetch") || is("push") {
+        let r = target.trim_matches('/');
+        let repo = r.strip_suffix(".git").unwrap_or(r).to_string();
+        if repo.is_empty() { return Err("name the repo, like push owner/repo".into()); }
+        let push = is("push");
+        let path = format!("/{repo}.git/{}", if push { "git-receive-pack" } else { "git-upload-pack" });
+        (Op::Git { push, repo }, "POST".into(), path)
+    } else {
+        // an HTTP token (RFC 9110 tchar), the same check the verb picker runs.
+        if !method.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) { return Err(format!("{method} is not an HTTP method")); }
+        let verb = method.to_ascii_uppercase();
+        let t = if target.starts_with('/') { target.to_string() } else { format!("/{target}") };
+        let (p, q) = t.split_once('?').unwrap_or((&t, ""));
+        let path = rule_path(p).to_string();
+        // the same classification `handle` in mod.rs runs.
+        let c = &super::recipe::spec(recipe).classify;
+        let op = if let Some(g) = c.git.then(|| classify_git(&path, q)).flatten() {
+            g
+        } else if c.graphql && is_graphql(&path) {
+            // the broker reads a POST's body, which a typed line has none of:
+            // judged unparsed, the strictest reading.
+            if verb == "POST" { classify_graphql(b"") } else { Op::Graphql { mutations: vec!["<non-post graphql>".into()] } }
+        } else {
+            Op::Http
+        };
+        (op, verb, path)
+    };
+    let t = trace(secret, host, &verb, &path, &op, role, &[]);
+    let effect = if t.verdict == Verdict::Allow { Effect::Allow } else { Effect::Deny };
+    Ok(TestResult { effect, rule_index: t.rule, from_fallback: t.fallback, detail: t.detail })
 }
 
 /// Path glob: `*` matches within one `/` segment, a `**` segment any number
@@ -658,5 +730,55 @@ mod tests {
         // a named mutation still takes the fallback.
         let named = Op::Graphql { mutations: vec!["addComment".into()] };
         assert_eq!(evaluate("gh", "api.github.com", "POST", "/graphql", &named, &r, &[]), Verdict::Allow);
+    }
+
+    #[test]
+    fn test_request_names_the_deciding_rule() {
+        use crate::secrets::Recipe::{ApiKey, Github};
+        let r = reviewer();
+        let t = |host: &str, m: &str, target: &str| test_request(&r, Github, "gh", host, m, target).unwrap();
+        let hit = |effect, i| TestResult { effect, rule_index: Some(i), from_fallback: false, detail: String::new() };
+        let strip = |mut x: TestResult| { x.detail.clear(); x };
+        // plain HTTP, verb case and a trailing slash as the broker sees them.
+        assert_eq!(strip(t("api.github.com", "get", "/repos/acme/widget/")), hit(Effect::Allow, 0));
+        assert_eq!(t("api.github.com", "GET", "user").rule_index, Some(0));
+        // nothing matched: the set's fallback.
+        let f = t("api.github.com", "DELETE", "/repos/acme/widget");
+        assert_eq!((f.effect, f.rule_index, f.from_fallback, f.detail.as_str()), (Effect::Deny, None, true, "fallback DENY"));
+        // pseudo-verbs build the op directly, whatever the target says.
+        assert_eq!(strip(t("api.github.com", "QUERY", "")), hit(Effect::Allow, 1));
+        assert_eq!(strip(t("api.github.com", "MUTATION", "mergePullRequest")), hit(Effect::Deny, 2));
+        assert_eq!(strip(t("api.github.com", "mutation", "addPullRequestReview")), hit(Effect::Allow, 3));
+        assert_eq!(strip(t("github.com", "fetch", "acme/widget.git")), hit(Effect::Allow, 0));
+        assert_eq!(strip(t("github.com", "push", "/acme/widget")), hit(Effect::Allow, 1));
+        assert!(t("github.com", "push", "other/widget").from_fallback);
+        // a typed git smart-HTTP path is classified as git, like the broker does.
+        assert_eq!(t("github.com", "POST", "/acme/widget.git/git-receive-pack").rule_index, Some(1));
+        // POST /graphql has no body here: unparsed, which only ALLOW MUTATION * opens.
+        let g = t("api.github.com", "POST", "/graphql");
+        assert_eq!((g.effect, g.rule_index, g.from_fallback), (Effect::Deny, None, false));
+        // an API key secret never classifies GraphQL: plain HTTP, the fallback.
+        let k = test_request(&r, ApiKey, "gh", "api.github.com", "POST", "/graphql").unwrap();
+        assert!(k.from_fallback && k.effect == Effect::Deny);
+        // a host with no set takes the role default, reported as the fallback.
+        let d = t("uploads.github.com", "GET", "/x");
+        assert_eq!((d.effect, d.from_fallback), (Effect::Deny, true));
+        // methods the broker refuses outright.
+        assert_eq!(t("api.github.com", "TRACE", "/").effect, Effect::Deny);
+        for (m, target) in [("", "/x"), ("MUTATION", ""), ("push", "/"), ("G/T", "/x")] {
+            assert!(test_request(&r, Github, "gh", "api.github.com", m, target).is_err(), "{m} {target}");
+        }
+    }
+
+    #[test]
+    fn trace_points_at_the_rule_evaluate_used() {
+        let mut r = reviewer();
+        r.rule_sets[0].rules[0].disabled = true;
+        // the disabled rule 0 is skipped; the GET falls to the fallback.
+        let tr = trace("gh", "api.github.com", "GET", "/user", &Op::Http, &r, &[]);
+        assert!(tr.rule.is_none() && tr.fallback && matches!(tr.verdict, Verdict::Deny { .. }));
+        let allow = TaskAllow { secret: "gh".into(), host: "api.github.com".into(), rule: rule(Effect::Allow, &["GET"], "/user") };
+        let tr = trace("gh", "api.github.com", "GET", "/user", &Op::Http, &r, &[allow]);
+        assert_eq!((tr.verdict, tr.rule, tr.fallback, tr.detail.as_str()), (Verdict::Allow, None, false, "task allow"));
     }
 }

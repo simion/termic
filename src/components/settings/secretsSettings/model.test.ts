@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
-import type { Role, SecretDef } from "@/lib/types";
+import type { Role, Rule, SecretDef } from "@/lib/types";
 import type { ApiKeyProblem } from "./model";
-import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblems, deliveredAs, deliveries, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, secretProblems, storedIn, toggleSecret } from "./model";
+import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblems, deliveredAs, deliveries, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, normaliseVerb, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, secretProblems, specificityOrder, splitRequest, storedIn, toggleSecret, toggleVerb, verbGroups } from "./model";
 
 const secret = (id: string, hosts = ["api.github.com", "github.com", "uploads.github.com"]): SecretDef => ({
   id, name: id, kind: "generic", service: "gh:github.com", account: "alice", recipe: "github", hosts,
@@ -152,8 +152,11 @@ describe("secrets model", () => {
   it("shows a rule block for every host, custom ones included", () => {
     const blocks = ruleBlocksFor(role({ secrets: ["a"] }), [secret("a", ["api.github.com", "github.com", "uploads.github.com", "objects.example.io"])]);
     expect(blocks.map(b => [b.host, b.kind])).toEqual([
-      ["api.github.com", "http"], ["github.com", "git"], ["uploads.github.com", "http"], ["objects.example.io", "http"],
+      ["api.github.com", "api"], ["github.com", "git"], ["uploads.github.com", "http"], ["objects.example.io", "http"],
     ]);
+    // an API key on api.github.com is plain HTTP: the broker never reads its GraphQL.
+    const key: SecretDef = { ...secret("k", ["api.github.com"]), recipe: "api_key", api: API_KEY_PRESETS.custom.api };
+    expect(ruleBlocksFor(role({ secrets: ["k"] }), [key])[0].kind).toBe("http");
   });
 
   it("Reviewer reads GraphQL, denies merge and push", () => {
@@ -224,5 +227,58 @@ describe("duplicateRole", () => {
   it("never reuses a name", () => {
     const taken = [base, { ...base, id: "b", name: "Reviewer copy" }];
     expect(duplicateRole(base, "c", taken, name).name).toBe("Reviewer copy 2");
+  });
+});
+
+describe("rule tools", () => {
+  const rl = (effect: Rule["effect"], pattern: string, disabled = false, methods = ["GET"]): Rule => ({ effect, methods, pattern, note: "", disabled });
+
+  it("sorts most specific first, deny before allow on a tie", () => {
+    const rules = [
+      rl("allow", "/**"),                         // 0: one **
+      rl("allow", "/repos/*/*/pulls/*/reviews"),  // 1: three *
+      rl("allow", "/repos/acme/*"),               // 2: one *, prefix "repos/acme/"
+      rl("deny", "/repos/*/*/pulls/*/reviews"),   // 3: ties with 1, deny first
+      rl("allow", "/user/keys"),                  // 4: no wildcard
+      rl("allow", "/repos/*"),                    // 5: one *, shorter prefix than 2
+    ];
+    expect(specificityOrder(rules)).toEqual([4, 2, 5, 3, 1, 0]);
+  });
+
+  it("keeps disabled rules in place and the old order on a full tie", () => {
+    const rules = [rl("allow", "/**"), rl("deny", "/**", true), rl("allow", "/x"), rl("allow", "/y")];
+    // slot 1 stays the disabled rule; /x and /y tie, so they keep their order.
+    expect(specificityOrder(rules)).toEqual([2, 1, 3, 0]);
+    // an empty pattern (a QUERY rule) is as broad as **.
+    expect(specificityOrder([rl("allow", "", false, ["QUERY"]), rl("allow", "/a/**")])).toEqual([1, 0]);
+    // git and mutation patterns use the same measure.
+    expect(specificityOrder([rl("allow", "*"), rl("deny", "acme/widget")])).toEqual([1, 0]);
+  });
+
+  it("offers verbs by block kind", () => {
+    expect(verbGroups("git").flatMap(g => g.verbs)).toEqual(["fetch", "push"]);
+    expect(verbGroups("api").flatMap(g => g.verbs)).toContain("MUTATION");
+    expect(verbGroups("http").flatMap(g => g.verbs)).not.toContain("QUERY");
+  });
+
+  it("normalises a typed verb", () => {
+    expect(normaliseVerb(" propfind ")).toBe("PROPFIND");
+    expect(normaliseVerb("Push")).toBe("push");
+    for (const bad of ["", "*", "GET POST", "G/T"]) expect(normaliseVerb(bad)).toBeNull();
+  });
+
+  it("toggles verbs without leaving a rule empty", () => {
+    expect(toggleVerb(["GET"], "POST")).toEqual(["GET", "POST"]);
+    expect(toggleVerb(["GET", "POST"], "GET")).toEqual(["POST"]);
+    expect(toggleVerb(["GET"], "GET")).toEqual(["GET"]);
+    // * and named verbs exclude each other.
+    expect(toggleVerb(["GET", "POST"], "*")).toEqual(["*"]);
+    expect(toggleVerb(["*"], "PUT")).toEqual(["PUT"]);
+  });
+
+  it("splits a tester line", () => {
+    expect(splitRequest("  GET   /repos/acme/widget ")).toEqual({ method: "GET", target: "/repos/acme/widget" });
+    expect(splitRequest("QUERY")).toEqual({ method: "QUERY", target: "" });
+    expect(splitRequest("")).toEqual({ method: "", target: "" });
   });
 });

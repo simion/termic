@@ -44,6 +44,7 @@ use http::HttpError;
 use keychain::Secret;
 use mitm::Connector;
 pub(crate) use recipe::Delivery;
+pub(crate) use rules::{test_request, TestResult};
 use recipe::{Inject, Route};
 use rules::{Op, Verdict};
 
