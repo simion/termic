@@ -47,7 +47,10 @@ export function Settings() {
   const [escArmed, setEscArmed] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      // a popover, menu or dialog that took this Esc (Radix preventDefaults
+      // the one it dismisses on) already used it: arming here too meant
+      // closing two verb pickers in a row closed Settings.
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       e.preventDefault();
       if (escArmed) closeSettings();
       else setEscArmed(true);

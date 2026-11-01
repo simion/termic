@@ -405,9 +405,10 @@ describe("settings: secrets and roles", () => {
   // HEAD /**, fallback deny. The three cases below build on each other.
   const uploads = '[data-testid="rules-uploads.github.com"]';
   const uploadRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "uploads.github.com").rules;
-  /** Radix dismisses on an Escape keydown at the document. */
+  /** Radix dismisses on an Escape keydown at the document. Cancelable like a
+   *  real key, so Settings sees it was taken and does not arm its own close. */
   const closePicker = async () => {
-    await browser.execute(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await browser.execute(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
     await waitGone('[data-testid="verb-picker"]');
   };
   const pickerVerbs = () => browser.execute(() =>
