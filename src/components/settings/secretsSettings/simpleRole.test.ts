@@ -23,6 +23,17 @@ const note = (k: string) => {
   if (typeof v !== "string") throw new Error(`missing secrets:${k}`);
   return v;
 };
+/** rules.rs's walk for a plain HTTP request: first enabled match, else the
+ *  fallback. `*` one segment, `**` any number (zero included). */
+const glob = (p: string, s: string): boolean => {
+  const seg = (a: string, b: string) => new RegExp(`^${a.split("*").map(x => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`, "i").test(b);
+  const go = (ps: string[], ss: string[]): boolean => !ps.length ? !ss.length
+    : ps[0] === "**" ? ss.some((_, i) => go(ps.slice(1), ss.slice(i))) || go(ps.slice(1), [])
+    : !!ss.length && seg(ps[0], ss[0]) && go(ps.slice(1), ss.slice(1));
+  return go(p.replace(/^\/+/, "").split("/"), s.replace(/^\/+/, "").split("/"));
+};
+const judge = (set: RuleSet, method: string, path: string) =>
+  set.rules.find(r => !r.disabled && r.methods.some(m => m === method || (m === "*")) && glob(r.pattern, path))?.effect ?? set.fallback;
 const popover = (pattern: string): Rule => ({ effect: "allow", methods: ["POST"], pattern, note: "" });
 /** What secrets.rs allow_on_role does: the rule goes first in its set. */
 const allowOnRole = (role: Role, host: string, rule: Rule): Role => ({
@@ -49,6 +60,24 @@ describe("simple roles: compile", () => {
     expect(on(compile(cfg({ caps: ["push"] }), gh), "github.com").rules.every(r => r.effect === "allow")).toBe(true);
   });
 
+  it("approving a deployment or a fork run is guarded, and Re-run CI never grants it", () => {
+    const gates = ["/repos/acme/widget/actions/runs/7/pending_deployments", "/repos/acme/widget/actions/runs/7/approve"];
+    // every capability ticked, anything not listed allowed: the guardrail
+    // must still be what decides.
+    const all = CAPS.map(c => c.id);
+    for (const path of gates) {
+      expect(judge(on(compile(cfg({ caps: all, fallback: "allow" }), gh), "api.github.com"), "POST", path)).toBe("deny");
+      // guard off, fallback deny: nothing a checkbox wrote matches.
+      expect(judge(on(compile(cfg({ guard: false, caps: all }), gh), "api.github.com"), "POST", path)).toBe("deny");
+    }
+    // the calls Re-run CI is for still pass, guard on.
+    const ci = on(compile(cfg({ caps: ["actions"] }), gh), "api.github.com");
+    for (const path of ["/repos/acme/widget/actions/runs/7/rerun", "/repos/acme/widget/actions/runs/7/rerun-failed-jobs",
+      "/repos/acme/widget/actions/runs/7/cancel", "/repos/acme/widget/actions/jobs/9/rerun", "/repos/acme/widget/actions/workflows/ci.yml/dispatches"]) {
+      expect(judge(ci, "POST", path)).toBe("allow");
+    }
+  });
+
   it("each capability writes its own rules, scoped where a path names the repo", () => {
     const only = (id: CapId, host: string) => lines(on(compile(cfg({ guard: false, caps: [id], scope: "acme/widget" }), gh), host));
     expect(only("read", "github.com")).toEqual(["allow fetch acme/widget"]);
@@ -58,9 +87,14 @@ describe("simple roles: compile", () => {
     expect(only("comment", "api.github.com")).toContain("allow MUTATION addComment");
     expect(only("prs", "api.github.com")).toContain("allow POST /repos/acme/widget/pulls");
     expect(only("issues", "api.github.com")).toContain("allow MUTATION updateIssue");
-    expect(only("actions", "api.github.com")).toContain("allow POST /repos/acme/widget/actions/runs/**");
-    // runs only: actions/** would reach runner tokens and repo variables.
-    expect(only("actions", "api.github.com")).not.toContain("allow POST /repos/acme/widget/actions/**");
+    // exactly what gh run rerun / cancel and gh workflow run send.
+    expect(only("actions", "api.github.com")).toEqual([
+      "allow POST /repos/acme/widget/actions/runs/*/rerun",
+      "allow POST /repos/acme/widget/actions/runs/*/rerun-failed-jobs",
+      "allow POST /repos/acme/widget/actions/runs/*/cancel",
+      "allow POST /repos/acme/widget/actions/jobs/*/rerun",
+      "allow POST /repos/acme/widget/actions/workflows/*/dispatches",
+    ]);
     expect(only("merge", "api.github.com")).toContain("allow MUTATION mergePullRequest");
     expect(only("release", "uploads.github.com")).toEqual(["allow POST /repos/acme/widget/releases/*/assets"]);
     // every rule the compile writes passes secrets.rs validate: a method, and

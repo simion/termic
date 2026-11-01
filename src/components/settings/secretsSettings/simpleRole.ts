@@ -27,7 +27,9 @@ export function scopeRepos(scope: string): string {
 }
 
 /** Calls that hand out access outliving the task (deploy keys, collaborators,
- *  webhooks, runners, org invites and memberships, SSH / GPG keys). Denied on
+ *  webhooks, runners, org invites and memberships, SSH / GPG keys), or wave
+ *  past a review gate (approving a deployment to a protected environment, or
+ *  a fork PR's workflow run). Denied on
  *  EVERY repo, not just the scoped ones: with "Anything not listed: Allow" a
  *  scoped guard would leave every other repo open. `**` also matches zero
  *  segments, so `hooks/**` covers `hooks` itself. */
@@ -46,6 +48,8 @@ export const GUARD: [string, string][] = [
   ["POST", "/user/keys"],
   ["POST", "/user/gpg_keys"],
   ["POST", "/user/ssh_signing_keys"],
+  ["POST", "/repos/*/*/actions/runs/*/pending_deployments"],
+  ["POST", "/repos/*/*/actions/runs/*/approve"],
 ];
 
 /** [methods, pattern] allowed by a capability; `{R}` is the repo scope. */
@@ -69,10 +73,13 @@ export const CAPS: { id: CapId; risk?: true; api?: Spec[]; git?: Spec[]; up?: Sp
     ["POST", "/repos/{R}/issues"], ["PATCH", "/repos/{R}/issues/*"], ["POST PUT DELETE", "/repos/{R}/issues/*/labels/**"],
     ["MUTATION", "createIssue"], ["MUTATION", "updateIssue"], ["MUTATION", "addLabelsToLabelable"], ["MUTATION", "removeLabelsFromLabelable"],
   ] },
-  // runs and dispatches only: `actions/**` would also cover repo variables
-  // and runner registration tokens.
+  // the exact calls gh run rerun (--failed, --job), gh run cancel and gh
+  // workflow run send. A wider glob is a grant: `actions/**` covers repo
+  // variables and runner tokens, `runs/**` approving deployments and fork runs.
   { id: "actions", api: [
-    ["POST", "/repos/{R}/actions/runs/**"], ["POST", "/repos/{R}/actions/jobs/*/rerun"], ["POST", "/repos/{R}/actions/workflows/*/dispatches"],
+    ["POST", "/repos/{R}/actions/runs/*/rerun"], ["POST", "/repos/{R}/actions/runs/*/rerun-failed-jobs"],
+    ["POST", "/repos/{R}/actions/runs/*/cancel"], ["POST", "/repos/{R}/actions/jobs/*/rerun"],
+    ["POST", "/repos/{R}/actions/workflows/*/dispatches"],
   ] },
   { id: "merge", risk: true, api: [
     ["PUT", "/repos/{R}/pulls/*/merge"], ["DELETE", "/repos/{R}/git/refs/heads/**"],
