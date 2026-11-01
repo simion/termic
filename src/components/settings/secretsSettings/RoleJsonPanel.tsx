@@ -1,10 +1,10 @@
 // A role as JSON: the current role to copy, an "Ask an agent" prompt, and a
-// paste box that previews and imports. Opened from the role editor (with
-// `role`, so Replace is offered) and from New role (without).
+// paste box that previews and imports. The role editor's JSON tab (with
+// `role`, so Replace is offered) and New role's "Paste JSON instead" (without).
 
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Copy } from "lucide-react";
+import { Copy, X } from "lucide-react";
 import type { Role, SecretDef } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -22,7 +22,8 @@ export function RoleJsonPanel({ role, example, secrets, onAdd, onReplace, onClos
   secrets: SecretDef[];
   onAdd: (draft: RoleDraft) => void;
   onReplace?: (draft: RoleDraft) => void;
-  onClose: () => void;
+  /** New role's flow only; in the editor the panel is a tab. */
+  onClose?: () => void;
 }) {
   const { t } = useTranslation("secrets");
   const tt = (k: string, o?: Record<string, unknown>) => t(k, o);
@@ -45,9 +46,11 @@ export function RoleJsonPanel({ role, example, secrets, onAdd, onReplace, onClos
             <Copy className="h-3.5 w-3.5" /> {t("manage.json.copy")}
           </Button>
         )}
-        <Button size="sm" variant="ghost" onClick={onClose} data-testid="role-json-close">
-          <ArrowLeft className="h-3.5 w-3.5" /> {role ? t("manage.json.back") : t("manage.json.close")}
-        </Button>
+        {onClose && (
+          <Button size="sm" variant="ghost" onClick={onClose} data-testid="role-json-close">
+            <X className="h-3.5 w-3.5" /> {t("manage.json.close")}
+          </Button>
+        )}
       </div>
 
       <div className={cn("grid gap-5", role && "md:grid-cols-2")}>

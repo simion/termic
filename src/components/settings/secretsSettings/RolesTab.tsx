@@ -1,18 +1,19 @@
-// Roles tab: the roles x secrets matrix and the new-role menu. The selected
-// role's editor lives in RoleEditor.tsx, its rule blocks in RuleBlock.tsx.
+// Roles tab: the roles x secrets matrix and New role (NewRolePanel.tsx). The
+// selected role's editor lives in RoleEditor.tsx, its rule blocks in
+// RuleBlock.tsx.
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { Role } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { i18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { DropdownItem, DropdownMenu, DropdownRoot, DropdownTrigger } from "@/components/ui/Dropdown";
 import { cn } from "@/lib/utils";
-import { defaultsFor, duplicateRole, hostConflicts, roleFromTemplate, tasksByRole, toggleSecret, type RoleTemplate } from "./model";
+import { defaultsFor, duplicateRole, hostConflicts, tasksByRole, toggleSecret } from "./model";
+import { NewRolePanel } from "./NewRolePanel";
 import { Eyebrow, RoleDot } from "./parts";
 import { RoleEditor } from "./RoleEditor";
 import { RoleJsonPanel } from "./RoleJsonPanel";
@@ -23,8 +24,8 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
   const { t } = useTranslation("secrets");
   const { secrets, roles } = model;
   const [selected, setSelected] = useState<string | null>(initialRole ?? roles[0]?.id ?? null);
-  // the JSON panel in place of the editor: for the selected role, or New role.
-  const [json, setJson] = useState<"edit" | "new" | null>(null);
+  // New role's gallery, or its "Paste JSON instead", in place of the editor.
+  const [panel, setPanel] = useState<"new" | "json" | null>(null);
   // A deleted role (or a first load) leaves nothing picked; fall to the first.
   useEffect(() => {
     if (!selected || !roles.some(r => r.id === selected)) setSelected(roles[0]?.id ?? null);
@@ -47,14 +48,8 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
     void saveRole(next);
   }
 
-  async function create(tpl: RoleTemplate) {
-    // i18n.t, not the hook's t: the template's names and notes are stored
-    // data, minted once in the current language.
-    // the templates' rules are GitHub's; an API key secret that happens to
-    // be listed first must not be bound to a role the user did not aim at it.
-    const gh = secrets.find(s => s.recipe === "github");
-    const role = roleFromTemplate(tpl, crypto.randomUUID(), gh, roles.map(r => r.colour), k => i18n.t(`secrets:${k}`));
-    if (await model.save({ roles: [...roles, role] })) setSelected(role.id);
+  async function create(role: Role) {
+    if (await model.save({ roles: [...roles, role] })) { setSelected(role.id); setPanel(null); }
   }
 
   async function duplicate(role: Role) {
@@ -65,14 +60,12 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
 
   async function addFromJson(draft: RoleDraft) {
     const role: Role = { ...draft, id: crypto.randomUUID() };
-    if (await model.save({ roles: [...roles, role] })) { setSelected(role.id); setJson(null); }
+    if (await model.save({ roles: [...roles, role] })) { setSelected(role.id); setPanel(null); }
   }
 
   // same id, so running tasks and the agents and projects defaulting to it
   // keep pointing at it.
-  async function replaceFromJson(id: string, draft: RoleDraft) {
-    if (await saveRole({ ...draft, id })) setJson(null);
-  }
+  const replaceFromJson = (id: string, draft: RoleDraft) => saveRole({ ...draft, id });
 
   async function remove(role: Role) {
     const ok = await useUI.getState().askConfirm({
@@ -84,6 +77,13 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
     if (ok) await model.save({ roles: roles.filter(r => r.id !== role.id) });
   }
 
+  const defaultList = (id: string) => {
+    const d = defaultsFor(id, projects, agents);
+    return [
+      ...d.agents.map(name => t("manage.roles.defaultAgent", { name })),
+      ...d.projects.map(name => t("manage.roles.defaultProject", { name })),
+    ].join(", ");
+  };
   const running = (n: number) => n === 1 ? t("manage.roles.running_one", { count: n }) : t("manage.roles.running_other", { count: n });
   const sel = roles.find(r => r.id === selected) ?? null;
 
@@ -93,17 +93,9 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
 
       <div className="flex items-center justify-between">
         <Eyebrow>{t("manage.roles.heading", { count: roles.length })}</Eyebrow>
-        <DropdownRoot>
-          <DropdownTrigger asChild>
-            <Button variant="primary" data-testid="roles-new"><Plus className="h-4 w-4" /> {t("manage.roles.new")} <ChevronDown className="h-3.5 w-3.5" /></Button>
-          </DropdownTrigger>
-          <DropdownMenu>
-            <DropdownItem data-role-template="empty" onSelect={() => void create("empty")}>{t("manage.tpl.menuEmpty")}</DropdownItem>
-            <DropdownItem data-role-template="reviewer" onSelect={() => void create("reviewer")}>{t("manage.tpl.menuReviewer")}</DropdownItem>
-            <DropdownItem data-role-template="maintainer" onSelect={() => void create("maintainer")}>{t("manage.tpl.menuMaintainer")}</DropdownItem>
-            <DropdownItem data-role-template="json" onSelect={() => setJson("new")}>{t("manage.json.menu")}</DropdownItem>
-          </DropdownMenu>
-        </DropdownRoot>
+        <Button variant="primary" data-testid="roles-new" aria-expanded={panel !== null} onClick={() => setPanel(panel ? null : "new")}>
+          <Plus className="h-4 w-4" /> {t("manage.roles.new")}
+        </Button>
       </div>
 
       {secrets.length === 0 && (
@@ -124,11 +116,7 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
           </thead>
           <tbody>
             {roles.map(r => {
-              const d = defaultsFor(r.id, projects, agents);
-              const def = [
-                ...d.agents.map(name => t("manage.roles.defaultAgent", { name })),
-                ...d.projects.map(name => t("manage.roles.defaultProject", { name })),
-              ].join(", ");
+              const def = defaultList(r.id);
               return (
                 <tr
                   key={r.id}
@@ -175,10 +163,12 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
         </table>
       </div>
 
-      {json && <RoleJsonPanel key={json === "edit" ? sel?.id : "new"} role={json === "edit" && sel ? sel : undefined} example={sel ?? undefined} secrets={secrets}
-        onAdd={d => void addFromJson(d)} onReplace={d => sel && void replaceFromJson(sel.id, d)} onClose={() => setJson(null)} />}
-      {json ? null : sel
-        ? <RoleEditor key={sel.id} role={sel} secrets={secrets} runningTasks={byRole.get(sel.id)?.map(x => x.name) ?? []} onSave={saveRole} onDuplicate={() => void duplicate(sel)} onDelete={() => void remove(sel)} onJson={() => setJson("edit")} />
+      {panel === "new" && <NewRolePanel secrets={secrets} roles={roles} onCreate={r => void create(r)} onJson={() => setPanel("json")} onClose={() => setPanel(null)} />}
+      {panel === "json" && <RoleJsonPanel example={sel ?? undefined} secrets={secrets} onAdd={d => void addFromJson(d)} onClose={() => setPanel(null)} />}
+      {panel ? null : sel
+        ? <RoleEditor key={sel.id} role={sel} secrets={secrets} runningTasks={byRole.get(sel.id)?.map(x => x.name) ?? []} defaultFor={defaultList(sel.id)}
+            onSave={saveRole} onDuplicate={() => void duplicate(sel)} onDelete={() => void remove(sel)}
+            onJsonAdd={d => void addFromJson(d)} onJsonReplace={d => replaceFromJson(sel.id, d)} />
         : roles.length > 0 && <div className="text-[12.5px] text-[var(--color-fg-faint)]">{t("manage.roles.selectHint")}</div>}
     </div>
   );

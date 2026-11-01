@@ -3,14 +3,14 @@ import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
 import type { Role, Rule, SecretDef } from "@/lib/types";
 import type { ApiKeyProblem } from "./model";
-import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblems, deliveredAs, deliveries, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, normaliseVerb, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, secretProblems, specificityOrder, splitRequest, storedIn, toggleSecret, toggleVerb, verbGroups } from "./model";
+import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblems, deliveredAs, deliveries, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, normaliseVerb, ownedService, putRuleSet, roleDefaultEffect, ruleBlocksFor, ruleSetFor, secretProblem, secretProblems, specificityOrder, splitRequest, storedIn, toggleSecret, toggleVerb, verbGroups } from "./model";
 
 const secret = (id: string, hosts = ["api.github.com", "github.com", "uploads.github.com"]): SecretDef => ({
   id, name: id, kind: "generic", service: "gh:github.com", account: "alice", recipe: "github", hosts,
 });
 const role = (p: Partial<Role> = {}): Role => ({ id: "r", name: "R", colour: "blue", description: "", secrets: [], rule_sets: [], ...p });
 
-// resolves a `manage.tpl.*` key against the real en tree, and fails loudly on
+// resolves a `manage.*` key against the real en tree, and fails loudly on
 // a key that does not exist: template keys are built, so usedKeys.test.ts
 // cannot see them (docs/i18n.md, "a registry's copy").
 const t = (key: string) => {
@@ -127,23 +127,6 @@ describe("secrets model", () => {
     expect(putRuleSet(open, { ...deny, fallback: "allow" }).rule_sets.map(x => x.host)).toEqual(["uploads.github.com"]);
   });
 
-  it("Maintainer denies only the calls that mint access outliving the task", () => {
-    const m = roleFromTemplate("maintainer", "m", secret("a"), [], t);
-    expect(m.secrets).toEqual(["a"]);
-    expect(m.rule_sets).toHaveLength(1);
-    const api = m.rule_sets[0];
-    expect([api.host, api.fallback]).toEqual(["api.github.com", "allow"]);
-    expect(roleDefaultEffect(m)).toBe("allow");
-    expect(api.rules.every(x => x.effect === "deny" && x.methods.length >= 1 && x.pattern.length > 1)).toBe(true);
-    const lines = api.rules.flatMap(x => x.methods.map(m => `${m} ${x.pattern}`));
-    for (const l of ["POST /repos/*/*/keys", "PATCH /repos/*/*/hooks/**", "POST /orgs/*/actions/runners/**", "PUT /orgs/*/memberships/*", "POST /user/ssh_signing_keys"]) {
-      expect(lines).toContain(l);
-    }
-    // an API key secret gets no GitHub rules and is not bound by a template.
-    const key = { ...secret("k", ["api.openai.com"]), recipe: "api_key" as const };
-    expect(roleFromTemplate("reviewer", "x", key, [], t)).toMatchObject({ secrets: ["k"], rule_sets: [] });
-  });
-
   it("unticking a secret drops its rules", () => {
     const r = role({ secrets: ["a"], rule_sets: [{ secret: "a", host: "github.com", rules: [], fallback: "deny" }] });
     expect(toggleSecret(r, "a", false)).toMatchObject({ secrets: [], rule_sets: [] });
@@ -157,27 +140,6 @@ describe("secrets model", () => {
     // an API key on api.github.com is plain HTTP: the broker never reads its GraphQL.
     const key: SecretDef = { ...secret("k", ["api.github.com"]), recipe: "api_key", api: API_KEY_PRESETS.custom.api };
     expect(ruleBlocksFor(role({ secrets: ["k"] }), [key])[0].kind).toBe("http");
-  });
-
-  it("Reviewer reads GraphQL, denies merge and push", () => {
-    const r = roleFromTemplate("reviewer", "x", secret("a"), ["blue"], t);
-    expect(r.colour).toBe("purple");
-    const api = r.rule_sets.find(s => s.host === "api.github.com")!;
-    expect(api.fallback).toBe("deny");
-    // without QUERY, gh pr view (POST /graphql) is denied by the fallback.
-    expect(api.rules.some(x => x.effect === "allow" && x.methods.includes("QUERY"))).toBe(true);
-    expect(api.rules.some(x => x.effect === "deny" && x.methods.includes("MUTATION") && x.pattern === "mergePullRequest")).toBe(true);
-    const git = r.rule_sets.find(s => s.host === "github.com")!;
-    expect(git.rules.map(x => [x.effect, x.methods[0], x.pattern])).toEqual([["allow", "fetch", "**"], ["deny", "push", "**"]]);
-    // a set per host: a host with no set would allow everything.
-    expect(r.rule_sets.map(s => s.host)).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
-    const up = r.rule_sets.find(s => s.host === "uploads.github.com")!;
-    expect(up.fallback).toBe("deny");
-    expect(up.rules.map(x => [x.effect, x.methods.join(",")])).toEqual([["allow", "GET,HEAD"]]);
-    const custom = roleFromTemplate("reviewer", "z", secret("a", ["api.github.com", "objects.example.io"]), [], t);
-    expect(custom.rule_sets.map(s => [s.host, s.fallback])).toEqual([["api.github.com", "deny"], ["objects.example.io", "deny"]]);
-    // every template key resolves (t throws otherwise).
-    for (const tpl of ["empty", "maintainer"] as const) roleFromTemplate(tpl, "y", secret("a"), [], t);
   });
 
   it("validates the Add secret form", () => {

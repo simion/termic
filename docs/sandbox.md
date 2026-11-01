@@ -705,7 +705,7 @@ revokes everything instead of falling back to the spawn-time rules. Task allows
 first, then the role's rule set for (secret, host), first match, then its
 fallback. A (secret, host) with no rule set takes the role's default: deny
 when any of the role's sets falls back to deny (the role was written
-deny-by-default, like the Reviewer template, so a host added later never
+deny-by-default, like the Reviewer starter, so a host added later never
 opens up), allow otherwise. A popover allow that creates a set gives it
 that default as its fallback. A mutation the classifier cannot name
 (unparsed, an unknown fragment, past the depth or visit caps, a non-POST

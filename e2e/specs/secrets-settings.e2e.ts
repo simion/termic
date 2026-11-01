@@ -1,5 +1,5 @@
 // Settings -> Secrets: add a secret, build a role from the Reviewer
-// template, edit its rules, and default an agent and a project to it. Asserts on the saved Settings, since
+// starter, drive its checkboxes, edit its rules, and default an agent and a project to it. Asserts on the saved Settings, since
 // that is what the broker reads at spawn.
 //
 // The broker's own commands (secret_probe, secrets_gh_accounts,
@@ -51,18 +51,6 @@ async function fixtureProjectId(): Promise<string> {
   return id;
 }
 
-/** Radix menus open on pointerdown, not click. */
-async function openMenu(sel: string) {
-  await browser.execute((s) => {
-    const el = document.querySelector(s) as HTMLElement;
-    const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-    el.dispatchEvent(new PointerEvent("pointerdown", opts));
-    el.dispatchEvent(new PointerEvent("pointerup", opts));
-    el.click();
-  }, sel);
-  await waitVisible("[role='menu']");
-}
-
 /** The Add dialog's "Keychain item" source, naming gh's own generic item, so
  *  the secret reads as a gh login without depending on the accounts gh has
  *  on the machine running the suite (the default source follows those). */
@@ -73,6 +61,18 @@ async function ghLoginSource() {
 }
 
 const secretsTab = (id: "secrets" | "roles" | "activity") => clickPresent(`[data-secrets-tab="${id}"]`);
+const editorTab = (id: "simple" | "rules" | "json") => clickPresent(`[data-role-tab="${id}"]`);
+
+/** Click the one button labelled `label` in the open confirm dialog. */
+async function confirmDialog(title: string, label: string) {
+  await browser.waitUntil(() => browser.execute((t: string) =>
+    [...document.querySelectorAll('[role="dialog"]')].some(d => d.textContent?.includes(t)), title),
+  { timeout: 10_000, timeoutMsg: `the "${title}" confirm never opened` });
+  await browser.execute((t: string, l: string) => {
+    const d = [...document.querySelectorAll('[role="dialog"]')].find(x => x.textContent?.includes(t))!;
+    ([...d.querySelectorAll("button")].find(b => b.textContent?.trim() === l) as HTMLElement).click();
+  }, title, label);
+}
 
 /** Remount Settings -> Secrets on the Roles tab with `role` open. The page
  *  edits a copy of the settings seeded on mount, so after a spec writes
@@ -266,24 +266,126 @@ describe("settings: secrets and roles", () => {
     expect(byName(await settingsLoad(), "gh-maintain")).toEqual(before);
   });
 
-  it("creates a Reviewer role whose rules read GraphQL and deny push", async () => {
+  it("creates a Reviewer role from a starter: reads GraphQL, refuses push", async () => {
     await secretsTab("roles");
     await waitForText("A role is the set of secrets an agent may use");
-    await openMenu('[data-testid="roles-new"]');
-    await clickPresent('[data-role-template="reviewer"]');
+    await clickPresent('[data-testid="roles-new"]');
+    await waitVisible('[data-testid="new-role"]');
+    await clickPresent('[data-starter="reviewer"]');
+    // Uses starts on the first GitHub secret; a second one on the same hosts
+    // is refused in place, before anything saves.
+    expect(await browser.execute(() =>
+      [...document.querySelectorAll('[data-new-role-secret][aria-checked="true"]')].map(e => e.getAttribute("data-new-role-secret")))).toEqual(["gh-review"]);
+    await clickPresent('[data-new-role-secret="gh-maintain"]');
+    await waitVisible('[data-testid="new-role-conflict"]');
+    expect(await browser.execute(() => (document.querySelector('[data-testid="new-role-create"]') as HTMLButtonElement).disabled)).toBe(true);
+    await snap("secrets-new-role-gallery.png");
+    await clickPresent('[data-new-role-secret="gh-maintain"]');
+    await waitGone('[data-testid="new-role-conflict"]');
+    await clickPresent('[data-testid="new-role-create"]');
     await waitSaved(s => s.roles?.length === 1, "the role never saved");
+
     const role = (await settingsLoad()).roles[0];
     roleId = role.id;
     expect(role.name).toBe("Reviewer");
+    const secretId = role.secrets[0];
+    expect(role.simple[secretId]).toMatchObject({ scope: "", fallback: "deny", guard: true, caps: ["read", "comment"] });
     const api = role.rule_sets.find((r: any) => r.host === "api.github.com");
     expect(api.fallback).toBe("deny");
     expect(api.rules.some((r: any) => r.methods.includes("QUERY") && r.effect === "allow")).toBe(true);
     // every host of the secret has a set, so none is silently open.
     expect(role.rule_sets.map((r: any) => r.host).sort()).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
+    // git fetches; a push matches nothing and the fallback refuses it.
     const git = role.rule_sets.find((r: any) => r.host === "github.com");
-    expect(git.rules.map((r: any) => `${r.effect} ${r.methods.join(",")}`)).toEqual(["allow fetch", "deny push"]);
-    await waitVisible('[data-testid="role-editor"]');
-    await snap("secrets-m2-reviewer.png");
+    expect(git.rules.map((r: any) => `${r.effect} ${r.methods.join(",")} ${r.pattern}`)).toEqual(["allow fetch */*"]);
+    expect(git.fallback).toBe("deny");
+
+    // it opens on its checkboxes, not custom.
+    await waitVisible('[data-testid="role-editor"] [data-simple-secret="gh-review"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-simple-secret="gh-review"][data-custom]'))).toBe(false);
+    expect(await browser.execute(() => document.querySelector('[data-simple-cap="comment"]')?.getAttribute("aria-checked"))).toBe("true");
+    expect(await browser.execute(() => document.querySelector('[data-simple-cap="push"]')?.getAttribute("aria-checked"))).toBe("false");
+    await snap("secrets-simple-reviewer.png");
+  });
+
+  const gitRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "github.com").rules;
+  const apiRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "api.github.com").rules;
+  const POPOVER = { effect: "allow", methods: ["POST"], pattern: "/repos/acme/widget/issues/412/labels", note: "allowed from review-412" };
+  const GUARD_RULES = 14;
+
+  it("ticking a capability rewrites the rules, and Rules shows them", async () => {
+    await clickPresent('[data-simple-cap="push"]');
+    await waitSaved(s => gitRules(s).some((r: any) => r.methods.join() === "push" && r.pattern === "*/*"), "push never compiled in");
+    await editorTab("rules");
+    await waitVisible('[data-testid="rules-github.com"] [data-rule-index="1"]');
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="rules-github.com"] [data-rule-index="1"] [data-field="methods"]')!.textContent)).toBe("push");
+    // a repo scope narrows git to it; the summary warns GraphQL writes are not.
+    await editorTab("simple");
+    await typeAndCommit('[data-testid="simple-scope"]', "acme");
+    await waitSaved(s => gitRules(s).every((r: any) => r.pattern === "acme/*"), "the scope never compiled in");
+    await waitVisible('[data-testid="simple-warn-graphql"]');
+    await snap("secrets-simple-push-scoped.png");
+    // back to every repo, no push: as the starter made it.
+    await typeAndCommit('[data-testid="simple-scope"]', "");
+    await clickPresent('[data-simple-cap="push"]');
+    await waitSaved(s => gitRules(s).length === 1 && gitRules(s)[0].pattern === "*/*", "push never compiled out");
+    await waitGone('[data-testid="simple-warn-graphql"]');
+  });
+
+  it("a popover allow on the role is an extra that survives a checkbox change", async () => {
+    // what broker_allow does for a role-scoped allow: the rule goes first.
+    await browser.execute(async (rule: any) => {
+      const t = window.__termic!;
+      const s = await t.invoke("settings_load") as any;
+      const roles = s.roles.map((r: any) => ({ ...r, rule_sets: r.rule_sets.map((rs: any) =>
+        rs.host === "api.github.com" ? { ...rs, rules: [rule, ...rs.rules] } : rs) }));
+      await t.invoke("settings_save", { s: { ...s, roles } });
+    }, POPOVER);
+    await waitSaved(s => apiRules(s)[0].pattern === POPOVER.pattern, "the popover allow never saved");
+    await reopenRoles("Reviewer");
+    const extra = `[data-simple-extra="api.github.com POST ${POPOVER.pattern}"]`;
+    await waitVisible(extra);
+    expect(await browser.execute(() => !!document.querySelector('[data-simple-secret="gh-review"][data-custom]'))).toBe(false);
+    await snap("secrets-simple-extra.png");
+
+    // a checkbox change keeps it, and moves it below the guardrail.
+    await clickPresent('[data-simple-cap="issues"]');
+    await waitSaved(s => apiRules(s).some((r: any) => r.pattern === "/repos/*/*/issues"), "issues never compiled in");
+    let rules = apiRules(await settingsLoad());
+    expect(rules.slice(0, GUARD_RULES).every((r: any) => r.effect === "deny")).toBe(true);
+    expect(rules[GUARD_RULES]).toEqual(POPOVER);
+    await clickPresent('[data-simple-cap="issues"]');
+    await waitSaved(s => !apiRules(s).some((r: any) => r.pattern === "/repos/*/*/issues"), "issues never compiled out");
+    rules = apiRules(await settingsLoad());
+    expect(rules.filter((r: any) => r.pattern === POPOVER.pattern)).toEqual([POPOVER]);
+    await waitVisible(extra);
+  });
+
+  it("a hand edit in Rules shows the custom banner; Reset restores the checkboxes and keeps the extra", async () => {
+    await editorTab("rules");
+    const row = '[data-testid="rules-api.github.com"] [data-rule-index="0"]';
+    await clickPresent(`${row} button[aria-label="Turn rule off (kept, but skipped)"]`);
+    await waitSaved(s => apiRules(s)[0].disabled === true, "the hand edit never saved");
+    await editorTab("simple");
+    await waitVisible('[data-simple-secret="gh-review"][data-custom] [data-testid="simple-custom"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-simple-cap]'))).toBe(false);
+    await snap("secrets-simple-custom.png");
+
+    await clickPresent('[data-testid="simple-reset"]');
+    await confirmDialog("Reset gh-review to checkboxes?", "Reset to checkboxes");
+    await waitSaved(s => !apiRules(s).some((r: any) => r.disabled), "Reset never saved");
+    await waitGone('[data-testid="simple-custom"]');
+    await waitVisible('[data-simple-cap="comment"][aria-checked="true"]');
+    await waitVisible(`[data-simple-extra="api.github.com POST ${POPOVER.pattern}"]`);
+    expect(apiRules(await settingsLoad())[GUARD_RULES]).toEqual(POPOVER);
+
+    // removing the extra drops just that rule, and the cases below start
+    // from the starter's rules.
+    await clickPresent(`[data-simple-extra="api.github.com POST ${POPOVER.pattern}"] button`);
+    await waitSaved(s => !apiRules(s).some((r: any) => r.pattern === POPOVER.pattern), "the extra was never removed");
+    await waitGone('[data-testid="simple-extras"]');
+    await editorTab("rules");
   });
 
   it("edits the role: name, colour, and an added rule moved up", async () => {
@@ -337,9 +439,11 @@ describe("settings: secrets and roles", () => {
       document.activeElement?.closest("[data-rule-index]")?.getAttribute("data-rule-index"))) === String(before),
       { timeout: 3_000, timeoutMsg: "focus did not follow the moved rule" });
 
-    // the fallback row flips like a rule does.
+    // the fallback row flips like a rule does, both ways.
     await clickPresent('[data-testid="rules-github.com"] [data-rule-fallback] [data-effect]');
     await waitSaved(s => s.roles[0].rule_sets.find((r: any) => r.host === "github.com").fallback === "allow", "fallback never saved");
+    await clickPresent('[data-testid="rules-github.com"] [data-rule-fallback] [data-effect]');
+    await waitSaved(s => s.roles[0].rule_sets.find((r: any) => r.host === "github.com").fallback === "deny", "fallback never flipped back");
   });
 
   it("a drag with an uncommitted edit keeps the edit on its own rule", async () => {
@@ -401,7 +505,7 @@ describe("settings: secrets and roles", () => {
     await waitGone(`${row}[data-rule-disabled]`);
   });
 
-  // the uploads block starts as the Reviewer template left it: ALLOW GET,
+  // the uploads block starts as the Reviewer starter left it: ALLOW GET,
   // HEAD /**, fallback deny. The three cases below build on each other.
   const uploads = '[data-testid="rules-uploads.github.com"]';
   const uploadRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "uploads.github.com").rules;
@@ -470,14 +574,14 @@ describe("settings: secrets and roles", () => {
     };
     await setSelect('[data-testid="rule-tester-block"]', `${secretId}@uploads.github.com`);
     await tryRequest("GET /repos/acme/widget/releases/assets/1", "allow", `${uploads} [data-rule-index="0"]`);
-    expect((await verdict()).text).toContain("by rule 1 on uploads.github.com (download, never upload)");
+    expect((await verdict()).text).toContain("by rule 1 on uploads.github.com (Read code, PRs and issues)");
     await tryRequest("PROPFIND /repos/acme/widget/releases/9/assets", "allow", `${uploads} [data-rule-index="1"]`);
     await tryRequest("DELETE /repos/acme/widget", "deny", `${uploads} [data-rule-fallback]`);
     expect((await verdict()).text).toContain("falls to the block's last line");
     await snap("secrets-tester-fallback.png");
     // git: pseudo-verbs are judged as what they are.
     await setSelect('[data-testid="rule-tester-block"]', `${secretId}@github.com`);
-    await tryRequest("push acme/widget", "deny", '[data-testid="rules-github.com"] [data-rule-index="1"]');
+    await tryRequest("push acme/widget", "deny", '[data-testid="rules-github.com"] [data-rule-fallback]');
     await tryRequest("fetch acme/widget", "allow", '[data-testid="rules-github.com"] [data-rule-index="0"]');
     // a line that is not a request says why, and lights nothing.
     await setInputValue('[data-testid="rule-tester-input"]', "push");
@@ -551,7 +655,7 @@ describe("settings: secrets and roles", () => {
     // edits a copy seeded on mount: remount it so a save here cannot write
     // the stale copy back.
     await reopenRoles((await settingsLoad()).roles[0].name);
-    await clickPresent('[data-testid="role-json-open"]');
+    await editorTab("json");
     await waitVisible('[data-testid="role-json-export"]');
     const j = JSON.parse(await browser.execute(() => document.querySelector('[data-testid="role-json-export"]')!.textContent!));
     const role = (await settingsLoad()).roles[0];
@@ -588,20 +692,23 @@ describe("settings: secrets and roles", () => {
     const after = (await settingsLoad()).roles[0];
     expect(after.id).toBe(before.id);
     expect(after.rule_sets.length).toBe(before.rule_sets.length);
-    // back on the rules editor.
-    await waitVisible('[data-testid="role-editor"]');
+    // JSON carries rules only, so the replaced role has no checkbox state and
+    // the editor moves to Rules, where it shows.
+    expect(after.simple).toBeUndefined();
+    await waitVisible('[data-testid="role-editor"] [data-testid="rules-api.github.com"]');
+    await editorTab("simple");
+    await waitVisible('[data-simple-secret="gh-review"] [data-testid="simple-custom"]');
   });
 
   it("pastes a modified JSON from New role and adds it as a new role", async () => {
     const orig = (await settingsLoad()).roles[0];
-    await clickPresent('[data-testid="role-json-open"]');
+    await editorTab("json");
     await waitVisible('[data-testid="role-json-export"]');
     const j = JSON.parse(await browser.execute(() => document.querySelector('[data-testid="role-json-export"]')!.textContent!));
-    await clickPresent('[data-testid="role-json-close"]');
-    await waitVisible('[data-testid="role-editor"]');
 
-    await openMenu('[data-testid="roles-new"]');
-    await clickPresent('[data-role-template="json"]');
+    await clickPresent('[data-testid="roles-new"]');
+    await waitVisible('[data-testid="new-role"]');
+    await clickPresent('[data-testid="new-role-json"]');
     await waitVisible('[data-testid="role-json"]');
     // the New role flow has nothing to export or replace.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="role-json-export"], [data-testid="role-json-replace"]'))).toBe(false);
@@ -680,6 +787,10 @@ describe("settings: secrets and roles", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("secrets"));
     await secretsTab("roles");
     await waitForText("agent FakeAgent, project fixture-repo");
+    // and in the open role's header, next to its running tasks.
+    await waitVisible('[data-testid="role-default-for"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="role-default-for"]')!.textContent))
+      .toBe("Default for agent FakeAgent, project fixture-repo");
     await snap("secrets-m2-matrix.png");
   });
 

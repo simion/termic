@@ -441,14 +441,14 @@ describe("settings: API key secrets", () => {
     await waitSaved(s => s.secrets.some((x: any) => x.name === "anthropic"), "the Anthropic key never saved");
 
     await clickPresent('[data-secrets-tab="roles"]');
+    await clickPresent('[data-testid="roles-new"]');
+    await clickPresent('[data-starter="empty"]');
+    // a role with no secrets yet: the cases below tick them in the matrix.
     await browser.execute(() => {
-      const el = document.querySelector('[data-testid="roles-new"]') as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
+      for (const b of document.querySelectorAll<HTMLElement>('[data-new-role-secret][aria-checked="true"]')) b.click();
     });
-    await clickPresent('[data-role-template="empty"]');
+    await waitGone('[data-new-role-secret][aria-checked="true"]');
+    await clickPresent('[data-testid="new-role-create"]');
     await waitSaved(s => s.roles?.length === 1, "the role never saved");
     const role = (await settingsLoad()).roles[0].name;
     await waitVisible('[data-testid="role-editor"]');

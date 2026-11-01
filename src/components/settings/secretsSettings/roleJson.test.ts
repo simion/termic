@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
 import type { Role, RuleSet, SecretDef } from "@/lib/types";
-import { roleFromTemplate } from "./model";
 import { agentPrompt, describeImport, parseRoleJson, roleJsonText, roleToJson } from "./roleJson";
+import { roleFromStarter } from "./simpleRole";
 
 const gh: SecretDef = {
   id: "s-gh", name: "gh-alice", kind: "generic", service: "gh:github.com", account: "alice", recipe: "github",
@@ -30,7 +30,7 @@ const base = { termic_role: 1, name: "R", colour: "teal", description: "" };
 
 describe("role JSON", () => {
   it("round-trips: export then import gives the same secrets and rule sets", () => {
-    const reviewer = roleFromTemplate("reviewer", "r1", gh, [], enT);
+    const reviewer = roleFromStarter("reviewer", { id: "r1", name: "Reviewer", description: "", secrets: [gh.id] }, secrets, [], enT);
     const role: Role = {
       ...reviewer,
       secrets: [gh.id, ant.id],
@@ -46,6 +46,10 @@ describe("role JSON", () => {
     expect(sorted(back.role!.rule_sets)).toEqual(sorted(role.rule_sets));
     expect(back.role).toMatchObject({ name: role.name, colour: role.colour, description: role.description });
     expect(describeImport(back.role!, secrets, t, role)).toEqual([{ sign: "~", text: "manage.json.diff.same" }]);
+    // rules only: the checkbox state is not exported, and an import has none,
+    // so it opens as custom.
+    expect(roleJsonText(role, secrets)).not.toContain("simple");
+    expect(back.role).not.toHaveProperty("simple");
   });
 
   it("exports secrets by name, a bound secret with no sets as {}, and off rules", () => {
@@ -127,7 +131,7 @@ describe("role JSON", () => {
   });
 
   it("builds a prompt with the format, the secrets by name and the example role", () => {
-    const role = roleFromTemplate("reviewer", "r1", gh, [], enT);
+    const role = roleFromStarter("reviewer", { id: "r1", name: "Reviewer", description: "", secrets: [gh.id] }, secrets, [], enT);
     const p = agentPrompt("review PRs in acme", secrets, role);
     expect(p).toContain("review PRs in acme");
     expect(p).toContain("- gh-alice, GitHub token: api.github.com, github.com, uploads.github.com");

@@ -1,26 +1,38 @@
-// The selected role's editor: name, colour, description, the rule blocks
-// per secret and host, duplicate and delete.
+// The selected role's editor: name, colour, description, then three tabs:
+// Simple (checkboxes, SimpleView.tsx), Rules (the rule blocks per secret and
+// host) and JSON (RoleJsonPanel.tsx). Duplicate and delete below.
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Braces, Copy, Trash2 } from "lucide-react";
+import { AlertTriangle, Copy, Trash2 } from "lucide-react";
 import type { Role, SecretDef } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { ROLE_COLOURS, loginTakeovers, putRuleSet, roleColourVar, ruleBlocksFor, ruleSetFor } from "./model";
-import { CommitInput, InfoTip } from "./parts";
+import { CommitInput, InfoTip, TabStrip } from "./parts";
 import { RequestTester, blockKey, type TesterHit } from "./RequestTester";
+import { RoleJsonPanel } from "./RoleJsonPanel";
+import type { RoleDraft } from "./roleJson";
 import { RuleBlock } from "./RuleBlock";
+import { SimpleView } from "./SimpleView";
 
-export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, onDelete, onJson }: {
+type EditorTab = "simple" | "rules" | "json";
+
+export function RoleEditor({ role, secrets, runningTasks, defaultFor, onSave, onDuplicate, onDelete, onJsonAdd, onJsonReplace }: {
   role: Role; secrets: SecretDef[]; runningTasks: string[];
+  /** "agent claude, project acme/widget", or "" when nothing defaults to it. */
+  defaultFor: string;
   onSave: (r: Role) => void; onDuplicate: () => void; onDelete: () => void;
-  /** Swap the editor for the JSON export / import panel (RoleJsonPanel). */
-  onJson?: () => void;
+  onJsonAdd: (d: RoleDraft) => void; onJsonReplace: (d: RoleDraft) => Promise<boolean>;
 }) {
   const { t } = useTranslation("secrets");
   const blocks = ruleBlocksFor(role, secrets);
   const [hit, setHit] = useState<TesterHit | null>(null);
+  // simple when every secret is on checkboxes (custom ones show a banner
+  // there), Rules once any has none. Picked once per role: the editor is
+  // keyed by role id, so a hand edit does not yank the tab away.
+  const [tab, setTab] = useState<EditorTab>(() =>
+    role.secrets.every(id => !!role.simple?.[id] || !secrets.some(s => s.id === id)) ? "simple" : "rules");
   return (
     <div className="flex flex-col gap-5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] p-5" data-testid="role-editor">
       <div className="flex flex-wrap items-start gap-6">
@@ -56,6 +68,7 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
               <span key={`${n}-${i}`} className="rounded-full border border-[var(--color-border)] px-2.5 py-0.5 text-[12px]">{n}</span>
             ))}
           </div>
+          {defaultFor && <span data-testid="role-default-for" className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.defaultFor", { list: defaultFor })}</span>}
         </div>
       </div>
 
@@ -71,10 +84,18 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
         </div>
       ))}
 
-      {blocks.length === 0 && (
+      <TabStrip attr="data-role-tab" value={tab} onChange={setTab} tabs={[
+        { id: "simple", label: t("manage.simple.tabSimple") },
+        { id: "rules", label: t("manage.simple.tabRules") },
+        { id: "json", label: t("manage.json.open") },
+      ]} />
+
+      {tab === "simple" && <SimpleView role={role} secrets={secrets} onSave={onSave} onOpenRules={() => setTab("rules")} />}
+
+      {tab === "rules" && blocks.length === 0 && (
         <div className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.noSecrets")}</div>
       )}
-      {blocks.length > 0 && (
+      {tab === "rules" && blocks.length > 0 && (
         <>
           <RequestTester role={role} blocks={blocks} onHit={setHit} />
           <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
@@ -83,7 +104,7 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
           </span>
         </>
       )}
-      {blocks.map(b => (
+      {tab === "rules" && blocks.map(b => (
         <RuleBlock
           key={blockKey(b.secret.id, b.host)}
           title={t(b.kind === "git" ? "manage.editor.rulesGit" : "manage.editor.rulesApi", { secret: b.secret.name, host: b.host })}
@@ -95,9 +116,14 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
         />
       ))}
 
+      {tab === "json" && (
+        <RoleJsonPanel role={role} secrets={secrets} onAdd={onJsonAdd}
+          // an import carries no checkbox state, so Rules is where it shows.
+          onReplace={d => void onJsonReplace(d).then(ok => { if (ok) setTab("rules"); })} />
+      )}
+
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.footer")}</p>
       <div className="flex gap-2">
-        {onJson && <Button size="sm" variant="ghost" onClick={onJson} data-testid="role-json-open"><Braces className="h-3.5 w-3.5" /> {t("manage.json.open")}</Button>}
         <Button size="sm" variant="ghost" onClick={onDuplicate} data-testid="role-duplicate"><Copy className="h-3.5 w-3.5" /> {t("manage.editor.duplicate")}</Button>
         <Button size="sm" variant="danger" onClick={onDelete} data-testid="role-delete"><Trash2 className="h-3.5 w-3.5" /> {t("manage.editor.delete")}</Button>
       </div>

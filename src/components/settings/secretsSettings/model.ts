@@ -305,25 +305,22 @@ export function ruleSetFor(role: Role, secret: string, host: string): RuleSet {
     ?? { secret, host, rules: [], fallback: roleDefaultEffect(role) };
 }
 
-/** Toggle a secret on a role. Dropping it also drops its rule sets, so a
- *  re-added secret starts clean instead of with rules nobody can see. */
+/** Toggle a secret on a role. Dropping it also drops its rule sets and its
+ *  checkbox state, so a re-added secret starts clean instead of with rules
+ *  nobody can see. */
 export function toggleSecret(role: Role, secretId: string, on: boolean): Role {
   if (on) return role.secrets.includes(secretId) ? role : { ...role, secrets: [...role.secrets, secretId] };
+  const { [secretId]: _, ...simple } = role.simple ?? {};
   return {
     ...role,
     secrets: role.secrets.filter(s => s !== secretId),
     rule_sets: role.rule_sets.filter(r => r.secret !== secretId),
+    ...(role.simple ? { simple } : {}),
   };
 }
 
-const r = (effect: RuleEffect, methods: string[], pattern: string, note: string): Rule => ({ effect, methods, pattern, note });
-
-/** Starting points for New role. Rules are per (secret, host), so a template
- *  needs a secret to hang them on; without one it is just a name. */
-export type RoleTemplate = "empty" | "reviewer" | "maintainer";
-
-/** A copy of `role` under a new id: same secrets, rules and description,
- *  the next unused colour, and a name no other role has. */
+/** A copy of `role` under a new id: same secrets, rules, checkbox state and
+ *  description, the next unused colour, and a name no other role has. */
 export function duplicateRole(role: Role, id: string, roles: Role[], copyName: (name: string, n: number) => string): Role {
   const taken = new Set(roles.map(r => r.name));
   let n = 1;
@@ -332,79 +329,6 @@ export function duplicateRole(role: Role, id: string, roles: Role[], copyName: (
   const used = roles.map(r => r.colour);
   const colour = ROLE_COLOURS.find(c => !used.includes(c)) ?? role.colour;
   return { ...structuredClone(role), id, name, colour };
-}
-
-/** `t` resolves `manage.tpl.*` keys: names and rule notes are DATA, minted in
- *  the user's language at creation and never re-resolved (docs/i18n.md). */
-export function roleFromTemplate(tpl: RoleTemplate, id: string, secret: SecretDef | undefined, usedColours: string[], t: (key: string) => string): Role {
-  const colour = ROLE_COLOURS.find(c => !usedColours.includes(c)) ?? ROLE_COLOURS[usedColours.length % ROLE_COLOURS.length];
-  const base: Role = {
-    id, name: t(`manage.tpl.${tpl}.name`), colour, description: t(`manage.tpl.${tpl}.desc`),
-    secrets: secret && tpl !== "empty" ? [secret.id] : [], rule_sets: [],
-  };
-  if (!secret || secret.recipe !== "github") return base;
-  if (tpl === "maintainer") {
-    // everything a maintainer does, minus the common REST calls that mint
-    // access which outlives the task: keys, collaborators, org members,
-    // webhooks (and their config), runners. Those would let an agent keep its
-    // reach after the placeholder is gone. A denylist is never complete (the
-    // description says so); a role that must be airtight starts from Reviewer.
-    // `**` also matches zero segments, so `hooks/**` covers `hooks` itself.
-    const mint = t("manage.tpl.note.mintsAccess");
-    const w = ["POST", "PUT", "PATCH"];
-    base.rule_sets = [{
-      secret: secret.id, host: API_HOST, fallback: "allow", rules: [
-        r("deny", ["POST"], "/repos/*/*/keys", mint),
-        r("deny", ["PUT"], "/repos/*/*/collaborators/*", mint),
-        r("deny", w, "/repos/*/*/hooks/**", mint),
-        r("deny", w, "/orgs/*/hooks/**", mint),
-        r("deny", ["POST"], "/repos/*/*/actions/runners/**", mint),
-        r("deny", ["POST"], "/orgs/*/actions/runners/**", mint),
-        r("deny", ["POST"], "/enterprises/*/actions/runners/**", mint),
-        r("deny", ["POST"], "/orgs/*/invitations", mint),
-        r("deny", ["PUT"], "/orgs/*/memberships/*", mint),
-        r("deny", ["PUT"], "/orgs/*/teams/*/memberships/*", mint),
-        r("deny", ["PUT"], "/orgs/*/teams/*/repos/**", mint),
-        r("deny", ["POST"], "/user/keys", mint),
-        r("deny", ["POST"], "/user/gpg_keys", mint),
-        r("deny", ["POST"], "/user/ssh_signing_keys", mint),
-      ],
-    }];
-    return base;
-  }
-  if (tpl !== "reviewer") return base;
-  // gh reads through POST /graphql (gh pr view, gh pr list), so QUERY must be
-  // allowed or a "read only" role cannot read. Writes are named mutations:
-  // allow the two a reviewer needs, deny the rest by the fallback.
-  const api: RuleSet = {
-    secret: secret.id, host: API_HOST, fallback: "deny", rules: [
-      r("allow", ["GET", "HEAD"], "/**", t("manage.tpl.note.readAll")),
-      r("allow", ["QUERY"], "*", t("manage.tpl.note.graphqlRead")),
-      r("allow", ["MUTATION"], "addPullRequestReview", t("manage.tpl.note.review")),
-      r("allow", ["MUTATION"], "addComment", t("manage.tpl.note.comment")),
-      r("allow", ["POST"], "/repos/*/*/pulls/*/reviews", t("manage.tpl.note.restReview")),
-      r("allow", ["POST"], "/repos/*/*/issues/*/comments", t("manage.tpl.note.restComment")),
-      r("deny", ["MUTATION"], "mergePullRequest", t("manage.tpl.note.merge")),
-    ],
-  };
-  const git: RuleSet = {
-    secret: secret.id, host: GIT_HOST, fallback: "deny", rules: [
-      // "**", not "*": a git pattern is an owner/repo glob, and "*" stops at
-      // the slash, so it matched no repo and both fell to the fallback.
-      r("allow", ["fetch"], "**", t("manage.tpl.note.fetch")),
-      r("deny", ["push"], "**", t("manage.tpl.note.push")),
-    ],
-  };
-  // every other host (uploads.github.com by default, or anything the user
-  // added) gets a set too: no set means allow everything, which would leave
-  // release-asset uploads open on a "read only" role.
-  const other = (host: string): RuleSet => ({
-    secret: secret.id, host, fallback: "deny", rules: [
-      r("allow", ["GET", "HEAD"], "/**", t("manage.tpl.note.downloadOnly")),
-    ],
-  });
-  base.rule_sets = secret.hosts.map(h => h === API_HOST ? api : h === GIT_HOST ? git : other(h));
-  return base;
 }
 
 /** Live (non-archived) tasks per role id. Tasks with no role land under "".
