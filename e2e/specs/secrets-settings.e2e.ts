@@ -426,7 +426,7 @@ describe("settings: secrets and roles", () => {
     await closePicker();
 
     const before = uploadRules(await settingsLoad()).length;
-    await clickPresent(`${uploads}-add`);
+    await clickPresent('[data-testid="rules-uploads.github.com-add"]');
     const row = `${uploads} [data-rule-index="${before}"]`;
     await waitVisible(row);
     await typeAndCommit(`${row} [data-field="pattern"]`, "/repos/*/*/releases/*/assets");
@@ -490,7 +490,7 @@ describe("settings: secrets and roles", () => {
   it("sorts a block by specificity, and the tester follows the move", async () => {
     const [broad, narrow] = uploadRules(await settingsLoad());
     expect(broad.pattern).toBe("/**");
-    await clickPresent(`${uploads}-sort`);
+    await clickPresent('[data-testid="rules-uploads.github.com-sort"]');
     await waitSaved(s => uploadRules(s)[0].pattern === narrow.pattern && uploadRules(s)[1].pattern === broad.pattern,
       "the sort never saved");
     expect(uploadRules(await settingsLoad())).toEqual([narrow, broad]);
@@ -501,7 +501,7 @@ describe("settings: secrets and roles", () => {
     // a rule that is off is not sorted, so one enabled rule leaves nothing to sort.
     await clickPresent(`${uploads} [data-rule-index="1"] button[aria-label="Turn rule off (kept, but skipped)"]`);
     await waitSaved(s => uploadRules(s)[1].disabled === true, "the off switch never saved");
-    await waitVisible(`${uploads}-sort[disabled]`);
+    await waitVisible('[data-testid="rules-uploads.github.com-sort"][disabled]');
     await clickPresent(`${uploads} [data-rule-index="1"] button[aria-label="Turn rule on"]`);
     await waitSaved(s => !uploadRules(s)[1].disabled, "the rule never turned back on");
   });
