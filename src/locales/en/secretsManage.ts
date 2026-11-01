@@ -394,7 +394,7 @@ export default {
     refuse: "Refuse (recommended)",
     allow: "Allow",
     guard: "Block calls that hand out lasting access",
-    guardHow: "deploy keys, collaborators, webhooks, runners, org invites, SSH/GPG keys, deployment and fork-run approvals",
+    guardHow: "deploy keys, collaborators, webhooks, runners, org invites, SSH/GPG keys, deployment and fork-run approvals, environment protections",
     guardTag: "guardrail",
     guardNote: "hands out lasting access",
     careful: "careful",

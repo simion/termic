@@ -393,7 +393,7 @@ export default {
     refuse: "拒绝（推荐）",
     allow: "允许",
     guard: "拦截会发放持久访问权限的调用",
-    guardHow: "部署密钥、协作者、Webhook、运行器、组织邀请、SSH/GPG 密钥、部署和 fork 运行审批",
+    guardHow: "部署密钥、协作者、Webhook、运行器、组织邀请、SSH/GPG 密钥、部署和 fork 运行审批、环境保护规则",
     guardTag: "护栏",
     guardNote: "发放持久访问权限",
     careful: "谨慎",

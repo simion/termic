@@ -27,12 +27,13 @@ export function scopeRepos(scope: string): string {
 }
 
 /** Calls that hand out access outliving the task (deploy keys, collaborators,
- *  webhooks, runners, org invites and memberships, SSH / GPG keys), or wave
- *  past a review gate (approving a deployment to a protected environment, or
- *  a fork PR's workflow run). Denied on
- *  EVERY repo, not just the scoped ones: with "Anything not listed: Allow" a
- *  scoped guard would leave every other repo open. `**` also matches zero
- *  segments, so `hooks/**` covers `hooks` itself. */
+ *  webhooks, runners, org invites and memberships, SSH / GPG keys), or get
+ *  past a review gate: approving a deployment to a protected environment (REST
+ *  or GraphQL) or a fork PR's workflow run, and rewriting an environment's
+ *  protections (its required reviewers, protection rules, branch policies).
+ *  Denied on EVERY repo, not just the scoped ones: with "Anything not listed:
+ *  Allow" a scoped guard would leave every other repo open. `**` also matches
+ *  zero segments, so `hooks/**` covers `hooks` itself. */
 export const GUARD: [string, string][] = [
   ["POST", "/repos/*/*/keys"],
   ["PUT", "/repos/*/*/collaborators/*"],
@@ -50,6 +51,12 @@ export const GUARD: [string, string][] = [
   ["POST", "/user/ssh_signing_keys"],
   ["POST", "/repos/*/*/actions/runs/*/pending_deployments"],
   ["POST", "/repos/*/*/actions/runs/*/approve"],
+  ["MUTATION", "approveDeployments"],
+  ["PUT DELETE", "/repos/*/*/environments/**"],
+  ["POST", "/repos/*/*/environments/*/deployment_protection_rules"],
+  ["POST", "/repos/*/*/environments/*/deployment-branch-policies"],
+  ["MUTATION", "updateEnvironment"],
+  ["MUTATION", "deleteEnvironment"],
 ];
 
 /** [methods, pattern] allowed by a capability; `{R}` is the repo scope. */
@@ -88,6 +95,19 @@ export const CAPS: { id: CapId; risk?: true; api?: Spec[]; git?: Spec[]; up?: Sp
   { id: "release", risk: true, api: [["POST", "/repos/{R}/releases"], ["PATCH", "/repos/{R}/releases/*"]], up: [["POST", "/repos/{R}/releases/*/assets"]] },
 ];
 
+/** The compile tables a saved cfg was written against, by `SimpleCfg.v`. A cfg
+ *  with no `v` predates the field and is v1. */
+// ponytail: one version so far. When GUARD or CAPS change, keep today's
+// tables here as v1, add the new ones as v2 and bump SIMPLE_V. Extras are
+// judged against the compile of the cfg's OWN version, so rules an older
+// release compiled read as compiled (not popover extras) and are dropped on
+// the next recompile instead of kept as allows.
+const TABLES: Record<number, { guard: typeof GUARD; caps: typeof CAPS }> = { 1: { guard: GUARD, caps: CAPS } };
+export const SIMPLE_V = 1;
+/** A version this build does not know (written by a newer one) compiles as
+ *  the current tables; its rules likely read as custom, which is the safe side. */
+export const compileVersion = (v: number | undefined) => TABLES[v ?? 1] ?? TABLES[SIMPLE_V];
+
 /** A notes source: `manage.simple.*` keys, resolved once at save. Notes are
  *  stored data (docs/i18n.md), and never part of the match below. */
 export type Note = (key: string) => string;
@@ -104,6 +124,7 @@ export function levelOf(s: Pick<SecretDef, "recipe">, host: string, cfg: SimpleC
  *  rule has a method and a pattern, so secrets.rs `validate` accepts it. */
 export function compile(cfg: SimpleCfg, s: SecretDef, note: Note = () => ""): RuleSet[] {
   const R = scopeRepos(cfg.scope);
+  const { guard, caps } = compileVersion(cfg.v);
   return s.hosts.map(host => {
     const k = kindOf(s, host);
     if (k === "key" || k === "other") {
@@ -112,8 +133,8 @@ export function compile(cfg: SimpleCfg, s: SecretDef, note: Note = () => ""): Ru
         rules: lv === "read" ? [mk("allow", "GET HEAD", "/**", note("manage.simple.level.read"))] : [] };
     }
     const rules: Rule[] = [];
-    if (k === "api" && cfg.guard) rules.push(...GUARD.map(([m, p]) => mk("deny", m, p, note("manage.simple.guardNote"))));
-    for (const c of CAPS) {
+    if (k === "api" && cfg.guard) rules.push(...guard.map(([m, p]) => mk("deny", m, p, note("manage.simple.guardNote"))));
+    for (const c of caps) {
       if (!cfg.caps.includes(c.id)) continue;
       for (const [m, p] of c[k] ?? []) rules.push(mk("allow", m, p.replaceAll("{R}", R), note(`manage.simple.cap.${c.id}.label`)));
     }
@@ -161,14 +182,15 @@ export function simpleState(role: Role, s: SecretDef): { cfg: SimpleCfg | undefi
   return { cfg, custom, extras };
 }
 
-/** Write `cfg` for `s`: its compiled sets replace the saved ones, with the
+/** Write `cfg` for `s`, at the current SIMPLE_V: its compiled sets replace the saved ones, with the
  *  saved allow extras kept, placed after the guardrail denies (so an extra
  *  can never undo the guardrail) and before the capability rules. Extras are
  *  judged against the cfg being replaced (else an unticked box's rules would
  *  read as extras and stay), or against `cfg` when there is none. Sets are
  *  stored even when empty: dropping one would hand it the role default, which
  *  the next set written can change. */
-export function applySimple(role: Role, s: SecretDef, cfg: SimpleCfg, note: Note = () => ""): Role {
+export function applySimple(role: Role, s: SecretDef, next: SimpleCfg, note: Note = () => ""): Role {
+  const cfg = { ...next, v: SIMPLE_V };
   const prev = role.simple?.[s.id];
   const before = prev ? compile(prev, s) : [];
   const sets = compile(cfg, s, note).map(c => {
@@ -204,8 +226,8 @@ export const STARTERS: { id: StarterId; colour: RoleColour; caps: CapId[]; fallb
 
 export function starterCfg(id: StarterId, s: Pick<SecretDef, "recipe" | "hosts">): SimpleCfg {
   const st = STARTERS.find(x => x.id === id)!;
-  if (s.recipe === "github") return { scope: "", fallback: st.fallback ?? "deny", guard: true, caps: st.keyOnly ? [] : [...st.caps], other: {} };
-  return { scope: "", fallback: "deny", guard: true, caps: [], other: Object.fromEntries(s.hosts.map(h => [h, st.empty ? "deny" : "all"])) };
+  if (s.recipe === "github") return { v: SIMPLE_V, scope: "", fallback: st.fallback ?? "deny", guard: true, caps: st.keyOnly ? [] : [...st.caps], other: {} };
+  return { v: SIMPLE_V, scope: "", fallback: "deny", guard: true, caps: [], other: Object.fromEntries(s.hosts.map(h => [h, st.empty ? "deny" : "all"])) };
 }
 
 /** A role from a starter, every secret on checkboxes. */

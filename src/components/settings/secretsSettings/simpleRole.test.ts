@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
 import type { Role, Rule, RuleSet, SecretDef, SimpleCfg } from "@/lib/types";
 import { duplicateRole, putRuleSet, ruleSetFor, toggleSecret } from "./model";
-import { CAPS, GUARD, STARTERS, applySimple, compile, kindOf, roleFromStarter, scopeRepos, simpleState, starterCfg, type CapId } from "./simpleRole";
+import { CAPS, GUARD, SIMPLE_V, STARTERS, applySimple, compile, compileVersion, kindOf, roleFromStarter, scopeRepos, simpleState, starterCfg, type CapId } from "./simpleRole";
 
 const gh: SecretDef = {
   id: "gh", name: "gh-alice", kind: "generic", service: "gh:github.com", account: "alice", recipe: "github",
@@ -32,8 +32,13 @@ const glob = (p: string, s: string): boolean => {
     : !!ss.length && seg(ps[0], ss[0]) && go(ps.slice(1), ss.slice(1));
   return go(p.replace(/^\/+/, "").split("/"), s.replace(/^\/+/, "").split("/"));
 };
-const judge = (set: RuleSet, method: string, path: string) =>
-  set.rules.find(r => !r.disabled && r.methods.some(m => m === method || (m === "*")) && glob(r.pattern, path))?.effect ?? set.fallback;
+/** `path` is the mutation name for MUTATION. ALLOW `*` never covers a
+ *  pseudo-verb, DENY `*` does (rules.rs `rule_matches`). */
+const judge = (set: RuleSet, method: string, path: string) => {
+  const pseudo = ["QUERY", "MUTATION", "fetch", "push"].includes(method);
+  return set.rules.find(r => !r.disabled && r.methods.some(m => m === method || (m === "*" && (r.effect === "deny" || !pseudo)))
+    && glob(r.pattern, path))?.effect ?? set.fallback;
+};
 const popover = (pattern: string): Rule => ({ effect: "allow", methods: ["POST"], pattern, note: "" });
 /** What secrets.rs allow_on_role does: the rule goes first in its set. */
 const allowOnRole = (role: Role, host: string, rule: Rule): Role => ({
@@ -76,6 +81,37 @@ describe("simple roles: compile", () => {
       "/repos/acme/widget/actions/runs/7/cancel", "/repos/acme/widget/actions/jobs/9/rerun", "/repos/acme/widget/actions/workflows/ci.yml/dispatches"]) {
       expect(judge(ci, "POST", path)).toBe("allow");
     }
+  });
+
+  it("the GraphQL approval and environment-protection writes are guarded too", () => {
+    const all = CAPS.map(c => c.id);
+    const open = on(compile(cfg({ caps: all, fallback: "allow" }), gh), "api.github.com");
+    for (const [method, target] of [
+      ["MUTATION", "approveDeployments"], ["MUTATION", "updateEnvironment"], ["MUTATION", "deleteEnvironment"],
+      ["PUT", "/repos/acme/widget/environments/production"], ["DELETE", "/repos/acme/widget/environments/production"],
+      ["POST", "/repos/acme/widget/environments/production/deployment_protection_rules"],
+      ["DELETE", "/repos/acme/widget/environments/production/deployment_protection_rules/3"],
+      ["POST", "/repos/acme/widget/environments/production/deployment-branch-policies"],
+      ["PUT", "/repos/acme/widget/environments/production/deployment-branch-policies/4"],
+    ]) {
+      expect(judge(open, method, target), `${method} ${target}`).toBe("deny");
+      // and with the guard off, nothing a checkbox wrote allows it.
+      expect(judge(on(compile(cfg({ guard: false, caps: all }), gh), "api.github.com"), method, target), `${method} ${target}`).toBe("deny");
+    }
+    // reading an environment is still a read.
+    expect(judge(open, "GET", "/repos/acme/widget/environments/production")).toBe("allow");
+  });
+
+  it("a cfg with no version compiles with the v1 tables, and a save stamps the current one", () => {
+    expect(compileVersion(undefined)).toBe(compileVersion(1));
+    expect(compileVersion(undefined).guard).toBe(GUARD);
+    const c = cfg({ caps: ["read", "comment"] });
+    expect(c.v).toBeUndefined();
+    expect(compile(c, gh)).toEqual(compile({ ...c, v: 1 }, gh));
+    const r = applySimple(empty({ secrets: ["gh"] }), gh, c);
+    expect(r.simple!.gh.v).toBe(SIMPLE_V);
+    // an unversioned cfg on a saved role reads its rules as compiled, not extras.
+    expect(simpleState({ ...r, simple: { gh: c } }, gh)).toMatchObject({ custom: false, extras: [] });
   });
 
   it("each capability writes its own rules, scoped where a path names the repo", () => {

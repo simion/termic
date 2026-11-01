@@ -2326,6 +2326,9 @@ export interface Role {
  *  per host the compile has no capability rules for (every host of an API key,
  *  hosts added to a GitHub secret beyond its three). */
 export interface SimpleCfg {
+  /** Which compile tables wrote it (simpleRole.ts `compileVersion`). Absent
+   *  is 1. */
+  v?: number;
   /** Repo scope: "" all, "acme" (acme/*), "acme/widget". */
   scope: string;
   fallback: RuleEffect;
