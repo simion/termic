@@ -6,11 +6,12 @@
 // of a stored value really reads it back.
 //
 // The broker's spawn-side delivery (base URL, env proxy) is covered by
-// broker/tests.rs; this spec is the dialog, the saved shape, and the
-// Keychain lifecycle the UI drives.
+// broker/tests.rs; this spec is the dialog (its inline field errors and the
+// "What happens" panel's routes), the saved shape, and the Keychain
+// lifecycle the UI drives.
 
 import {
-  clickPresent, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitVisible,
+  clickPresent, requireTermicApi, setInputValue, snap, textOf, waitForAppShell, waitForText, waitGone, waitVisible,
 } from "../helpers";
 
 const KEY = "sk-e2e-not-a-real-key-0123456789";
@@ -60,6 +61,25 @@ async function rowStatus(name: string): Promise<string> {
   return st;
 }
 
+/** The "What happens" panel's routes, `{ route: on }`. */
+const routes = () => browser.execute(() => Object.fromEntries(
+  [...document.querySelectorAll('[data-testid="add-secret-preview"] [data-route]')]
+    .map(e => [e.getAttribute("data-route"), e.getAttribute("data-on") === "true"])));
+
+async function waitRoutes(want: Record<string, boolean>) {
+  await browser.waitUntil(async () => JSON.stringify(await routes()) === JSON.stringify(want),
+    { timeout: 5_000, timeoutMsg: `routes never became ${JSON.stringify(want)}: ${JSON.stringify(await routes())}` });
+}
+
+const routeText = (r: string) => textOf(`[data-testid="add-secret-preview"] [data-route="${r}"]`);
+
+/** Wait for a field's inline error to read `text`. */
+async function waitFieldError(field: string, text: string) {
+  const sel = `[data-testid="add-secret-error-${field}"]`;
+  await browser.waitUntil(async () => (await textOf(sel)) === text,
+    { timeout: 5_000, timeoutMsg: `${field} never said "${text}" (last: "${await textOf(sel)}")` });
+}
+
 async function openAdd() {
   await clickPresent('[data-testid="secrets-add"]');
   await waitVisible('[data-testid="add-secret-dialog"]');
@@ -105,12 +125,22 @@ describe("settings: API key secrets", () => {
     expect(await browser.execute(() => !!document.querySelector('[data-testid="add-secret-source"]'))).toBe(false);
     // this build has the protected keychain, so the dialog says so and the
     // unsigned-build notice stays off the tab.
-    await waitForText("Saved to the protected Keychain on this Mac. Not synced to iCloud.");
-    await waitForText("Termic stores it where only Termic can read it");
+    await waitForText("Saved to the protected Keychain. Never synced.");
     expect(await browser.execute(() => !!document.querySelector('[data-testid="secrets-unsigned"]'))).toBe(false);
+    // the preset turns both deliveries on: its base URL's host is its host
+    await waitRoutes({ baseUrl: true, envProxy: true });
+    expect(await textOf('[data-testid="add-secret-stand-in"]')).toBe("OPENAI_API_KEY=termic_ph_…");
+    expect(await routeText("baseUrl")).toContain("$OPENAI_BASE_URL · local endpoint");
+    expect(await routeText("baseUrl")).toContain("authorization: Bearer real value");
+    expect(await routeText("envProxy")).toContain("curl, Python and Node. Not Go on macOS.");
+    // nothing typed yet, so no field complains before a submit
+    expect(await browser.execute(() => document.querySelectorAll('[data-testid^="add-secret-error-"]').length)).toBe(0);
+    // OpenAI's key is not one an agent signs in with
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="add-secret-login-takeover"]'))).toBe(false);
+    await snap("secrets-b-add-openai-preview.png");
 
     await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Paste the key.");
+    await waitFieldError("value", "Paste the key.");
     expect((await settingsLoad()).secrets ?? []).toEqual([]);
   });
 
@@ -190,46 +220,85 @@ describe("settings: API key secrets", () => {
     expect(JSON.stringify(await settingsLoad())).not.toContain(KEY2);
   });
 
-  it("checks a custom key's env var and base URL before saving", async () => {
+  it("checks a custom key's fields as you type and flips its routes", async () => {
     await openAdd();
     await setSelect('[data-testid="add-secret-preset"]', "custom");
     await waitVisible('[data-testid="add-secret-value"]');
+    // a custom key opens its delivery fields: they are all it has
+    expect(await browser.execute(() => (document.querySelector('[data-testid="add-secret-delivery"]') as HTMLDetailsElement).open)).toBe(true);
     await setInputValue('[data-testid="add-secret-value"]', KEY);
     await setInputValue('[data-testid="add-secret-name"]', "acme-api");
-    // a custom key starts with no hosts
+    // no hosts: nothing can be delivered
+    await waitRoutes({ baseUrl: false, envProxy: false });
+    expect(await routeText("envProxy")).toContain("Add a host to turn on.");
+    expect(await routeText("baseUrl")).toContain("Go and Rust tools need this one: set a base URL.");
+    // before any submit: the error shows as you type and clears once the name is good
+    await setInputValue('[data-testid="add-secret-env"]', "1ACME");
+    await waitFieldError("env", "Name the env var, like OPENAI_API_KEY.");
+    await setInputValue('[data-testid="add-secret-env"]', "HTTPS_PROXY");
+    await waitFieldError("env", "Termic sets HTTPS_PROXY itself. Pick another name.");
+    await setInputValue('[data-testid="add-secret-header"]', "proxy-authorization");
+    await waitFieldError("header", "\"proxy-authorization\" can't carry a secret.");
+    // both at once: every field says its own problem, not just the first (hosts
+    // is empty too, but untouched and not yet submitted, so it stays quiet)
+    expect(await browser.execute(() => document.querySelectorAll('[data-testid^="add-secret-error-"]').length)).toBe(2);
+    await snap("secrets-b-add-inline-errors.png");
     await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Add at least one host.");
+    expect((await settingsLoad()).secrets.length).toBe(1);
+    await setInputValue('[data-testid="add-secret-env"]', "ACME_TOKEN");
+    await setInputValue('[data-testid="add-secret-header"]', "authorization");
+    await waitGone('[data-testid="add-secret-error-env"]');
+    await waitGone('[data-testid="add-secret-error-header"]');
+    expect(await textOf('[data-testid="add-secret-stand-in"]')).toBe("ACME_TOKEN=termic_ph_…");
+
+    await clickPresent('[data-testid="add-secret-submit"]');
+    await waitFieldError("hosts", "Add at least one host.");
     await setInputValue('[data-testid="add-secret-hosts-input"]', "api.acme.com");
     await clickPresent('[data-testid="add-secret-hosts-add"]');
     await waitVisible('[data-testid="add-secret-hosts"] [data-host="api.acme.com"]');
+    await waitGone('[data-testid="add-secret-error-hosts"]');
+    await waitRoutes({ baseUrl: false, envProxy: true });
 
-    await setInputValue('[data-testid="add-secret-env"]', "1ACME");
-    await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Name the env var, like OPENAI_API_KEY.");
-    await setInputValue('[data-testid="add-secret-env"]', "ACME_TOKEN");
-    // a base URL on a host the secret is not bound to
+    // a base URL env var alone, then a URL on a host the secret is not bound to
     await setInputValue('[data-testid="add-secret-base-url-env"]', "ACME_BASE_URL");
+    await waitFieldError("baseUrl", "Fill in both base URL fields, or leave both empty.");
     await setInputValue('[data-testid="add-secret-base-url"]', "https://other.acme.com/v2");
-    await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Fill in both base URL fields");
-    // a name the front end allows but Termic sets itself: the save is refused
-    // in Rust (secrets.rs validate), and nothing lands in settings.
+    await waitFieldError("baseUrl", "other.acme.com isn't one of the hosts.");
+    await waitRoutes({ baseUrl: false, envProxy: true });
+    expect(await routeText("baseUrl")).toContain("Add other.acme.com to the hosts to turn on.");
+    await snap("secrets-b-add-routes-off.png");
+    // on a bound host the endpoint turns on, named by its var
+    await setInputValue('[data-testid="add-secret-base-url"]', "https://api.acme.com/v2");
+    await waitGone('[data-testid="add-secret-error-baseUrl"]');
+    await waitRoutes({ baseUrl: true, envProxy: true });
+    expect(await routeText("baseUrl")).toContain("$ACME_BASE_URL · local endpoint");
+    await snap("secrets-b-add-routes-on.png");
     await setInputValue('[data-testid="add-secret-base-url-env"]', "");
     await setInputValue('[data-testid="add-secret-base-url"]', "");
-    await setInputValue('[data-testid="add-secret-env"]', "HTTPS_PROXY");
+    await waitRoutes({ baseUrl: false, envProxy: true });
+
+    // a host the front end lets through but secrets.rs refuses: the save
+    // fails with Rust's reason, and nothing lands in settings.
+    await setInputValue('[data-testid="add-secret-hosts-input"]', "bad_host");
+    await clickPresent('[data-testid="add-secret-hosts-add"]');
+    await waitVisible('[data-testid="add-secret-hosts"] [data-host="bad_host"]');
     await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Couldn't save. Your last change was not kept.");
+    await waitForText("Couldn't save, so your last change was not kept");
+    await waitForText("\"bad_host\" is not a host name like api.github.com");
     await waitSaved(s => s.secrets.length === 1, "the refused secret must not be saved");
     // the toast outlives the case on an occluded window and would sit in
     // every later snap.
     await browser.execute(() => window.__termic!.useUI.setState({ toasts: [] }));
-    // fixed, it goes through
-    await setInputValue('[data-testid="add-secret-env"]', "ACME_TOKEN");
+    // fixed, it goes through (the failed save's stored item was cleaned up,
+    // and the retry stores it again under the same id)
+    await clickPresent('[data-testid="add-secret-hosts"] [data-host="bad_host"] button');
+    await waitGone('[data-testid="add-secret-hosts"] [data-host="bad_host"]');
     await clickPresent('[data-testid="add-secret-submit"]');
     await waitSaved(s => s.secrets.length === 2, "the custom key never saved");
     const acme = (await settingsLoad()).secrets.find((s: any) => s.name === "acme-api");
-    expect(acme.api).toMatchObject({ env: "ACME_TOKEN", base_url_env: "", base_url: "" });
+    expect(acme.api).toMatchObject({ env: "ACME_TOKEN", header: "authorization", base_url_env: "", base_url: "" });
     expect(acme.hosts).toEqual(["api.acme.com"]);
+    expect((await probe(acme.id)).status).toBe("readable");
   });
 
   it("adds a pasted GitHub token as a Termic-owned secret", async () => {
@@ -243,15 +312,18 @@ describe("settings: API key secrets", () => {
     expect(await inputValue('[data-testid="add-secret-name"]')).toBe("gh-token");
     // the gh login's fields belong to the other source
     expect(await inputValue('[data-testid="add-secret-service"]')).toBeNull();
-    await waitForText("Paste a token once. Termic stores it where only Termic can read it");
     await waitForText("Create a fine-grained token");
-    await waitForText("Saved to the protected Keychain on this Mac.");
+    await waitForText("Saved to the protected Keychain. Never synced.");
+    await waitRoutes({ gh: true, git: true });
+    expect(await textOf('[data-testid="add-secret-stand-in"]')).toBe("GH_TOKEN=termic_ph_…");
+    expect(await routeText("gh")).toContain("Authorization: token real value");
+    expect(await textOf('[data-testid="add-secret-acts-as"]')).toBe("On GitHub, calls show up as whoever owns the token.");
     const hosts = await browser.execute(() =>
       [...document.querySelectorAll('[data-testid="add-secret-hosts"] [data-host]')].map(e => e.getAttribute("data-host")));
     expect(hosts).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
 
     await clickPresent('[data-testid="add-secret-submit"]');
-    await waitForText("Paste the token.");
+    await waitFieldError("value", "Paste the token.");
     expect((await settingsLoad()).secrets.some((s: any) => s.name === "gh-token")).toBe(false);
 
     await setInputValue('[data-testid="add-secret-value"]', TOKEN);
@@ -322,10 +394,48 @@ describe("settings: API key secrets", () => {
     }, { timeout: 10_000, timeoutMsg: "the removed secret's Keychain item was not deleted" });
   });
 
+  it("adds an existing Keychain item as a GitHub secret", async () => {
+    await openAdd();
+    await clickPresent('[data-testid="add-secret-source-item"]');
+    await waitVisible('[data-testid="add-secret-service"]');
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="add-secret-source-item"]')?.getAttribute("aria-pressed"))).toBe("true");
+    // not Termic's to store, so no Saved to line and no value field
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="add-secret-saved-to"]'))).toBe(false);
+    expect(await inputValue('[data-testid="add-secret-value"]')).toBeNull();
+    await waitForText("macOS asks once: choose Always Allow.");
+    await clickPresent('[data-testid="add-secret-submit"]');
+    await waitFieldError("item", "Keychain service and account are both required.");
+    await waitFieldError("name", "Give it a name.");
+
+    await setInputValue('[data-testid="add-secret-service"]', "acme-ci-token");
+    await setInputValue('[data-testid="add-secret-keychain-account"]', "ci-bot");
+    await setInputValue('[data-testid="add-secret-name"]', "acme-ci");
+    await waitGone('[data-testid="add-secret-error-item"]');
+    await waitGone('[data-testid="add-secret-error-name"]');
+    // the default hosts turn both on; without api.github.com gh has no route
+    await waitRoutes({ gh: true, git: true });
+    await clickPresent('[data-testid="add-secret-hosts"] [data-host="api.github.com"] button');
+    await waitRoutes({ gh: false, git: true });
+    expect(await routeText("gh")).toContain("Add api.github.com to turn on.");
+    await snap("secrets-b-add-keychain-item.png");
+
+    await clickPresent('[data-testid="add-secret-submit"]');
+    await waitSaved(s => s.secrets.some((x: any) => x.name === "acme-ci"), "the Keychain item secret never saved");
+    const saved = (await settingsLoad()).secrets.find((s: any) => s.name === "acme-ci");
+    expect(saved).toMatchObject({
+      recipe: "github", kind: "generic", service: "acme-ci-token", account: "ci-bot",
+      hosts: ["github.com", "uploads.github.com"],
+    });
+  });
+
   it("warns when a role's key would replace Claude's own login", async () => {
     await openAdd();
     await setSelect('[data-testid="add-secret-preset"]', "anthropic");
     await waitVisible('[data-testid="add-secret-value"]');
+    // the dialog says it before the role editor does
+    expect(await textOf('[data-testid="add-secret-login-takeover"]')).toBe(
+      "Claude tasks on a role with this key sign in with it instead of /login.");
     await setInputValue('[data-testid="add-secret-value"]', KEY);
     await clickPresent('[data-testid="add-secret-submit"]');
     await waitSaved(s => s.secrets.some((x: any) => x.name === "anthropic"), "the Anthropic key never saved");

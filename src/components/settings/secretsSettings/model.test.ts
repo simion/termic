@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
 import type { Role, SecretDef } from "@/lib/types";
-import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblem, deliveredAs, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, storedIn, toggleSecret } from "./model";
+import type { ApiKeyProblem } from "./model";
+import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblems, deliveredAs, deliveries, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, secretProblems, storedIn, toggleSecret } from "./model";
 
 const secret = (id: string, hosts = ["api.github.com", "github.com", "uploads.github.com"]): SecretDef => ({
   id, name: id, kind: "generic", service: "gh:github.com", account: "alice", recipe: "github", hosts,
@@ -21,19 +22,52 @@ const t = (key: string) => {
 describe("secrets model", () => {
   it("checks API key drafts the way secrets.rs validate does", () => {
     const { hosts, api } = API_KEY_PRESETS.openai;
-    expect(apiKeyProblem("sk-1", hosts, api)).toBeNull();
-    expect(apiKeyProblem("sk-1", API_KEY_PRESETS.anthropic.hosts, API_KEY_PRESETS.anthropic.api)).toBeNull();
-    expect(apiKeyProblem("  ", hosts, api)).toBe("value");
-    expect(apiKeyProblem("sk-1", hosts, { ...api, env: "1X" })).toBe("env");
-    expect(apiKeyProblem("sk-1", hosts, { ...api, header: "x-key: y" })).toBe("header");
-    expect(apiKeyProblem("sk-1", hosts, { ...api, base_url: "" })).toBe("baseUrl");
-    expect(apiKeyProblem("sk-1", ["api.other.example"], api)).toBe("baseUrl");
-    expect(apiKeyProblem("sk-1", hosts, { ...api, base_url_env: "", base_url: "" })).toBeNull();
-    expect(baseUrlHost("https://API.openai.com/v1")).toBe("api.openai.com");
-    expect(baseUrlHost("http://api.openai.com")).toBeNull();
-    expect(baseUrlHost("https://a.com:8443")).toBeNull();
-    expect(isOwned({ id: "k", service: ownedService("k"), account: "termic" })).toBe(true);
-    expect(isOwned({ id: "k", service: "gh:github.com", account: "termic" })).toBe(false);
+    const p = (a: Partial<typeof api>, h = hosts, v = "sk-1") => apiKeyProblems(v, h, { ...api, ...a });
+    expect(p({})).toEqual({});
+    expect(apiKeyProblems("sk-1", API_KEY_PRESETS.anthropic.hosts, API_KEY_PRESETS.anthropic.api)).toEqual({});
+    expect(p({}, hosts, "  ")).toEqual({ value: "value" });
+    expect(p({ env: "1X" })).toEqual({ env: "env" });
+    expect(p({ env: "" })).toEqual({ env: "env" });
+    expect(p({ env: "https_proxy" })).toEqual({ env: "envReserved" });
+    expect(p({ env: "GH_KEY" })).toEqual({ env: "envReserved" });
+    expect(p({ header: "x-key: y" })).toEqual({ header: "header" });
+    expect(p({ header: "Proxy-Authorization" })).toEqual({ header: "headerReserved" });
+    expect(p({ scheme: "Bearer token" })).toEqual({ scheme: "scheme" });
+    expect(p({ scheme: "" })).toEqual({});
+    expect(p({ base_url: "" })).toEqual({ baseUrl: "baseUrlPair" });
+    expect(p({ base_url_env: "" })).toEqual({ baseUrl: "baseUrlPair" });
+    expect(p({ base_url: "http://api.openai.com" })).toEqual({ baseUrl: "baseUrlShape" });
+    expect(p({}, ["api.other.example"])).toEqual({ baseUrl: "baseUrlHost" });
+    expect(p({ base_url_env: "openai_api_key" })).toEqual({ baseUrlEnv: "baseUrlEnvSame" });
+    expect(p({ base_url_env: "NODE_OPTIONS" })).toEqual({ baseUrlEnv: "envReserved" });
+    expect(p({ base_url_env: "", base_url: "" })).toEqual({});
+    // every problem at once, one per field, not just the first
+    expect(apiKeyProblems("", [], { header: "host", scheme: "a b", env: "PATH", base_url_env: "9", base_url: "https://x.example" }))
+      .toEqual({ value: "value", env: "envReserved", header: "headerReserved", scheme: "scheme", baseUrlEnv: "env", baseUrl: "baseUrlHost" });
+  });
+
+  it("has a message for every Add dialog problem", () => {
+    // the dialog builds `manage.add.problem.<key>`, which usedKeys.test.ts cannot see
+    const keys = ["name", "nameTaken", "keychain", "hosts", "token", "value", "env", "envReserved", "header", "headerReserved",
+      "scheme", "baseUrlEnvSame", "baseUrlPair", "baseUrlShape", "baseUrlHost"] satisfies (ApiKeyProblem | "name" | "nameTaken" | "keychain" | "hosts" | "token")[];
+    for (const k of keys) t(`manage.add.problem.${k}`);
+  });
+
+  it("turns delivery routes on the way recipe.rs Route::active does", () => {
+    const on = (s: Parameters<typeof deliveries>[0]) => Object.fromEntries(deliveries(s).map(d => [d.route, d.on]));
+    // github: gh on api.github.com, git on github.com, each on its own host
+    expect(on({ recipe: "github", hosts: ["api.github.com", "github.com"] })).toEqual({ gh: true, git: true });
+    expect(on({ recipe: "github", hosts: ["API.github.com"] })).toEqual({ gh: true, git: false });
+    expect(on({ recipe: "github", hosts: ["github.com", "uploads.github.com"] })).toEqual({ gh: false, git: true });
+    // api key: base URL needs the env var AND its host bound; env proxy any host
+    const { hosts, api } = API_KEY_PRESETS.openai;
+    expect(on({ recipe: "api_key", hosts, api })).toEqual({ baseUrl: true, envProxy: true });
+    expect(on({ recipe: "api_key", hosts, api: { ...api, base_url_env: "" } })).toEqual({ baseUrl: false, envProxy: true });
+    expect(on({ recipe: "api_key", hosts, api: { ...api, base_url: "not a url" } })).toEqual({ baseUrl: false, envProxy: true });
+    expect(on({ recipe: "api_key", hosts: ["api.other.example"], api })).toEqual({ baseUrl: false, envProxy: true });
+    expect(on({ recipe: "api_key", hosts: [], api })).toEqual({ baseUrl: false, envProxy: false });
+    // a recipe from a newer Termic delivers nothing (recipe.rs INERT)
+    expect(deliveries({ recipe: "future" as never, hosts })).toEqual([]);
   });
 
   it("says where a secret is stored", () => {
@@ -149,6 +183,9 @@ describe("secrets model", () => {
     expect(secretProblem({ ...ok, account: " " }, [])).toBe("keychain");
     expect(secretProblem({ ...ok, hosts: [] }, [])).toBe("hosts");
     expect(secretProblem(ok, [secret("gh-alice")])).toBe("nameTaken");
+    // per field, every problem at once
+    expect(secretProblems({ name: " ", service: "", account: "x", hosts: [] }, [])).toEqual({ name: "name", keychain: "keychain", hosts: "hosts" });
+    expect(secretProblems(ok, [])).toEqual({});
   });
 
   it("delivers only through the routes the broker turns on (recipe.rs Route::active)", () => {

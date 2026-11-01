@@ -63,13 +63,13 @@ async function openMenu(sel: string) {
   await waitVisible("[role='menu']");
 }
 
-/** The Add dialog's "Use my gh login" source, with the Advanced disclosure
- *  open. The default source follows gh's accounts on the machine running the
- *  suite, so specs pick it rather than inherit it. */
+/** The Add dialog's "Keychain item" source, naming gh's own generic item, so
+ *  the secret reads as a gh login without depending on the accounts gh has
+ *  on the machine running the suite (the default source follows those). */
 async function ghLoginSource() {
-  await clickPresent('[data-testid="add-secret-source-gh"]');
-  await clickPresent('[data-testid="add-secret-advanced"] summary');
+  await clickPresent('[data-testid="add-secret-source-item"]');
   await waitVisible('[data-testid="add-secret-service"]');
+  await setInputValue('[data-testid="add-secret-service"]', "gh:github.com");
 }
 
 const secretsTab = (id: "secrets" | "roles" | "activity") => clickPresent(`[data-secrets-tab="${id}"]`);
@@ -127,20 +127,13 @@ describe("settings: secrets and roles", () => {
     await clickPresent('[data-testid="secrets-add"]');
     await waitVisible('[data-testid="add-secret-dialog"]');
     await ghLoginSource();
-    await waitForText("Use a login gh already keeps on this Mac.");
-    // a login gh keeps is not stored by Termic, so no "Saved to" line
+    // an item Termic did not store, so no "Saved to" line
     expect(await browser.execute(() => !!document.querySelector('[data-testid="add-secret-saved-to"]'))).toBe(false);
-    // the GitHub preset's defaults: gh's generic item and three hosts.
-    const pre = await browser.execute(() => ({
-      service: (document.querySelector('[data-testid="add-secret-service"]') as HTMLInputElement).value,
-      hosts: [...document.querySelectorAll('[data-testid="add-secret-hosts"] [data-host]')].map(e => e.getAttribute("data-host")),
-    }));
-    expect(pre.service).toBe("gh:github.com");
-    expect(pre.hosts).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
+    // the GitHub preset's three default hosts
+    const hosts = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="add-secret-hosts"] [data-host]')].map(e => e.getAttribute("data-host")));
+    expect(hosts).toEqual(["api.github.com", "github.com", "uploads.github.com"]);
 
-    // when gh reports an account the picker fills these; clear them so the
-    // negative case does not depend on the machine running the suite.
-    await setInputValue('[data-testid="add-secret-keychain-account"]', "");
     await setInputValue('[data-testid="add-secret-name"]', "gh-review");
     await clickPresent('[data-testid="add-secret-submit"]');
     await waitForText("Keychain service and account are both required.");
@@ -708,7 +701,7 @@ describe("settings: env vars kept out of agents", () => {
   it("opens Add secret for a detected token", async () => {
     await clickPresent(`[data-testid="kept-out-add-secret-${PAT}"]`);
     await waitVisible('[data-testid="add-secret-dialog"]');
-    await waitForText(`Adding ${PAT} as a secret`);
+    await waitForText(`Paste the value of ${PAT} below.`);
     // the dialog opens over the Secrets tab, where the new secret would land
     await waitVisible('[data-testid="secrets-health"]');
     await browser.keys("Escape");

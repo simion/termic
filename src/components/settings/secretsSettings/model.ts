@@ -31,23 +31,11 @@ export const GIT_HOST = "github.com";
 /** One way an agent reaches a secret, for the "Delivered as" chips. */
 export type Delivery = { via: "gh" } | { via: "git" } | { via: "baseUrl"; env: string } | { via: "proxy" };
 
-/** The routes a secret is delivered through, each only when it is on.
- *  Mirrors `Route::active` in src-tauri/src/broker/recipe.rs: gh needs
- *  api.github.com, git needs github.com, the base URL endpoint needs its env
- *  var and a base URL whose host is one of the secret's, the proxy needs any
- *  host. */
+/** The routes a secret is delivered through, only those that are on
+ *  (`deliveries`, which mirrors recipe.rs). */
 export function deliveredAs(s: Pick<SecretDef, "recipe" | "hosts" | "api">): Delivery[] {
-  const bound = (h: string) => s.hosts.some(x => x.toLowerCase() === h);
-  const out: Delivery[] = [];
-  if (s.recipe === "github") {
-    if (bound(API_HOST)) out.push({ via: "gh" });
-    if (bound(GIT_HOST)) out.push({ via: "git" });
-  } else if (s.recipe === "api_key" && s.api) {
-    const base = s.api.base_url_env ? baseUrlHost(s.api.base_url) : null;
-    if (base && bound(base)) out.push({ via: "baseUrl", env: s.api.base_url_env });
-    if (s.hosts.length > 0) out.push({ via: "proxy" });
-  }
-  return out;
+  return deliveries(s).filter(d => d.on).map(({ route }): Delivery =>
+    route === "baseUrl" ? { via: "baseUrl", env: s.api?.base_url_env ?? "" } : route === "envProxy" ? { via: "proxy" } : { via: route });
 }
 
 /** Env var names kept out of agents whatever their value looks like
@@ -128,19 +116,72 @@ export function baseUrlHost(url: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
-/** First problem with an API key draft, or null. The Rust side re-checks
- *  everything on save; this is for an inline message before the round trip. */
-export function apiKeyProblem(value: string, hosts: string[], a: ApiKeyCfg): "value" | "env" | "header" | "baseUrl" | null {
-  if (!value.trim()) return "value";
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(a.env)) return "env";
-  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(a.header)) return "header";
-  const hasEnv = a.base_url_env.trim() !== "", hasUrl = a.base_url.trim() !== "";
-  if (hasEnv !== hasUrl) return "baseUrl";
-  if (hasUrl) {
-    const h = baseUrlHost(a.base_url);
-    if (!h || !hosts.some(x => x.toLowerCase() === h)) return "baseUrl";
+/** Env vars an API key may not claim. Mirrors secrets.rs `env_reserved`. */
+const ENV_RESERVED = new Set([
+  "PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR", "PWD", "TERM",
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS",
+]);
+const ENV_RESERVED_PREFIX = ["DYLD_", "LD_", "TERMIC_", "GIT_", "GH_", "SANDBOX"];
+/** Headers the broker never rewrites. Mirrors secrets.rs `header_reserved`. */
+const HEADER_RESERVED = new Set(["host", "content-length", "transfer-encoding", "connection", "proxy-connection", "keep-alive",
+  "upgrade", "te", "trailer", "proxy-authorization", "expect"]);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+const envProblem = (v: string): "env" | "envReserved" | null => {
+  if (!ENV_NAME.test(v)) return "env";
+  const u = v.toUpperCase();
+  return ENV_RESERVED.has(u) || ENV_RESERVED_PREFIX.some(p => u.startsWith(p)) ? "envReserved" : null;
+};
+
+export type ApiKeyField = "value" | "env" | "header" | "scheme" | "baseUrlEnv" | "baseUrl";
+export type ApiKeyProblem = "value" | "env" | "envReserved" | "header" | "headerReserved" | "scheme"
+  | "baseUrlEnvSame" | "baseUrlPair" | "baseUrlShape" | "baseUrlHost";
+
+/** Every problem with an API key draft, keyed by the field it belongs to.
+ *  Mirrors secrets.rs `validate_api_key`; the Rust side re-checks on save,
+ *  this is for the message next to the field before the round trip. */
+export function apiKeyProblems(value: string, hosts: string[], a: ApiKeyCfg): Partial<Record<ApiKeyField, ApiKeyProblem>> {
+  const out: Partial<Record<ApiKeyField, ApiKeyProblem>> = {};
+  if (!value.trim()) out.value = "value";
+  const env = envProblem(a.env);
+  if (env) out.env = env;
+  if (!HEADER_TOKEN.test(a.header)) out.header = "header";
+  else if (HEADER_RESERVED.has(a.header.toLowerCase())) out.header = "headerReserved";
+  if (a.scheme && !HEADER_TOKEN.test(a.scheme)) out.scheme = "scheme";
+  if (a.base_url_env) {
+    const b = envProblem(a.base_url_env);
+    if (b) out.baseUrlEnv = b;
+    else if (a.base_url_env.toUpperCase() === a.env.toUpperCase()) out.baseUrlEnv = "baseUrlEnvSame";
   }
-  return null;
+  const hasEnv = a.base_url_env !== "", hasUrl = a.base_url.trim() !== "";
+  if (hasEnv !== hasUrl) out.baseUrl = "baseUrlPair";
+  else if (hasUrl) {
+    const h = baseUrlHost(a.base_url);
+    if (!h) out.baseUrl = "baseUrlShape";
+    else if (!hosts.some(x => x.toLowerCase() === h)) out.baseUrl = "baseUrlHost";
+  }
+  return out;
+}
+
+/** One broker delivery (broker/recipe.rs `Delivery`). */
+export type DeliveryRoute = "gh" | "git" | "baseUrl" | "envProxy";
+
+/** The delivery routes of a secret's recipe, each on or off from its hosts
+ *  and fields. Mirrors `Route::active` over the GITHUB and API_KEY specs in
+ *  src-tauri/src/broker/recipe.rs: a route added or re-conditioned there
+ *  changes here too, or the Add dialog promises a delivery that never
+ *  happens. */
+export function deliveries(s: Pick<SecretDef, "recipe" | "hosts" | "api">): { route: DeliveryRoute; on: boolean }[] {
+  const bound = (h: string) => s.hosts.some(x => x.toLowerCase() === h);
+  switch (s.recipe) {
+    case "github": return [{ route: "gh", on: bound(API_HOST) }, { route: "git", on: bound(GIT_HOST) }];
+    case "api_key": {
+      const h = s.api?.base_url_env ? baseUrlHost(s.api.base_url) : null;
+      return [{ route: "baseUrl", on: !!h && bound(h) }, { route: "envProxy", on: s.hosts.length > 0 }];
+    }
+    default: return [];
+  }
 }
 
 /** The (secret, host) rule blocks the editor shows for a role, one per host
@@ -317,11 +358,20 @@ export function defaultsFor(roleId: string, projects: Project[], agents: Agent[]
   };
 }
 
-/** Validation for the Add secret form. Returns the first problem's key. */
+/** Validation for the Add secret form, every problem keyed by its field. */
+export function secretProblems(s: Pick<SecretDef, "name" | "service" | "account" | "hosts">, existing: SecretDef[]): {
+  name?: "name" | "nameTaken"; keychain?: "keychain"; hosts?: "hosts";
+} {
+  const out: ReturnType<typeof secretProblems> = {};
+  if (!s.name.trim()) out.name = "name";
+  else if (existing.some(e => e.name === s.name.trim())) out.name = "nameTaken";
+  if (!s.service.trim() || !s.account.trim()) out.keychain = "keychain";
+  if (s.hosts.length === 0) out.hosts = "hosts";
+  return out;
+}
+
+/** The first of `secretProblems`, or null. */
 export function secretProblem(s: Pick<SecretDef, "name" | "service" | "account" | "hosts">, existing: SecretDef[]): "name" | "nameTaken" | "keychain" | "hosts" | null {
-  if (!s.name.trim()) return "name";
-  if (existing.some(e => e.name === s.name.trim())) return "nameTaken";
-  if (!s.service.trim() || !s.account.trim()) return "keychain";
-  if (s.hosts.length === 0) return "hosts";
-  return null;
+  const p = secretProblems(s, existing);
+  return p.name ?? p.keychain ?? p.hosts ?? null;
 }
