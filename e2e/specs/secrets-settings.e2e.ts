@@ -74,6 +74,18 @@ async function ghLoginSource() {
 
 const secretsTab = (id: "secrets" | "roles" | "activity") => clickPresent(`[data-secrets-tab="${id}"]`);
 
+/** Remount Settings -> Secrets on the Roles tab with `role` open. The page
+ *  edits a copy of the settings seeded on mount, so after a spec writes
+ *  settings directly this is what makes the page see it. */
+async function reopenRoles(role: string) {
+  await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
+  await waitGone('[data-testid="secrets-section"]');
+  await browser.execute(() => window.__termic!.useApp.getState().openSettings("secrets"));
+  await secretsTab("roles");
+  await clickPresent(`[data-role-row="${role}"]`);
+  await waitVisible('[data-testid="role-editor"]');
+}
+
 describe("settings: secrets and roles", () => {
   let original: any;
   let projectId = "";
@@ -366,6 +378,96 @@ describe("settings: secrets and roles", () => {
     expect(role.secrets.length).toBe(1);
     expect(await browser.execute(() =>
       document.querySelector('[data-role-secret="Reviewer bot/gh-maintain"]')?.getAttribute("aria-checked"))).toBe("false");
+  });
+
+  it("shows the role as JSON, with secrets by name", async () => {
+    // the cases above wrote settings behind the page's back, and the page
+    // edits a copy seeded on mount: remount it so a save here cannot write
+    // the stale copy back.
+    await reopenRoles((await settingsLoad()).roles[0].name);
+    await clickPresent('[data-testid="role-json-open"]');
+    await waitVisible('[data-testid="role-json-export"]');
+    const j = JSON.parse(await browser.execute(() => document.querySelector('[data-testid="role-json-export"]')!.textContent!));
+    const role = (await settingsLoad()).roles[0];
+    expect(j).toMatchObject({ termic_role: 1, name: role.name, colour: role.colour });
+    expect(Object.keys(j.secrets)).toEqual(["gh-review"]);
+    const git = role.rule_sets.find((r: any) => r.host === "github.com");
+    expect(j.secrets["gh-review"]["github.com"]).toEqual({
+      otherwise: git.fallback,
+      rules: git.rules.map((r: any) => ({ [r.effect]: r.methods.join(" "), match: r.pattern, ...(r.note ? { note: r.note } : {}) })),
+    });
+    await snap("secrets-role-json.png");
+  });
+
+  it("refuses invalid JSON, then replaces the role and keeps its id", async () => {
+    const paste = '[data-testid="role-json-paste"]';
+    const addDisabled = () => browser.execute(() => (document.querySelector('[data-testid="role-json-add"]') as HTMLButtonElement).disabled);
+    await setInputValue(paste, "{ nope");
+    await waitVisible('[data-testid="role-json-preview"] [data-import-error]');
+    await waitForText("Not valid JSON");
+    expect(await addDisabled()).toBe(true);
+    // valid JSON, but naming a secret this Mac does not have.
+    await setInputValue(paste, JSON.stringify({ termic_role: 1, name: "X", secrets: { "gh-bob": {} } }));
+    await waitForText("No secret named gh-bob.");
+    expect(await addDisabled()).toBe(true);
+    await snap("secrets-role-json-invalid.png");
+
+    const before = (await settingsLoad()).roles[0];
+    const j = JSON.parse(await browser.execute(() => document.querySelector('[data-testid="role-json-export"]')!.textContent!));
+    await setInputValue(paste, JSON.stringify({ ...j, description: "replaced from JSON" }));
+    await waitVisible('[data-testid="role-json-preview"][data-valid]');
+    await waitForText("Description changed");
+    await clickPresent('[data-testid="role-json-replace"]');
+    await waitSaved(s => s.roles.length === 1 && s.roles[0].description === "replaced from JSON", "the replace never saved");
+    const after = (await settingsLoad()).roles[0];
+    expect(after.id).toBe(before.id);
+    expect(after.rule_sets.length).toBe(before.rule_sets.length);
+    // back on the rules editor.
+    await waitVisible('[data-testid="role-editor"]');
+  });
+
+  it("pastes a modified JSON from New role and adds it as a new role", async () => {
+    const orig = (await settingsLoad()).roles[0];
+    await clickPresent('[data-testid="role-json-open"]');
+    await waitVisible('[data-testid="role-json-export"]');
+    const j = JSON.parse(await browser.execute(() => document.querySelector('[data-testid="role-json-export"]')!.textContent!));
+    await clickPresent('[data-testid="role-json-close"]');
+    await waitVisible('[data-testid="role-editor"]');
+
+    await openMenu('[data-testid="roles-new"]');
+    await clickPresent('[data-role-template="json"]');
+    await waitVisible('[data-testid="role-json"]');
+    // the New role flow has nothing to export or replace.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="role-json-export"], [data-testid="role-json-replace"]'))).toBe(false);
+    const api = j.secrets["gh-review"]["api.github.com"];
+    const edited = { ...j, name: "Imported", colour: "pink", secrets: { "gh-review": { ...j.secrets["gh-review"],
+      "api.github.com": { ...api, rules: api.rules.slice(1) } } } };
+    await setInputValue('[data-testid="role-json-paste"]', JSON.stringify(edited));
+    await waitVisible('[data-testid="role-json-preview"][data-valid]');
+    // textContent, not innerText: the heading is an uppercase eyebrow.
+    expect(await browser.execute(() => document.querySelector('[data-testid="role-json-preview"]')!.textContent))
+      .toContain("Import preview · Imported");
+    await snap("secrets-role-json-preview.png");
+    await clickPresent('[data-testid="role-json-add"]');
+    await waitSaved(s => s.roles.length === 2 && s.roles[1].name === "Imported", "the imported role never saved");
+    const added = (await settingsLoad()).roles[1];
+    expect(added.id).not.toBe(orig.id);
+    expect(added.colour).toBe("pink");
+    expect(added.secrets).toEqual(orig.secrets);
+    const apiOf = (r: any) => r.rule_sets.find((x: any) => x.host === "api.github.com");
+    expect(apiOf(added).rules).toEqual(apiOf(orig).rules.slice(1));
+    // the new role is the one open in the editor.
+    await browser.waitUntil(() => browser.execute(() =>
+      (document.querySelector('[data-testid="role-name"]') as HTMLInputElement | null)?.value === "Imported"),
+    { timeout: 5_000, timeoutMsg: "the editor did not switch to the imported role" });
+    // back to one role for the cases below.
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      const s = await t.invoke("settings_load") as any;
+      await t.invoke("settings_save", { s: { ...s, roles: s.roles.slice(0, 1) } });
+    });
+    await waitSaved(s => s.roles.length === 1, "the imported role was not cleaned up");
+    await reopenRoles(orig.name);
   });
 
   it("defaults an agent to the role", async () => {

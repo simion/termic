@@ -15,12 +15,16 @@ import { cn } from "@/lib/utils";
 import { defaultsFor, duplicateRole, hostConflicts, roleFromTemplate, tasksByRole, toggleSecret, type RoleTemplate } from "./model";
 import { Eyebrow, RoleDot } from "./parts";
 import { RoleEditor } from "./RoleEditor";
+import { RoleJsonPanel } from "./RoleJsonPanel";
+import type { RoleDraft } from "./roleJson";
 import type { SecretsModel } from "./SecretsSection";
 
 export function RolesTab({ model, initialRole }: { model: SecretsModel; initialRole?: string | null }) {
   const { t } = useTranslation("secrets");
   const { secrets, roles } = model;
   const [selected, setSelected] = useState<string | null>(initialRole ?? roles[0]?.id ?? null);
+  // the JSON panel in place of the editor: for the selected role, or New role.
+  const [json, setJson] = useState<"edit" | "new" | null>(null);
   // A deleted role (or a first load) leaves nothing picked; fall to the first.
   useEffect(() => {
     if (!selected || !roles.some(r => r.id === selected)) setSelected(roles[0]?.id ?? null);
@@ -59,6 +63,17 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
     if (await model.save({ roles: [...roles, copy] })) setSelected(copy.id);
   }
 
+  async function addFromJson(draft: RoleDraft) {
+    const role: Role = { ...draft, id: crypto.randomUUID() };
+    if (await model.save({ roles: [...roles, role] })) { setSelected(role.id); setJson(null); }
+  }
+
+  // same id, so running tasks and the agents and projects defaulting to it
+  // keep pointing at it.
+  async function replaceFromJson(id: string, draft: RoleDraft) {
+    if (await saveRole({ ...draft, id })) setJson(null);
+  }
+
   async function remove(role: Role) {
     const ok = await useUI.getState().askConfirm({
       title: t("manage.editor.deleteTitle", { name: role.name }),
@@ -86,6 +101,7 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
             <DropdownItem data-role-template="empty" onSelect={() => void create("empty")}>{t("manage.tpl.menuEmpty")}</DropdownItem>
             <DropdownItem data-role-template="reviewer" onSelect={() => void create("reviewer")}>{t("manage.tpl.menuReviewer")}</DropdownItem>
             <DropdownItem data-role-template="maintainer" onSelect={() => void create("maintainer")}>{t("manage.tpl.menuMaintainer")}</DropdownItem>
+            <DropdownItem data-role-template="json" onSelect={() => setJson("new")}>{t("manage.json.menu")}</DropdownItem>
           </DropdownMenu>
         </DropdownRoot>
       </div>
@@ -159,8 +175,10 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
         </table>
       </div>
 
-      {sel
-        ? <RoleEditor key={sel.id} role={sel} secrets={secrets} runningTasks={byRole.get(sel.id)?.map(x => x.name) ?? []} onSave={saveRole} onDuplicate={() => void duplicate(sel)} onDelete={() => void remove(sel)} />
+      {json && <RoleJsonPanel key={json === "edit" ? sel?.id : "new"} role={json === "edit" && sel ? sel : undefined} example={sel ?? undefined} secrets={secrets}
+        onAdd={d => void addFromJson(d)} onReplace={d => sel && void replaceFromJson(sel.id, d)} onClose={() => setJson(null)} />}
+      {json ? null : sel
+        ? <RoleEditor key={sel.id} role={sel} secrets={secrets} runningTasks={byRole.get(sel.id)?.map(x => x.name) ?? []} onSave={saveRole} onDuplicate={() => void duplicate(sel)} onDelete={() => void remove(sel)} onJson={() => setJson("edit")} />
         : roles.length > 0 && <div className="text-[12.5px] text-[var(--color-fg-faint)]">{t("manage.roles.selectHint")}</div>}
     </div>
   );

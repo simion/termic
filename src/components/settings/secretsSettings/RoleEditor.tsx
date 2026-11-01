@@ -2,7 +2,7 @@
 // per secret and host, duplicate and delete.
 
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Copy, Trash2 } from "lucide-react";
+import { AlertTriangle, Braces, Copy, Trash2 } from "lucide-react";
 import type { Role, SecretDef } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
@@ -10,9 +10,11 @@ import { ROLE_COLOURS, loginTakeovers, putRuleSet, roleColourVar, ruleBlocksFor,
 import { CommitInput } from "./parts";
 import { RuleBlock } from "./RuleBlock";
 
-export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, onDelete }: {
+export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, onDelete, onJson }: {
   role: Role; secrets: SecretDef[]; runningTasks: string[];
   onSave: (r: Role) => void; onDuplicate: () => void; onDelete: () => void;
+  /** Swap the editor for the JSON export / import panel (RoleJsonPanel). */
+  onJson?: () => void;
 }) {
   const { t } = useTranslation("secrets");
   const blocks = ruleBlocksFor(role, secrets);
@@ -83,6 +85,7 @@ export function RoleEditor({ role, secrets, runningTasks, onSave, onDuplicate, o
 
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.editor.footer")}</p>
       <div className="flex gap-2">
+        {onJson && <Button size="sm" variant="ghost" onClick={onJson} data-testid="role-json-open"><Braces className="h-3.5 w-3.5" /> {t("manage.json.open")}</Button>}
         <Button size="sm" variant="ghost" onClick={onDuplicate} data-testid="role-duplicate"><Copy className="h-3.5 w-3.5" /> {t("manage.editor.duplicate")}</Button>
         <Button size="sm" variant="danger" onClick={onDelete} data-testid="role-delete"><Trash2 className="h-3.5 w-3.5" /> {t("manage.editor.delete")}</Button>
       </div>
