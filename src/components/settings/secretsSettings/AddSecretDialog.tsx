@@ -438,7 +438,7 @@ function WhatHappens({ isKey, hosts, api, actsAs }: { isKey: boolean; hosts: str
   };
   const takeover = isKey ? AGENT_LOGIN_ENV.find(a => a.env === api.env.toUpperCase()) : undefined;
   return (
-    <div data-testid="add-secret-preview" className="flex shrink-0 flex-col gap-2 self-start rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 text-[12.5px] sm:w-72">
+    <div data-testid="add-secret-preview" className="flex shrink-0 flex-col gap-2 self-start rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 text-[12.5px] sm:w-80">
       <Eyebrow className="flex items-center gap-1.5">{t("manage.add.how.title")}<InfoTip text={t("manage.add.how.tip")} /></Eyebrow>
       <div>{t("manage.add.how.standIn")}</div>
       <code data-testid="add-secret-stand-in" className="block truncate rounded bg-[var(--color-bg-2)] px-2 py-1 font-mono text-[11.5px]">
@@ -476,7 +476,7 @@ function Route({ route, on, name, reach, off, tip, inject }: {
       <div className="flex items-center gap-1.5">
         <span className={cn("font-mono text-[12px] font-medium", !on && "text-[var(--color-fg-dim)]")}>{name}</span>
         <span className={cn(
-          "rounded px-1 text-[10.5px] font-medium uppercase tracking-wide",
+          "shrink-0 rounded px-1 text-[10.5px] font-medium uppercase tracking-wide",
           on ? "bg-[var(--color-ok)]/15 text-[var(--color-ok)]" : "bg-[var(--color-hover)] text-[var(--color-fg-faint)]",
         )}>
           {on ? t("manage.add.how.on") : t("manage.add.how.off")}
@@ -485,7 +485,7 @@ function Route({ route, on, name, reach, off, tip, inject }: {
       </div>
       <div className="text-[12px] text-[var(--color-fg-dim)]">{on ? reach : off}</div>
       {on && (
-        <code className="block break-all font-mono text-[11.5px]">
+        <code className="block break-words font-mono text-[11.5px]">
           {inject}<span className="text-[var(--color-accent)]">{t("manage.add.how.real")}</span>
         </code>
       )}
