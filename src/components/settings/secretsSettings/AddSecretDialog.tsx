@@ -370,7 +370,6 @@ export function AddSecretDialog({ existing, fromVar, fromPreset, protectedOk, on
                   <label className="flex min-w-0 flex-col gap-1">
                     <span className={labelCls}>
                       {t("manage.add.baseUrlEnv")}
-                      <span className="font-normal text-[var(--color-fg-faint)]">{t("manage.add.optional")}</span>
                       <InfoTip text={t("manage.add.baseUrlEnvTip")} />
                     </span>
                     <Input data-testid="add-secret-base-url-env" value={api.base_url_env} placeholder="ACME_BASE_URL" aria-invalid={!!shown("baseUrlEnv")} onChange={setApiField("base_url_env", "baseUrlEnv")} className="font-mono" />
@@ -486,7 +485,7 @@ function Route({ route, on, name, reach, off, tip, inject }: {
       </div>
       <div className="text-[12px] text-[var(--color-fg-dim)]">{on ? reach : off}</div>
       {on && (
-        <code className="block truncate font-mono text-[11.5px]">
+        <code className="block break-all font-mono text-[11.5px]">
           {inject}<span className="text-[var(--color-accent)]">{t("manage.add.how.real")}</span>
         </code>
       )}

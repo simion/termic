@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { cn } from "@/lib/utils";
 import { defaultsFor, duplicateRole, hostConflicts, tasksByRole, toggleSecret } from "./model";
 import { NewRolePanel } from "./NewRolePanel";
-import { Eyebrow, RoleDot } from "./parts";
+import { Eyebrow, InfoTip, RoleDot } from "./parts";
 import { RoleEditor } from "./RoleEditor";
 import { RoleJsonPanel } from "./RoleJsonPanel";
 import type { RoleDraft } from "./roleJson";
@@ -89,10 +89,11 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
 
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-[13px] text-[var(--color-fg-dim)]">{t("manage.roles.intro")}</p>
-
       <div className="flex items-center justify-between">
-        <Eyebrow>{t("manage.roles.heading", { count: roles.length })}</Eyebrow>
+        <span className="flex items-center gap-1.5">
+          <Eyebrow>{t("manage.roles.heading", { count: roles.length })}</Eyebrow>
+          <InfoTip text={t("manage.roles.intro")} />
+        </span>
         <Button variant="primary" data-testid="roles-new" aria-expanded={panel !== null} onClick={() => setPanel(panel ? null : "new")}>
           <Plus className="h-4 w-4" /> {t("manage.roles.new")}
         </Button>
