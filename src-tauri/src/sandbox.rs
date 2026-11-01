@@ -694,6 +694,36 @@ pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
     owner_of(pid, &roots, ppid_of, sid_of).is_some()
 }
 
+/// The process of `task_id` holding the client end of a loopback TCP
+/// connection from `peer_port` to our `local_port`: the credential
+/// broker's peer check for its TCP deliveries, where there is no
+/// `LOCAL_PEERPID`. Only the task's own tree is searched (its roots and
+/// their descendants, then, on a miss, orphans that kept a root's session
+/// id, the same two ways `pid_in_task` accepts a pid), so the cost scales
+/// with the task, not the machine, and a process outside it is never
+/// found.
+#[cfg(target_os = "macos")]
+pub(crate) fn tcp_peer_in_task(task_id: &str, peer_port: u16, local_port: u16) -> Option<u32> {
+    let roots: Vec<u32> = sandbox_pids().lock().ok()?.get(task_id)?.iter().copied().collect();
+    let search = |seeds: Vec<u32>| {
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut queue = std::collections::VecDeque::from(seeds);
+        // the cap bounds a fork bomb's cost to the accept thread.
+        while let Some(pid) = queue.pop_front().filter(|_| seen.len() < 4096) {
+            if pid <= 1 || !seen.insert(pid) { continue; }
+            if crate::procmon::holds_tcp_client(pid, peer_port, local_port) { return Some(pid); }
+            queue.extend(crate::procmon::child_pids(pid));
+        }
+        None
+    };
+    search(roots.clone()).or_else(|| {
+        let orphans = crate::procmon::child_pids(1).into_iter()
+            .filter(|p| sid_of(*p).is_some_and(|s| roots.contains(&s)))
+            .collect();
+        search(orphans)
+    })
+}
+
 /// `pid`'s executable and its parent chain, for logging a peer that
 /// failed `pid_in_task`. An orphan ends at `1 launchd`; a process that
 /// already exited reads `(exited)`.
@@ -4301,5 +4331,120 @@ mod watcher_tests {
         assert_eq!(proc_name(Some("2.1.144".into()), 1, &mut r), "/opt/claude/versions/2.1.144");
         assert_eq!(proc_name(Some("touch".into()), 1, &mut r), "touch");
         assert_eq!(proc_name(None, 1, &mut r), "/opt/claude/versions/2.1.144");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tcp_peer_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant};
+
+    /// A listener, and `script` run under sh with `$P` set to its port; the
+    /// script connects (bash's /dev/tcp) and holds the socket. Returns the
+    /// child (the caller kills it), our port and the client's port.
+    fn connect_from(script: &str, setsid: bool) -> (Child, u16, u16) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(script).env("P", port.to_string());
+        if setsid {
+            // SAFETY: setsid is async-signal-safe.
+            unsafe { cmd.pre_exec(|| { libc::setsid(); Ok(()) }); }
+        }
+        let child = cmd.spawn().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let _ = tx.send(l.accept().map(|(s, a)| (s, a.port()))); });
+        let (s, peer) = rx.recv_timeout(Duration::from_secs(10)).expect("child never connected").unwrap();
+        std::mem::forget(s); // keep the connection up for the lookup
+        (child, port, peer)
+    }
+
+    const HOLD: &str = "exec 3<>/dev/tcp/127.0.0.1/$P; sleep 30";
+
+    /// Runs `f` 200 times and prints the mean, for the per-connection cost.
+    fn timed<T>(what: &str, f: impl Fn() -> T) -> T {
+        let n = 200;
+        let t = Instant::now();
+        for _ in 0..n { f(); }
+        eprintln!("{what}: {:?} per lookup", t.elapsed() / n);
+        f()
+    }
+
+    #[test]
+    fn finds_the_grandchild_holding_the_connection() {
+        // `; true` keeps sh from exec'ing bash, so the holder is a grandchild.
+        let (mut root, port, peer) = connect_from(&format!("/bin/bash -c '{HOLD}'; true"), false);
+        let task = "tcp-peer-tree";
+        register_root_pid(task, root.id());
+        let pid = timed("tree hit", || tcp_peer_in_task(task, peer, port)).expect("found");
+        assert_ne!(pid, root.id());
+        assert_eq!(ppid_of(pid), Some(root.id()));
+        assert!(pid_in_task(task, pid));
+        assert_eq!(tcp_peer_in_task(task, port, peer), None, "the listener's end is not the client's");
+        assert_eq!(tcp_peer_in_task("tcp-peer-other", peer, port), None, "another task's tree");
+        // our own process holds the accepted end, never the client end.
+        assert!(!crate::procmon::holds_tcp_client(std::process::id(), peer, port));
+        unregister_root_pid(task, root.id());
+        // SAFETY: kill on the grandchild this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        let _ = root.kill();
+        let _ = root.wait();
+    }
+
+    #[test]
+    fn finds_an_orphan_by_its_session() {
+        // the subshell exits at once, so bash is reparented to launchd and
+        // only the session id still ties it to the root.
+        let (mut root, port, peer) = connect_from(&format!("(/bin/bash -c '{HOLD}' &); sleep 30"), true);
+        let task = "tcp-peer-orphan";
+        register_root_pid(task, root.id());
+        let pid = timed("orphan hit", || tcp_peer_in_task(task, peer, port)).expect("found via the session");
+        assert_eq!(ppid_of(pid), Some(1));
+        assert_eq!(sid_of(pid), Some(root.id()));
+        unregister_root_pid(task, root.id());
+        let _ = root.kill();
+        let _ = root.wait();
+        // SAFETY: kill on the orphan this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+
+    #[test]
+    fn an_outsider_is_not_found() {
+        let (mut client, port, peer) = connect_from(&format!("exec /bin/bash -c '{HOLD}'"), false);
+        // a task whose tree holds no such socket: the full miss path,
+        // including the orphan scan, is what an outsider costs.
+        let mut idle = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let task = "tcp-peer-outsider";
+        register_root_pid(task, idle.id());
+        assert_eq!(timed("miss", || tcp_peer_in_task(task, peer, port)), None);
+        assert_eq!(tcp_peer_in_task("tcp-peer-unregistered", peer, port), None);
+        unregister_root_pid(task, idle.id());
+        let _ = client.kill();
+        let _ = client.wait();
+        let _ = idle.kill();
+        let _ = idle.wait();
+    }
+
+    #[test]
+    fn a_caged_client_is_found() {
+        // the network shape of an Enforce profile: loopback out only. The
+        // seatbelt binds the client, not Termic's view of its fds.
+        let profile = r#"(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:*"))"#;
+        let probe = Command::new("/usr/bin/sandbox-exec").args(["-p", profile, "/usr/bin/true"])
+            .stderr(std::process::Stdio::null()).status();
+        if !probe.is_ok_and(|s| s.success()) {
+            eprintln!("skipped: sandbox-exec cannot apply here (already inside a sandbox)");
+            return;
+        }
+        let (mut caged, port, peer) = connect_from(&format!("exec /usr/bin/sandbox-exec -p '{profile}' /bin/bash -c '{HOLD}'"), false);
+        let task = "tcp-peer-caged";
+        register_root_pid(task, caged.id());
+        assert_eq!(tcp_peer_in_task(task, peer, port), Some(caged.id()));
+        unregister_root_pid(task, caged.id());
+        let _ = caged.kill();
+        let _ = caged.wait();
     }
 }

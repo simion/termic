@@ -202,6 +202,10 @@ struct Binding {
 pub(crate) struct Deps {
     pub(crate) connector: Connector,
     pub(crate) peer_ok: PeerCheck,
+    /// (task, peer port, our port) -> the task's process on the other end
+    /// of a loopback TCP connection. None where there is no way to look it
+    /// up (off macOS), which leaves the TCP deliveries on their markers.
+    pub(crate) tcp_peer: Option<TcpPeer>,
     pub(crate) read_secret: SecretReader,
     pub(crate) live: LiveRules,
     /// Where `stale` reads the role and secrets as they are now. None in
@@ -210,6 +214,7 @@ pub(crate) struct Deps {
 }
 
 type PeerCheck = Arc<dyn Fn(&str, u32) -> bool + Send + Sync>;
+type TcpPeer = Arc<dyn Fn(&str, u16, u16) -> Option<u32> + Send + Sync>;
 type SecretReader = Arc<dyn Fn(&SecretDef) -> Result<Arc<Secret>, SecretStatus> + Send + Sync>;
 type LiveRules = Arc<dyn Fn(&str, &str) -> Option<(Role, Vec<TaskAllow>)> + Send + Sync>;
 
@@ -218,6 +223,10 @@ impl Deps {
         Deps {
             connector: mitm::system_connector(),
             peer_ok: Arc::new(crate::sandbox::pid_in_task),
+            #[cfg(target_os = "macos")]
+            tcp_peer: Some(Arc::new(crate::sandbox::tcp_peer_in_task)),
+            #[cfg(not(target_os = "macos"))]
+            tcp_peer: None,
             read_secret: Arc::new(keychain::read),
             profile: Some(profile.clone()),
             live: Arc::new(move |task, role| live_rules(&profile, task, role)),
@@ -262,8 +271,8 @@ pub(crate) struct Spawn {
     /// so a CONNECT is MITM'd only for the delivery that asked: a Go tool
     /// on `HTTPS_PROXY` would fail TLS against a host only git's route binds.
     env_proxy_auth: String,
-    /// First path segment of the base-URL endpoint. The endpoint is TCP, so
-    /// there is no peer pid; knowing this spawn's URL is the check.
+    /// First path segment of the base-URL endpoint, checked on top of the
+    /// TCP peer check (`admit_tcp`).
     base_marker: String,
     ca: Option<mitm::Ca>,
     pub(crate) deps: Deps,
@@ -327,6 +336,26 @@ impl Spawn {
         Ok(())
     }
 
+    /// The peer check for the TCP deliveries (base URL, git's proxy, the env
+    /// proxy), the counterpart of the gh socket's `LOCAL_PEERPID`: the
+    /// connection's client end must belong to a process of this task. A
+    /// refusal is answered 403 and recorded `wrong_peer`, like the socket's.
+    pub(crate) fn admit_tcp(&self, conn: &std::net::TcpStream) -> bool {
+        let Some(lookup) = &self.deps.tcp_peer else { return true };
+        let ports = conn.peer_addr().and_then(|p| Ok((p.port(), conn.local_addr()?.port()))).ok();
+        let pid = ports.and_then(|(peer, local)| lookup(&self.task_id, peer, local));
+        if pid.is_some_and(|p| (self.deps.peer_ok)(&self.task_id, p)) { return true; }
+        let who = match (pid, ports) {
+            (Some(p), _) => crate::sandbox::describe_pid(p),
+            (None, Some((peer, _))) => format!("the client on 127.0.0.1:{peer} (outside this task's process tree)"),
+            (None, None) => "a peer that already closed".into(),
+        };
+        let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+        let mut w = conn;
+        refuse_wrong_peer(&self.task_id, &who, &mut w, "Refused by Termic: this endpoint belongs to another task's agent.\n");
+        false
+    }
+
     /// A plain-HTTP proxy request carrying one of this spawn's placeholders
     /// is refused and recorded: the broker only ever substitutes over TLS
     /// it dialed itself. Returns true when it refused.
@@ -346,6 +375,14 @@ impl Spawn {
             &format!("Refused by Termic: a Termic secret placeholder was sent to {host} over plain HTTP.\n"));
         true
     }
+}
+
+/// A peer that failed a delivery's pid check: recorded, then a short 403
+/// into what is still an empty socket buffer. The caller sets a write
+/// timeout so a peer that never reads cannot stall its accept thread.
+fn refuse_wrong_peer(task_id: &str, who: &str, w: &mut dyn Write, body: &str) {
+    record_suspicious(task_id, "wrong_peer", "", &format!("{who} is not this task's agent"));
+    let _ = http::respond(w, 403, "Forbidden", &[("X-Termic-Secrets", "wrong-peer")], body);
 }
 
 /// Equal without an early exit, for credentials compared on every request.
@@ -1212,6 +1249,7 @@ pub(crate) fn test_handle(task_id: &str, proxy_port: Option<u16>) -> BrokerHandl
     let deps = Deps {
         connector: Arc::new(|_, _| Err(std::io::Error::other("offline"))),
         peer_ok: Arc::new(|_, _| true),
+        tcp_peer: None,
         read_secret: Arc::new(|_| Err(SecretStatus::Missing)),
         live: Arc::new(|_, _| None),
         profile: None,

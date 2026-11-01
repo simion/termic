@@ -2,7 +2,7 @@
 //! does the TLS. One listener per agent spawn.
 
 use super::accept::{self, Acceptor};
-use super::{record_suspicious, Spawn, Via, CLIENT_READ_TIMEOUT, CLIENT_WRITE_TIMEOUT};
+use super::{Spawn, Via, CLIENT_READ_TIMEOUT, CLIENT_WRITE_TIMEOUT};
 use std::io::BufReader;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -39,13 +39,9 @@ fn admit(sp: &Spawn, conn: &UnixStream) -> bool {
     let pid = peer_pid(conn);
     if pid.is_some_and(|p| (sp.deps.peer_ok)(&sp.task_id, p)) { return true; }
     let who = pid.map(crate::sandbox::describe_pid).unwrap_or_else(|| "unknown pid".into());
-    record_suspicious(&sp.task_id, "wrong_peer", "", &format!("{who} is not this task's agent"));
-    // a short refusal into an empty socket buffer; the timeout keeps a peer
-    // that never reads from stalling the accept thread.
     let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(200)));
     let mut w = conn;
-    let _ = super::http::respond(&mut w, 403, "Forbidden", &[("X-Termic-Secrets", "wrong-peer")],
-        "Refused by Termic: this socket belongs to another task's agent.\n");
+    super::refuse_wrong_peer(&sp.task_id, &who, &mut w, "Refused by Termic: this socket belongs to another task's agent.\n");
     false
 }
 

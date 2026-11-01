@@ -5,11 +5,9 @@
 //!     then a wake-by-connect never lands and `Drop` joins forever.
 //!   - an accept error (EMFILE) backs off instead of spinning a core.
 //!   - live connections are capped, so a flood cannot exhaust threads, and
-//!     a peer that can be refused cheaply (the gh socket's pid check) is
-//!     refused before it takes a slot, so another task cannot fill them.
-//!     The base-URL endpoint can only tell its own agent by the marker in
-//!     the request, so a same-user process that floods its port can still
-//!     crowd it out (docs/sandbox.md "Marker-only deliveries").
+//!     the peer check (the gh socket's `LOCAL_PEERPID`, the base-URL
+//!     endpoint's pid lookup) runs before a connection takes a slot, so a
+//!     process outside the task cannot fill them.
 
 use std::io;
 use std::net::{TcpListener, TcpStream};

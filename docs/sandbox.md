@@ -590,8 +590,8 @@ any), with no substitution; a 401 from one is recorded as "no secret".
 **git** is pointed at the task's proxy with credentials only it has
 (`http.https://github.com/.proxy=http://termic:<marker>@127.0.0.1:<port>`,
 sent up front because of `proxyAuthMethod=basic`; verified with Apple
-git 2.50.1). A CONNECT to a bound host on 443 carrying them is
-terminated with a leaf from a per-spawn CA name-constrained to the
+git 2.50.1). A CONNECT to a bound host on 443 carrying them, from a
+process of the task ("TCP peer check" below), is terminated with a leaf from a per-spawn CA name-constrained to the
 bound hosts (key in memory only), ALPN http/1.1. Every other CONNECT,
 including other tools going to github.com, is the blind tunnel it
 always was, so nothing else ever sees the CA. In Enforce this is the
@@ -609,9 +609,10 @@ Bearer`, `x-api-key`):
   verified TLS to that host; a host the secret is not bound to over
   this route is a 403 `not-bound`, so the endpoint never forwards
   elsewhere. No CA is involved, so this reaches Go and Rust clients
-  the MITM cannot. TCP has no `LOCAL_PEERPID`: the random marker is the
-  peer check, and a request without it is a 403 and a Suspicious
-  `wrong_peer`. See "Marker-only deliveries" below.
+  the MITM cannot. The client must be a process of the task (see "TCP
+  peer check" below), checked before the connection takes a slot, and
+  the request must carry the random marker; failing either is a 403
+  and a Suspicious `wrong_peer`.
 - **Env proxy.** `HTTPS_PROXY` / `https_proxy` carry a SECOND set of
   proxy credentials, distinct from git's, and `SSL_CERT_FILE`,
   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` point at a bundle of the trust
@@ -626,17 +627,38 @@ Bearer`, `x-api-key`):
   macOS and would fail TLS against a host it used to tunnel to.
   `NO_PROXY` covers loopback, so base-URL requests go direct.
 
-**Marker-only deliveries.** The gh socket checks the peer pid; the other
-three cannot (TCP has no `LOCAL_PEERPID`): the base-URL endpoint checks
-its path marker, and git's proxy and the env proxy check their proxy
-credentials, each a random 128-bit value in the agent's env and argv
-only. EnforceFs allows all network, so any same-user process that learns
-a marker (another process's env) can spend that spawn's secret under its
-role. The same process can also crowd the base-URL endpoint out by holding
-its 64 connection slots (each freed after 15s idle); the gh socket checks
-the pid before a connection takes a slot, so it cannot be crowded this
-way. Mapping the TCP peer to a pid (libproc socket tables) and running
-`pid_in_task` is the upgrade, not built.
+**TCP peer check.** The base-URL endpoint, git's proxy and the env
+proxy are TCP, which has no `LOCAL_PEERPID`, so the broker names the
+peer itself (`sandbox::tcp_peer_in_task`, libproc in `procmon.rs`): it
+looks for the process holding the client end of the connection, a TCP
+socket whose local port is the peer's port and whose remote end is
+127.0.0.1 on the listener's port. Only the task's own tree is searched:
+its registered roots and their descendants (`PROC_PPID_ONLY`), then, on
+a miss, launchd's children whose session id is a root's, the same two
+ways `pid_in_task` accepts a pid. A process outside the task is never
+found, and the pid found still goes through `pid_in_task`. Anything
+else is a 403 and a Suspicious `wrong_peer`. Measured on an Apple
+silicon Mac (release build): about 12us when the client is in the tree,
+about 90-100us for an orphan or a miss (both list launchd's children),
+and about 100us more for each tree process holding ~60 sockets. Well
+under a millisecond for a normal agent tree, so nothing is cached.
+
+It runs on the base-URL endpoint's accept thread, before the connection
+takes one of its 64 slots, so a same-user process can neither spend the
+secret nor crowd the endpoint out. On the task's proxy it runs only for
+a CONNECT carrying this spawn's git or env-proxy credentials, the ones
+the broker would MITM; every other CONNECT is the blind tunnel it
+always was, for any process. The path marker and the proxy credentials
+are still checked too.
+
+What is left: any process of the same task passes, which is intended
+(every tool the agent runs may use its role). Off macOS there is no
+lookup (`Deps::tcp_peer` is None) and these deliveries stay on their
+markers alone. A process that `setsid()`s and is then orphaned has left
+the tree and is refused, as `pid_in_task` refuses it. A base-URL client
+refused on accept may see a reset instead of the 403 if it had already
+sent its request, because the refusal does not read it; the Suspicious
+row is the record either way.
 
 **Substitution** happens in one spot per delivery and only when the
 broker dials a bound host itself: `Authorization: token|Bearer <ph>` on

@@ -324,6 +324,9 @@ fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, moni
                 // the agent's git or an HTTPS_PROXY tool, for a host its role
                 // binds: the broker terminates TLS and substitutes. Not
                 // subject to the allow-list, the role binding is the allow.
+                // The credentials alone are a marker another process could
+                // read, so the client must also be one of the task's.
+                if !sp.admit_tcp(&stream) { return Ok(()); }
                 client_established(&mut stream)?;
                 return sp.serve_mitm(stream, &host, delivery);
             }

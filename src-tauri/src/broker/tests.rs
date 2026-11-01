@@ -110,6 +110,7 @@ fn deps(up: &Upstream, peer_ok: bool) -> Deps {
     Deps {
         connector: up.connector.clone(),
         peer_ok: Arc::new(move |_, _| peer_ok),
+        tcp_peer: None,
         read_secret: Arc::new(|_| Ok(Arc::new(Secret::new(REAL.into())))),
         live: Arc::new(|_, _| None),
         profile: None,
@@ -600,6 +601,103 @@ fn api_key_without_a_proxy_or_base_url_still_gets_its_placeholder() {
     assert!(env_of(&h, "OPENAI_API_KEY").unwrap().starts_with("termic_ph_"));
     assert!(h.base_url_port.is_none() && env_of(&h, "OPENAI_BASE_URL").is_none());
     assert!(env_of(&h, "HTTPS_PROXY").is_none(), "no proxy, no env proxy");
+}
+
+// ─── TCP peer check (macOS) ──────────────────────────────────────────
+
+/// An API-key spawn with the real TCP peer lookup and `pid_in_task`, not
+/// the always-yes seams.
+#[cfg(target_os = "macos")]
+fn start_api_checked(task: &str, up: &Upstream, proxy_port: Option<u16>) -> BrokerHandle {
+    let mut d = deps(up, true);
+    d.peer_ok = Arc::new(crate::sandbox::pid_in_task);
+    d.tcp_peer = Some(Arc::new(crate::sandbox::tcp_peer_in_task));
+    let secrets = [api_secret("authorization", "Bearer")];
+    let role = Role { id: "dev".into(), name: "Dev".into(), secrets: vec!["oa".into()], ..Default::default() };
+    start_with(StartArgs {
+        task_id: task, role: &role, secrets: &secrets, task_allows: &[], host_patterns: vec![], allow_all_hosts: false,
+        proxy_port, dir: new_spawn_dir().unwrap(),
+    }, d).unwrap()
+}
+
+/// A task whose only root is an idle process, so this test process is
+/// outside it even though it can read every marker.
+#[cfg(target_os = "macos")]
+fn outsider_task(task: &str) -> std::process::Child {
+    let idle = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    crate::sandbox::register_root_pid(task, idle.id());
+    idle
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn base_url_admits_only_the_tasks_own_processes() {
+    let up = upstream("200 OK");
+    let target = |h: &BrokerHandle| {
+        let base = env_of(h, "OPENAI_BASE_URL").unwrap();
+        format!("/{}/api.openai.com/v1/m", base.split('/').nth(3).unwrap())
+    };
+
+    let mut idle = outsider_task("t-tcp-out");
+    let h = start_api_checked("t-tcp-out", &up, None);
+    // refused on accept, before the request is read: read without writing,
+    // so the refusal is not raced by unread request bytes.
+    let mut s = TcpStream::connect(("127.0.0.1", h.base_url_port.unwrap())).unwrap();
+    let mut resp = String::new();
+    s.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 403") && resp.contains("wrong-peer"), "{resp}");
+    let ev = events("t-tcp-out").suspicious;
+    assert_eq!(ev[0].kind, "wrong_peer");
+    assert!(ev[0].detail.contains("outside this task's process tree"), "{}", ev[0].detail);
+    assert_eq!(up.dials.load(Ordering::SeqCst), 0);
+
+    // the same request from a process of the task goes through.
+    crate::sandbox::register_root_pid("t-tcp-in", std::process::id());
+    let h2 = start_api_checked("t-tcp-in", &up, None);
+    let ph = env_of(&h2, "OPENAI_API_KEY").unwrap();
+    let resp = over_base_url(&h2, &target(&h2), &format!("Authorization: Bearer {ph}\r\n"));
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(up.rx.recv().unwrap().contains(&format!("Authorization: Bearer {REAL}\r\n")));
+    assert!(events("t-tcp-in").suspicious.is_empty());
+
+    crate::sandbox::unregister_root_pid("t-tcp-in", std::process::id());
+    crate::sandbox::unregister_root_pid("t-tcp-out", idle.id());
+    let _ = idle.kill();
+    let _ = idle.wait();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn env_proxy_checks_the_peer_only_where_it_would_substitute() {
+    use base64::Engine;
+    let up = upstream("200 OK");
+    let task = "t-tcp-proxy";
+    let mut idle = outsider_task(task);
+    let proxy = crate::proxy::start(vec![], task.into(), false).unwrap();
+    let h = start_api_checked(task, &up, Some(proxy.port));
+    proxy.attach_broker(h.mitm_ctx());
+    let url = env_of(&h, "HTTPS_PROXY").unwrap();
+    let creds = base64::engine::general_purpose::STANDARD.encode(url.trim_start_matches("http://").split('@').next().unwrap());
+    let connect = |auth: &str| {
+        let mut tcp = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
+        tcp.write_all(format!("CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n{auth}\r\n").as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = tcp.read_to_string(&mut out);
+        out
+    };
+    // this spawn's credentials, from outside the task: refused.
+    let resp = connect(&format!("Proxy-Authorization: Basic {creds}\r\n"));
+    assert!(resp.starts_with("HTTP/1.1 403") && resp.contains("wrong-peer"), "{resp}");
+    assert_eq!(events(task).suspicious[0].kind, "wrong_peer");
+    // a CONNECT without them is the ordinary tunnel path (refused here by
+    // the empty allow-list), never the peer check.
+    let resp = connect("");
+    assert!(resp.contains("403") && !resp.contains("wrong-peer"), "{resp}");
+    assert_eq!(events(task).suspicious[0].count, 1);
+    assert_eq!(up.dials.load(Ordering::SeqCst), 0);
+    crate::sandbox::unregister_root_pid(task, idle.id());
+    let _ = idle.kill();
+    let _ = idle.wait();
 }
 
 // ─── owned items ─────────────────────────────────────────────────────
