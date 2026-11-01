@@ -488,9 +488,11 @@ that shell's exports, and every agent it spawns inherits them in turn. A
 `GITHUB_TOKEN` exported for the user's own `gh` then sits in a caged agent's
 environment, where the cage cannot stop it leaving through an allow-listed
 host. A Dock launch gets launchd's bare env and has nothing to keep out. Code:
-`src-tauri/src/env_guard.rs`, applied in `pty_spawn`; UI: Settings > Secrets,
-"Kept out of agents", and the "Inherited from Termic" list on each agent's
-card.
+`src-tauri/src/env_guard.rs`, applied in `pty_spawn`; UI: the Env vars tab
+of Settings > Secrets, and the "Inherited from Termic" list on each agent's
+card (its "Edit the list" link opens that tab). The tab's tip lists the
+built-in names from `ENV_GUARD_BUILTIN` in `secretsSettings/model.ts`, which
+`model.test.ts` pins to `env_guard::BUILTIN`.
 
 **What is on the list.** A name in `env_guard::BUILTIN` (credentials with no
 recognisable value shape: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, ...), a

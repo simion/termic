@@ -28,14 +28,37 @@ export const GITHUB_HOSTS = ["api.github.com", "github.com", "uploads.github.com
 export const API_HOST = "api.github.com";
 export const GIT_HOST = "github.com";
 
-/** "gh, git" - what a secret is delivered as, derived from its recipe. */
-export function deliveredAs(s: SecretDef): string[] {
-  switch (s.recipe) {
-    case "github": return ["gh", "git"];
-    case "api_key": return [s.api?.env ? `$${s.api.env}` : "env"];
-    default: return [s.recipe];
+/** One way an agent reaches a secret, for the "Delivered as" chips. */
+export type Delivery = { via: "gh" } | { via: "git" } | { via: "baseUrl"; env: string } | { via: "proxy" };
+
+/** The routes a secret is delivered through, each only when it is on.
+ *  Mirrors `Route::active` in src-tauri/src/broker/recipe.rs: gh needs
+ *  api.github.com, git needs github.com, the base URL endpoint needs its env
+ *  var and a base URL whose host is one of the secret's, the proxy needs any
+ *  host. */
+export function deliveredAs(s: Pick<SecretDef, "recipe" | "hosts" | "api">): Delivery[] {
+  const bound = (h: string) => s.hosts.some(x => x.toLowerCase() === h);
+  const out: Delivery[] = [];
+  if (s.recipe === "github") {
+    if (bound(API_HOST)) out.push({ via: "gh" });
+    if (bound(GIT_HOST)) out.push({ via: "git" });
+  } else if (s.recipe === "api_key" && s.api) {
+    const base = s.api.base_url_env ? baseUrlHost(s.api.base_url) : null;
+    if (base && bound(base)) out.push({ via: "baseUrl", env: s.api.base_url_env });
+    if (s.hosts.length > 0) out.push({ via: "proxy" });
   }
+  return out;
 }
+
+/** Env var names kept out of agents whatever their value looks like
+ *  (env_guard.rs `BUILTIN`; model.test.ts pins the two together). */
+export const ENV_GUARD_BUILTIN = [
+  "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+  "GITLAB_TOKEN", "GL_TOKEN",
+  "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  "AZURE_CLIENT_SECRET", "GOOGLE_APPLICATION_CREDENTIALS",
+  "NPM_TOKEN", "HF_TOKEN", "DOCKER_PASSWORD",
+];
 
 /** Keychain service + account of an item Termic writes itself (secrets.rs
  *  `owned_service`, `OWNED_ACCOUNT`). */

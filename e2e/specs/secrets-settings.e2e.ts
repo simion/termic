@@ -115,8 +115,11 @@ describe("settings: secrets and roles", () => {
 
   it("opens on an empty Secrets tab", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("secrets"));
-    await waitForText("Every secret lives in your Keychain");
     await waitForText("No secrets yet.");
+    // Env vars sits between Roles and Activity, and its list is not on this tab.
+    expect(await browser.execute(() =>
+      [...document.querySelectorAll("[data-secrets-tab]")].map(e => e.getAttribute("data-secrets-tab")))).toEqual(["secrets", "roles", "env", "activity"]);
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="secrets-kept-out"]'))).toBe(false);
     await snap("secrets-m1-empty.png");
   });
 
@@ -183,14 +186,18 @@ describe("settings: secrets and roles", () => {
   it("expands a row and edits its hosts", async () => {
     await clickPresent('[data-secret-row="gh-review"]');
     await waitVisible('[data-testid="secret-expanded"]');
-    await waitForText("Pinned to the ci-bot account");
+    await waitForText("Pinned to ci-bot.");
     // a gh login is gh's item: the Stored in column says so, there is no
-    // Replace (Termic does not own the value), and Test access says it reads
-    // gh's login without the macOS prompt.
+    // Replace (Termic does not own the value), and Test access's tip says it
+    // reads gh's login without the macOS prompt.
     expect(await browser.execute(() =>
       (document.querySelector('[data-secret-row="gh-review"] [data-col="stored"]') as HTMLElement).innerText.trim())).toBe("gh login · ci-bot\nkept by gh");
     expect(await browser.execute(() => !!document.querySelector('[data-testid="secret-replace"]'))).toBe(false);
-    await waitForText("the way gh does");
+    expect(await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="secret-expanded"] [aria-label]')].some(e => e.getAttribute("aria-label")!.includes("the way gh does")))).toBe(true);
+    // both GitHub routes are on: the secret reaches api.github.com and github.com
+    expect(await browser.execute(() =>
+      [...document.querySelectorAll('[data-secret-row="gh-review"] [data-delivered]')].map(e => e.textContent))).toEqual(["gh · socket", "git · proxy"]);
     await snap("secrets-m1-expanded.png");
 
     // drop uploads.github.com, then put it back through the add field.
@@ -199,12 +206,71 @@ describe("settings: secrets and roles", () => {
     await setInputValue('[data-testid="secret-hosts-input"]', "uploads.github.com");
     await clickPresent('[data-testid="secret-hosts-add"]');
     await waitSaved(s => s.secrets.find((x: any) => x.name === "gh-review").hosts.includes("uploads.github.com"), "host add never saved");
+    // without api.github.com the gh socket route is off, so its chip goes
+    // (recipe.rs Route::active); putting the host back brings it back.
+    const chips = () => browser.execute(() =>
+      [...document.querySelectorAll('[data-secret-row="gh-review"] [data-delivered]')].map(e => e.getAttribute("data-delivered")));
+    await clickPresent('[data-testid="secret-hosts"] [data-host="api.github.com"] button');
+    await waitSaved(s => !s.secrets.find((x: any) => x.name === "gh-review").hosts.includes("api.github.com"), "api host removal never saved");
+    expect(await chips()).toEqual(["git"]);
+    await setInputValue('[data-testid="secret-hosts-input"]', "api.github.com");
+    await clickPresent('[data-testid="secret-hosts-add"]');
+    await waitSaved(s => s.secrets.find((x: any) => x.name === "gh-review").hosts.includes("api.github.com"), "api host add never saved");
+    expect(await chips()).toEqual(["gh", "git"]);
 
     // Test access always lands on a status, readable or not.
     await clickPresent('[data-testid="secret-test"]');
     await browser.waitUntil(() => browser.execute(() =>
       document.querySelector('[data-secret-row="gh-review"] [data-status]')?.getAttribute("data-status") !== "checking"),
     { timeout: 10_000, timeoutMsg: "Test access never settled" });
+  });
+
+  it("renames a secret: a taken or empty name is refused, Esc cancels, Enter saves", async () => {
+    const input = '[data-testid="secret-rename-input"]';
+    const byName = (s: any, n: string) => s.secrets.find((x: any) => x.name === n);
+    const before = byName(await settingsLoad(), "gh-maintain");
+    const keyDown = (key: string) => browser.execute((s, k) => {
+      document.querySelector(s)!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+    }, input, key);
+
+    // the pencil on the name cell opens the field on that row only
+    await clickPresent('[data-secret-row="gh-maintain"] [data-testid="secret-rename"]');
+    await waitVisible(`[data-secret-row="gh-maintain"] ${input}`);
+    expect(await browser.execute((s) => (document.querySelector(s) as HTMLInputElement).value, input)).toBe("gh-maintain");
+
+    // a name another secret has is refused in place, and nothing is saved
+    await typeAndCommit(input, "gh-review");
+    await waitForText("A secret with that name already exists.");
+    await waitVisible(input);
+    await snap("secrets-rename-taken.png");
+    await typeAndCommit(input, "   ");
+    await waitForText("Give it a name.");
+    expect(byName(await settingsLoad(), "gh-maintain")).toEqual(before);
+
+    // Esc drops the draft, and stops there: had it reached Settings' own
+    // handler, the rail's Close button would ask for a second Esc.
+    await setInputValue(input, "never-saved");
+    await keyDown("Escape");
+    await waitGone(input);
+    await waitVisible('[data-secret-row="gh-maintain"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="settings-rail"]')!.textContent!.includes("Esc again to close"))).toBe(false);
+    expect(byName(await settingsLoad(), "never-saved")).toBeUndefined();
+
+    // Enter saves: same id and Keychain item, only the label moves
+    await clickPresent('[data-secret-row="gh-maintain"] [data-testid="secret-rename"]');
+    await typeAndCommit(input, "gh-maintainer");
+    await waitSaved(s => !!byName(s, "gh-maintainer"), "the rename never saved");
+    expect(byName(await settingsLoad(), "gh-maintainer")).toEqual({ ...before, name: "gh-maintainer" });
+    await waitGone(input);
+    await waitVisible('[data-secret-row="gh-maintainer"]');
+
+    // the expanded row's Rename button opens the same field; put the name back
+    await clickPresent('[data-secret-row="gh-maintainer"]');
+    await clickPresent('[data-testid="secret-rename-button"]');
+    await waitVisible(`[data-secret-row="gh-maintainer"] ${input}`);
+    await typeAndCommit(input, "gh-maintain");
+    await waitSaved(s => !!byName(s, "gh-maintain"), "the rename back never saved");
+    expect(byName(await settingsLoad(), "gh-maintain")).toEqual(before);
   });
 
   it("creates a Reviewer role whose rules read GraphQL and deny push", async () => {
@@ -575,20 +641,27 @@ describe("settings: env vars kept out of agents", () => {
     }, original);
   });
 
-  it("lists a detected token by name only", async () => {
+  it("lists a detected token by name only, on its own Env vars tab", async () => {
+    await waitVisible('[data-testid="secrets-health"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="secrets-kept-out"]'))).toBe(false);
+    await clickPresent('[data-secrets-tab="env"]');
     await waitVisible(row(PAT));
+    await waitForText("Agent tabs don't get these. Your own terminals still do.");
     const card = await browser.execute(() => document.querySelector('[data-testid="secrets-kept-out"]')!.textContent ?? "");
     expect(card).toContain("detected");
     expect(card).not.toContain("e2eFakeToken");
     expect(card).not.toContain("ghp_");
-    expect(await statusText(PAT)).toBe("kept out of caged agents");
+    expect(await statusText(PAT)).toBe("Hidden from caged agent tabs. Uncaged ones still get it.");
+    // the heading's tip carries the built-in list
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="secrets-kept-out"] [aria-label*="Always watched"]')?.getAttribute("aria-label") ?? "")).toContain("GITLAB_TOKEN");
     await snap("secrets-kept-out.png");
   });
 
   it("switches a var to all agents and back", async () => {
     await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="all"]`);
     await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: PAT, all: true }]), "the all-agents scope never saved");
-    expect(await statusText(PAT)).toBe("kept out of all agents");
+    expect(await statusText(PAT)).toBe("Hidden from every agent tab.");
     await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="caged"]`);
     // caged is a detected var's default, so no rule is left behind
     await waitSaved(s => (s.env_guard ?? []).length === 0, "the caged scope left a rule");
@@ -603,7 +676,8 @@ describe("settings: env vars kept out of agents", () => {
     await clickPresent('[data-testid="kept-out-add"]');
     await waitVisible(row("STRIPE_SECRET_KEY"));
     await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: "STRIPE_SECRET_KEY", all: true }]), "the added name never saved");
-    expect(await statusText("STRIPE_SECRET_KEY")).toBe("not set right now · kept out of all agents");
+    expect(await statusText("STRIPE_SECRET_KEY")).toBe("Not set right now.");
+    expect(await browser.execute(() => document.querySelector('[data-testid="kept-out-scope-STRIPE_SECRET_KEY"] [data-value="all"]')?.getAttribute("aria-pressed"))).toBe("true");
     await snap("secrets-kept-out-added.png");
   });
 
@@ -623,7 +697,7 @@ describe("settings: env vars kept out of agents", () => {
       return r.bottom <= window.innerHeight;
     }, PAT);
     expect(fits).toBe(true);
-    await browser.waitUntil(async () => (await statusText(PAT)).includes("passed to FakeAgent"),
+    await browser.waitUntil(async () => (await statusText(PAT)).includes("FakeAgent gets the real value."),
       { timeout: 10_000, timeoutMsg: "the row never said it was passed" });
     await snap("secrets-kept-out-pass.png");
     await clickPresent(`[data-testid="kept-out-pass-${PAT}-fakeagent"]`);
@@ -635,6 +709,8 @@ describe("settings: env vars kept out of agents", () => {
     await clickPresent(`[data-testid="kept-out-add-secret-${PAT}"]`);
     await waitVisible('[data-testid="add-secret-dialog"]');
     await waitForText(`Adding ${PAT} as a secret`);
+    // the dialog opens over the Secrets tab, where the new secret would land
+    await waitVisible('[data-testid="secrets-health"]');
     await browser.keys("Escape");
     await waitGone('[data-testid="add-secret-dialog"]');
   });
@@ -653,6 +729,13 @@ describe("settings: env vars kept out of agents", () => {
     await snap("agent-inherited-env.png");
     await clickPresent(toggle);
     await waitSaved(s => !passEnv(s).includes(PAT), "the card's keep-out never saved");
+    // the card's link lands on the Env vars tab, where the list now lives
+    await browser.execute(() => {
+      const b = [...document.querySelectorAll('[data-testid="agent-inherited-env-fakeagent"] button')]
+        .find(x => x.textContent?.trim() === "Edit the list in Secrets") as HTMLElement;
+      b.click();
+    });
+    await waitVisible(row(PAT));
   });
 
   // What the SPAWNED agent received, read from the fixture agent's log

@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import en from "@/locales/en";
 import type { Role, SecretDef } from "@/lib/types";
-import { API_KEY_PRESETS, apiKeyProblem, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, storedIn, toggleSecret } from "./model";
+import { API_KEY_PRESETS, ENV_GUARD_BUILTIN, apiKeyProblem, deliveredAs, duplicateRole, loginTakeovers, baseUrlHost, hostConflicts, isOwned, ownedService, putRuleSet, roleDefaultEffect, roleFromTemplate, ruleBlocksFor, ruleSetFor, secretProblem, storedIn, toggleSecret } from "./model";
 
 const secret = (id: string, hosts = ["api.github.com", "github.com", "uploads.github.com"]): SecretDef => ({
   id, name: id, kind: "generic", service: "gh:github.com", account: "alice", recipe: "github", hosts,
@@ -148,6 +149,24 @@ describe("secrets model", () => {
     expect(secretProblem({ ...ok, account: " " }, [])).toBe("keychain");
     expect(secretProblem({ ...ok, hosts: [] }, [])).toBe("hosts");
     expect(secretProblem(ok, [secret("gh-alice")])).toBe("nameTaken");
+  });
+
+  it("delivers only through the routes the broker turns on (recipe.rs Route::active)", () => {
+    expect(deliveredAs(secret("a"))).toEqual([{ via: "gh" }, { via: "git" }]);
+    expect(deliveredAs(secret("a", ["GitHub.com"]))).toEqual([{ via: "git" }]);
+    expect(deliveredAs(secret("a", ["api.github.com", "uploads.github.com"]))).toEqual([{ via: "gh" }]);
+    const { hosts, api } = API_KEY_PRESETS.openai;
+    const key: SecretDef = { ...secret("k", hosts), recipe: "api_key", api };
+    expect(deliveredAs(key)).toEqual([{ via: "baseUrl", env: "OPENAI_BASE_URL" }, { via: "proxy" }]);
+    // no base URL env, or a base URL on a host the secret does not reach: proxy only
+    expect(deliveredAs({ ...key, api: { ...api, base_url_env: "" } })).toEqual([{ via: "proxy" }]);
+    expect(deliveredAs({ ...key, hosts: ["api.acme.com"] })).toEqual([{ via: "proxy" }]);
+  });
+
+  it("lists the same built-in kept-out names as env_guard.rs", () => {
+    const src = readFileSync("src-tauri/src/env_guard.rs", "utf8");
+    const block = /pub const BUILTIN: &\[&str\] = &\[([\s\S]*?)\];/.exec(src)?.[1] ?? "";
+    expect([...block.matchAll(/"([A-Z0-9_]+)"/g)].map(m => m[1])).toEqual(ENV_GUARD_BUILTIN);
   });
 });
 

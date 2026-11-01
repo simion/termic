@@ -15,8 +15,10 @@ import { TabStrip } from "./parts";
 import { SecretsTab } from "./SecretsTab";
 import { RolesTab } from "./RolesTab";
 import { ActivityTab } from "./ActivityTab";
+import { ENV_TAB_HIGHLIGHT, KeptOutCard } from "./KeptOut";
+import type { SecretPreset } from "./model";
 
-type Tab = "secrets" | "roles" | "activity";
+type Tab = "secrets" | "roles" | "env" | "activity";
 
 export interface SecretsModel {
   secrets: SecretDef[];
@@ -30,14 +32,18 @@ export function SecretsSection() {
   const { settings, patchOrError } = useBackendSettings();
   // the footer's role link opens Settings with "role:<id>": land on that role.
   // Sections mount on open, so reading it once as initial state is enough.
-  const [focusRole] = useState(() => {
+  // The agent card's "Edit the list" link lands on the Env vars tab.
+  const [{ focusRole, envTab }] = useState(() => {
     const h = useApp.getState().view.settingsHighlight;
-    return h?.startsWith("role:") ? h.slice(5) : null;
+    return { focusRole: h?.startsWith("role:") ? h.slice(5) : null, envTab: h === ENV_TAB_HIGHLIGHT };
   });
-  useEffect(() => { if (focusRole) useApp.getState().clearSettingsHighlight(); }, [focusRole]);
-  const [tab, setTab] = useState<Tab>(focusRole ? "roles" : "secrets");
+  useEffect(() => { if (focusRole || envTab) useApp.getState().clearSettingsHighlight(); }, [focusRole, envTab]);
+  const [tab, setTab] = useState<Tab>(focusRole ? "roles" : envTab ? "env" : "secrets");
   // "Show activity" on a secret row lands here with that secret picked.
   const [activityFilter, setActivityFilter] = useState<string | null>(null);
+  // "Add as a secret" on the Env vars tab opens the Add dialog, which lives
+  // on the Secrets tab, so the new secret shows up where it was added.
+  const [pendingAdd, setPendingAdd] = useState<{ fromVar: string; preset: SecretPreset } | null>(null);
 
   // The page edits a local copy, updated synchronously on every save, and
   // persists in the background. The backend copy lags by a settings round
@@ -82,19 +88,23 @@ export function SecretsSection() {
       <TabStrip
         attr="data-secrets-tab"
         value={tab}
-        onChange={v => { setTab(v); if (v !== "activity") setActivityFilter(null); }}
+        onChange={v => { setTab(v); setPendingAdd(null); if (v !== "activity") setActivityFilter(null); }}
         tabs={[
           { id: "secrets", label: t("manage.tabs.secrets") },
           { id: "roles", label: t("manage.tabs.roles") },
+          { id: "env", label: t("manage.tabs.env") },
           { id: "activity", label: t("manage.tabs.activity") },
         ]}
       />
       {/* Nothing renders until settings load: an empty table for a frame
           would read as "your secrets are gone". */}
       {local && tab === "secrets" && (
-        <SecretsTab model={model} onShowActivity={id => { setActivityFilter(id); setTab("activity"); }} />
+        <SecretsTab model={model} initialAdd={pendingAdd} onShowActivity={id => { setActivityFilter(id); setTab("activity"); }} />
       )}
       {local && tab === "roles" && <RolesTab model={model} initialRole={focusRole} />}
+      {local && tab === "env" && (
+        <KeptOutCard onAddSecret={(fromVar, preset) => { setPendingAdd({ fromVar, preset }); setTab("secrets"); }} />
+      )}
       {local && tab === "activity" && (
         <ActivityTab secrets={secrets} filter={activityFilter} onClearFilter={() => setActivityFilter(null)} />
       )}

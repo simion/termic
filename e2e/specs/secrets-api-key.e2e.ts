@@ -139,22 +139,27 @@ describe("settings: API key secrets", () => {
   it("shows how an API key is delivered", async () => {
     await clickPresent('[data-secret-row="openai"]');
     await waitVisible('[data-testid="secret-expanded"]');
-    await waitForText("Only Termic can read this key.");
-    await waitForText("Test access reads the item once. No prompt: Termic stored it.");
+    await waitForText("Only Termic can read it.");
+    // Test access's tip: the item is Termic's, so no macOS prompt
+    const tips = () => browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="secret-expanded"] [aria-label]')].map(e => e.getAttribute("aria-label")!));
+    expect(await tips()).toContain("Reads the item once. No prompt: Termic stored it.");
     expect(await browser.execute(() =>
       document.querySelector('[data-testid="secret-stored-box"]')?.getAttribute("data-stored"))).toBe("protected");
     // the Always Allow advice is for items Termic does not own
     expect(await browser.execute(() => document.body.innerText.includes("choose Always Allow"))).toBe(false);
-    const chips = await browser.execute(() =>
-      [...document.querySelectorAll('[data-testid="secret-expanded"] [data-delivered]')].map(e => e.getAttribute("data-delivered")));
-    expect(chips).toEqual(["env", "base-url", "proxy"]);
-    await waitForText("$OPENAI_API_KEY · placeholder");
+    expect((await tips()).some(t => t.includes("choose Always Allow"))).toBe(false);
+    // the agent holds a stand-in in the key's env var; the real key goes
+    // into the header
+    await waitForText("$OPENAI_API_KEY = termic_ph_…");
+    await waitForText("$OPENAI_BASE_URL → local Termic endpoint");
     await waitForText("authorization: Bearer …");
     await snap("secrets-b5-expanded-api-key.png");
-    // the table's Delivered column names the env var
+    // the table's Delivered column: the base URL endpoint (its URL's host is
+    // one of the secret's) and the task proxy
     const delivered = await browser.execute(() =>
-      document.querySelector('[data-secret-row="openai"] td:nth-child(3)')?.textContent);
-    expect(delivered).toBe("$OPENAI_API_KEY");
+      [...document.querySelectorAll('[data-secret-row="openai"] [data-delivered]')].map(e => [e.getAttribute("data-delivered"), e.textContent]));
+    expect(delivered).toEqual([["baseUrl", "$OPENAI_BASE_URL · endpoint"], ["proxy", "HTTPS_PROXY"]]);
     // a long env var wraps inside its column instead of running into Hosts
     // (34px over before the fix, seen in the first screenshot pass).
     const overflow = await browser.execute(() => {
@@ -263,9 +268,9 @@ describe("settings: API key secrets", () => {
     expect(await storedCell("gh-token")).toBe("Termic · protected\npasted token");
 
     await clickPresent('[data-secret-row="gh-token"]');
-    await waitForText("Only Termic can read this token.");
+    await waitForText("Only Termic can read it.");
     await waitForText("Replace token…");
-    // four buttons in the right column: Remove ran 23px past the panel
+    // five buttons in one row: Remove ran 23px past the panel
     // before the row wrapped (first screenshot pass).
     const past = await browser.execute(() => {
       const panel = document.querySelector('[data-testid="secret-expanded"]')!.getBoundingClientRect();
@@ -280,9 +285,9 @@ describe("settings: API key secrets", () => {
     await browser.waitUntil(async () => (await dialogWith("Remove gh-token?")) !== null,
       { timeout: 10_000, timeoutMsg: "the remove confirm never opened" });
     const msg = await dialogWith("Remove gh-token?");
-    expect(msg).toContain("Termic deletes the stored token. It lives only in Termic's protected Keychain, so there is no other copy to fall back on.");
-    expect(msg).toContain("Running agents keep their placeholder until they restart.");
-    expect(msg).toContain("The token itself stays valid on GitHub until you revoke it there.");
+    expect(msg).toContain("Termic deletes the stored token. There's no other copy.");
+    expect(msg).toContain("Running agents keep their stand-in until they restart.");
+    expect(msg).toContain("The token stays valid on GitHub until you revoke it there.");
     await snap("secrets-c4-remove-github-owned.png");
     await clickInDialog("Remove gh-token?", "Remove");
     await waitSaved(s => !s.secrets.some((x: any) => x.name === "gh-token"), "the GitHub secret was not removed");
@@ -297,7 +302,7 @@ describe("settings: API key secrets", () => {
     await waitVisible('[data-testid="secret-expanded"]');
     await clickPresent('[data-testid="secret-remove"]');
     await browser.waitUntil(() => browser.execute(() =>
-      [...document.querySelectorAll('[role="dialog"]')].some(d => d.textContent?.includes("Termic deletes the stored key. It lives only in Termic's protected Keychain"))),
+      [...document.querySelectorAll('[role="dialog"]')].some(d => d.textContent?.includes("Termic deletes the stored key. There's no other copy."))),
     { timeout: 10_000, timeoutMsg: "the owned-secret remove confirm never opened" });
     // an API key has no GitHub to revoke it on
     expect(await dialogWith("Remove openai?")).not.toContain("stays valid on GitHub");

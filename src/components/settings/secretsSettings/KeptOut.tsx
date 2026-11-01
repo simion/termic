@@ -1,10 +1,11 @@
 // Env vars agent tabs do not inherit from Termic's own environment
-// (env_guard.rs): the card on the Secrets tab, and the per-agent list on an
-// agent's card. Names only: no value, or any part of one, ever reaches here.
+// (env_guard.rs): the Env vars tab on the Secrets page, and the per-agent
+// list on an agent's card. Names only: no value, or any part of one, ever
+// reaches here.
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Shield, X } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import { agentSetPassEnv, envGuardList, envGuardSave } from "@/lib/ipc";
 import type { Agent, EnvGuardRule, KeptOutVar } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -14,6 +15,11 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { PopoverContent, PopoverRoot, PopoverTrigger } from "@/components/ui/Popover";
 import { cn } from "@/lib/utils";
+import { ENV_GUARD_BUILTIN } from "./model";
+import { Eyebrow, InfoTip } from "./parts";
+
+/** `settingsHighlight` that opens Settings > Secrets on the Env vars tab. */
+export const ENV_TAB_HIGHLIGHT = "secrets-tab:env";
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -67,22 +73,27 @@ export function KeptOutCard({ onAddSecret }: { onAddSecret: (name: string, prese
 
   if (!rows) return null;
   return (
-    <section data-testid="secrets-kept-out" className="flex gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] px-4 py-3.5">
-      <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-info)]" />
-      <div className="min-w-0 flex-1">
-        <div className="text-[14px] font-medium">{t("manage.keptOut.title", { n: rows.length })}</div>
-        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.keptOut.body")}</div>
-        <div className="mt-3 flex flex-col">
-          {rows.map(r => {
+    <section data-testid="secrets-kept-out" className="flex flex-col gap-3">
+      <div>
+        <Eyebrow className="flex items-center gap-1.5">
+          {t("manage.keptOut.title", { n: rows.length })}
+          <InfoTip text={t("manage.keptOut.tip", { names: ENV_GUARD_BUILTIN.join(", ") })} />
+        </Eyebrow>
+        <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("manage.keptOut.intro")}</p>
+      </div>
+      <div className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] px-4 pb-3">
+        <div className="flex flex-col">
+          {rows.map((r, i) => {
             const passedTo = passable.filter(a => a.pass_env?.includes(r.name));
+            // one outcome sentence per row: who it is hidden from, then who
+            // still reads it.
             const status = [
-              !r.set && t("manage.keptOut.notSet"),
-              t(r.all ? "manage.keptOut.scopeAll" : "manage.keptOut.scopeCaged"),
-              passedTo.length > 0 && t("manage.keptOut.passedTo", { agents: passedTo.map(a => a.display_name || a.id).join(", ") }),
+              r.set ? t(r.all ? "manage.keptOut.hiddenAll" : "manage.keptOut.hiddenCaged") : t("manage.keptOut.notSet"),
               r.own_login_of.length > 0 && t("manage.keptOut.ownLogin", { agents: r.own_login_of.map(id => agentName(agents, id)).join(", ") }),
-            ].filter(Boolean).join(" · ");
+              passedTo.length > 0 && t("manage.keptOut.passedTo", { agents: passedTo.map(a => a.display_name || a.id).join(", ") }),
+            ].filter((x): x is string => !!x).reduce((a, b) => t("manage.keptOut.join", { a, b }));
             return (
-              <div key={r.name} data-testid={`kept-out-row-${r.name}`} className="flex min-h-[52px] items-center gap-3 border-t border-[var(--color-border-soft)] py-1.5">
+              <div key={r.name} data-testid={`kept-out-row-${r.name}`} className={cn("flex min-h-[52px] items-center gap-3 py-1.5", i > 0 && "border-t border-[var(--color-border-soft)]")}>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <code className="font-mono text-[12px] text-[var(--color-fg)]">{r.name}</code>
@@ -154,7 +165,7 @@ export function KeptOutCard({ onAddSecret }: { onAddSecret: (name: string, prese
               </div>
             );
           })}
-          <form className="flex items-center gap-2 border-t border-[var(--color-border-soft)] pt-3" onSubmit={e => { e.preventDefault(); void add(); }}>
+          <form className={cn("flex items-center gap-2 pt-3", rows.length > 0 && "border-t border-[var(--color-border-soft)]")} onSubmit={e => { e.preventDefault(); void add(); }}>
             <Input
               value={draft}
               onChange={e => { setDraft(e.target.value); setBad(false); }}
@@ -186,7 +197,7 @@ export function InheritedEnv({ agent, onPassEnv }: { agent: Agent; onPassEnv: (n
     <div className="flex flex-col gap-2" data-testid={`agent-inherited-env-${agent.id}`}>
       <div className="flex items-baseline justify-between gap-3">
         <div className="text-[13px] font-medium">{t("agents.card.inheritedLabel")}</div>
-        <button type="button" className="text-[12px] text-[var(--color-accent)] hover:underline" onClick={() => useApp.getState().openSettings("secrets")}>
+        <button type="button" className="text-[12px] text-[var(--color-accent)] hover:underline" onClick={() => useApp.getState().openSettings("secrets", undefined, ENV_TAB_HIGHLIGHT)}>
           {t("agents.card.inheritedEdit")}
         </button>
       </div>
