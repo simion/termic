@@ -694,8 +694,8 @@ pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
     owner_of(pid, &roots, ppid_of, sid_of).is_some()
 }
 
-/// The process of `task_id` holding the client end of a loopback TCP
-/// connection from `peer_port` to our `local_port`: the credential
+/// The process of `task_id` holding the client end of a TCP connection
+/// from `peer` to our listener at `local`: the credential
 /// broker's peer check for its TCP deliveries, where there is no
 /// `LOCAL_PEERPID`. Only the task's own tree is searched (its roots and
 /// their descendants, then, on a miss, orphans that kept a root's session
@@ -703,7 +703,7 @@ pub(crate) fn pid_in_task(task_id: &str, pid: u32) -> bool {
 /// with the task, not the machine, and a process outside it is never
 /// found.
 #[cfg(target_os = "macos")]
-pub(crate) fn tcp_peer_in_task(task_id: &str, peer_port: u16, local_port: u16) -> Option<u32> {
+pub(crate) fn tcp_peer_in_task(task_id: &str, peer: std::net::SocketAddr, local: std::net::SocketAddr) -> Option<u32> {
     let roots: Vec<u32> = sandbox_pids().lock().ok()?.get(task_id)?.iter().copied().collect();
     let search = |seeds: Vec<u32>| {
         let mut seen: HashSet<u32> = HashSet::new();
@@ -711,7 +711,7 @@ pub(crate) fn tcp_peer_in_task(task_id: &str, peer_port: u16, local_port: u16) -
         // the cap bounds a fork bomb's cost to the accept thread.
         while let Some(pid) = queue.pop_front().filter(|_| seen.len() < 4096) {
             if pid <= 1 || !seen.insert(pid) { continue; }
-            if crate::procmon::holds_tcp_client(pid, peer_port, local_port) { return Some(pid); }
+            if crate::procmon::holds_tcp_client(pid, peer, local) { return Some(pid); }
             queue.extend(crate::procmon::child_pids(pid));
         }
         None
@@ -4337,29 +4337,29 @@ mod watcher_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tcp_peer_tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener, UdpSocket};
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
     use std::time::{Duration, Instant};
 
     /// A listener, and `script` run under sh with `$P` set to its port; the
     /// script connects (bash's /dev/tcp) and holds the socket. Returns the
-    /// child (the caller kills it), our port and the client's port.
-    fn connect_from(script: &str, setsid: bool) -> (Child, u16, u16) {
+    /// child (the caller kills it), our listener and the client address.
+    fn connect_from(script: &str, setsid: bool) -> (Child, SocketAddr, SocketAddr) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
+        let addr = l.local_addr().unwrap();
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(script).env("P", port.to_string());
+        cmd.arg("-c").arg(script).env("P", addr.port().to_string());
         if setsid {
             // SAFETY: setsid is async-signal-safe.
             unsafe { cmd.pre_exec(|| { libc::setsid(); Ok(()) }); }
         }
         let child = cmd.spawn().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || { let _ = tx.send(l.accept().map(|(s, a)| (s, a.port()))); });
+        std::thread::spawn(move || { let _ = tx.send(l.accept()); });
         let (s, peer) = rx.recv_timeout(Duration::from_secs(10)).expect("child never connected").unwrap();
         std::mem::forget(s); // keep the connection up for the lookup
-        (child, port, peer)
+        (child, addr, peer)
     }
 
     const HOLD: &str = "exec 3<>/dev/tcp/127.0.0.1/$P; sleep 30";
@@ -4426,6 +4426,25 @@ mod tcp_peer_tests {
         let _ = client.wait();
         let _ = idle.kill();
         let _ = idle.wait();
+    }
+
+    #[test]
+    fn a_socket_matching_only_on_ports_is_not_the_client() {
+        use crate::procmon::holds_tcp_client as holds;
+        let (mut client, listener, peer) = connect_from(&format!("exec /bin/bash -c '{HOLD}'"), false);
+        assert!(holds(client.id(), peer, listener), "control: the real client end");
+        // right ports, wrong address on either end.
+        let other = |a: SocketAddr| SocketAddr::from(([127, 0, 0, 2], a.port()));
+        assert!(!holds(client.id(), other(peer), listener));
+        assert!(!holds(client.id(), peer, other(listener)));
+        // a UDP socket on the very same addresses and ports (UDP has its own
+        // port space) is not a TCP client. Our process holds only it and the
+        // accepted end, so a hit here could only be the UDP socket.
+        let udp = UdpSocket::bind(peer).unwrap();
+        udp.connect(listener).unwrap();
+        assert!(!holds(std::process::id(), peer, listener));
+        let _ = client.kill();
+        let _ = client.wait();
     }
 
     #[test]

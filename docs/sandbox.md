@@ -630,9 +630,12 @@ Bearer`, `x-api-key`):
 **TCP peer check.** The base-URL endpoint, git's proxy and the env
 proxy are TCP, which has no `LOCAL_PEERPID`, so the broker names the
 peer itself (`sandbox::tcp_peer_in_task`, libproc in `procmon.rs`): it
-looks for the process holding the client end of the connection, a TCP
-socket whose local port is the peer's port and whose remote end is
-127.0.0.1 on the listener's port. Only the task's own tree is searched:
+looks for the process holding the client end of the connection: a TCP
+stream socket (`SOCKINFO_TCP`, `SOCK_STREAM`, `IPPROTO_TCP`) whose local
+address and port are the peer's and whose remote address and port are
+the listener's, the whole 4-tuple, with the address form taken from
+`insi_vflag` so a v6 socket is never read as v4. A UDP socket on the
+same ports does not count. Only the task's own tree is searched:
 its registered roots and their descendants (`PROC_PPID_ONLY`), then, on
 a miss, launchd's children whose session id is a root's, the same two
 ways `pid_in_task` accepts a pid. A process outside the task is never

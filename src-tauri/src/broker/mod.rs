@@ -202,8 +202,8 @@ struct Binding {
 pub(crate) struct Deps {
     pub(crate) connector: Connector,
     pub(crate) peer_ok: PeerCheck,
-    /// (task, peer port, our port) -> the task's process on the other end
-    /// of a loopback TCP connection. None where there is no way to look it
+    /// (task, peer address, our listener's address) -> the task's process
+    /// on the other end of a loopback TCP connection. None where there is no way to look it
     /// up (off macOS), which leaves the TCP deliveries on their markers.
     pub(crate) tcp_peer: Option<TcpPeer>,
     pub(crate) read_secret: SecretReader,
@@ -214,7 +214,7 @@ pub(crate) struct Deps {
 }
 
 type PeerCheck = Arc<dyn Fn(&str, u32) -> bool + Send + Sync>;
-type TcpPeer = Arc<dyn Fn(&str, u16, u16) -> Option<u32> + Send + Sync>;
+type TcpPeer = Arc<dyn Fn(&str, std::net::SocketAddr, std::net::SocketAddr) -> Option<u32> + Send + Sync>;
 type SecretReader = Arc<dyn Fn(&SecretDef) -> Result<Arc<Secret>, SecretStatus> + Send + Sync>;
 type LiveRules = Arc<dyn Fn(&str, &str) -> Option<(Role, Vec<TaskAllow>)> + Send + Sync>;
 
@@ -342,12 +342,12 @@ impl Spawn {
     /// refusal is answered 403 and recorded `wrong_peer`, like the socket's.
     pub(crate) fn admit_tcp(&self, conn: &std::net::TcpStream) -> bool {
         let Some(lookup) = &self.deps.tcp_peer else { return true };
-        let ports = conn.peer_addr().and_then(|p| Ok((p.port(), conn.local_addr()?.port()))).ok();
-        let pid = ports.and_then(|(peer, local)| lookup(&self.task_id, peer, local));
+        let addrs = conn.peer_addr().and_then(|p| Ok((p, conn.local_addr()?))).ok();
+        let pid = addrs.and_then(|(peer, local)| lookup(&self.task_id, peer, local));
         if pid.is_some_and(|p| (self.deps.peer_ok)(&self.task_id, p)) { return true; }
-        let who = match (pid, ports) {
+        let who = match (pid, addrs) {
             (Some(p), _) => crate::sandbox::describe_pid(p),
-            (None, Some((peer, _))) => format!("the client on 127.0.0.1:{peer} (outside this task's process tree)"),
+            (None, Some((peer, _))) => format!("the client on {peer} (outside this task's process tree)"),
             (None, None) => "a peer that already closed".into(),
         };
         let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(200)));
