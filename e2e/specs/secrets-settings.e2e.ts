@@ -249,18 +249,28 @@ describe("settings: secrets and roles", () => {
     expect(await browser.execute(() => document.querySelector('[data-testid="settings-rail"]')!.textContent!.includes("Esc again to close"))).toBe(false);
     expect(byName(await settingsLoad(), "never-saved")).toBeUndefined();
 
-    // Enter saves: same id and Keychain item, only the label moves
+    // Enter saves: same id and Keychain item, only the label moves. The new
+    // name is long on purpose: the cell wraps it rather than clipping it.
+    const LONG = "gh-maintainer-for-the-acme-platform-release-bots";
     await clickPresent('[data-secret-row="gh-maintain"] [data-testid="secret-rename"]');
-    await typeAndCommit(input, "gh-maintainer");
-    await waitSaved(s => !!byName(s, "gh-maintainer"), "the rename never saved");
-    expect(byName(await settingsLoad(), "gh-maintainer")).toEqual({ ...before, name: "gh-maintainer" });
+    await typeAndCommit(input, LONG);
+    await waitSaved(s => !!byName(s, LONG), "the rename never saved");
+    expect(byName(await settingsLoad(), LONG)).toEqual({ ...before, name: LONG });
     await waitGone(input);
-    await waitVisible('[data-secret-row="gh-maintainer"]');
+    await waitVisible(`[data-secret-row="${LONG}"]`);
+    const name = await browser.execute((n) => {
+      const el = document.querySelector(`[data-secret-row="${n}"] [data-testid="secret-name"]`) as HTMLElement;
+      return { text: el.textContent, clipped: el.scrollWidth > el.clientWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) };
+    }, LONG);
+    expect(name.text).toBe(LONG);
+    expect(name.clipped).toBe(false);
+    expect(name.lines).toBeGreaterThan(1);
+    await snap("secrets-rename-long.png");
 
     // the expanded row's Rename button opens the same field; put the name back
-    await clickPresent('[data-secret-row="gh-maintainer"]');
+    await clickPresent(`[data-secret-row="${LONG}"]`);
     await clickPresent('[data-testid="secret-rename-button"]');
-    await waitVisible(`[data-secret-row="gh-maintainer"] ${input}`);
+    await waitVisible(`[data-secret-row="${LONG}"] ${input}`);
     await typeAndCommit(input, "gh-maintain");
     await waitSaved(s => !!byName(s, "gh-maintain"), "the rename back never saved");
     expect(byName(await settingsLoad(), "gh-maintain")).toEqual(before);

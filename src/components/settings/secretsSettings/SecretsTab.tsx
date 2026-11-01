@@ -156,12 +156,12 @@ export function SecretsTab({ model, initialAdd, onShowActivity }: {
           <table className="w-full table-fixed text-left text-[13px]" data-testid="secrets-table">
             <thead className="bg-[var(--color-bg-1)] text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
               <tr>
-                <th className="w-[15%] px-3 py-2.5 font-medium">{t("manage.secrets.colName")}</th>
-                <th className="w-[19%] px-3 py-2.5 font-medium">{t("manage.secrets.colStoredIn")}</th>
-                <th className="w-[16%] px-3 py-2.5 font-medium">{t("manage.secrets.colDelivered")}</th>
+                <th className="w-[22%] px-3 py-2.5 font-medium">{t("manage.secrets.colName")}</th>
+                <th className="w-[17%] px-3 py-2.5 font-medium">{t("manage.secrets.colStoredIn")}</th>
+                <th className="w-[14%] px-3 py-2.5 font-medium">{t("manage.secrets.colDelivered")}</th>
                 <th className="w-[19%] px-3 py-2.5 font-medium">{t("manage.secrets.colHosts")}</th>
-                <th className="w-[17%] px-3 py-2.5 font-medium">{t("manage.secrets.colUsedBy")}</th>
-                <th className="w-[14%] px-3 py-2.5 font-medium">{t("manage.secrets.colStatus")}</th>
+                <th className="w-[15%] px-3 py-2.5 font-medium">{t("manage.secrets.colUsedBy")}</th>
+                <th className="w-[13%] px-3 py-2.5 font-medium">{t("manage.secrets.colStatus")}</th>
               </tr>
             </thead>
             <tbody>
@@ -179,18 +179,19 @@ export function SecretsTab({ model, initialAdd, onShowActivity }: {
                         {renaming === s.id ? (
                           <RenameInput secret={s} onRename={name => rename(s, name)} onDone={() => setRenaming(null)} />
                         ) : (
-                          <span className="flex items-center gap-1.5">
+                          <span className="flex items-start gap-1.5">
                             {isOpen
-                              ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
-                              : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
-                            <span className="truncate">{s.name}</span>
+                              ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                              : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+                            {/* wraps, never truncates: the name is how you tell secrets apart */}
+                            <span data-testid="secret-name" className="min-w-0 wrap-anywhere">{s.name}</span>
                             <button
                               type="button"
                               data-testid="secret-rename"
                               aria-label={t("manage.secrets.rename.pencil", { name: s.name })}
                               title={t("manage.secrets.row.rename")}
                               onClick={e => { e.stopPropagation(); setRenaming(s.id); }}
-                              className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:text-[var(--color-fg)] focus-visible:opacity-100 group-hover:opacity-100"
+                              className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:text-[var(--color-fg)] focus-visible:opacity-100 group-hover:opacity-100"
                             >
                               <Pencil className="h-3 w-3" />
                             </button>
