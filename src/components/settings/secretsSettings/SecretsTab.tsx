@@ -217,7 +217,7 @@ export function SecretsTab({ model, initialAdd, onShowActivity }: {
                             );
                           })}
                       </td>
-                      <td className="px-3 py-3"><StatusCell probe={probes[s.id]} unused={using.length === 0} /></td>
+                      <td className="px-3 py-3"><StatusCell probe={probes[s.id]} /></td>
                     </tr>
                     {isOpen && (
                       <tr className="border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
@@ -282,14 +282,11 @@ export function SecretsTab({ model, initialAdd, onShowActivity }: {
   );
 }
 
-function StatusCell({ probe, unused }: { probe: Probe | undefined; unused: boolean }) {
+// status is only "can Termic read it": whether a role uses it is the Used by
+// column's job, and folding that in here hid the result of Test access.
+function StatusCell({ probe }: { probe: Probe | undefined }) {
   const { t } = useTranslation("secrets");
   const st = probe?.status ?? "checking";
-  // An unused secret that reads fine has nothing to say beyond "unused"; one
-  // that does NOT read still shows why, so it can be fixed before it is used.
-  if (unused && st === "readable") {
-    return <span data-status="unused" className="text-[var(--color-fg-faint)]">{t("manage.secrets.status.unused")}</span>;
-  }
   const look: Record<string, { cls: string; icon?: React.ReactNode }> = {
     readable: { cls: "text-[var(--color-ok)]", icon: <Check className="h-3.5 w-3.5" /> },
     locked: { cls: "text-[var(--color-warn)]", icon: <Lock className="h-3.5 w-3.5" /> },

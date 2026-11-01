@@ -44,7 +44,6 @@ export default {
       missing: "不存在",
       denied: "被拒绝",
       error: "无法检查",
-      unused: "未使用",
       checking: "检查中",
     },
     health: {

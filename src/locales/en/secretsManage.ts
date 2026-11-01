@@ -45,7 +45,6 @@ export default {
       missing: "Missing",
       denied: "Denied",
       error: "Can't check",
-      unused: "Unused",
       checking: "Checking",
     },
     health: {

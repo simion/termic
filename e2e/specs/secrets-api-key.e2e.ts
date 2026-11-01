@@ -158,9 +158,9 @@ describe("settings: API key secrets", () => {
       api: { header: "authorization", scheme: "Bearer", env: "OPENAI_API_KEY", base_url_env: "OPENAI_BASE_URL", base_url: "https://api.openai.com/v1" },
     });
     expect(JSON.stringify(await settingsLoad())).not.toContain(KEY);
-    // the probe reads the stored item back; unused in a role, so the table
-    // says unused rather than readable.
-    expect(await rowStatus("openai")).toBe("unused");
+    // the probe reads the stored item back. No role uses it yet, which is
+    // the Used by column's to say, not Status's.
+    expect(await rowStatus("openai")).toBe("readable");
     expect((await probe(saved.id)).status).toBe("readable");
     // the Stored in column names Termic's protected store
     expect(await storedCell("openai")).toBe("Termic · protected\npasted key");
