@@ -30,11 +30,12 @@ export function scopeRepos(scope: string): string {
  *  webhooks, runners, org invites and memberships, SSH / GPG keys), or get
  *  past a review gate: approving a deployment to a protected environment (REST
  *  or GraphQL) or a fork PR's workflow run, and rewriting an environment's
- *  protections (its required reviewers, protection rules, branch policies).
+ *  protections (its required reviewers, protection rules, branch policies),
+ *  a branch's protection or a ruleset, or dismissing a blocking review.
  *  Denied on EVERY repo, not just the scoped ones: with "Anything not listed:
  *  Allow" a scoped guard would leave every other repo open. `**` also matches
  *  zero segments, so `hooks/**` covers `hooks` itself. */
-export const GUARD: [string, string][] = [
+const GUARD_V1: [string, string][] = [
   ["POST", "/repos/*/*/keys"],
   ["PUT", "/repos/*/*/collaborators/*"],
   ["POST PUT PATCH", "/repos/*/*/hooks/**"],
@@ -57,6 +58,22 @@ export const GUARD: [string, string][] = [
   ["POST", "/repos/*/*/environments/*/deployment-branch-policies"],
   ["MUTATION", "updateEnvironment"],
   ["MUTATION", "deleteEnvironment"],
+];
+export const GUARD: [string, string][] = [
+  ...GUARD_V1,
+  // v2. `branches/**` also takes branch rename, the one branch write that is
+  // not protection; a role that needs it turns the guardrail off.
+  ["POST PUT PATCH DELETE", "/repos/*/*/branches/**"],
+  ["POST PUT DELETE", "/repos/*/*/rulesets/**"],
+  ["POST PUT DELETE", "/orgs/*/rulesets/**"],
+  ["PUT", "/repos/*/*/pulls/*/reviews/*/dismissals"],
+  ["MUTATION", "createBranchProtectionRule"],
+  ["MUTATION", "updateBranchProtectionRule"],
+  ["MUTATION", "deleteBranchProtectionRule"],
+  ["MUTATION", "createRepositoryRuleset"],
+  ["MUTATION", "updateRepositoryRuleset"],
+  ["MUTATION", "deleteRepositoryRuleset"],
+  ["MUTATION", "dismissPullRequestReview"],
 ];
 
 /** [methods, pattern] allowed by a capability; `{R}` is the repo scope. */
@@ -97,13 +114,17 @@ export const CAPS: { id: CapId; risk?: true; api?: Spec[]; git?: Spec[]; up?: Sp
 
 /** The compile tables a saved cfg was written against, by `SimpleCfg.v`. A cfg
  *  with no `v` predates the field and is v1. */
-// ponytail: one version so far. When GUARD or CAPS change, keep today's
-// tables here as v1, add the new ones as v2 and bump SIMPLE_V. Extras are
+// When GUARD or CAPS change, keep the old tables under their version, add
+// the new ones as the next and bump SIMPLE_V. v2 added branch protection,
+// rulesets and review dismissal to the guard. Extras are
 // judged against the compile of the cfg's OWN version, so rules an older
 // release compiled read as compiled (not popover extras) and are dropped on
 // the next recompile instead of kept as allows.
-const TABLES: Record<number, { guard: typeof GUARD; caps: typeof CAPS }> = { 1: { guard: GUARD, caps: CAPS } };
-export const SIMPLE_V = 1;
+const TABLES: Record<number, { guard: typeof GUARD; caps: typeof CAPS }> = {
+  1: { guard: GUARD_V1, caps: CAPS },
+  2: { guard: GUARD, caps: CAPS },
+};
+export const SIMPLE_V = 2;
 /** A version this build does not know (written by a newer one) compiles as
  *  the current tables; its rules likely read as custom, which is the safe side. */
 export const compileVersion = (v: number | undefined) => TABLES[v ?? 1] ?? TABLES[SIMPLE_V];

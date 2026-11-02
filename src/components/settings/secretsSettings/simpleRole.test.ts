@@ -12,7 +12,7 @@ const key: SecretDef = {
   id: "ant", name: "anthropic", kind: "protected", service: "termic:ant", account: "termic", recipe: "api_key",
   hosts: ["api.anthropic.com"], api: { header: "x-api-key", scheme: "", env: "ANTHROPIC_API_KEY", base_url_env: "", base_url: "" },
 };
-const cfg = (p: Partial<SimpleCfg> = {}): SimpleCfg => ({ scope: "", fallback: "deny", guard: true, caps: [], other: {}, ...p });
+const cfg = (p: Partial<SimpleCfg> = {}): SimpleCfg => ({ v: SIMPLE_V, scope: "", fallback: "deny", guard: true, caps: [], other: {}, ...p });
 const empty = (p: Partial<Role> = {}): Role => ({ id: "r", name: "R", colour: "blue", description: "", secrets: [], rule_sets: [], ...p });
 const on = (sets: RuleSet[], host: string) => sets.find(s => s.host === host)!;
 const lines = (set: RuleSet) => set.rules.map(r => `${r.effect} ${r.methods.join(",")} ${r.pattern}`);
@@ -93,6 +93,15 @@ describe("simple roles: compile", () => {
       ["DELETE", "/repos/acme/widget/environments/production/deployment_protection_rules/3"],
       ["POST", "/repos/acme/widget/environments/production/deployment-branch-policies"],
       ["PUT", "/repos/acme/widget/environments/production/deployment-branch-policies/4"],
+      // v2: branch protection, rulesets, review dismissal
+      ["PUT", "/repos/acme/widget/branches/main/protection"],
+      ["DELETE", "/repos/acme/widget/branches/main/protection/required_pull_request_reviews"],
+      ["POST", "/repos/acme/widget/branches/main/protection/enforce_admins"],
+      ["PUT", "/repos/acme/widget/rulesets/5"], ["DELETE", "/repos/acme/widget/rulesets/5"], ["POST", "/orgs/acme/rulesets"],
+      ["PUT", "/repos/acme/widget/pulls/3/reviews/8/dismissals"],
+      ["MUTATION", "updateBranchProtectionRule"], ["MUTATION", "deleteBranchProtectionRule"], ["MUTATION", "createBranchProtectionRule"],
+      ["MUTATION", "updateRepositoryRuleset"], ["MUTATION", "deleteRepositoryRuleset"], ["MUTATION", "createRepositoryRuleset"],
+      ["MUTATION", "dismissPullRequestReview"],
     ]) {
       expect(judge(open, method, target), `${method} ${target}`).toBe("deny");
       // and with the guard off, nothing a checkbox wrote allows it.
@@ -104,14 +113,17 @@ describe("simple roles: compile", () => {
 
   it("a cfg with no version compiles with the v1 tables, and a save stamps the current one", () => {
     expect(compileVersion(undefined)).toBe(compileVersion(1));
-    expect(compileVersion(undefined).guard).toBe(GUARD);
-    const c = cfg({ caps: ["read", "comment"] });
-    expect(c.v).toBeUndefined();
+    expect(compileVersion(undefined).guard).not.toBe(GUARD);
+    expect(compileVersion(SIMPLE_V).guard).toBe(GUARD);
+    const c = cfg({ caps: ["read", "comment"], v: undefined });
     expect(compile(c, gh)).toEqual(compile({ ...c, v: 1 }, gh));
     const r = applySimple(empty({ secrets: ["gh"] }), gh, c);
     expect(r.simple!.gh.v).toBe(SIMPLE_V);
-    // an unversioned cfg on a saved role reads its rules as compiled, not extras.
-    expect(simpleState({ ...r, simple: { gh: c } }, gh)).toMatchObject({ custom: false, extras: [] });
+    // an unversioned cfg on a role saved with v1's rules reads them as
+    // compiled, not extras, though v2's guard has more.
+    const v1 = { ...r, rule_sets: compile(c, gh), simple: { gh: c } };
+    expect(simpleState(v1, gh)).toMatchObject({ custom: false, extras: [] });
+    expect(on(compile(c, gh), "api.github.com").rules.length).toBeLessThan(on(r.rule_sets, "api.github.com").rules.length);
   });
 
   it("each capability writes its own rules, scoped where a path names the repo", () => {
