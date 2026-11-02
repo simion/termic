@@ -105,6 +105,7 @@ describe("simple roles: compile", () => {
       // the id forms of the same routes
       ["PUT", "/repositories/123/branches/main/protection"], ["POST", "/repositories/123/hooks"],
       ["PUT", "/repositories/123/collaborators/bob"], ["POST", "/organizations/9/invitations"],
+      ["PUT", "/teams/7/memberships/bob"], ["PUT", "/teams/7/repos/acme/widget"],
     ]) {
       expect(judge(open, method, target), `${method} ${target}`).toBe("deny");
       // and with the guard off, nothing a checkbox wrote allows it.

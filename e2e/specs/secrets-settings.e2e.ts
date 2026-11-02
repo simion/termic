@@ -322,7 +322,7 @@ describe("settings: secrets and roles", () => {
   const gitRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "github.com").rules;
   const apiRules = (s: any) => s.roles[0].rule_sets.find((r: any) => r.host === "api.github.com").rules;
   const POPOVER = { effect: "allow", methods: ["POST"], pattern: "/repos/acme/widget/issues/412/labels", note: "allowed from review-412" };
-  const GUARD_RULES = 35;  // simpleRole.ts GUARD, current version
+  const GUARD_RULES = 36;  // simpleRole.ts GUARD, current version
 
   it("ticking a capability rewrites the rules, and Rules shows them", async () => {
     await clickPresent('[data-simple-cap="push"]');
