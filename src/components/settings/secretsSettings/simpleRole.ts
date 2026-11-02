@@ -74,6 +74,12 @@ export const GUARD: [string, string][] = [
   ["MUTATION", "updateRepositoryRuleset"],
   ["MUTATION", "deleteRepositoryRuleset"],
   ["MUTATION", "dismissPullRequestReview"],
+  // GitHub also routes /repositories/{id}/... and /organizations/{id}/... to
+  // the same endpoints, which every /repos/*/* and /orgs/* deny above would
+  // miss. gh writes through the name forms only, so the id forms get no
+  // writes at all; reads (Link headers use them) still pass.
+  ["POST PUT PATCH DELETE", "/repositories/**"],
+  ["POST PUT PATCH DELETE", "/organizations/**"],
 ];
 
 /** [methods, pattern] allowed by a capability; `{R}` is the repo scope. */

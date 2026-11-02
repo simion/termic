@@ -102,6 +102,9 @@ describe("simple roles: compile", () => {
       ["MUTATION", "updateBranchProtectionRule"], ["MUTATION", "deleteBranchProtectionRule"], ["MUTATION", "createBranchProtectionRule"],
       ["MUTATION", "updateRepositoryRuleset"], ["MUTATION", "deleteRepositoryRuleset"], ["MUTATION", "createRepositoryRuleset"],
       ["MUTATION", "dismissPullRequestReview"],
+      // the id forms of the same routes
+      ["PUT", "/repositories/123/branches/main/protection"], ["POST", "/repositories/123/hooks"],
+      ["PUT", "/repositories/123/collaborators/bob"], ["POST", "/organizations/9/invitations"],
     ]) {
       expect(judge(open, method, target), `${method} ${target}`).toBe("deny");
       // and with the guard off, nothing a checkbox wrote allows it.
@@ -109,6 +112,7 @@ describe("simple roles: compile", () => {
     }
     // reading an environment is still a read.
     expect(judge(open, "GET", "/repos/acme/widget/environments/production")).toBe("allow");
+    expect(judge(open, "GET", "/repositories/123/pulls?page=2")).toBe("allow");
   });
 
   it("a cfg with no version compiles with the v1 tables, and a save stamps the current one", () => {
