@@ -424,7 +424,7 @@ export default {
     plainExtras_other: "{{count}} specific calls allowed from popovers",
     plainGuard: "Add keys, collaborators, webhooks or runners, or approve deployments",
     plainElse: "Anything else",
-    warnGraphql: "Repo scope can't limit GraphQL mutations (addComment, mergePullRequest...).",
+    warnGraphql: "Repo scope limits git and REST writes only. Reads, and GraphQL writes (addComment, mergePullRequest...), reach every repo the token can.",
     warnDenylist: "A denylist: the guardrail covers common cases, not all.",
     keyPlain: {
       all: "Any request to {{host}} gets the real key.",
@@ -513,6 +513,8 @@ export default {
       secretDefault: "{{secret}}: no rules, takes the role default",
       dropSet: "{{secret}} on {{host}}: rules removed, takes the role default",
       same: "No changes.",
+      broad: "  allows {{what}}",
+      fallbackAllow: "  anything not listed is allowed",
     },
   },
 

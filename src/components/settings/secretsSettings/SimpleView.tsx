@@ -191,7 +191,7 @@ function SecretSection({ role, secret: s, onSave, onOpenRules }: {
           {cfg.guard && <li>{t("manage.simple.plainGuard")}</li>}
           {cfg.fallback === "deny" && <li>{t("manage.simple.plainElse")}</li>}
         </ul>
-        {scoped && ["comment", "prs", "issues", "merge"].some(has) && (
+        {scoped && ["read", "comment", "prs", "issues", "merge"].some(has) && (
           <Warn testid="simple-warn-graphql">{t("manage.simple.warnGraphql")}</Warn>
         )}
         {cfg.fallback === "allow" && <Warn testid="simple-warn-denylist">{t("manage.simple.warnDenylist")}</Warn>}

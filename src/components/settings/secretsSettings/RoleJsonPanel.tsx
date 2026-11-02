@@ -99,7 +99,7 @@ export function RoleJsonPanel({ role, example, secrets, onAdd, onReplace, onClos
               {parsed.role && <Eyebrow className="mb-1">{t("manage.json.previewHeading", { name: parsed.role.name })}</Eyebrow>}
               {parsed.errors.map((e, i) => <span key={`e${i}`} data-import-error className="text-[var(--color-err)]">{e}</span>)}
               {lines.map((l, i) => (
-                <span key={`l${i}`} className={l.sign === "-" ? "text-[var(--color-err)]" : l.sign === "+" ? "text-[var(--color-ok)]" : "text-[var(--color-fg)]"}>{l.sign} {l.text}</span>
+                <span key={`l${i}`} className={l.sign === "-" ? "text-[var(--color-err)]" : l.sign === "+" ? "text-[var(--color-ok)]" : l.sign === "!" ? "text-[var(--color-warn)]" : "text-[var(--color-fg)]"}>{l.sign} {l.text}</span>
               ))}
               {parsed.warnings.map((w, i) => <span key={`w${i}`} className="text-[var(--color-warn)]">{w}</span>)}
             </div>

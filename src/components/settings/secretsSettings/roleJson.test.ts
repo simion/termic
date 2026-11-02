@@ -130,6 +130,22 @@ describe("role JSON", () => {
     ]);
   });
 
+  it("flags a write allowed on a catch-all, and an allow fallback, in the preview", () => {
+    const rules = [
+      { allow: "GET HEAD", match: "/**" },          // reads: not flagged
+      { allow: "push", match: "*/*" },              // any repo: flagged
+      { allow: "POST", match: "/repos/acme/w/issues" },  // narrow: not flagged
+      { allow: "MUTATION", match: "*", off: true },  // disabled: not flagged
+    ];
+    const draft = parse({ ...base, secrets: { "gh-alice": { "github.com": { otherwise: "allow", rules } } } }).role!;
+    const fmt = ((k: string, o?: Record<string, unknown>) => enT(k).replace(/{{(\w+)}}/g, (_, n) => String(o?.[n]))) as typeof t;
+    const lines = describeImport(draft, secrets, fmt);
+    expect(lines.filter(l => l.sign === "!").map(l => l.text.trim())).toEqual([
+      "allows push */*",
+      "anything not listed is allowed",
+    ]);
+  });
+
   it("builds a prompt with the format, the secrets by name and the example role", () => {
     const role = roleFromStarter("reviewer", { id: "r1", name: "Reviewer", description: "", secrets: [gh.id] }, secrets, [], enT);
     const p = agentPrompt("review PRs in acme", secrets, role);

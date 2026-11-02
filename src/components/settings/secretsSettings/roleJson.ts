@@ -133,7 +133,20 @@ function parseSet(set: unknown): Omit<RuleSet, "secret" | "host"> | string {
   return { rules, fallback };
 }
 
-export interface ImportLine { sign: "+" | "-" | "~"; text: string }
+export interface ImportLine { sign: "+" | "-" | "~" | "!"; text: string }
+
+const READ_VERBS = new Set(["GET", "HEAD", "QUERY", "fetch"]);
+
+/** The parts of a set worth a second look before importing: a write verb
+ *  allowed on a catch-all pattern, or an allow fallback. A count alone would
+ *  hide a pasted role that quietly opens everything. */
+function broadAllows(rs: RuleSet): string[] {
+  const out = rs.rules
+    .filter(r => !r.disabled && r.effect === "allow" && r.methods.some(m => !READ_VERBS.has(m))
+      && (r.pattern === "" || r.pattern === "*" || r.pattern === "*/*" || r.pattern.endsWith("**")))
+    .map(r => `${r.methods.join(" ")} ${r.pattern || "*"}`);
+  return out;
+}
 
 /** What an import adds, or, given `existing`, what it changes on that role.
  *  Short on purpose: one line per (secret, host) that differs. */
@@ -159,8 +172,10 @@ export function describeImport(draft: RoleDraft, secrets: SecretDef[], t: T, exi
   for (const rs of draft.rule_sets) {
     const prev = old.get(key(rs));
     old.delete(key(rs));
-    if (!prev) out.push({ sign: "+", text: summary(rs) });
-    else if (!sameSet(prev, rs)) out.push({ sign: "~", text: summary(rs) });
+    if (prev && sameSet(prev, rs)) continue;
+    out.push({ sign: prev ? "~" : "+", text: summary(rs) });
+    for (const what of broadAllows(rs)) out.push({ sign: "!", text: t("manage.json.diff.broad", { what }) });
+    if (rs.fallback === "allow") out.push({ sign: "!", text: t("manage.json.diff.fallbackAllow") });
   }
   for (const rs of old.values()) {
     if (draft.secrets.includes(rs.secret)) out.push({ sign: "-", text: t("manage.json.diff.dropSet", { secret: nameOf(rs.secret), host: rs.host }) });

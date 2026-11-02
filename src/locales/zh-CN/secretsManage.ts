@@ -423,7 +423,7 @@ export default {
     plainExtras_other: "{{count}} 个从弹窗允许的特定调用",
     plainGuard: "添加密钥、协作者、Webhook 或运行器，或批准部署",
     plainElse: "其他任何事",
-    warnGraphql: "仓库范围无法限制 GraphQL 变更（addComment、mergePullRequest...）。",
+    warnGraphql: "仓库范围只限制 git 和 REST 写操作。读取以及 GraphQL 写操作（addComment、mergePullRequest...）仍能访问令牌可访问的所有仓库。",
     warnDenylist: "这是黑名单：护栏只覆盖常见情况，并不完整。",
     keyPlain: {
       all: "发往 {{host}} 的任何请求都会带上真实密钥。",
@@ -512,6 +512,8 @@ export default {
       secretDefault: "{{secret}}：没有规则，采用角色默认值",
       dropSet: "{{secret}} 在 {{host}} 上：规则已移除，采用角色默认值",
       same: "没有变化。",
+      broad: "  允许 {{what}}",
+      fallbackAllow: "  未列出的请求一律允许",
     },
   },
 
