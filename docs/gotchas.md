@@ -363,6 +363,33 @@ Two defences now, and a new emitter needs the first one:
   created after a miss still resolves. It never holds its lock across the
   scan, which had queued every flusher behind whichever one was reading.
 
+## One big font collection made the font scan run for an hour
+
+`list_monospace_fonts` probes one face per installed family. It used to
+do that with font-kit (`select_family_by_name` + `load()` +
+`is_monospace()`), and on macOS font-kit finds a face inside a .ttc/.otc
+by reading the whole file, then trying collection index 0, 1, 2... until
+the PostScript name matches, and each try copies the whole file again
+(font-kit 0.14.3, `sources/core_text.rs` and `loaders/core_text.rs`). The
+cost is (faces in the family) x (each face's index) full-file copies, so
+it is invisible for a normal few-MB .ttc and explodes for Sarasa Gothic's
+SuperTTC (~830 MB, ~480 faces in one file). Reported on an M4 Max: about
+an hour at 150-250% CPU and 6.6 GB resident after launch; with the file
+out of `~/Library/Fonts` the same scan finished within 23 s. It ran on two
+threads because the command's cache was check-then-set, so the startup
+warm-up and Settings > Appearance each started their own scan.
+
+macOS now asks Core Text directly (`family_is_monospace`): match the
+family, take its first descriptor, `CTFontCreateWithFontDescriptor`,
+read `symbolic_traits()`. That is the same trait bit font-kit read, from
+the registered face, without copying any file. Both font commands now
+`get_or_init` inside the blocking closure, so a second caller waits for
+the scan in flight. If you reach for font-kit again on macOS, anything
+that goes through `create_handles_from_core_text_collection` (every
+`select_*` and `all_fonts`) has this cost; `all_families` does not.
+`core_text_probe_matches_font_kit` (an ignored test) compares the two
+probes family by family on the Mac it runs on.
+
 ## `std::mem::take` on a shared queue swallows another window's work (GH #280)
 
 `deep_link_take_pending` drained the whole pending-URL queue for whichever

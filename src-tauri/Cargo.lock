@@ -5318,6 +5318,8 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "core-foundation 0.9.4",
+ "core-text",
  "dirs 5.0.1",
  "dunce",
  "flate2",

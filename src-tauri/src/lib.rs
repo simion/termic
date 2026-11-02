@@ -24971,41 +24971,152 @@ pub struct CliInfo {
 /// curated probe list. Cached in-process via OnceLock.
 ///
 /// CRITICAL: this MUST be `async` — Tauri runs sync commands on the main
-/// thread, and font-kit's first enumeration loads every installed font face
-/// to read its PANOSE/post tables, which can take several hundred ms to a
-/// few seconds. Blocking the main thread freezes the whole UI. Async +
+/// thread, and probing one face per installed family is real work even
+/// when it is cheap. Blocking the main thread freezes the whole UI. Async +
 /// spawn_blocking moves the heavy work to a worker thread.
+///
+/// The `get_or_init` runs INSIDE the blocking closure, so a second call
+/// that lands while the first is still scanning waits for that scan rather
+/// than starting its own. The startup warm-up in prefs.ts and opening
+/// Settings > Appearance are two such calls; the old check-then-set left
+/// both of them scanning, which doubled the cost of a slow scan.
 #[tauri::command]
 async fn list_monospace_fonts() -> Vec<String> {
     use std::sync::OnceLock;
     static CACHE: OnceLock<Vec<String>> = OnceLock::new();
     if let Some(v) = CACHE.get() { return v.clone(); }
-    let computed = tauri::async_runtime::spawn_blocking(|| {
-        use font_kit::source::SystemSource;
+    tauri::async_runtime::spawn_blocking(|| CACHE.get_or_init(monospace_families).clone())
+        .await
+        .unwrap_or_default()
+}
+
+fn monospace_families() -> Vec<String> {
+    use font_kit::source::SystemSource;
+    let src = SystemSource::new();
+    let mut out: Vec<String> = src.all_families().unwrap_or_default()
+        .into_iter()
+        // Hide PostScript-style names (those starting with a dot like
+        // ".AppleSystemUIFont") — they're internal to the OS. Filtered
+        // BEFORE the probe so they are never opened at all.
+        .filter(|n| !n.starts_with('.'))
+        .filter(|family| family_is_monospace(&src, family))
+        .collect();
+    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.dedup();
+    out
+}
+
+/// Probe one face per family: if the family's first face is monospace, the
+/// family qualifies.
+///
+/// macOS asks Core Text directly and never touches the file. font-kit's
+/// `select_family_by_name` cannot be used here: for a face inside a font
+/// collection (.ttc/.otc) it reads the WHOLE file into memory, then finds
+/// the face by trying collection index 0, 1, 2... and each try clones the
+/// whole file again (font-kit 0.14.3, `create_handles_from_core_text_
+/// collection` + `loaders::core_text::Font::from_bytes`). That is
+/// (faces in the family) x (index of each face) full-file copies. A normal
+/// .ttc is a few MB with a handful of faces and nobody notices; Sarasa
+/// Gothic's SuperTTC is ~830 MB with ~480 faces, and with it installed the
+/// scan ran for about an hour at 150-250% CPU and 6.6 GB of memory.
+///
+/// `CTFontCreateWithFontDescriptor` on the matched descriptor opens the
+/// one registered face the way every app that draws with it does, and
+/// `symbolic_traits()` is the same Core Text call font-kit's
+/// `is_monospace()` makes, so the answer is the same bit.
+#[cfg(target_os = "macos")]
+fn family_is_monospace(_src: &font_kit::source::SystemSource, family: &str) -> bool {
+    use core_foundation::array::CFArray;
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+    use core_text::font_descriptor::SymbolicTraitAccessors;
+    use core_text::{font, font_collection, font_descriptor};
+
+    // The same query font-kit's select_family_by_name builds
+    // ("NSFontFamilyAttribute" is kCTFontFamilyNameAttribute's value), so
+    // "first face" means the same face it picked.
+    let attrs: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[(
+        CFString::new("NSFontFamilyAttribute"),
+        CFString::new(family).as_CFType(),
+    )]);
+    let wanted = font_descriptor::new_from_attributes(&attrs);
+    let collection = font_collection::new_from_descriptors(&CFArray::from_CFTypes(&[wanted]));
+    let Some(faces) = collection.get_descriptors() else { return false };
+    let Some(first) = faces.get(0) else { return false };
+    font::new_from_descriptor(&first, 12.0).symbolic_traits().is_monospace()
+}
+
+/// Other platforms keep font-kit. Their sources hand back a path or a
+/// native handle per face, so there is no per-index search to blow up;
+/// `load()` still reads a collection file once per family probed.
+#[cfg(not(target_os = "macos"))]
+fn family_is_monospace(src: &font_kit::source::SystemSource, family: &str) -> bool {
+    font_kit_family_is_monospace(src, family)
+}
+
+/// The font-kit probe: what every platform used before, and what macOS
+/// still uses as the reference in the parity test below.
+#[cfg(any(not(target_os = "macos"), test))]
+fn font_kit_family_is_monospace(src: &font_kit::source::SystemSource, family: &str) -> bool {
+    src.select_family_by_name(family).ok()
+        .and_then(|handles| handles.fonts().first().cloned())
+        .and_then(|h| h.load().ok())
+        .map(|f| f.is_monospace())
+        .unwrap_or(false)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod monospace_probe_tests {
+    use super::*;
+    use font_kit::source::SystemSource;
+
+    // Menlo, Courier and Helvetica ship with every macOS install
+    // (/System/Library/Fonts), so these hold on any Mac, CI included.
+    #[test]
+    fn system_monospace_families_qualify() {
         let src = SystemSource::new();
-        let families = src.all_families().unwrap_or_default();
-        let mut out: Vec<String> = families.into_iter()
-            // Probe one face per family — if the regular face is monospace,
-            // the family qualifies. is_monospace() reads PANOSE/post table.
-            .filter(|family| {
-                src.select_family_by_name(family).ok()
-                    .and_then(|handles| handles.fonts().first().cloned())
-                    .and_then(|h| h.load().ok())
-                    .map(|f| f.is_monospace())
-                    .unwrap_or(false)
+        assert!(family_is_monospace(&src, "Menlo"));
+        assert!(family_is_monospace(&src, "Courier"));
+    }
+
+    #[test]
+    fn proportional_and_unknown_families_do_not() {
+        let src = SystemSource::new();
+        assert!(!family_is_monospace(&src, "Helvetica"));
+        // A family Core Text cannot match must come back false, not
+        // fall back to some default face and report ITS traits.
+        assert!(!family_is_monospace(&src, "Termic No Such Family 7f3a"));
+    }
+
+    #[test]
+    fn the_list_contains_menlo_and_not_helvetica() {
+        let list = monospace_families();
+        assert!(list.iter().any(|f| f == "Menlo"), "{list:?}");
+        assert!(!list.iter().any(|f| f == "Helvetica"), "{list:?}");
+        assert!(!list.iter().any(|f| f.starts_with('.')), "{list:?}");
+    }
+
+    /// The Core Text probe answers the same as the font-kit probe it
+    /// replaced, for every family installed on this Mac. Ignored by
+    /// default because the font-kit side is the slow path: seconds on a
+    /// stock Mac, and the full hour if a huge .ttc (Sarasa SuperTTC) is
+    /// installed, so take that out of ~/Library/Fonts first. Run with
+    ///   cargo test --lib core_text_probe_matches_font_kit -- --ignored
+    #[test]
+    #[ignore]
+    fn core_text_probe_matches_font_kit() {
+        let src = SystemSource::new();
+        let differ: Vec<(String, bool, bool)> = src.all_families().unwrap()
+            .into_iter()
+            .filter(|f| !f.starts_with('.'))
+            .filter_map(|f| {
+                let (ct, fk) = (family_is_monospace(&src, &f), font_kit_family_is_monospace(&src, &f));
+                (ct != fk).then_some((f, ct, fk))
             })
-            // Hide PostScript-style names (those starting with a dot like
-            // ".AppleSystemUIFont") — they're internal to the OS.
-            .filter(|n| !n.starts_with('.'))
             .collect();
-        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-        out.dedup();
-        out
-    }).await.unwrap_or_default();
-    // get_or_init would race with the spawn_blocking — set explicitly and
-    // tolerate a tiny chance of double-compute (still correct, same result).
-    let _ = CACHE.set(computed.clone());
-    computed
+        assert!(differ.is_empty(), "(family, core text, font-kit): {differ:?}");
+    }
 }
 
 /// Enumerate EVERY installed font family, with no monospace filter. The
@@ -25016,14 +25127,15 @@ async fn list_monospace_fonts() -> Vec<String> {
 /// "is installed" and "is monospace" are different questions, and using
 /// the filtered list here would hide fonts the user really has.
 ///
-/// Same async + spawn_blocking discipline as list_monospace_fonts, though
-/// this path is much cheaper (family names only, no face loading).
+/// Same async + spawn_blocking + get_or_init discipline as
+/// list_monospace_fonts, though this path is much cheaper (family names
+/// only, no face loading).
 #[tauri::command]
 async fn list_font_families() -> Vec<String> {
     use std::sync::OnceLock;
     static CACHE: OnceLock<Vec<String>> = OnceLock::new();
     if let Some(v) = CACHE.get() { return v.clone(); }
-    let computed = tauri::async_runtime::spawn_blocking(|| {
+    tauri::async_runtime::spawn_blocking(|| CACHE.get_or_init(|| {
         use font_kit::source::SystemSource;
         let mut out: Vec<String> = SystemSource::new()
             .all_families()
@@ -25036,9 +25148,7 @@ async fn list_font_families() -> Vec<String> {
         out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
         out.dedup();
         out
-    }).await.unwrap_or_default();
-    let _ = CACHE.set(computed.clone());
-    computed
+    }).clone()).await.unwrap_or_default()
 }
 
 /// Probe each registered agent's `command` to see whether it resolves.
