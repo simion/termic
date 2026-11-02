@@ -40,7 +40,8 @@ portable-pty = "0.8"
 parking_lot = "0.12"
 libc = "0.2"
 # font-kit enumerates installed system fonts and exposes is_monospace().
-# Lazy-evaluated: only the `list_monospace_fonts` command pulls families.
+# Lazy-evaluated: only the font-list commands pull families. On macOS the
+# per-family monospace probe goes through core-text instead (below).
 font-kit = "0.14"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
@@ -159,6 +160,12 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRe
 # WKWebViewConfiguration to disable Apple Intelligence Writing Tools / Campo (GH #355).
 # Already in the tree via tauri/wry.
 objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration"] }
+# The monospace probe in list_monospace_fonts asks Core Text directly,
+# because font-kit's family lookup copies a whole .ttc once per face it
+# tries (see family_is_monospace). Both are font-kit's own versions,
+# already in the tree, so pinning them direct does not change resolution.
+core-text = "20"
+core-foundation = "0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", features = ["blocking-api"] }
