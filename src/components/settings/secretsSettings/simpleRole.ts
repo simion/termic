@@ -82,6 +82,14 @@ export const GUARD: [string, string][] = [
   ["POST PUT PATCH DELETE", "/repositories/**"],
   ["POST PUT PATCH DELETE", "/organizations/**"],
   ["POST PUT PATCH DELETE", "/teams/**"],
+  // the GraphQL side of the same grants, from GitHub's mutation reference
+  // (2026-11-01): a team's repo access, every enterprise admin mutation
+  // (invites, roles, base permission, 2FA and fork settings), the IP allow
+  // list, and an org's forking setting. `*` matches within the name.
+  ["MUTATION", "updateTeamsRepository"],
+  ["MUTATION", "*Enterprise*"],
+  ["MUTATION", "*IpAllowList*"],
+  ["MUTATION", "updateOrganization*Setting"],
 ];
 
 /** [methods, pattern] allowed by a capability; `{R}` is the repo scope. */

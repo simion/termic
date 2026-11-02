@@ -106,6 +106,11 @@ describe("simple roles: compile", () => {
       ["PUT", "/repositories/123/branches/main/protection"], ["POST", "/repositories/123/hooks"],
       ["PUT", "/repositories/123/collaborators/bob"], ["POST", "/organizations/9/invitations"],
       ["PUT", "/teams/7/memberships/bob"], ["PUT", "/teams/7/repos/acme/widget"],
+      // GraphQL grants
+      ["MUTATION", "updateTeamsRepository"], ["MUTATION", "inviteEnterpriseAdmin"],
+      ["MUTATION", "updateEnterpriseDefaultRepositoryPermissionSetting"], ["MUTATION", "addEnterpriseOrganizationMember"],
+      ["MUTATION", "createIpAllowListEntry"], ["MUTATION", "updateIpAllowListEnabledSetting"],
+      ["MUTATION", "updateOrganizationAllowPrivateRepositoryForkingSetting"],
     ]) {
       expect(judge(open, method, target), `${method} ${target}`).toBe("deny");
       // and with the guard off, nothing a checkbox wrote allows it.
@@ -114,6 +119,8 @@ describe("simple roles: compile", () => {
     // reading an environment is still a read.
     expect(judge(open, "GET", "/repos/acme/widget/environments/production")).toBe("allow");
     expect(judge(open, "GET", "/repositories/123/pulls?page=2")).toBe("allow");
+    // the name globs leave ordinary writes alone
+    for (const m of ["addComment", "mergePullRequest", "createPullRequest", "updateIssue"]) expect(judge(open, "MUTATION", m), m).toBe("allow");
   });
 
   it("a cfg with no version compiles with the v1 tables, and a save stamps the current one", () => {
