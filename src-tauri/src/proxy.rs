@@ -54,6 +54,9 @@ use std::time::Duration;
 const ACCEPT_ERROR_BACKOFF_MS: u64 = 200;
 const READ_HEADER_TIMEOUT_MS: u64 = 5_000;
 const CONNECT_UPSTREAM_TIMEOUT_MS: u64 = 8_000;
+/// Head start each resolved address gets before the next one joins the
+/// race (RFC 8305 suggests 250ms).
+const DIAL_STAGGER: Duration = Duration::from_millis(250);
 // Max bytes we'll buffer for the request line + headers before bailing.
 // Real proxy requests are well under 8KB; anything larger is a buggy
 // or malicious client.
@@ -304,6 +307,38 @@ pub fn start(allowed_patterns: Vec<String>, ws_id: String, monitor: bool) -> Res
     Ok(ProxyHandle { port, shutdown, thread: Some(thread), broker })
 }
 
+/// Connect to `host:port`, racing every resolved address instead of
+/// trusting the first. The first is usually IPv6, and on a network with a
+/// dead v6 route it times out while v4 works, which failed every tunnel
+/// the agent opened (Claude reports the 502 as ERR_PROXY_TUNNEL).
+pub(crate) fn dial(host: &str, port: u16, timeout: Duration) -> std::io::Result<TcpStream> {
+    let addrs = (host, port).to_socket_addrs()?;
+    dial_addrs(addrs, timeout).map_err(|e| e.unwrap_or_else(|| std::io::Error::other(format!("no addresses for {host}"))))
+}
+
+/// Happy-eyeballs-lite: each address starts `DIAL_STAGGER` after the last
+/// unless an earlier one already answered. `Err(None)` means no addresses.
+/// A loser that connects after the winner sends into a closed channel and
+/// its stream drops, so it costs one stray connect, nothing more.
+fn dial_addrs(addrs: impl IntoIterator<Item = std::net::SocketAddr>, timeout: Duration) -> Result<TcpStream, Option<std::io::Error>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut last = None;
+    for a in addrs {
+        let tx = tx.clone();
+        thread::spawn(move || { let _ = tx.send(TcpStream::connect_timeout(&a, timeout)); });
+        match rx.recv_timeout(DIAL_STAGGER) {
+            Ok(Ok(s)) => return Ok(s),
+            Ok(Err(e)) => last = Some(e),
+            Err(_) => {}
+        }
+    }
+    drop(tx);
+    for r in rx {
+        match r { Ok(s) => return Ok(s), Err(e) => last = Some(e) }
+    }
+    Err(last)
+}
+
 // ─── connection handler ──────────────────────────────────────────────
 
 fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, monitor: bool, broker: Option<&crate::broker::Spawn>) -> Result<()> {
@@ -454,17 +489,7 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
 
     // Connect to the actual upstream. ToSocketAddrs handles DNS in
     // one call; we don't constrain IPv6 vs IPv4 - whichever resolves.
-    let upstream = match (host, port).to_socket_addrs()
-        .map_err(|e| anyhow!("resolve {host}: {e}"))?
-        .next()
-    {
-        Some(addr) => addr,
-        None => {
-            write_status(&mut client, 502, "Bad Gateway")?;
-            return Err(anyhow!("no addresses for {host}"));
-        }
-    };
-    let upstream = match TcpStream::connect_timeout(&upstream, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
+    let upstream = match dial(host, port, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
         Ok(s) => s,
         Err(e) => {
             dlog(&format!("[proxy] CONNECT {host}:{port} → 502 (upstream connect failed: {e})"));
@@ -561,14 +586,13 @@ fn handle_plain_http(
         return Ok(());
     }
 
-    let upstream_addr = match (host, port).to_socket_addrs()?.next() {
-        Some(a) => a,
-        None => {
+    let mut upstream = match dial(host, port, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
+        Ok(s) => s,
+        Err(e) => {
             write_status(&mut client, 502, "Bad Gateway")?;
-            return Err(anyhow!("no addresses for {host}"));
+            return Err(anyhow!("connect upstream {host}:{port}: {e}"));
         }
     };
-    let mut upstream = TcpStream::connect_timeout(&upstream_addr, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS))?;
 
     // Rewrite the request line into origin form (path-only) per
     // RFC 7230 §5.3.1; most upstreams require it. Strip any
@@ -639,6 +663,28 @@ mod tests {
 
     fn re(pattern: &str) -> Regex {
         Regex::new(pattern).expect("valid regex")
+    }
+
+    // ── dial ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dial_falls_past_a_dead_first_address() {
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = live.local_addr().unwrap();
+        // TEST-NET-1 never answers: it either times out (the dead v6 route
+        // case) or fails fast, and neither may stall or fail the dial.
+        let dead: std::net::SocketAddr = "192.0.2.1:9".parse().unwrap();
+        let t = std::time::Instant::now();
+        let s = dial_addrs([dead, live], Duration::from_secs(8)).expect("live address should win");
+        assert_eq!(s.peer_addr().unwrap(), live);
+        assert!(t.elapsed() < Duration::from_secs(2), "took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn dial_reports_the_last_error_when_all_fail() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(dial_addrs([closed], Duration::from_secs(1)).unwrap_err().is_some());
+        assert!(dial_addrs([], Duration::from_secs(1)).unwrap_err().is_none());
     }
 
     // ── find_double_crlf ─────────────────────────────────────────────

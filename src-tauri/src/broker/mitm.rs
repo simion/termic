@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use rustls::pki_types::{PrivateKeyDer, ServerName};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -124,9 +124,7 @@ pub(crate) fn system_connector() -> Connector {
 }
 
 pub(crate) fn tls_connect(cfg: Arc<rustls::ClientConfig>, host: &str, port: u16) -> std::io::Result<Box<dyn Duplex>> {
-    let addr = (host, port).to_socket_addrs()?.next()
-        .ok_or_else(|| std::io::Error::other(format!("no addresses for {host}")))?;
-    let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
+    let tcp = crate::proxy::dial(host, port, CONNECT_TIMEOUT)?;
     tcp.set_read_timeout(Some(UPSTREAM_READ_TIMEOUT))?;
     tcp.set_write_timeout(Some(UPSTREAM_WRITE_TIMEOUT))?;
     let name = ServerName::try_from(host.to_string()).map_err(|e| std::io::Error::other(e.to_string()))?;
