@@ -702,7 +702,7 @@ export function CommandPalette() {
     return cmds;
   }, [view, task, proj, committedTheme, visibleThemes, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, sidebarFiltered, hasGitProject, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Recents, re-read on every open so an hour spent with the palette closed
+  // Recents, re-read on every open so time spent with the palette closed
   // expires them (the list is only ever consulted at build time). Empty query
   // only: once you are searching, you want the best match, and a pinned
   // section would push it down and duplicate rows.

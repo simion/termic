@@ -6,14 +6,15 @@
 // localStorage-backed directly, same as the palette's sibling component-local
 // prefs (DiffPane's view mode) — nothing else reads it.
 //
-// The point is the reopen case: run a command, hit ⇧⌘P again a minute later,
-// and the thing you just did is the first row. An hour on, the palette is back
-// to its normal order rather than showing you what you were doing before lunch.
+// The point is the reopen case: run a command, hit ⇧⌘P again later, and the
+// thing you did is the first row. Eight hours, a working day: an hour expired
+// what you ran before lunch by the afternoon, and by tomorrow the palette is
+// back to its normal order.
 
 const LS_KEY = "commandPaletteRecent";
 
 /** Entries older than this are dropped on the next read or write. */
-export const RECENT_TTL_MS = 60 * 60 * 1000;
+export const RECENT_TTL_MS = 8 * 60 * 60 * 1000;
 
 /** How many recents the section shows. Small on purpose: the section sits above
  *  everything else and pushes the real list down, so it earns its height only

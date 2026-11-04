@@ -52,19 +52,19 @@ describe("withRecorded", () => {
 });
 
 describe("parseRecents expiry", () => {
-  it("keeps an entry just under the hour", () => {
+  it("keeps an entry just under the TTL", () => {
     const r = parseRecents(raw([{ id: "a", at: T0 }]), T0 + RECENT_TTL_MS - 1);
     expect(r.map(e => e.id)).toEqual(["a"]);
   });
 
-  it("drops it exactly AT the hour", () => {
+  it("drops it exactly AT the TTL", () => {
     const r = parseRecents(raw([{ id: "a", at: T0 }]), T0 + RECENT_TTL_MS);
     expect(r).toEqual([]);
   });
 
   it("drops an entry stamped in the future", () => {
-    // A clock change backwards would otherwise pin a row to the top for over
-    // an hour, since `now - at` stays negative.
+    // A clock change backwards would otherwise pin a row to the top for longer
+    // than the TTL, since `now - at` stays negative.
     const r = parseRecents(raw([{ id: "a", at: T0 + 5000 }]), T0);
     expect(r).toEqual([]);
   });

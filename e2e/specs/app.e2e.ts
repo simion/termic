@@ -515,15 +515,15 @@ describe("command palette", () => {
     );
   });
 
-  it("forgets a recent command after an hour", async () => {
-    // Age the stored entry past the TTL rather than waiting an hour. The expiry
+  it("forgets a recent command after eight hours", async () => {
+    // Age the stored entry past the TTL rather than waiting eight hours. The expiry
     // rule itself is unit-tested against an injected clock
     // (lib/paletteRecent.test.ts); this only proves the palette consults it.
     await browser.execute(() => {
       const raw = localStorage.getItem("commandPaletteRecent");
       if (!raw) throw new Error("no recents were recorded");
       const aged = JSON.parse(raw).map((e: { id: string; at: number }) => ({
-        ...e, at: e.at - 61 * 60 * 1000,
+        ...e, at: e.at - 9 * 60 * 60 * 1000,
       }));
       localStorage.setItem("commandPaletteRecent", JSON.stringify(aged));
     });
