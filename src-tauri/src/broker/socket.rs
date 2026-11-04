@@ -66,5 +66,20 @@ fn peer_pid(s: &UnixStream) -> Option<u32> {
     (rc == 0 && pid > 0).then_some(pid as u32)
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux: SO_PEERCRED, also from the kernel. Without it every connection,
+/// the agent's own included, was refused as another task's.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn peer_pid(s: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `cred`.
+    let rc = unsafe {
+        libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void, &mut len)
+    };
+    (rc == 0 && cred.pid > 0).then_some(cred.pid as u32)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
 fn peer_pid(_s: &UnixStream) -> Option<u32> { None }

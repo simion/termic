@@ -28049,6 +28049,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn under_keychains_matches_both_forms_and_nothing_else() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("real/Library/Keychains/sub")).unwrap();
