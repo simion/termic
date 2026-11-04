@@ -312,9 +312,10 @@ const ptyBytes = () => browser.execute(() => {
     const original = await browser.execute(
       (id) => window.__termic!.ipc.taskFileRead(id, "README.md"), taskId,
     ) as unknown as string;
-    // scoped: a task left mounted by an earlier spec file has its own
-    // README row, and opening that one switches the active task away.
-    const README = `[data-task-id="${taskId}"] [data-path="README.md"]`;
+    // not scoped by [data-task-id]: the file tree is the right panel's,
+    // outside every task mount, and it only ever shows the active task.
+    const README = '[data-path="README.md"]';
+    // the editor IS inside the task mount, and hidden tasks keep theirs
     const EDITOR = `[data-task-id="${taskId}"] .cm-content`;
     await browser.waitUntil(
       () => browser.execute((sel) => !!document.querySelector(sel), README),
@@ -608,9 +609,9 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
       { timeout: 5_000, timeoutMsg: "the split never produced a second pane" });
   };
   const openReadme = async () => {
-    // scoped: a task left mounted by an earlier spec file has its own
-    // README row, and opening that one switches the active task away.
-    const README = `[data-task-id="${a}"] [data-path="README.md"]`;
+    // not scoped by [data-task-id]: the file tree is the right panel's,
+    // outside every task mount, and it only ever shows the active task.
+    const README = '[data-path="README.md"]';
     await browser.waitUntil(() => browser.execute((sel) => !!document.querySelector(sel), README),
       { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" });
     await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), README);
