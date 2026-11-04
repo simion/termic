@@ -68,6 +68,15 @@ static STATE: OnceLock<State> = OnceLock::new();
 static PROBE_STARTED: Once = Once::new();
 static RESOLVED_SHELL: OnceLock<String> = OnceLock::new();
 static FALLBACK_DIRS: OnceLock<Vec<String>> = OnceLock::new();
+static HEALED_HOOK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Run `f` once if the login env lands AFTER some reader was already handed
+/// the fallback. Whatever that reader decided (CLI detection marking an
+/// nvm-installed agent as missing, GH #441) was decided on the wrong PATH and
+/// nothing else would ever ask again. First call wins.
+pub fn on_healed(f: impl Fn() + Send + Sync + 'static) {
+    let _ = HEALED_HOOK.set(Box::new(f));
+}
 
 /// The login-shell environment as currently known — the fallback until
 /// a probe succeeds, the real thing after.
@@ -103,6 +112,10 @@ struct Inner {
     /// How many read-kicked retries have run, capped at
     /// `MAX_KICKED_RETRIES` so probing is bounded over the app's life.
     kicked_retries: u32,
+    /// A reader got the fallback env (the probe had not succeeded yet).
+    served_fallback: bool,
+    /// Times a success landed after `served_fallback`; only ever 0 or 1.
+    heals: u32,
 }
 
 struct State {
@@ -120,6 +133,8 @@ impl State {
                 probing: false,
                 last_attempt: None,
                 kicked_retries: 0,
+                served_fallback: false,
+                heals: 0,
             }),
             cvar: Condvar::new(),
         }
@@ -139,14 +154,15 @@ impl State {
     /// landing and pair a fallback env with `final = true`, which is the
     /// one combination a memoizing caller must never see.
     fn snapshot_final(&self, max_wait: Duration) -> (LoginEnv, bool) {
-        let guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap();
         if !guard.first_attempt_done && !max_wait.is_zero() {
-            let (guard, _) = self
+            guard = self
                 .cvar
                 .wait_timeout_while(guard, max_wait, |i| !i.first_attempt_done)
-                .unwrap();
-            return (guard.env.clone(), guard.succeeded);
+                .unwrap()
+                .0;
         }
+        if !guard.succeeded { guard.served_fallback = true; }
         (guard.env.clone(), guard.succeeded)
     }
 
@@ -159,6 +175,7 @@ impl State {
         let mut guard = self.inner.lock().unwrap();
         guard.first_attempt_done = true;
         guard.last_attempt = Some(Instant::now());
+        let healed = resolved.is_some() && !guard.succeeded && guard.served_fallback;
         if let Some(env) = resolved {
             guard.env = env;
             guard.succeeded = true;
@@ -166,8 +183,13 @@ impl State {
         } else {
             guard.probing = still_probing;
         }
+        if healed { guard.heals += 1; }
         self.cvar.notify_all();
-        guard.succeeded
+        let succeeded = guard.succeeded;
+        drop(guard);
+        // Outside the lock: the hook may read the env itself.
+        if healed { if let Some(f) = HEALED_HOOK.get() { f(); } }
+        succeeded
     }
 
     /// Whether a read-kicked retry should run now: never after success,
@@ -1457,6 +1479,26 @@ mod tests {
         // A failed attempt unblocks readers but still isn't an answer.
         st.attempt_finished(None, false);
         assert_eq!(st.snapshot_final(Duration::ZERO), (fallback_env(), false));
+    }
+
+    #[test]
+    fn heals_only_when_a_reader_got_the_fallback_first() {
+        // Probe lands before anyone reads: nothing was decided on the
+        // fallback, so nothing needs redoing.
+        let st = State::new(fallback_env());
+        st.attempt_finished(Some(real_env()), false);
+        assert_eq!(st.inner.lock().unwrap().heals, 0);
+
+        // A reader gets the fallback, then the probe lands: one heal, and a
+        // later success-shaped call does not count again.
+        let st = State::new(fallback_env());
+        st.snapshot_final(Duration::ZERO);
+        st.attempt_finished(None, true);
+        st.attempt_finished(Some(real_env()), false);
+        assert_eq!(st.inner.lock().unwrap().heals, 1);
+        st.snapshot_final(Duration::ZERO);
+        st.attempt_finished(Some(real_env()), false);
+        assert_eq!(st.inner.lock().unwrap().heals, 1);
     }
 
     #[test]

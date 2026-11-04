@@ -26636,6 +26636,11 @@ pub fn run() {
         .manage(PtyManager::default())
         .setup(|app| {
             caffeinate::start(app.handle().clone());
+            // CLI detection that ran on the fallback PATH re-runs (GH #441).
+            {
+                let h = app.handle().clone();
+                shell_env::on_healed(move || { let _ = h.emit("termic://shell-env-healed", ()); });
+            }
             // FIRST thing, e2e only. Accessory was already set before the
             // window is shown, and that is too late for the very first launch:
             // macOS activates a Regular app while it starts up, before any

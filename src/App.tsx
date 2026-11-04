@@ -125,6 +125,10 @@ export function App() {
     // opens (AgentsSection drives the latter). Deliberately NOT on every
     // window focus — `loadAll` re-runs on focus, detection does not.
     useApp.getState().refreshClis();
+    // Again if the login-shell PATH lands after that ran on the fallback
+    // (a slow .zshrc): an nvm-installed agent was marked missing and hidden
+    // from the New Task picker for the whole session (GH #441).
+    void listen("termic://shell-env-healed", () => useApp.getState().refreshClis());
     // Which agents report their own state. Drives whether the terminal title
     // is still allowed to end a turn for them (docs/agent-hooks.md). Syncs
     // first: an install from an older termic is upgraded to this build's hook
