@@ -6874,7 +6874,7 @@ fn task_open_repo(
     // session; the seeded resume rides agent_session_ids alone.
     let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
     let mut task = Task {
-        role: role,
+        role,
         secret_allows: Vec::new(),
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -7321,7 +7321,7 @@ fn task_import_worktree(
     // task-wide flag).
     let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
     let mut task = Task {
-        role: role,
+        role,
         secret_allows: Vec::new(),
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),

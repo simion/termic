@@ -7,6 +7,7 @@ import {
   setInputValue,
   snap,
   waitForAppShell,
+  waitForAgentPty,
   waitForAgentReady,
   waitGone,
   waitVisible,
@@ -29,9 +30,20 @@ describe("task finder dialog", () => {
     t1 = await openTask("finder-alpha", true, "fakeagent");
     t2 = await openTask("finder-bravo", false, "fakeagent");
     t3 = await openTask("finder-charlie", false, "fakeagent");
+
+    // radix keeps a closing dialog mounted until its exit animation ends, and
+    // WebKit freezes animations while the window reads as occluded, so a
+    // waitGone after Escape could wait forever. Skip the animations here.
+    await browser.execute(() => {
+      const s = document.createElement("style");
+      s.id = "tf-noanim";
+      s.textContent = ".termic-pop[data-state],.termic-backdrop[data-state]{animation:none!important}";
+      document.head.appendChild(s);
+    });
   });
 
   after(async () => {
+    await browser.execute(() => document.getElementById("tf-noanim")?.remove());
     await dismissOverlays();
     for (const id of [t1, t2, t3]) {
       if (id) await archiveTask(id);
@@ -40,6 +52,9 @@ describe("task finder dialog", () => {
 
   it("opens via shortcut with Open selected and can switch to All", async () => {
     const isMac = process.platform === "darwin";
+    // the shortcut picks Open only when a task has a live agent, read once at
+    // open time, so wait for one before pressing it.
+    await waitForAgentPty(t1);
     // Open via ⌘O / Ctrl+O keyboard event
     await browser.execute((mac) => {
       window.dispatchEvent(

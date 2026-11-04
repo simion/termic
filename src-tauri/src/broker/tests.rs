@@ -801,9 +801,9 @@ fn bindings_changed_flags_only_what_a_spawn_baked_in() {
     let sp = &h.spawn;
     let ch = |roles: &[Role], secrets: &[SecretDef]| bindings_changed(sp, roles, secrets);
 
-    assert!(!ch(&[started.clone()], &[secret()]), "unchanged");
+    assert!(!ch(std::slice::from_ref(&started), &[secret()]), "unchanged");
     assert!(!ch(&[role(vec![])], &[secret()]), "rules are read live");
-    assert!(!ch(&[started.clone()], &[SecretDef { name: "renamed".into(), ..secret() }]), "a rename bakes nothing in");
+    assert!(!ch(std::slice::from_ref(&started), &[SecretDef { name: "renamed".into(), ..secret() }]), "a rename bakes nothing in");
     assert!(!ch(&[], &[secret()]), "a deleted role already revokes live");
 
     let other = SecretDef { id: "gh2".into(), account: "bob".into(), ..secret() };
@@ -811,5 +811,5 @@ fn bindings_changed_flags_only_what_a_spawn_baked_in() {
     assert!(ch(&[swapped], &[secret(), other.clone()]), "secret swapped");
     let added = Role { secrets: vec!["gh".into(), "gh2".into()], ..started.clone() };
     assert!(ch(&[added], &[secret(), other]), "secret added");
-    assert!(ch(&[started.clone()], &[SecretDef { hosts: vec!["api.github.com".into()], ..secret() }]), "hosts edited");
+    assert!(ch(std::slice::from_ref(&started), &[SecretDef { hosts: vec!["api.github.com".into()], ..secret() }]), "hosts edited");
 }

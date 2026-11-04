@@ -8,6 +8,16 @@ import { setSeatbeltAvailableForTests } from "@/lib/platform";
 
 setSeatbeltAvailableForTests(true);
 
+// node >= 25 defines its own `localStorage`/`sessionStorage` globals, which
+// read as undefined without `--localstorage-file`, and vitest's happy-dom
+// environment does not overwrite a global node already has. So a DOM file
+// sees undefined storage. Give it fresh DOM `Storage` instances instead.
+const DomStorage = (globalThis as { window?: { Storage?: new () => Storage } }).window?.Storage;
+for (const key of ["localStorage", "sessionStorage"] as const) {
+  if (!DomStorage || (globalThis as Record<string, unknown>)[key]) continue;
+  Object.defineProperty(globalThis, key, { value: new DomStorage(), configurable: true, writable: true });
+}
+
 // The active language defaults to "system", which follows
 // navigator.language, and Node >= 21 exposes a real navigator with the
 // machine's locale. On a zh-CN machine every user-visible string renders

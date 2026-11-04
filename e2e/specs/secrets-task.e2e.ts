@@ -7,6 +7,7 @@
 // one-click fix. macOS only: without Seatbelt there are no enforcing modes.
 //
 // Fixtures use the mocks' placeholder names only (alice, acme/widget).
+import path from "node:path";
 import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, waitForAgentPty, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 (process.platform !== "darwin" ? describe.skip : describe)("secrets: task role", () => {
@@ -41,7 +42,11 @@ import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, waitFo
     prevSettings = await browser.execute(async () => JSON.stringify(await window.__termic!.ipc.settingsLoad()));
     lastPick = await browser.execute(() => JSON.stringify(
       Object.entries(localStorage).filter(([k]) => k.endsWith("newTaskLastSandboxMode"))));
-    await browser.execute(async () => {
+    // fakeagent is a script in the repo's scripts/, outside every cage
+    // allow-list, so a caged spawn would exit 126 before it sends anything.
+    // after() restores prevSettings, which drops this again.
+    const scripts = path.resolve("scripts");
+    await browser.execute(async (scripts) => {
       const t = window.__termic!;
       const s = await t.ipc.settingsLoad();
       const gh = (id: string, name: string) => ({
@@ -50,6 +55,7 @@ import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, waitFo
       });
       await t.ipc.settingsSave({
         ...s,
+        sandbox_default_rw_paths: [...(s.sandbox_default_rw_paths ?? []), scripts],
         secrets: [gh("gh-review", "gh-review"), gh("gh-maintain", "gh-maintain")],
         roles: [
           {
@@ -67,7 +73,7 @@ import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, waitFo
       // user's edit there would reach it.
       t.useApp.getState().openSettings();
       t.useApp.getState().closeSettings();
-    });
+    }, scripts);
   });
 
   after(async () => {
