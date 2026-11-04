@@ -66,13 +66,21 @@ else to do.
 
 ### Linux (AppImage)
 
-Download `termic_<version>_amd64.AppImage` from the
+```sh
+curl -fsSL https://termic.dev/install.sh | sh
+```
+
+That puts the AppImage at `~/Applications/Termic.AppImage` and starts it,
+no root needed; on first run Termic offers to add itself to your app
+launcher. The same command works on macOS (into `/Applications`).
+
+Or by hand: download `Termic_<version>_amd64.AppImage` from the
 [Releases](https://github.com/simion/termic/releases) page, make it
 executable, and run it:
 
 ```sh
-chmod +x termic_*_amd64.AppImage
-./termic_*_amd64.AppImage
+chmod +x Termic_*_amd64.AppImage
+./Termic_*_amd64.AppImage
 ```
 
 The AppImage is ed25519-signed by the same CI flow as the macOS build,
