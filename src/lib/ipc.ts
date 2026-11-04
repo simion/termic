@@ -1539,6 +1539,8 @@ let homeDirOnce: Promise<string> | null = null;
 export const cachedHomeDir = () => (homeDirOnce ??= homeDir().catch(() => ""));
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });
 export const pathIsGitRepo = (path: string) => invoke<boolean>("path_is_git_repo", { path });
+/** `git init` + an empty first commit, so a plain folder can host tasks (GH #443). */
+export const gitInitRepo = (path: string) => invoke<void>("git_init_repo", { path });
 export const logLine   = (msg: string) => invoke<void>("log_line", { msg });
 /** Append a line to a named file in the OS temp dir. Used by the ptyDebug
  *  logger in TerminalPane when `localStorage.ptyDebug = "1"`. */

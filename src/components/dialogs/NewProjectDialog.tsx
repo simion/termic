@@ -10,20 +10,23 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { bulkAddSummary, pathsToAdd, type BulkAddResult } from "@/lib/bulkAdd";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, settingsSave, pathIsGitRepo, pathExists, cachedHomeDir } from "@/lib/ipc";
+import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, settingsSave, pathIsGitRepo, gitInitRepo, pathExists, cachedHomeDir } from "@/lib/ipc";
 import { repoNameFromUrl } from "@/lib/cloneUrl";
 import { expandTilde } from "@/lib/pathMatch";
 import { joinPath } from "@/lib/osPath";
 import { IS_WINDOWS } from "@/lib/platform";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import type { DiscoveredRepo, Project, ProjectMember } from "@/lib/types";
-import { Folder, FolderPlus, Layers, RotateCcw, X, Download } from "lucide-react";
+import { Folder, FolderPlus, GitBranch, Layers, RotateCcw, X, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Where a non-git folder is being added — drives the confirm copy. We no
 // longer ask the user to pre-declare "not a git repo" with a checkbox;
 // instead we detect it after they pick a directory and confirm intent.
 type ConfirmKind = "project" | "host" | "member";
+/** The confirm's answer: add as a plain folder, make it a git repo first, or
+ *  back out (null). */
+type Choice = "folder" | "git" | null;
 const CONFIRM_COPY: Record<ConfirmKind, { titleKey: string; bodyKey: string }> = {
   project: {
     titleKey: "newProject.confirmProjectTitle",
@@ -87,7 +90,7 @@ export function NewProjectDialog() {
   const [nonGit, setNonGit] = useState(false);
   // Pending non-git confirmation. We surface it as a Promise so the
   // browse / add flows can `await` the user's decision inline.
-  const [confirm, setConfirm] = useState<{ kind: ConfirmKind; resolve: (ok: boolean) => void } | null>(null);
+  const [confirm, setConfirm] = useState<{ kind: ConfirmKind; resolve: (choice: Choice) => void } | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredRepo[]>([]);
   // Checked rows in the discovered list. A set of PATHS, which is the only
   // stable identity a discovered repo has: the list is refetched after every
@@ -236,12 +239,12 @@ export function NewProjectDialog() {
   }
 
   // Resolve the pending confirm dialog with the user's decision.
-  function resolveConfirm(ok: boolean) {
-    confirm?.resolve(ok);
+  function resolveConfirm(choice: Choice) {
+    confirm?.resolve(choice);
     setConfirm(null);
   }
   // Open the non-git confirm dialog and resolve once the user decides.
-  function confirmNonGit(kind: ConfirmKind): Promise<boolean> {
+  function confirmNonGit(kind: ConfirmKind): Promise<Choice> {
     return new Promise(resolve => setConfirm({ kind, resolve }));
   }
   // Decide how to treat a picked directory: a real git repo proceeds
@@ -250,7 +253,11 @@ export function NewProjectDialog() {
   async function classify(p: string, kind: ConfirmKind): Promise<boolean | null> {
     const isGit = await pathIsGitRepo(p).catch(() => false);
     if (isGit) return false;
-    return (await confirmNonGit(kind)) ? true : null;
+    const choice = await confirmNonGit(kind);
+    if (choice !== "git") return choice === "folder" ? true : null;
+    // Made a repo here, so from now on it is one, with a commit to branch from.
+    try { await gitInitRepo(p); return false; }
+    catch (e) { setErr(String(e).replace(/^Error:\s*/, "")); return null; }
   }
 
   // The directory `git clone` will create. `null` when the URL carries no
@@ -1072,7 +1079,7 @@ export function NewProjectDialog() {
         we detect a plain folder after the user picks it, then ask here. */}
     <AppDialog
       open={!!confirm}
-      onOpenChange={(v) => { if (!v) resolveConfirm(false); }}
+      onOpenChange={(v) => { if (!v) resolveConfirm(null); }}
       title={confirm ? t(CONFIRM_COPY[confirm.kind].titleKey) : ""}
       className="max-w-md"
     >
@@ -1082,8 +1089,15 @@ export function NewProjectDialog() {
             {t(CONFIRM_COPY[confirm.kind].bodyKey)}
           </p>
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => resolveConfirm(false)}>{t("common:cancel")}</Button>
-            <Button variant="primary" onClick={() => resolveConfirm(true)}>
+            <Button variant="ghost" data-testid="new-project-confirm-cancel" onClick={() => resolveConfirm(null)}>{t("common:cancel")}</Button>
+            {/* A project only: a host or member keeps its own copy, and a
+                member is already a repo or deliberately not one. */}
+            {confirm.kind === "project" && (
+              <Button variant="ghost" data-testid="new-project-make-git" onClick={() => resolveConfirm("git")}>
+                <GitBranch className="h-4 w-4" /> {t("newProject.makeGitRepo")}
+              </Button>
+            )}
+            <Button variant="primary" data-testid="new-project-add-folder" onClick={() => resolveConfirm("folder")}>
               <FolderPlus className="h-4 w-4" /> {t("newProject.addAsFolder")}
             </Button>
           </div>

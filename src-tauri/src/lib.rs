@@ -21351,6 +21351,32 @@ fn path_exists(path: String) -> bool {
 /// "this is a plain folder" confirm after the user picks a directory —
 /// replacing the old manual "Not a git repository" checkbox. Returns false
 /// for a non-existent or non-directory path (the caller adds nothing then).
+/// Turn a plain folder into a git repo a task can branch from: `git init`
+/// plus an empty first commit, which `git worktree add` needs (GH #443).
+/// Commits as the user when git knows who they are, else as Termic. Refuses a
+/// folder that already is a repo, so it never touches existing history.
+#[tauri::command]
+async fn git_init_repo(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || git_init_repo_sync(&PathBuf::from(expand_tilde(path.trim()))))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn git_init_repo_sync(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() { return Err(format!("{} is not a folder.", dir.display())); }
+    if git(&["rev-parse", "--git-dir"], dir).is_ok() {
+        return Err(format!("{} is already a git repository.", dir.display()));
+    }
+    git(&["init", "-q"], dir).map_err(|e| format!("git init failed: {e}"))?;
+    let known = |k: &str| git(&["config", k], dir).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    let mut args: Vec<&str> = Vec::new();
+    if !known("user.name") { args.extend(["-c", "user.name=Termic"]); }
+    if !known("user.email") { args.extend(["-c", "user.email=termic@local"]); }
+    args.extend(["commit", "-q", "--allow-empty", "--no-verify", "-m", "Initial commit"]);
+    git(&args, dir).map_err(|e| format!("git commit failed: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn path_is_git_repo(path: String) -> bool {
     let trimmed = path.trim();
@@ -26946,7 +26972,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
             lsp_offer, lsp_catalog, lsp_install, lsp_install_zuban, lsp_check_update, lsp_update, lsp_start, lsp_send, lsp_stop, lsp_reap_foreign, lsp_list,
-            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, customizations_open, customizations_set_enabled, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, customizations_open, customizations_set_enabled, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, git_init_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss,
             config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
             config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull, config_sync::sync_focus_pull,
@@ -34342,6 +34368,20 @@ mod tests {
         // on it anyway; failing here keeps the error about the ref the user
         // typed instead of about git plumbing.
         assert_eq!(try_resolve_base_ref(repo, "HEAD^{tree}"), None);
+    }
+
+    #[test]
+    fn git_init_repo_makes_a_branchable_repo_and_refuses_an_existing_one() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), "x").unwrap();
+        git_init_repo_sync(dir.path()).unwrap();
+        // A first commit exists, so a task can branch from it.
+        assert!(git_branch_new(dir.path(), "feat", "HEAD").is_ok());
+        // The user's files are left uncommitted: the commit is empty.
+        assert!(git(&["status", "--porcelain"], dir.path()).unwrap().contains("notes.md"));
+        let e = git_init_repo_sync(dir.path()).unwrap_err();
+        assert!(e.contains("already a git repository"), "{e}");
+        assert!(git_init_repo_sync(&dir.path().join("nope")).is_err());
     }
 
     #[test]

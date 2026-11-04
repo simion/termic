@@ -245,6 +245,60 @@ describe("project add/remove", () => {
     }
   });
 
+  // A plain folder (GH #443): the confirm offers to make it a git repo, which
+  // means git init plus an empty first commit so tasks can branch, and adds it
+  // as a REPO project. Cancel adds nothing and leaves the folder alone.
+  it("offers to make a plain folder a git repo, and Cancel touches nothing", async () => {
+    const plain = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-proj-plain-")));
+    writeFileSync(path.join(plain, "notes.md"), "# notes\n");
+    let addedId: string | null = null;
+    const openAndAdd = async () => {
+      await browser.execute(() => window.__termic!.useUI.getState().openNewProject());
+      await setInputValue('[data-testid="new-project-path"]', plain);
+      await keysIn('[data-testid="new-project-path"]', "Enter");
+      await waitVisible('[data-testid="new-project-make-git"]');
+    };
+    try {
+      await openAndAdd();
+      await snap("new-project-plain-folder-confirm.png");
+      await clickWhenVisible('[data-testid="new-project-confirm-cancel"]');
+      await waitGone('[data-testid="new-project-make-git"]');
+      expect(existsSync(path.join(plain, ".git"))).toBe(false);
+      await browser.execute(() => window.__termic!.useUI.getState().closeNewProject());
+
+      await openAndAdd();
+      await clickWhenVisible('[data-testid="new-project-make-git"]');
+      await browser.waitUntil(async () => {
+        const p = (await browser.execute(
+          (d) => window.__termic!.useApp.getState().projects.find((x: any) => x.root_path === d) ?? null,
+          plain,
+        )) as any;
+        if (!p) return false;
+        addedId = p.id;
+        return true;
+      }, { timeout: 10_000, timeoutMsg: "Make it a git repo added no project" });
+      // One empty commit, the user's file left for them to commit.
+      expect(execSync(`git -C "${plain}" rev-list --count HEAD`).toString().trim()).toBe("1");
+      expect(execSync(`git -C "${plain}" status --porcelain`).toString()).toContain("notes.md");
+      // Added as a repo, not a plain folder.
+      const nonGit = await browser.execute(
+        (id) => window.__termic!.useApp.getState().projects.find((x: any) => x.id === id)?.non_git ?? null,
+        addedId,
+      );
+      expect(nonGit).not.toBe(true);
+    } finally {
+      if (addedId) {
+        await browser.execute(async (id) => {
+          await window.__termic!.ipc.projectRemove(id);
+          await window.__termic!.useApp.getState().loadAll();
+        }, addedId);
+      } else {
+        await browser.execute(() => window.__termic!.useUI.getState().closeNewProject());
+      }
+      rmTree(plain, { bestEffort: true });
+    }
+  });
+
   // The dashed "New task" placeholder stands in for the task rows an empty
   // project does not have yet, so it must be the same height as one. It used
   // to be ~11px taller, which broke the sidebar rhythm.
