@@ -142,7 +142,9 @@ export function shortcutLabel(id: ShortcutId, t: T): string {
 export function shortcutHint(id: ShortcutId, t: T): string | undefined {
   const key = `${defKey(id)}.hint`;
   const hint = t(key, HINT_VARS[id]);
-  return hint === key ? undefined : hint;
+  // i18next hands a missing key back WITHOUT its "settings:" namespace, so a
+  // row with no hint drew "shortcuts.defs.tabPrev.hint" under its label.
+  return hint === key || hint === key.slice(key.indexOf(":") + 1) ? undefined : hint;
 }
 
 /** A group's heading in the list. */

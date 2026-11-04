@@ -197,3 +197,15 @@ describe("shortcut copy", () => {
     }
   });
 });
+
+// i18next returns a missing key without its namespace ("shortcuts.defs.x.hint",
+// not "settings:shortcuts.defs.x.hint"), and the Shortcuts page drew that
+// under every row with no hint.
+describe("a row with no hint", () => {
+  it("reads as no hint however the missing key comes back", () => {
+    const stripped = (key: string) => key.slice(key.indexOf(":") + 1);
+    const verbatim = (key: string) => key;
+    expect(shortcutHint("tab-prev", stripped)).toBeUndefined();
+    expect(shortcutHint("tab-prev", verbatim)).toBeUndefined();
+  });
+});
