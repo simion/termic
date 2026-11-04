@@ -24,7 +24,7 @@ export interface ReaderSettings {
 }
 
 export const READER_DEFAULTS: Readonly<ReaderSettings> = {
-  measure: "readable", wide: "full", size: 16, font: "sans", leading: "normal", lineNumbers: "hover",
+  measure: "full", wide: "full", size: 16, font: "sans", leading: "normal", lineNumbers: "hover",
 };
 
 export const READER_SIZE_MIN = 12;

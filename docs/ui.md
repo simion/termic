@@ -152,7 +152,7 @@ Rows carry `data-launcher-cli="<id>"` so tests can assert the order by id
 instead of by display name.
 
 **Recent on top, the rest under More.** The menu's top level holds only the
-entries used in the last 5 days (agents, Terminal, Custom command, Review a
+entries used in the last 7 days (agents, Terminal, Custom command, Review a
 pull request) plus the project default; everything else folds into a "More"
 submenu ("Used less often"), which also always holds Start a race and
 Resume. `lib/launcherUsage.ts` (unit-tested) decides: an entry's last use is
@@ -1937,9 +1937,13 @@ type and widths are reader settings (`ReaderSettings` in
 as CSS variables (`--md-size`, `--md-leading`, `--md-font`, `--md-measure`,
 `--md-measure-min`, `--md-wide-max`) plus an `md-ln-*` class on the host, so
 a change restyles without a re-parse or a document rebuild. Defaults: 16px,
-1.6, the system sans, a 72ch measure, wide content at the full pane.
+1.6, the system sans, text and wide content at the full pane.
 
-Why those defaults: the reading-measure consensus is 45-75 characters
+The measure defaults to Full, not Readable (72ch), by the maintainer's call:
+the preview mostly shows plans and specs read beside an agent, and a 72ch
+column centered in a wide pane left most of it empty. Readable stays one
+click away in Aa. The typography consensus below is why Readable is 72ch:
+the reading-measure consensus is 45-75 characters
 (Bringhurst ~66, Baymard 50-75, WCAG 1.4.8 at most 80), line height
 1.4-1.6 (WCAG 1.4.8 asks for at least 1.5), left-aligned rather than
 justified. Serif versus sans on screen has no settled answer, which is why

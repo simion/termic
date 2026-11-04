@@ -4,10 +4,10 @@ import { parseReaderSettings, READER_DEFAULTS, readerClass, readerStyle, sameRea
 const at = (p: Partial<ReaderSettings>) => readerStyle({ ...READER_DEFAULTS, ...p });
 
 describe("readerStyle", () => {
-  it("defaults to a 72ch measure at 16px/1.6, wide content at the full pane", () => {
+  it("defaults to the full pane at 16px/1.6", () => {
     const s = readerStyle(READER_DEFAULTS);
-    expect(s["--md-measure"]).toBe("72ch");
-    expect(s["--md-measure-min"]).toBe("min(72ch, 100%)");
+    expect(s["--md-measure"]).toBe("100%");
+    expect(s["--md-measure-min"]).toBe("100%");
     expect(s["--md-wide-max"]).toBe("100%");
     expect(s["--md-size"]).toBe("16px");
     expect(s["--md-leading"]).toBe("1.6");
@@ -17,12 +17,14 @@ describe("readerStyle", () => {
 
   it("maps each measure", () => {
     expect(at({ measure: "narrow" })["--md-measure"]).toBe("60ch");
+    expect(at({ measure: "readable" })["--md-measure"]).toBe("72ch");
+    expect(at({ measure: "readable" })["--md-measure-min"]).toBe("min(72ch, 100%)");
     expect(at({ measure: "wide" })["--md-measure"]).toBe("100ch");
   });
 
   it("wide content: same as the text, at least 120ch, or the pane", () => {
-    expect(at({ wide: "text" })["--md-wide-max"]).toBe("72ch");
-    expect(at({ wide: "wide" })["--md-wide-max"]).toBe("max(72ch, 120ch)");
+    expect(at({ measure: "readable", wide: "text" })["--md-wide-max"]).toBe("72ch");
+    expect(at({ measure: "readable", wide: "wide" })["--md-wide-max"]).toBe("max(72ch, 120ch)");
     // a wide text measure is never narrowed by the wide-content cap
     expect(at({ measure: "wide", wide: "wide" })["--md-wide-max"]).toBe("max(100ch, 120ch)");
   });

@@ -359,12 +359,12 @@ describe("markdown review menu", () => {
     expect([stored.outline, stored.save]).toEqual(["1", "0"]);
 
     await pick("reset");
-    await browser.waitUntil(async () => (await checked("measure-readable")) === "true", { timeout: 5_000, timeoutMsg: "Reset left the measure" });
+    await browser.waitUntil(async () => (await checked("measure-full")) === "true", { timeout: 5_000, timeoutMsg: "Reset left the measure" });
     expect(await checked("font-sans")).toBe("true");
     expect(await checked("outline")).toBe("false");
     expect(await checked("save")).toBe("true");
     await browser.waitUntil(async () => (await outline()) === null, { timeout: 5_000, timeoutMsg: "Reset left the outline open" });
     expect(await browser.execute(() => JSON.parse(localStorage.getItem("markdownReader") ?? "null")))
-      .toEqual({ measure: "readable", wide: "full", size: 16, font: "sans", leading: "normal", lineNumbers: "hover" });
+      .toEqual({ measure: "full", wide: "full", size: 16, font: "sans", leading: "normal", lineNumbers: "hover" });
   });
 });
