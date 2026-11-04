@@ -215,10 +215,16 @@ export async function langForPath(
  *  Plain Text pinned to the top — it is the "turn this off" row, not a
  *  language you go hunting for in the Ps. */
 export function pickerLanguages(): Array<{ name: string; keywords: string }> {
+  const rows = UNIQUE.map(d => ({ name: d.name, keywords: d.alias.join(" ") }));
+  const common = PICKER_COMMON.flatMap(n => n === PLAIN_TEXT
+    ? [{ name: PLAIN_TEXT, keywords: "none off plain raw txt text" }]
+    : rows.filter(r => r.name === n));
   return [
-    { name: PLAIN_TEXT, keywords: "none off plain raw txt text" },
-    ...UNIQUE
-      .map(d => ({ name: d.name, keywords: d.alias.join(" ") }))
-      .sort((a, b) => a.name.localeCompare(b.name)),
+    ...common,
+    ...rows.filter(r => !PICKER_COMMON.includes(r.name)).sort((a, b) => a.name.localeCompare(b.name)),
   ];
 }
+
+/** What the picker lists first, in this order, ahead of the alphabetical
+ *  rest: what a scratch pad is set to most, Markdown above all. */
+export const PICKER_COMMON: readonly string[] = ["Markdown", PLAIN_TEXT, "YAML", "JSON", "Shell"];

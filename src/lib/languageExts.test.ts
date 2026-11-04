@@ -4,7 +4,7 @@ import { ensureSyntaxTree, highlightingFor, syntaxTree } from "@codemirror/langu
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { languages as registry } from "@codemirror/language-data";
 import {
-  OVERLAY, isKnownLanguage, langForId, langForPath, languageIdForPath, matchLanguage, pickerLanguages,
+  OVERLAY, PICKER_COMMON, isKnownLanguage, langForId, langForPath, languageIdForPath, matchLanguage, pickerLanguages,
 } from "./languageExts";
 import { PLAIN_TEXT } from "./languages";
 import { resolveEditorTheme } from "./editorTheme";
@@ -125,11 +125,12 @@ describe("the composed list", () => {
     expect(pickerLanguages().filter(l => l.name === "ProtoBuf")).toHaveLength(1);
   });
 
-  it("lists each language once, Plain Text first, the rest alphabetical", () => {
+  it("lists each language once, the common ones first, the rest alphabetical", () => {
     const rows = pickerLanguages();
-    expect(rows[0].name).toBe(PLAIN_TEXT);
+    expect(rows.slice(0, 5).map(r => r.name)).toEqual(["Markdown", PLAIN_TEXT, "YAML", "JSON", "Shell"]);
+    expect(rows.slice(0, PICKER_COMMON.length).map(r => r.name)).toEqual(PICKER_COMMON);
     expect(new Set(rows.map(r => r.name)).size).toBe(rows.length);
-    const rest = rows.slice(1).map(r => r.name);
+    const rest = rows.slice(PICKER_COMMON.length).map(r => r.name);
     expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b)));
     // Aliases are what makes the fuzzy search find a language by a name
     // nobody displays: "ini" has to reach "Properties files".
