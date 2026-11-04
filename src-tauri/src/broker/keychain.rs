@@ -246,14 +246,20 @@ pub(crate) fn status_for(code: i32) -> SecretStatus {
     }
 }
 
+/// e2e: a Termic-owned item, from the in-memory store.
+#[cfg(feature = "e2e")]
+fn fake_read(s: &SecretDef) -> Result<Vec<u8>, SecretStatus> {
+    let fake = fake_store().lock().unwrap_or_else(|e| e.into_inner());
+    [KeychainKind::Protected, KeychainKind::Generic].iter()
+        .find_map(|k| fake.get(&(*k, s.service.clone())))
+        .map(|v| v.clone().into_bytes()).ok_or(SecretStatus::Missing)
+}
+
 #[cfg(target_os = "macos")]
 fn raw_read(s: &SecretDef) -> Result<Vec<u8>, SecretStatus> {
     #[cfg(feature = "e2e")]
     if s.service.starts_with(crate::secrets::OWNED_SERVICE_PREFIX) {
-        let fake = fake_store().lock().unwrap_or_else(|e| e.into_inner());
-        return [KeychainKind::Protected, KeychainKind::Generic].iter()
-            .find_map(|k| fake.get(&(*k, s.service.clone())))
-            .map(|v| v.clone().into_bytes()).ok_or(SecretStatus::Missing);
+        return fake_read(s);
     }
     if s.kind == KeychainKind::Generic && s.service.starts_with("gh:") {
         return read_via_security(s);
@@ -311,7 +317,14 @@ fn security_exit_status(code: i32) -> SecretStatus {
         .map_or_else(|| SecretStatus::Error(format!("security exited {code}")), status_for)
 }
 
-#[cfg(not(target_os = "macos"))]
+// e2e off macOS: the in-memory store is the only Keychain there is, so an
+// item it does not hold is missing, as on a Mac without that item.
+#[cfg(all(not(target_os = "macos"), feature = "e2e"))]
+fn raw_read(s: &SecretDef) -> Result<Vec<u8>, SecretStatus> {
+    fake_read(s)
+}
+
+#[cfg(all(not(target_os = "macos"), not(feature = "e2e")))]
 fn raw_read(_s: &SecretDef) -> Result<Vec<u8>, SecretStatus> {
     Err(SecretStatus::Error("Keychain reads need macOS".into()))
 }
