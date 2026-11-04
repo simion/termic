@@ -795,3 +795,37 @@ describe("hold gestures on a non-US layout", () => {
       .toEqual({ hold: "cmd", code: "Semicolon" });
   });
 });
+
+// GH #442: mouse side buttons are bindable. The bridge turns a side-button
+// press into a keydown, so everything below it is the ordinary key path.
+describe("mouse side buttons", () => {
+  // node has no KeyboardEvent; the bridge only needs one that keeps its init.
+  class FakeKeyboardEvent { constructor(public type: string, init: Record<string, unknown>) { Object.assign(this, init); } }
+  const mouse = (button: number, mods: Partial<MouseEvent> = {}) =>
+    ({ button, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods }) as MouseEvent;
+
+  it("maps back / forward to Mouse4 / Mouse5 and ignores the other buttons", async () => {
+    const { vi } = await import("vitest");
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    try {
+      const { mouseAsKeydown } = await import("./shortcuts");
+      expect((mouseAsKeydown(mouse(3)) as unknown as KeyboardEvent).key).toBe("Mouse4");
+      const fwd = mouseAsKeydown(mouse(4, { metaKey: true, shiftKey: true })) as unknown as KeyboardEvent;
+      expect([fwd.key, fwd.metaKey, fwd.shiftKey]).toEqual(["Mouse5", true, true]);
+      for (const b of [0, 1, 2, 5]) expect(mouseAsKeydown(mouse(b))).toBeNull();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("records, validates, labels and matches like a key", () => {
+    const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
+      ({ key, code: key, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, getModifierState: () => false, ...mods }) as unknown as KeyboardEvent;
+    const bare = bindingFromEvent(ev("Mouse4"))!;
+    expect(bare).toEqual({ cmd: false, shift: false, alt: false, key: "Mouse4" });
+    // A side button types nothing, so it needs no modifier, like F12.
+    expect(isValidBinding(bare)).toBe(true);
+    expect(bindingText(bare, true)).toContain("Mouse 4");
+    expect(bindingMatches(ev("Mouse4"), bare)).toBe(true);
+    expect(bindingMatches(ev("Mouse5"), bare)).toBe(false);
+    expect(bindingMatches(ev("Mouse4", { shiftKey: true }), bare)).toBe(false);
+  });
+});

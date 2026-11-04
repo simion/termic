@@ -46,6 +46,23 @@ data-driven from `SHORTCUT_DEFS`.
   read-only, grouped by `GROUP_ORDER`. Edit button jumps to Settings →
   Shortcuts.
 
+## Mouse side buttons (GH #442)
+
+The back and forward buttons (DOM `button` 3 and 4) are bindable, as the
+key tokens `Mouse4` and `Mouse5`, with or without modifiers. There is no
+mouse path through the registry: `useShortcuts` listens for `mousedown` in
+the capture phase and re-dispatches a side-button press as a `keydown` on
+`window` (`mouseAsKeydown` in `lib/shortcuts.ts`). The Settings recorder,
+`bindingMatches`, the conflict check and the chip labels ("Mouse 5") then
+treat it as any other key. A press some shortcut claimed is cancelled, so
+WebKit does not also read it as back / forward. Left, middle and right are
+not offered: they are clicking, pasting and the context menu. A bare side
+button is a valid binding, like an F-key, because it types nothing.
+
+The e2e case dispatches a synthetic `MouseEvent`, which proves the bridge
+and not that a given WebView delivers a hardware side button as `button`
+3 / 4. That half is a manual check per platform.
+
 ## What "Cmd" is on each platform, and what a real key looks like
 
 One table serves all three platforms. `Binding.cmd` is Cmd on macOS, and off

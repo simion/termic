@@ -2727,6 +2727,39 @@ describe("search everywhere chord", () => {
     await snap("search-everywhere-recorded.png");
   });
 
+  // GH #442: a mouse side button records like a key and then fires the
+  // command. The press is a mousedown with DOM button 4 (forward), which the
+  // shortcut layer re-dispatches as a "Mouse5" keydown. A left click while
+  // recording stays a click: only side buttons are bindable.
+  it("records the forward mouse button, and pressing it runs the command", async () => {
+    const side = (button: number) => browser.execute((b) => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: b }));
+    }, button);
+    await clickWhenVisible(RECORDER);
+    await browser.waitUntil(async () => (await textOf(RECORDER)).includes("Press keys"),
+      { timeout: 5_000, timeoutMsg: "the recorder never started recording" });
+    await side(0);
+    expect(await binding()).toEqual({ cmd: true, shift: true, alt: false, key: "o" });
+    await side(4);
+    await browser.waitUntil(async () => (await binding() as any)?.key === "Mouse5",
+      { timeout: 5_000, timeoutMsg: "the side button was never stored" });
+    expect(await binding()).toEqual({ cmd: false, shift: false, alt: false, key: "Mouse5" });
+    expect(await textOf(RECORDER)).toContain("Mouse 5");
+    await browser.execute((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), ROW);
+    await snap("shortcut-mouse-recorded.png");
+
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await side(3);
+    // Back is not bound: nothing opens. The handler runs inside the dispatch,
+    // so the store already says so by the time it returns.
+    expect(await browser.execute(() => window.__termic!.useUI.getState().searchEverywhereTaskId)).toBeNull();
+    await side(4);
+    await waitVisible('[data-testid="search-everywhere"]');
+    await browser.execute(() => window.__termic!.useUI.getState().closeSearchEverywhere());
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
+    await waitVisible(RECORDER);
+  });
+
   it("resets to Not set", async () => {
     await clickWhenVisible(RESET);
     await browser.waitUntil(async () => (await binding()) === null,

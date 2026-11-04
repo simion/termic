@@ -45,7 +45,7 @@ import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { newScratchTab } from "@/lib/scratchTabs";
 import { dirHistoryTarget, goDirHistory } from "@/lib/dirTabs";
 import {
-  bindingMatches, eventCode, eventKeyToken, holdHeld, holdReleased, IS_MAC, SHORTCUT_DEFS,
+  bindingMatches, eventCode, eventKeyToken, holdHeld, holdReleased, IS_MAC, mouseAsKeydown, SHORTCUT_DEFS,
   type HoldGesture, type ShortcutId,
 } from "@/lib/shortcuts";
 import { isTerminalCloseCombo } from "@/lib/terminalFind";
@@ -676,6 +676,17 @@ export function useShortcuts() {
       }
     }
     window.addEventListener("keydown", onKey);
+    // Mouse side buttons become keydowns (GH #442), so the Settings recorder
+    // and this handler take them like any key. Capture, so a press over a
+    // terminal or the editor is seen before either consumes it; claimed ones
+    // are cancelled so WebKit does not also treat them as back / forward.
+    const onMouse = (e: MouseEvent) => {
+      const k = mouseAsKeydown(e);
+      if (!k) return;
+      window.dispatchEvent(k);
+      if (k.defaultPrevented) { e.preventDefault(); e.stopPropagation(); }
+    };
+    window.addEventListener("mousedown", onMouse, true);
     // ⌘W that the page never heard (focus in a sandboxed preview iframe)
     // reaches the native menu's Close Tab instead (lib.rs `app_menu`).
     let unlistenMenu: (() => void) | null = null;
@@ -685,6 +696,7 @@ export function useShortcuts() {
     });
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onMouse, true);
       disposed = true;
       unlistenMenu?.();
     };

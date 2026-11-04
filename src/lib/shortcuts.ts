@@ -794,6 +794,25 @@ function baseKey(key: string, shift: boolean): string {
   return shift ? UNSHIFTED[key] ?? key : key;
 }
 
+/** Mouse side buttons as key tokens (GH #442): DOM button 3 is "back",
+ *  4 is "forward", the buttons a mouse calls 4 and 5. Left, middle and right
+ *  are not offered: they are clicking, pasting and the context menu. */
+const MOUSE_KEYS: Record<number, string> = { 3: "Mouse4", 4: "Mouse5" };
+export const isMouseKey = (key: string): boolean => key === "Mouse4" || key === "Mouse5";
+
+/** The keydown a side-button press stands for, or null for any other button.
+ *  Re-dispatched on window, a mouse shortcut is recorded, matched and
+ *  conflict-checked by exactly the code that handles keys, with nothing of
+ *  its own to keep in step. */
+export function mouseAsKeydown(e: MouseEvent): KeyboardEvent | null {
+  const key = MOUSE_KEYS[e.button];
+  if (!key) return null;
+  return new KeyboardEvent("keydown", {
+    key, code: key, bubbles: true, cancelable: true,
+    metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+  });
+}
+
 /** Normalize a live KeyboardEvent's key to the same token space as `Binding.key`. */
 export function eventKeyToken(e: KeyboardEvent): string {
   const k = e.key;
@@ -862,8 +881,9 @@ export function isValidBinding(b: Binding): boolean {
   if (isReservedKey(b.key)) return false;
   if (b.cmd || b.alt) return true;
   // A function key types nothing, so it needs no modifier to be safe: F12 on
-  // its own is go-to-definition in every IDE this app's users come from.
-  if (/^F([1-9]|1[0-9]|20)$/.test(b.key)) return true;
+  // its own is go-to-definition in every IDE this app's users come from. A
+  // mouse side button types nothing either (GH #442).
+  if (/^F([1-9]|1[0-9]|20)$/.test(b.key) || isMouseKey(b.key)) return true;
   // Shift+punctuation (e.g. ⇧?) is a valid shortcut; Shift+letter is not.
   return b.shift && !/^[a-z0-9]$/i.test(b.key);
 }
@@ -920,6 +940,7 @@ export function glyphLabel(glyph: string): string {
 /** Render a key token as a display glyph (↑, 1…9, L, [ …). */
 export function keyGlyph(key: string): string {
   if (key === "1-9") return "1…9";
+  if (isMouseKey(key)) return `Mouse ${key.slice(5)}`;
   if (ARROW_GLYPH[key]) return ARROW_GLYPH[key];
   if (/^[a-z]$/.test(key)) return key.toUpperCase();
   return key;
