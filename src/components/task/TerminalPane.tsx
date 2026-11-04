@@ -3388,8 +3388,11 @@ const captureArmedRef = useRef(false);
           }
           // Config-driven restart: the user just hit "Save & restart" on a
           // config dialog (Sandbox or Resume override). Auto-respawn instead
-          // of showing the exited overlay so they don't click Restart.
-          if (useUI.getState().consumePendingPtyRestart(task.id)) {
+          // of showing the exited overlay so they don't click Restart. Only
+          // the PTYs that carry the task id: those are the ones the kill
+          // hits, and a shell exiting on its own must still close.
+          const killedByTask = !(tab.cli === "shell" || isRegistryTerminal || isRunTab);
+          if (killedByTask && useUI.getState().ptyRestartPending(task.id, spawnStartedAtRef.current)) {
             setGen(g => g + 1);
             return;
           }
