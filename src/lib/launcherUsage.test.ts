@@ -9,8 +9,8 @@ const opts = (pinned: string[] = [], folded: string[] = ["race"]) =>
 describe("splitLauncher", () => {
   const ids = ["claude", "codex", "gemini", "shell", "custom", "review", "race"];
 
-  it("keeps what was used in the last 5 days on top and folds the rest", () => {
-    const used = { claude: NOW - DAY, shell: NOW - 4 * DAY, codex: NOW - 6 * DAY };
+  it("keeps what was used in the last 7 days on top and folds the rest", () => {
+    const used = { claude: NOW - DAY, shell: NOW - 6 * DAY, codex: NOW - 8 * DAY };
     expect(splitLauncher(ids, used, opts())).toEqual({
       top: ["claude", "shell"],
       more: ["codex", "gemini", "custom", "review", "race"],
@@ -34,7 +34,7 @@ describe("splitLauncher", () => {
       .toEqual({ top: ["claude", "codex", "gemini", "shell", "custom", "review"], more: [] });
   });
 
-  it("treats exactly 5 days ago as old", () => {
+  it("treats exactly 7 days ago as old", () => {
     expect(splitLauncher(["a", "b", "c"], { a: NOW - RECENT_MS, b: NOW }, opts([], [])).more).toEqual(["a", "c"]);
   });
 });

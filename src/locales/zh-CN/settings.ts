@@ -1007,7 +1007,7 @@ export default {
     },
     visibility: {
       auto: "自动",
-      autoHint: "最近 5 天用过就放在顶部，否则放进“更多”。",
+      autoHint: "最近 7 天用过就放在顶部，否则放进“更多”。",
       shown: "始终显示",
       shownHint: "始终显示在新建任务菜单顶部。",
       pinned: "置顶",

@@ -1,7 +1,7 @@
 // Shared dropdown body for project-level "new task" actions. A [Worktree |
 // Main checkout] toggle at the top picks the mode (remembered app-wide);
 // below it, the agents, Terminal, Custom command and Review a pull request
-// used in the last 5 days (lib/launcherUsage.ts), then "More" holding the
+// used in the last 7 days (lib/launcherUsage.ts), then "More" holding the
 // rest, Start a race and Resume; "Advanced…" opens the full New Task modal. Used in the
 // sidebar's project-row `+` icon, the sidebar's empty-project placeholder
 // CTA, and the dashboard project card header.
@@ -518,7 +518,7 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
         </div>
       )}
 
-      {/* Top level: what was used in the last 5 days (and the project
+      {/* Top level: what was used in the last 7 days (and the project
           default); everything else, Race always, folds under "More" with
           Resume beside it. The launcher kept growing with every agent and
           errand until the agents someone actually uses were hard to find. */}

@@ -1029,7 +1029,7 @@ export default {
     },
     visibility: {
       auto: "Auto",
-      autoHint: "On top while used in the last 5 days, else under More.",
+      autoHint: "On top while used in the last 7 days, else under More.",
       shown: "Always shown",
       shownHint: "Always on top of the new task menu.",
       pinned: "Pinned",

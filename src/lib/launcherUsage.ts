@@ -13,7 +13,7 @@ import { scoped } from "@/lib/profileScope";
 
 
 /** Where an entry of the new-task menu shows. auto: top level while used in
- *  the last 5 days, else under More. shown: always top level. pinned: always
+ *  the last 7 days, else under More. shown: always top level. pinned: always
  *  top level and first. more: always under More. */
 export type LauncherVisibility = "auto" | "shown" | "pinned" | "more";
 const LAUNCHER_VISIBILITIES: readonly LauncherVisibility[] = ["auto", "shown", "pinned", "more"];
@@ -56,7 +56,7 @@ export function pinnedFirst(
 }
 
 /** Entries not used for this long fold under "More". */
-export const RECENT_MS = 5 * 24 * 60 * 60 * 1000;
+export const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Per profile: its task list is the other half of the signal.
 const LS_LAUNCHER_LAST_USED = scoped("launcherLastUsed");
