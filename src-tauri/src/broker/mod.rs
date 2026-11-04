@@ -353,6 +353,7 @@ impl Spawn {
         let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(200)));
         let mut w = conn;
         refuse_wrong_peer(&self.task_id, &who, &mut w, "Refused by Termic: this endpoint belongs to another task's agent.\n");
+        drain_refused(conn, || conn.shutdown(std::net::Shutdown::Write), |d| conn.set_read_timeout(Some(d)));
         false
     }
 
@@ -383,6 +384,32 @@ impl Spawn {
 fn refuse_wrong_peer(task_id: &str, who: &str, w: &mut dyn Write, body: &str) {
     record_suspicious(task_id, "wrong_peer", "", &format!("{who} is not this task's agent"));
     let _ = http::respond(w, 403, "Forbidden", &[("X-Termic-Secrets", "wrong-peer")], body);
+}
+
+/// after a refusal: half-close, then drain what the peer already sent.
+/// Closing with its request still unread makes Linux reset the connection,
+/// and the peer's read fails with ECONNRESET instead of reaching the 403.
+/// Bounded in time and bytes, since this runs on the accept thread: each
+/// read's timeout is what is left of a 50ms budget, so a peer that dribbles
+/// bytes cannot hold the thread past it.
+fn drain_refused(
+    mut r: impl Read,
+    shutdown_write: impl FnOnce() -> std::io::Result<()>,
+    set_read_timeout: impl Fn(std::time::Duration) -> std::io::Result<()>,
+) {
+    let _ = shutdown_write();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let mut buf = [0u8; 4096];
+    let mut left = 64 * 1024usize;
+    while left > 0 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        // a zero timeout means "block forever" to set_read_timeout.
+        if remaining.is_zero() || set_read_timeout(remaining).is_err() { break; }
+        match r.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left = left.saturating_sub(n),
+        }
+    }
 }
 
 /// Equal without an early exit, for credentials compared on every request.

@@ -42,6 +42,7 @@ fn admit(sp: &Spawn, conn: &UnixStream) -> bool {
     let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(200)));
     let mut w = conn;
     super::refuse_wrong_peer(&sp.task_id, &who, &mut w, "Refused by Termic: this socket belongs to another task's agent.\n");
+    super::drain_refused(conn, || conn.shutdown(std::net::Shutdown::Write), |d| conn.set_read_timeout(Some(d)));
     false
 }
 
