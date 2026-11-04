@@ -1043,6 +1043,9 @@ describe("new PR highlight", () => {
     seedApp();
     useApp.setState({ activeTaskId: "other" });
     initPrRefreshOnFocus();
+    vi.mocked(ipc.taskPrStatus).mockResolvedValueOnce(lookupWith(null));
+    await usePr.getState().refresh("ws1");
+    usePr.setState(s => ({ byTask: { ...s.byTask, ws1: { ...s.byTask.ws1, fetchedAt: 0 } } }));
     await usePr.getState().refresh("ws1");
     expect(usePr.getState().unseen).toEqual({ ws1: 7 });
     expect(parseUnseen(localStorage.getItem("prUnseen"))).toEqual({ ws1: 7 });
@@ -1050,6 +1053,13 @@ describe("new PR highlight", () => {
     expect(usePr.getState().unseen).toEqual({});
     expect(parseUnseen(localStorage.getItem("prUnseen"))).toEqual({});
     stopPrRefreshOnFocus();
+  });
+
+  it("does not mark a PR found on the first poll (task started on an existing PR)", async () => {
+    seedApp();
+    useApp.setState({ activeTaskId: "other" });
+    await usePr.getState().refresh("ws1");
+    expect(usePr.getState().unseen).toEqual({});
   });
 
   it("does not mark a PR the task already had", async () => {

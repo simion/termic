@@ -336,8 +336,11 @@ export const usePr = create<PrStore>((set, get) => ({
         if (found) {
           const known = useApp.getState().tasks.find(t => t.id === taskId);
           if (known && (known.pr_number !== found.number || known.pr_provider !== found.provider)) {
-            // A PR new to this task, found while you were elsewhere.
-            if (known.pr_number !== found.number && useApp.getState().activeTaskId !== taskId) {
+            // A PR new to this task, found while you were elsewhere. Only one
+            // that APPEARED: an earlier ok poll this session saw no PR. A task
+            // started on an existing PR's branch finds it on its first poll.
+            const appeared = prev?.status === "ok" && !prev.pr;
+            if (appeared && known.pr_number !== found.number && useApp.getState().activeTaskId !== taskId) {
               const unseen = { ...get().unseen, [taskId]: found.number };
               set({ unseen });
               persistUnseen(unseen);
