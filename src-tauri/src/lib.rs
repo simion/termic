@@ -2847,6 +2847,19 @@ pub(crate) fn git(args: &[&str], cwd: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&git_bytes(args, cwd)?).into_owned())
 }
 
+/// `git branch --no-track <branch> <base>`, with a readable error for a repo
+/// that has no commits yet: git's own ("not a valid object name: 'HEAD'")
+/// does not say what to do about it (GH #443).
+fn git_branch_new(repo: &Path, branch: &str, base: &str) -> Result<String> {
+    git(&["branch", "--no-track", branch, base], repo).map_err(|e| {
+        if git(&["rev-parse", "--verify", "--quiet", "HEAD"], repo).is_err() {
+            anyhow!("{} has no commits yet, so there is nothing to branch a task from. \
+                     Make a first commit (git commit --allow-empty -m \"Initial commit\"), then try again.",
+                    repo.display())
+        } else { e }
+    })
+}
+
 /// Time-bounded fetch of a single ref. `remote_ref` is like "origin/develop":
 /// the leading path segment is the remote, the rest is the ref. A ref with no
 /// remote prefix (a purely local branch), or whose prefix isn't a configured
@@ -3221,7 +3234,7 @@ fn ensure_restore_branch(repo: &Path, task: &Task, fetch: bool) -> std::result::
     }
     // Resolved to a ref that exists: local-only repos have no origin/main.
     let base_ref = resolve_base_ref(repo, &task.base_branch);
-    git(&["branch", "--no-track", branch, &base_ref], repo)
+    git_branch_new(repo, branch, &base_ref)
         .map(|_| ())
         .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))
 }
@@ -7498,7 +7511,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             resolve_base_ref(&repo, &base_full)
         };
         emit_create_progress(&app, &task_id, format!("Branching '{branch}' from '{base_ref}'…"));
-        let branch_result = match git(&["branch", "--no-track", &branch, &base_ref], &repo) {
+        let branch_result = match git_branch_new(&repo, &branch, &base_ref) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         };
@@ -7942,7 +7955,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
             }
             let base_ref = resolve_base_ref(&host_repo, &base_branch);
             emit_create_progress(&app, &task_id, format!("Branching host '{branch}' from '{base_ref}'…"));
-            match git(&["branch", "--no-track", &branch, &base_ref], &host_repo) {
+            match git_branch_new(&host_repo, &branch, &base_ref) {
                 Ok(_) => {
                     emit_create_progress(&app, &task_id, format!("Adding host worktree at {}…", wrapper.display()));
                     worktree_add(&host_repo, &wrapper, &["worktree", "add", wrapper.to_str().unwrap(), &branch])
@@ -8375,7 +8388,7 @@ fn materialize_member(
                 }
                 let mbase_ref = resolve_base_ref(&mrepo, &mbase);
                 emit_create_progress(app, task_id, format!("Branching member '{dir_name}' ('{mbranch}') from '{mbase_ref}'…"));
-                git(&["branch", "--no-track", &mbranch, &mbase_ref], &mrepo)
+                git_branch_new(&mrepo, &mbranch, &mbase_ref)
                     .and_then(|_| worktree_add(&mrepo, &target, &["worktree", "add", target.to_str().unwrap(), &mbranch]))
             }
             .map_err(|e| format!("member {dir_name} worktree add failed: {e}"))?;
@@ -12100,7 +12113,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
                     .map_err(|e| format!("host worktree add: {e}"))?;
             } else {
                 let host_base_ref = resolve_base_ref(&repo, &host_base);
-                git(&["branch", "--no-track", &host_branch, &host_base_ref], &repo)
+                git_branch_new(&repo, &host_branch, &host_base_ref)
                     .map_err(|e| format!("recreate host branch: {e}"))?;
                 worktree_add(&repo, &wt_path, &["worktree", "add", wt_path.to_str().unwrap(), &host_branch])
                     .map_err(|e| format!("host worktree add: {e}"))?;
@@ -12141,7 +12154,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
                         let branch_exists = git(&["rev-parse", "--verify", &m.branch], &mr_path).is_ok();
                         if !branch_exists {
                             let mbase_ref = resolve_base_ref(&mr_path, &base_branch);
-                            let _ = git(&["branch", "--no-track", &m.branch, &mbase_ref], &mr_path);
+                            let _ = git_branch_new(&mr_path, &m.branch, &mbase_ref);
                         }
                         let _ = worktree_add(&mr_path, Path::new(&m.path), &["worktree", "add", &m.path, &m.branch]);
                         // Same per-member copy creation does. Legacy records
@@ -34324,6 +34337,19 @@ mod tests {
         // on it anyway; failing here keeps the error about the ref the user
         // typed instead of about git plumbing.
         assert_eq!(try_resolve_base_ref(repo, "HEAD^{tree}"), None);
+    }
+
+    #[test]
+    fn branching_in_a_repo_with_no_commits_says_so() {
+        let dir = tempdir().unwrap();
+        git(&["init", "-q"], dir.path()).unwrap();
+        let e = git_branch_new(dir.path(), "feat", "HEAD").unwrap_err().to_string();
+        assert!(e.contains("has no commits yet"), "{e}");
+        // A repo with commits keeps git's own error for a bad base.
+        git_init_with_commit(dir.path());
+        let e = git_branch_new(dir.path(), "feat", "nope").unwrap_err().to_string();
+        assert!(!e.contains("no commits yet"), "{e}");
+        assert!(git_branch_new(dir.path(), "feat", "HEAD").is_ok());
     }
 
     #[test]
