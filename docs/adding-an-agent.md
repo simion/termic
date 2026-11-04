@@ -356,7 +356,7 @@ four schemas, pick by how the agent loads hooks, not by what looks similar:
 |---|---|---|
 | `ClaudeCompatible` | claude, codex, devin, grok, muse | a `hooks.<Event>[] = {hooks:[…]}` map merged into the agent's config (grok and muse into a file of termic's own) |
 | `AntigravityNamed` | agy | one named key in `config/hooks.json` |
-| `PluginFile` | opencode, pi | one in-process module in a directory the agent autoloads; install is a write, removal a delete |
+| `PluginFile` | opencode, pi, omp | one in-process module in a directory the agent autoloads; install is a write, removal a delete. Extra files beside it (opencode 2's TUI plugin directory) come from `plugin_companions` and share that lifecycle |
 | `CopilotFile` | copilot | the agent's NATIVE hook file, whole, in a directory it loads every `*.json` from |
 
 A plugin file is written whole on every install, and must never pass through
@@ -368,6 +368,10 @@ An in-process plugin (opencode, pi) is the easiest transport there is when it
 exists: it sees the agent's own env, needs no script per event, and can read
 state a hook payload never carries (pi's `ctx.getContextUsage()`, opencode's
 message tokens). Wrap every handler, since a throw lands in the agent.
+First check WHICH process "in-process" means: opencode 2 runs server plugins
+in a shared background service whose env is not the task's, so its reporting
+had to move to the TUI (docs/gotchas.md "An agent's plugin process may not be
+the process termic spawned").
 
 **Look at what the agent says on its OWN, with hooks installed.** Three
 agents rang the wrong bell with a correct install (docs/agent-hooks.md "An

@@ -264,7 +264,7 @@
       "work_done": true,
       "kind": "agent",
       "post_launch_capture": {
-        "command": "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1"
+        "command": "opencode session list | awk '/^ses_/ { print $1; exit }'"
       }
     },
     {

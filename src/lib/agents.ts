@@ -223,7 +223,9 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
     post_launch_capture: {
       // Run on first PTY exit when no session ID is stored yet. stdout
       // (trimmed) becomes the tab's resume session ID for subsequent spawns.
-      command: "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1",
+      // awk, not `cut -d' '`: opencode 2 separates the columns with tabs.
+      // KEEP IN SYNC with `OPENCODE_CAPTURE` in lib.rs.
+      command: "opencode session list | awk '/^ses_/ { print $1; exit }'",
     },
   },
   // Muse Code (Meta). Mirrors the Rust seeded default in lib.rs; the two

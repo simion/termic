@@ -40,7 +40,8 @@ target.
 | claude | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop`, guarded on the `background_tasks` whitelist, which REPORTS what it holds for (see Delegated work) | none exists |
 | grok | not measured | `UserPromptSubmit`, `PreToolUse` | `Notification` | `Stop` + `StopCancelled`, `Stop` guarded on `backgroundTasks` (see Delegated work) | `StopCancelled` |
 | agy | not measured | `PreInvocation` | none exists (see below) | `Stop`, guarded on `fullyIdle`, which reports an unlabelled hold | none exists |
-| opencode | not measured | `chat.message`, `permission.replied` | `permission.asked` | `session.idle` | `session.idle`, on the SECOND escape |
+| opencode 1 | not measured | `chat.message`, `permission.replied` | `permission.asked` | the final assistant `message.updated`, `session.idle` as the backstop | `session.idle`, on the SECOND escape |
+| opencode 2 (read from 2.2.5 source, not measured) | none | `session.execution.started` on a root, `permission.replied`, `form.replied` / `form.cancelled` | `permission.asked`, `form.created` | `session.execution.succeeded` / `.failed` on a root, held while a direct subagent runs | `session.execution.interrupted` |
 | codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | none: the `Action Required` title (see below) | `Stop` | none exists |
 | devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
 | copilot | none (trust dialog precedes `sessionStart`) | `userPromptSubmitted`, `preToolUse`, `postToolUse` | `permissionRequest` | `agentStop` | none exists |
@@ -103,6 +104,8 @@ Three install shapes are new with copilot, pi and muse (GH #277 follow-up):
     mechanism the runbook forbids when a unified one exists. Rejected;
     this paragraph is the record so nobody re-investigates.
 - **muse** needs its MANAGED hook file, see below.
+- **opencode 2** gets a second file, see "opencode 2" below. The module
+  both versions load stays `~/.config/opencode/plugins/termic.js`.
 
 **Ready is the only signal that is not a correction.** Everything else here
 replaces a state the terminal reports WRONG. Ready reports one the terminal
@@ -566,6 +569,72 @@ Give a pty a window size before probing a TUI. Two earlier probes concluded agy
 emits nothing at all, and both were invalid: without `TIOCSWINSZ` agy never
 finishes booting, so the probe was typing into a splash screen.
 
+## opencode 2 reports from its TUI, because its server is not this task's
+
+opencode 2 (`@opencode/cli`, 2.x; opencode 1 is still `opencode-ai` on npm and
+is what the Docker image installs) rebuilt plugins, and three things broke the
+opencode 1 plugin at once. Everything in this section was READ out of the
+2.2.5 source, not measured on a live binary: re-measure before trusting a
+detail, and fix this section when it disagrees.
+
+1. **The loader refuses the old module.** A server plugin must default-export
+   `{ id, setup }` or `{ id, effect }`; a module with only named exports fails
+   with "Plugin must export a default definition with an id and an effect or
+   setup function" (`core/src/plugin/module.ts`). It still auto-discovers a
+   top-level `plugins/*.js` file, so our file is loaded and rejected.
+2. **Server plugins do not run in the process termic spawned.** The `opencode`
+   TUI connects to a background service (`opencode serve --service`), one per
+   machine, shared by every client and the desktop app, and spawns it if none
+   is running: detached, with `{...process.env}` of the client that started it
+   (`client/src/service-contender.ts`). That service's `$TERMIC_PTY` is
+   whichever task launched opencode first, or nothing. A server plugin there
+   would write every task's state into one task's terminal.
+3. **Every event changed.** `chat.message`, `chat.params`, `message.updated`
+   and `message.part.delta` are gone.
+
+So the one module now carries both: `export default { id: "termic", server,
+setup() {} }`. opencode 1's `readV1Plugin` (1.18.31 and 1.19.5) runs
+`default.server`, the old hooks; opencode 2 strips the unknown `server` key
+(Effect Schema's default `onExcessProperty: "ignore"`) and runs a `setup` that
+does nothing. No named export, because opencode 1's fallback registers every
+export it finds.
+
+The reporting is `plugins/termic/tui.js`, a TUI plugin. opencode 2 discovers
+TUI plugins only as DIRECTORIES under `plugins/`, resolves `tui` by its
+conventional name without a package.json, and its server skips a directory
+with no `server` / `index` entry. opencode 1 globs `{plugin,plugins}/*.{ts,js}`
+one level deep and never sees it. The TUI is the process termic spawned, so
+its env and its terminal are this task's.
+
+**The event stream is not this task's either.** The TUI's `data.on` carries
+events "across all server locations": other tasks' sessions, the desktop
+app's. A root session becomes this tab's the first time this TUI shows it (its
+route, or one of its tabs) and stays this tab's after the user navigates away,
+so a running turn's done is not dropped. A subagent belongs to its root,
+through `session.created`'s `parentID` or the TUI's store. Heartbeats only
+extend a turn already known to be this tab's, so another task's token stream
+costs a map lookup.
+
+The edges are the ones opencode's own notifications plugin rings on
+(`tui/src/feature-plugins/system/notifications.ts`): working on a root's
+`session.execution.started`; attention on `permission.asked` and
+`form.created` (the question tool), released exactly by `permission.replied`,
+`form.replied` and `form.cancelled`; done on a root's `.succeeded`, `.failed`
+or `.interrupted`. A root that succeeds while a direct subagent still runs is
+not done, because the subagent's report wakes it again. With several of this
+TUI's sessions running, done waits for the last. The context window is the
+footer's formula (`tui/src/util/session.ts`): the last step's input + output
++ reasoning + cache read + cache write, over the model's `limit.context`.
+
+Known gaps, all from the same shared service and none fixed here:
+
+- **Accounts.** termic moves an opencode login with `XDG_DATA_HOME`, but the
+  service registers itself under `XDG_STATE_HOME`, which termic does not
+  move. A second account's tab can connect to a service started with the
+  first account's environment.
+- **Sandbox.** Tools run in the service (`core/src/session/model-request.ts`),
+  not in the PTY termic wrapped in `sandbox-exec`. See docs/sandbox.md.
+
 ## Transport
 
 Every agent writes one OSC to the terminal termic handed it. Three targets,
@@ -900,7 +969,8 @@ a completion, so it earns no badge and spends no done token.
 
 Three shapes: claude-compatible JSON (claude, grok), Antigravity's named-block
 shape with tool events grouped under a matcher and the rest direct (agy), and a
-generated JS plugin (opencode). Paths are in `settings_rel`; agy's LIVE path is
+generated JS plugin (opencode, plus opencode 2's `plugins/termic/tui.js` from
+`plugin_companions`). Paths are in `settings_rel`; agy's LIVE path is
 `config/hooks.json` (`antigravity-cli/hooks.json` parses, logs "loaded 1 named
 hooks", and executes nothing).
 
@@ -1013,7 +1083,8 @@ tokens/window.
 | copilot | status line (`~/.copilot/settings.json`) | `current_context_tokens` over `displayed_context_limit`. NOT `total_input_tokens`, which is the whole session's, and `context_window_size` is null on the `auto` model |
 | grok | status line (`[ui.status_line]` in `~/.grok/config.toml`) | `context_tokens` over `context_window_size` (`session_input_tokens` only grows) |
 | codex | `Stop` hook | `transcript_path` is the rollout; its last `token_count` has `last_token_usage.total_tokens` and `model_context_window`. The percent is codex's own, with its 12000-token baseline reserved (`codex-rs/protocol`), so plain tokens/window would disagree with the TUI |
-| opencode | plugin | the last assistant `message.updated` with output: input + output + reasoning + cache read + write, over the model's `limit.context` from `chat.params` (the TUI's formula, read out of 1.18.31) |
+| opencode 1 | plugin | the last assistant `message.updated` with output: input + output + reasoning + cache read + write, over the model's `limit.context` from `chat.params` (the TUI's formula, read out of 1.18.31) |
+| opencode 2 | TUI plugin | `session.step.ended`'s `tokens`, same sum, over `limit.context` of the model `session.step.started` named, from the session location's model list (the footer's formula, read from the 2.2.5 source) |
 | pi | extension | `ctx.getContextUsage()`, pi's own footer figure |
 | omp | extension | `ctx.getContextUsage()` — the identical `{tokens, contextWindow, percent}` shape pi reports (measured: `{tokens: 5788, contextWindow: 1000000, percent: 0.5788}`) |
 | devin | read at turn end | nothing live: no status line, no token count in any hook. `num_tokens_preceding` of the last assistant node in `cli/sessions.db`, over `max_context_tokens` from `devin models list` (`agent_context_devin`) |
