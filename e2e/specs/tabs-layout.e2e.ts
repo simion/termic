@@ -1024,26 +1024,30 @@ describe("split pane", () => {
       return walk(tree);
     }, taskId);
 
+  // Scoped to this task: every visited task stays mounted, and each strip's
+  // toggle splits ITS task, so the first match in the document can split a
+  // task left over from an earlier spec file and leave this one unsplit.
   const clickSplit = async (lucideClass: string, label: string) => {
+    await ensureActiveTask(taskId);
     // Wait for the toggle to render (the tab strip mounts async after the task
     // becomes active, and is slower under full-suite load).
     await browser.waitUntil(
       () =>
         browser.execute(
-          (cls) =>
-            [...document.querySelectorAll("button")].some((b) =>
+          (cls, id) =>
+            [...document.querySelectorAll(`[data-task-id="${id}"] button`)].some((b) =>
               b.querySelector(`svg.${cls}`),
             ),
-          lucideClass,
+          lucideClass, taskId,
         ),
       { timeout: 10_000, timeoutMsg: `${label} toggle never appeared` },
     );
-    await browser.execute((cls) => {
-      const btn = [...document.querySelectorAll("button")].find((b) =>
+    await browser.execute((cls, id) => {
+      const btn = [...document.querySelectorAll(`[data-task-id="${id}"] button`)].find((b) =>
         b.querySelector(`svg.${cls}`),
       );
       (btn as HTMLElement).click();
-    }, lucideClass);
+    }, lucideClass, taskId);
   };
 
   it("starts unsplit", async () => {

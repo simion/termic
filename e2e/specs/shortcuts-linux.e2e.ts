@@ -312,21 +312,24 @@ const ptyBytes = () => browser.execute(() => {
     const original = await browser.execute(
       (id) => window.__termic!.ipc.taskFileRead(id, "README.md"), taskId,
     ) as unknown as string;
-    const README = '[data-path="README.md"]';
+    // scoped: a task left mounted by an earlier spec file has its own
+    // README row, and opening that one switches the active task away.
+    const README = `[data-task-id="${taskId}"] [data-path="README.md"]`;
+    const EDITOR = `[data-task-id="${taskId}"] .cm-content`;
     await browser.waitUntil(
       () => browser.execute((sel) => !!document.querySelector(sel), README),
       { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" },
     );
     await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), README);
     await browser.waitUntil(
-      () => browser.execute(() => !!document.querySelector(".cm-content")),
+      () => browser.execute((sel) => !!document.querySelector(sel), EDITOR),
       { timeout: 10_000, timeoutMsg: "the editor never opened README" },
     );
     try {
-      await clickFor(".cm-content");
+      await clickFor(EDITOR);
       press([], "q"); press([], "z"); press([], "q");
       await browser.waitUntil(
-        () => browser.execute(() => (document.querySelector(".cm-content")?.textContent ?? "").includes("qzq")),
+        () => browser.execute((sel) => (document.querySelector(sel)?.textContent ?? "").includes("qzq"), EDITOR),
         { timeout: 5_000, timeoutMsg: "keys typed into the editor never appeared in it" },
       );
       press(["Control_L"], "s");
@@ -605,7 +608,9 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
       { timeout: 5_000, timeoutMsg: "the split never produced a second pane" });
   };
   const openReadme = async () => {
-    const README = '[data-path="README.md"]';
+    // scoped: a task left mounted by an earlier spec file has its own
+    // README row, and opening that one switches the active task away.
+    const README = `[data-task-id="${a}"] [data-path="README.md"]`;
     await browser.waitUntil(() => browser.execute((sel) => !!document.querySelector(sel), README),
       { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" });
     await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), README);

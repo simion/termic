@@ -60,8 +60,12 @@ export function useTabStripDrag(opts: {
     // no close button), so don't offer a highlight that would no-op.
     if (!currentPaneId && stripTabsRef.current.length <= 1) return null;
     const raw = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    // scoped to this task: every visited task stays mounted, and a hidden
+    // task's main pane measures 0x0, which reads as "center" and turned an
+    // edge drop on main into nothing at all.
+    const scope = `[data-task-id="${CSS.escape(taskId)}"]`;
     const paneHighlight = (id: string) =>
-      document.querySelector(`[data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+      document.querySelector(`${scope} [data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
     const zoneOf = (el: HTMLElement | null): DropZone =>
       el ? detectDropZone(el.getBoundingClientRect(), clientX, clientY) : "center";
 
@@ -75,7 +79,7 @@ export function useTabStripDrag(opts: {
         if (paneId) zone = zoneOf(paneHighlight(paneId));
       } else if (onDropToSplit && raw?.closest("[data-main-content]")) {
         // Over the main pane's own surface: an edge proposes splitting main.
-        const el = document.querySelector("[data-main-content][data-split-leaf]") as HTMLElement | null;
+        const el = document.querySelector(`${scope} [data-main-content][data-split-leaf]`) as HTMLElement | null;
         const z = zoneOf(el);
         return z === "center" ? null : { el, toPaneId: null, zone: z };
       }
