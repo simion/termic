@@ -4,6 +4,28 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.21.0] - 2026-11-05
+
+Turn a plain folder into a git repo, bind mouse buttons, a full-width markdown preview.
+
+### Features
+- Add project: a folder that is not a git repository can be made one right there (git init and an empty first commit), so its tasks get their own branches ([#443](https://github.com/simion/termic/issues/443)).
+- Shortcuts: the mouse back and forward buttons can be bound to any command in Settings, Shortcuts, with or without modifier keys ([#442](https://github.com/simion/termic/issues/442)).
+- Markdown preview: text runs the full width of the pane by default. Readable, Wide and Narrow are still under Aa.
+- The new-task menu keeps anything you used in the last 7 days at the top level, up from 5.
+- The command palette's Recent section remembers commands for 8 hours, up from 1.
+- Set syntax lists Markdown, Plain Text, YAML, JSON and Shell first.
+- Every Rust panic is written to `logs/panic.log` in the app data folder, so a crash can be traced back to what caused it ([#439](https://github.com/simion/termic/issues/439)).
+- Install on macOS or Linux with one command: `curl -fsSL https://termic.dev/install.sh | sh`.
+
+### Bug fixes
+- Agents installed under nvm and similar no longer go missing from New Task when the login shell is slow to start ([#441](https://github.com/simion/termic/issues/441)).
+- Creating a task in a repo with no commits says to make a first commit, instead of showing git's error ([#443](https://github.com/simion/termic/issues/443)).
+- A task created from an existing PR no longer gets the new-PR highlight on its badge.
+- The task keys (⌥⌘↑/↓, ⌥↑/↓ and the waiting jump) walk the sidebar's rows in order, task groups included.
+- macOS: the font list no longer takes an hour and gigabytes of memory with a very large font collection installed, such as Sarasa Gothic ([#444](https://github.com/simion/termic/pull/444)).
+- Settings, Shortcuts: rows without a description no longer show a raw translation key.
+
 ## [1.20.0] - 2026-10-28
 
 Review markdown in the preview, pick Todos projects, keep the display on.

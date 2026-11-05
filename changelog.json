@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.21.0",
+      "date": "2026-11-05",
+      "summary": "Turn a plain folder into a git repo, bind mouse buttons, a full-width markdown preview."
+    },
+    {
       "version": "1.20.0",
       "date": "2026-10-28",
       "summary": "Review markdown in the preview, pick Todos projects, keep the display on."
