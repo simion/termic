@@ -170,6 +170,11 @@ describe("editor open", () => {
   });
 
   it("sets the preview at 16px / 1.6 with a 72ch measure, same for an h1 as for a paragraph", async () => {
+    // The default measure is Full; Readable is the one with a ch measure to check.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setMarkdownReader({ measure: "readable" }));
+    await browser.waitUntil(() => browser.execute(() => [...document.querySelectorAll<HTMLElement>(".markdown-body")]
+      .some((el) => el.getBoundingClientRect().width > 0 && el.style.getPropertyValue("--md-measure") === "72ch")),
+    { timeout: 5_000, timeoutMsg: "the Readable measure never reached the preview" });
     const m = await browser.execute(() => {
       const host = [...document.querySelectorAll(".markdown-body")]
         .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
@@ -197,6 +202,7 @@ describe("editor open", () => {
     expect({ size: m.size, lh: m.lh, max: m.max }).toEqual({ size: "16px", lh: "25.6px", max: "none" });
     expect(m.h1Max).toBe(m.pMax);
     expect(Math.abs(m.pMax - m.ch72)).toBeLessThanOrEqual(2);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setMarkdownReader({ measure: "full" }));
   });
 
   it("previews a markdown file outside the task, and follows its relative links", async () => {

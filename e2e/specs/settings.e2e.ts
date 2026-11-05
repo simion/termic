@@ -2748,6 +2748,8 @@ describe("search everywhere chord", () => {
     await browser.execute((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), ROW);
     await snap("shortcut-mouse-recorded.png");
 
+    // The command needs an active task, and this spec has none of its own.
+    const tid = await openTask("e2e-mouse-shortcut");
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await side(3);
     // Back is not bound: nothing opens. The handler runs inside the dispatch,
@@ -2756,6 +2758,7 @@ describe("search everywhere chord", () => {
     await side(4);
     await waitVisible('[data-testid="search-everywhere"]');
     await browser.execute(() => window.__termic!.useUI.getState().closeSearchEverywhere());
+    await archiveTask(tid);
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
     await waitVisible(RECORDER);
   });
