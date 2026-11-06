@@ -2358,6 +2358,59 @@ describe("default tasks path", () => {
     await setProjectTasksPath("");
   });
 
+  // The same guard when the check is SLOW. The save fires 500ms after the
+  // last keystroke and the conflict check answers after its own 300ms debounce
+  // plus an IPC round trip; on a loaded machine that answer came after the
+  // save, which read "no conflicts" from a check still running and wrote `.`.
+  // Delaying the command at `fetch` (where a Tauri command leaves the page;
+  // `__TAURI_INTERNALS__.invoke` cannot be replaced) makes that order certain.
+  it("does not persist a repo-swallowing override while its check is still running", async () => {
+    await setProjectTasksPath("");
+    await browser.execute(() => {
+      const w = window as unknown as { __slowConflicts?: boolean; __slowConflictsRig?: boolean };
+      w.__slowConflicts = true;
+      if (w.__slowConflictsRig) return;
+      w.__slowConflictsRig = true;
+      const real = window.fetch;
+      window.fetch = async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+        const url = String((input as Request).url ?? input);
+        if (w.__slowConflicts && url.endsWith("/tasks_path_conflicts")) {
+          await new Promise(r => setTimeout(r, 1_500));
+        }
+        return real.call(this, input, init);
+      } as typeof window.fetch;
+    });
+    try {
+      await browser.execute(
+        (id) => window.__termic!.useApp.getState().openSettings("repositories", id), projectId,
+      );
+      await waitVisible('[data-repo-tab="advanced"]');
+      await browser.execute(() =>
+        (document.querySelector('[data-repo-tab="advanced"]') as HTMLElement).click(),
+      );
+      await waitVisible('[data-testid="project-tasks-path-input"]');
+      await browser.execute(() => {
+        const input = document.querySelector('[data-testid="project-tasks-path-input"]') as HTMLInputElement;
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, ".");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const stored = () => browser.execute(
+        (id) => window.__termic!.useApp.getState().projects.find((p: any) => p.id === id)?.tasks_path ?? null,
+        projectId,
+      );
+      // The verdict arrives at ~1.8s; the unguarded save fired at 500ms.
+      await waitVisible('[data-testid="project-tasks-path-conflict"]', 8_000);
+      // Inverted wait, as above: timing out IS the pass.
+      await expect(
+        browser.waitUntil(async () => (await stored()) === ".", { timeout: 2_500 }),
+      ).rejects.toThrow();
+      expect(await stored()).toBe("");
+    } finally {
+      await browser.execute(() => { (window as unknown as { __slowConflicts?: boolean }).__slowConflicts = false; });
+      await setProjectTasksPath("");
+    }
+  });
+
   // The global field itself: it carries a REAL value (not a placeholder), and
   // the preview under it flips between the two halves of the rule as you type.
   // Emptying it is a validation error, since the setting is required.

@@ -217,13 +217,16 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // `draftTasksPath` is a primitive derived from `draft`, so this does not
   // re-fire on every unrelated keystroke in the section.
   const draftTasksPath = draft?.tasks_path.trim() ?? "";
-  const tasksPathInvalid = useTasksPathConflicts(
+  const tasksPathCheck = useTasksPathConflicts(
     onMoreTab ? draftTasksPath : "", projectId,
-  ).names.length > 0;
-  // The debounced save closes over the render that scheduled it, so it needs a
-  // ref to read the CURRENT verdict rather than the one from 500ms ago.
+  );
+  const tasksPathInvalid = tasksPathCheck.names.length > 0;
+  // The debounced save closes over the render that scheduled it, so it needs
+  // refs to read the CURRENT verdict rather than the one from 500ms ago.
   const tasksPathInvalidRef = useRef(false);
   tasksPathInvalidRef.current = tasksPathInvalid;
+  const tasksPathCheckingRef = useRef(false);
+  tasksPathCheckingRef.current = tasksPathCheck.checking;
 
   if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("repo.notFound")}</div>;
 
@@ -313,7 +316,15 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       const next = { ...d, [k]: v };
       // Debounce the actual save — coalesces rapid keystrokes.
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(() => {
+      const fire = () => {
+        // The conflict check is async (its own 300ms debounce, then an IPC
+        // round trip), so at 500ms it may not have answered for this value
+        // yet, and "no conflicts" from a check still running is not an
+        // all-clear. Wait for the verdict. A new keystroke clears this timer.
+        if (tasksPathCheckingRef.current) {
+          saveTimer.current = window.setTimeout(fire, 100) as unknown as number;
+          return;
+        }
         // Don't persist a tasks path that resolves onto the repo. The field is
         // already flagged; writing it would leave a broken value in
         // projects.json whose only other signal is a failed task create.
@@ -324,7 +335,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         // keystroke, which reschedules this.
         if (tasksPathInvalidRef.current) { setStatus("idle"); return; }
         void performSave(next);
-      }, 500) as unknown as number;
+      };
+      saveTimer.current = window.setTimeout(fire, 500) as unknown as number;
       return next;
     });
   }
