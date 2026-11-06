@@ -270,14 +270,31 @@ describe("caffeinate", () => {
         await clickWhenVisible('[data-testid="caffeinate-lid"]');
       }
       await clickWhenVisible(APPLY);
-      await browser.waitUntil(async () => await browser.execute(() => document.querySelector('[data-testid="caffeinate-lid-status"]')?.getAttribute("data-active") === "true"));
+      // Flaked once in a full local run and never alone: when it times out,
+      // say what the panel showed (the lid row is gone if the guard failed to
+      // start, and the error line says why).
+      await browser.waitUntil(async () => await browser.execute(() => document.querySelector('[data-testid="caffeinate-lid-status"]')?.getAttribute("data-active") === "true"))
+        .catch(async () => {
+          const seen = await browser.execute((e) => ({
+            lid: document.querySelector('[data-testid="caffeinate-lid-status"]')?.getAttribute("data-active") ?? "<no lid row>",
+            error: document.querySelector(e)?.textContent ?? "",
+            mode: document.querySelector('[data-testid="caffeinate-trigger"]')?.getAttribute("data-mode"),
+          }), ERROR);
+          throw new Error(`the lid guard never went active: ${JSON.stringify(seen)}`);
+        });
       writeFileSync(revoked, "");
       await clickWhenVisible(STOP);
       await waitVisible('[data-testid="caffeinate-restore"]');
       expect(await text(ERROR)).toContain("Restore normal sleep");
       expect(existsSync(path.join(dataDir, "caffeinate-lid.json"))).toBe(true);
       await clickWhenVisible('[data-testid="caffeinate-restore"]');
-      await waitGone('[data-testid="caffeinate-restore"]');
+      // Also flaked once in a full run: say what the panel and the journal
+      // files looked like if the restore never cleared.
+      await waitGone('[data-testid="caffeinate-restore"]').catch(async (e) => {
+        const error = await text(ERROR);
+        throw new Error(`${(e as Error).message}; error line: ${JSON.stringify(error)}; ` +
+          `needs-approval file: ${existsSync(revoked)}; journal: ${existsSync(path.join(dataDir, "caffeinate-lid.json"))}`);
+      });
       expect(existsSync(revoked)).toBe(false);
       expect(existsSync(path.join(dataDir, "caffeinate-lid.json"))).toBe(false);
     } finally { rmSync(revoked, { force: true }); }

@@ -2581,9 +2581,11 @@ describe("a claude session that moves after /clear is the one resumed", () => {
     await waitTabInFront(id, tabId);
     const idx = tabIds.indexOf(tabId);
     const before = (await sessions(id))[idx].lastInputAt;
-    const ok = await browser.execute((t, text) => {
-      const host = document.querySelector(`[data-task-id="${t}"]`);
-      const ta = [...(host?.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea") ?? [])]
+    const ok = await browser.execute((t, tb, text) => {
+      // This tab's own terminal: the stamp checked below is this tab's, and
+      // the first visible terminal in the task need not be it.
+      // `data-tab-id` is on the tab bar's button too: match the terminal under it.
+      const ta = [...document.querySelectorAll<HTMLTextAreaElement>(`[data-task-id="${t}"] [data-tab-id="${tb}"] .xterm-helper-textarea`)]
         .find(el => { const r = (el.closest(".xterm") ?? el).getBoundingClientRect(); return r.width > 0 && r.height > 0; });
       if (!ta) return false;
       ta.focus();
@@ -2592,10 +2594,13 @@ describe("a claude session that moves after /clear is the one resumed", () => {
         ta.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true } as KeyboardEventInit));
       }
       return true;
-    }, id, line);
+    }, id, tabId, line);
     expect(ok).toBe(true);
     await browser.waitUntil(async () => (await sessions(id))[idx].lastInputAt > before,
-      { timeout: 10_000, timeoutMsg: `tab ${idx} never took "${line}"` });
+      { timeout: 10_000 }).catch(async () => {
+        const stamps = (await sessions(id)).map(s => s.lastInputAt).join(" ");
+        throw new Error(`tab ${idx} never took "${line}" (every tab's lastInputAt: ${stamps}, was ${before})`);
+      });
   }
 
   after(async () => {
@@ -2756,6 +2761,38 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
   const waitPickerReady = (id: string, n: number) => browser.waitUntil(
     () => Promise.resolve(pickersReady(id) >= n),
     { timeout: 30_000, timeoutMsg: "the agent's picker never started listening" });
+  /** Lines the fixture's picker logged in `id` other than `<ready>`: what
+   *  it actually read from its terminal. */
+  const pickerReads = (id: string): number => {
+    try {
+      return readFileSync(join(dataDir, "e2e-picker.log"), "utf8").split("\n")
+        .filter(l => l.startsWith(id + "\t") && l !== `${id}\t<ready>`).length;
+    } catch { return 0; }
+  };
+  /**
+   * Write `bytes` to the picker in ONE pty write, and retry until it reads
+   * them. The picker logs `<ready>` the moment its process starts, which can
+   * be before the spawn's reply has put its pty id in the store, so a write
+   * right after that went to the PREVIOUS pty (the failed resume, already
+   * gone) and was lost with no error. Each retry re-reads the id. A write
+   * that did land is never repeated: the picker logs what it read at once.
+   */
+  const writeToPicker = async (id: string, bytes: number[]) => {
+    const readsBefore = pickerReads(id);
+    const deadline = Date.now() + 15_000;
+    for (let attempt = 1; ; attempt++) {
+      await browser.execute(async (t, b) => {
+        const ptyId = (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.ptyId;
+        await window.__termic!.ipc.ptyWrite(ptyId, b).catch(() => {});
+      }, id, bytes);
+      const landed = await browser.waitUntil(
+        () => Promise.resolve(pickerReads(id) > readsBefore),
+        { timeout: 1_500, interval: 100 },
+      ).then(() => true, () => false);
+      if (landed) return;
+      if (Date.now() > deadline) throw new Error(`the picker in ${id} never read the write (${attempt} attempts)`);
+    }
+  };
   const toasts = () => browser.execute(() =>
     (window.__termic!.useUI.getState().toasts as any[]).map(t => t.msg as string));
 
@@ -2806,11 +2843,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     // read a bare Enter as its first key, took it for "nothing picked" and
     // exited, and the text went to the fresh session that replaced it.
     const spawnsBefore = spawnArgv(id).length;
-    await browser.execute(async (t, line) => {
-      const st = window.__termic!.useApp.getState();
-      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
-      await window.__termic!.ipc.ptyWrite(ptyId, [...new TextEncoder().encode(line)]);
-    }, id, `pick ${PICKED}\r`);
+    await writeToPicker(id, [...new TextEncoder().encode(`pick ${PICKED}\r`)]);
     // On failure, say what the picker read and whether it was still the
     // picker: the terminal is a canvas and these two files are the story.
     const story = () => {
@@ -2841,11 +2874,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     // Leaving claude's picker is Esc alone, no Enter, which exits 1 with
     // nothing picked. Written to the pty directly: typing through xterm would
     // add the Enter that picking takes.
-    await browser.execute(async (t) => {
-      const st = window.__termic!.useApp.getState();
-      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
-      await window.__termic!.ipc.ptyWrite(ptyId, [27]);
-    }, id);
+    await writeToPicker(id, [27]);
     await waitSpawns(id, before + 3, "leaving the picker did not start a fresh session");
     const fresh = spawnArgv(id)[before + 2];
     expect(fresh).toContain("--session-id");
@@ -2892,11 +2921,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     // pick in one write. Typing it through xterm raced the new PTY (the
     // tab's old output made it look ready) and lost the keys.
     await waitPickerReady(id, pickersBefore + 1);
-    await browser.execute(async (t, line) => {
-      const st = window.__termic!.useApp.getState();
-      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
-      await window.__termic!.ipc.ptyWrite(ptyId, [...new TextEncoder().encode(line)]);
-    }, id, `pick ${theirs}\r`);
+    await writeToPicker(id, [...new TextEncoder().encode(`pick ${theirs}\r`)]);
     await browser.waitUntil(
       async () => (await toasts()).some(m => m.includes('belongs to "e2e-picker-sibling"')),
       { timeout: 10_000, timeoutMsg: "no toast named the task that owns the picked conversation" });

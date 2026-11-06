@@ -267,6 +267,17 @@ describe("drop a file from Finder onto a terminal", () => {
   });
 
   it("types nothing when dropped outside a terminal", async () => {
+    // The case above ends on the FIRST byte of the agent's echo, and the
+    // rest of it can still be arriving. Take the baseline once the terminal
+    // has been quiet for a moment, or that tail reads as a stray write.
+    // Polled every 500ms: quiet means two polls in a row saw the same stamp.
+    let last = await outputAt();
+    await browser.waitUntil(async () => {
+      const now = await outputAt();
+      const quiet = now === last;
+      last = now;
+      return quiet;
+    }, { timeout: 10_000, interval: 500, timeoutMsg: "the agent's output never settled" });
     const before = await outputAt();
     await emitDrag("drop", "sidebar", ["/tmp/termic e2e shot.png"]);
     // give a stray write the same window the positive case needed, then check.

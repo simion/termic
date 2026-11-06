@@ -122,7 +122,11 @@ describe("markdown preview edits", () => {
     );
     await key("s");
     await browser.waitUntil(() => disk().includes("tail"), { timeout: 5_000, timeoutMsg: "⌘S in the preview did not save" });
-    expect((await tab())?.dirty).toBe(false);
+    // The file is on disk before the save's reply clears the dirty dot, so
+    // wait for the dot rather than reading it the moment the bytes land.
+    await browser.waitUntil(async () => (await tab())?.dirty === false, {
+      timeout: 5_000, timeoutMsg: "the save never cleared the dirty dot",
+    });
   });
 
   it("double-clicking a block edits its source in place and saves it", async () => {
@@ -250,7 +254,10 @@ describe("markdown preview edits", () => {
     await browser.waitUntil(() => disk().includes("my typing"), { timeout: 5_000, timeoutMsg: "the save after Keep mine never wrote" });
     expect(disk()).not.toContain("agent two");
     expect(disk()).toBe(await mainCm());
-    expect((await tab())?.dirty).toBe(false);
+    // As above: the bytes land before the dirty dot clears.
+    await browser.waitUntil(async () => (await tab())?.dirty === false, {
+      timeout: 5_000, timeoutMsg: "the save after Keep mine never cleared the dirty dot",
+    });
   });
 
   it("two quick ticks both save, and the buffer ends clean", async () => {

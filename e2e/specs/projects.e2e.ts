@@ -1772,9 +1772,12 @@ describe("dashboard", () => {
 
     // Archiving moves the task to History, so the chip must not be left behind
     // offering a dead link.
+    const chip = `${RECENTS} [data-dashboard-recent-task-id="${taskId}"]`;
     await archiveTask(taskId);
     taskId = "";
-    await waitGone(RECENTS);
+    // Assert on THIS task's chip. The row as a whole stays whenever any other
+    // open task is in the recents, which is correct, and made this flaky.
+    await waitGone(chip);
   });
 });
 

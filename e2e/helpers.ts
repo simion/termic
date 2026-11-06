@@ -1191,15 +1191,22 @@ export async function submitToAgent(taskId: string, text: string): Promise<void>
     (id, line) => {
       const host = document.querySelector(`[data-task-id="${id}"]`);
       if (!host) return "task view is not mounted";
-      // Every visited task stays mounted and inactive tabs are display:none,
-      // so take the first terminal that actually has geometry.
-      const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")].find(
+      // Type into the AGENT tab's own terminal, the one whose lastInputAt is
+      // checked below, not the first visible terminal in the task: with a
+      // second tab or a footer shell those can differ, and the keys would go
+      // somewhere this check never looks.
+      // `data-tab-id` also marks the tab's button in the tab bar, so match
+      // the terminal UNDER any element carrying it, not the first element.
+      const agentTab = (window.__termic!.useApp.getState().tabs[id] ?? [])[0]?.id;
+      if (!agentTab) return "the task has no agent tab";
+      // Inactive tabs are display:none, so take a terminal with geometry.
+      const ta = [...host.querySelectorAll<HTMLTextAreaElement>(`[data-tab-id="${agentTab}"] .xterm-helper-textarea`)].find(
         (el) => {
           const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         },
       );
-      if (!ta) return "no visible terminal in the task view";
+      if (!ta) return "the agent tab's terminal is not visible";
       ta.focus();
       ta.dispatchEvent(
         new InputEvent("input", { inputType: "insertText", data: line, bubbles: true }),
@@ -1240,10 +1247,15 @@ export async function submitToAgent(taskId: string, text: string): Promise<void>
         )) > before,
       { timeout: 10_000, interval: 100 },
     )
-    .catch(() => {
+    .catch(async () => {
+      // Every tab's input stamp: if another one moved, the keys went there.
+      const stamps = await browser.execute(
+        (id) => ((window.__termic!.useApp.getState().tabs[id] ?? []) as { id: string; lastInputAt?: number }[]).map((t) => `${t.id.slice(0, 8)}=${t.lastInputAt ?? 0}`).join(" "),
+        taskId,
+      );
       throw new Error(
         `submit to ${taskId} was dispatched but xterm never forwarded it ` +
-          `(lastInputAt did not advance past ${before}). The terminal was not ` +
+          `(lastInputAt did not advance past ${before}; tabs: ${stamps}). The terminal was not ` +
           `ready for input — call waitForAgentReady() before submitting.`,
       );
     });
