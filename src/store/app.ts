@@ -86,7 +86,7 @@ interface View {
    *  and panel state all stay intact while it's open. */
   settingsOpen?: boolean;
   /** When the Settings overlay is open, which section is selected. */
-  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles" | "sync" | "mcp" | "peers";
+  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "secrets" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles" | "sync" | "mcp" | "peers";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
   /** DOM id to scroll into view + briefly highlight once the settings

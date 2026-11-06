@@ -172,17 +172,21 @@ describe("editor open", () => {
   it("sets the preview at 16px / 1.6 with a 72ch measure, same for an h1 as for a paragraph", async () => {
     // The default measure is Full; Readable is the one with a ch measure to check.
     await browser.execute(() => window.__termic!.usePrefs.getState().setMarkdownReader({ measure: "readable" }));
-    await browser.waitUntil(() => browser.execute(() => [...document.querySelectorAll<HTMLElement>(".markdown-body")]
-      .some((el) => el.getBoundingClientRect().width > 0 && el.style.getPropertyValue("--md-measure") === "72ch")),
+    await browser.waitUntil(() => browser.execute((id) => [...document.querySelectorAll<HTMLElement>(`[data-task-id="${id}"] .markdown-body`)]
+      .some((el) => el.getBoundingClientRect().width > 0 && el.style.getPropertyValue("--md-measure") === "72ch"), taskId),
     { timeout: 5_000, timeoutMsg: "the Readable measure never reached the preview" });
-    const m = await browser.execute(() => {
-      const host = [...document.querySelectorAll(".markdown-body")]
+    const m = await browser.execute((id) => {
+      // this task's README preview, not whichever preview comes first in the DOM
+      const host = [...document.querySelectorAll(`[data-task-id="${id}"] .markdown-body`)]
         .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
       const cs = getComputedStyle(host);
+      // 72 zeros in the host's own font: a probe inside it inherits that font
+      // exactly, where copying `font` onto one in <body> depends on how the
+      // engine serializes the shorthand
       const probe = document.createElement("span");
-      probe.style.font = cs.font;
+      probe.style.whiteSpace = "nowrap";
       probe.textContent = "0".repeat(72);
-      document.body.appendChild(probe);
+      host.appendChild(probe);
       const ch72 = probe.getBoundingClientRect().width;
       probe.remove();
       // the fixture README is a lone heading: a paragraph is probed beside it
@@ -192,14 +196,18 @@ describe("editor open", () => {
         size: cs.fontSize, lh: cs.lineHeight, max: cs.maxWidth,
         // the measure resolves in the BODY font, once (@property), so a 2em
         // heading is not given a measure twice as wide
+        pRaw: getComputedStyle(p).maxWidth,
         pMax: Math.round(parseFloat(getComputedStyle(p).maxWidth)),
         h1Max: Math.round(parseFloat(getComputedStyle(h1).maxWidth)),
         ch72: Math.round(ch72),
       };
       p.remove();
       return out;
-    });
+    }, taskId);
     expect({ size: m.size, lh: m.lh, max: m.max }).toEqual({ size: "16px", lh: "25.6px", max: "none" });
+    // a measure that fell back to 100% reads as "100%", and parseFloat makes
+    // that 100: name it, rather than fail on a width gap nobody can read
+    expect(m.pRaw).toMatch(/px$/);
     expect(m.h1Max).toBe(m.pMax);
     expect(Math.abs(m.pMax - m.ch72)).toBeLessThanOrEqual(2);
     await browser.execute(() => window.__termic!.usePrefs.getState().setMarkdownReader({ measure: "full" }));

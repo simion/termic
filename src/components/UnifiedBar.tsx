@@ -25,6 +25,7 @@ import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { effectiveSandboxMode } from "@/lib/types";
 import { taskLabel } from "@/lib/taskLabel";
 import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
+import { TaskRoleKey } from "@/components/secretsUi/RolePicker";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
@@ -344,6 +345,7 @@ export function UnifiedBar() {
                 </Button>
               </Tip>
             )}
+            <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />
             {(() => {
               if (task.docker_sandbox_enabled) {
                 return (

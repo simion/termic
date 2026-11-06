@@ -304,13 +304,14 @@ interface UIState {
    *  immediately on whatever image already exists) when the modal closes;
    *  DockerRebuildPromptDialog reads this and renders. */
   dockerRebuildPrompt: { taskName: string; lastBuiltDate: string | null; resolve: (choice: "rebuild" | "skip" | "always" | "background") => void } | null;
-  /** Tasks whose PTYs are about to be SIGKILL'd because the user
-   *  explicitly hit "Save & restart" on a config dialog (Sandbox or
-   *  Resume override). The next pty-exit for any PTY belonging to one of
-   *  these tasks will trigger an immediate respawn (the TerminalPane
-   *  checks the set on exit instead of showing the "Restart agent"
-   *  overlay). Cleared per-(task,tab) when the respawn fires. */
-  pendingPtyRestarts: Set<string>;
+  /** When each task last asked for its agents to restart (ms), because a
+   *  config dialog is about to SIGKILL them ("Save & restart"). An agent
+   *  PTY that exits having been spawned BEFORE that moment respawns instead
+   *  of showing the "Restart agent" overlay. A time, not a one-shot flag:
+   *  a task can have several agents, and the first exit used to take the
+   *  flag and leave the rest dead. Nothing clears it, since a PTY spawned
+   *  after the mark never matches it. */
+  pendingPtyRestarts: Record<string, number>;
   /** Sidebar task filter per project id (GH #324). Absent = unfiltered.
    *  Not persisted: a restart starts with every task visible. */
   taskFilters: Record<string, TaskFilter>;
@@ -478,9 +479,9 @@ interface UIState {
    *  it relaunches with the new settings (the Sandbox dialog before
    *  `task_set_sandbox`, the Resume override dialog before its kill). */
   markPendingPtyRestart: (taskId: string) => void;
-  /** Pop the marker — TerminalPane calls this after consuming a
-   *  pending restart so a SUBSEQUENT real exit shows the overlay. */
-  consumePendingPtyRestart: (taskId: string) => boolean;
+  /** Whether a PTY of this task spawned at `spawnedAt` was killed by a
+   *  requested restart (see pendingPtyRestarts). */
+  ptyRestartPending: (taskId: string, spawnedAt: number) => boolean;
   /** Push a transient toast. Returns its id (so callers can dismiss
    *  early if needed). Auto-dismiss is handled by <Toaster/>.
    *  `opts.action` adds a button (e.g. "Undo") whose click runs the
@@ -595,7 +596,7 @@ export const useUI = create<UIState>((set, get) => ({
   scratchSave: null,
   scratchExport: null,
   dockerRebuildPrompt: null,
-  pendingPtyRestarts: new Set<string>(),
+  pendingPtyRestarts: {},
   taskFilters: {},
   setTaskFilterText: (projectId, text) => set(s => patchTaskFilter(s.taskFilters, projectId, { text })),
   toggleTaskFilterBell: (projectId) => set(s =>
@@ -768,19 +769,8 @@ export const useUI = create<UIState>((set, get) => ({
     p?.resolve(choice);
     set({ dockerRebuildPrompt: null });
   },
-  markPendingPtyRestart: (taskId) => set(s => {
-    const next = new Set(s.pendingPtyRestarts);
-    next.add(taskId);
-    return { pendingPtyRestarts: next };
-  }),
-  consumePendingPtyRestart: (taskId) => {
-    const s = useUI.getState();
-    if (!s.pendingPtyRestarts.has(taskId)) return false;
-    const next = new Set(s.pendingPtyRestarts);
-    next.delete(taskId);
-    useUI.setState({ pendingPtyRestarts: next });
-    return true;
-  },
+  markPendingPtyRestart: (taskId) => set(s => ({ pendingPtyRestarts: { ...s.pendingPtyRestarts, [taskId]: Date.now() } })),
+  ptyRestartPending: (taskId, spawnedAt): boolean => (get().pendingPtyRestarts[taskId] ?? 0) >= spawnedAt,
   pushToast: (msg, kind = "success", opts) => {
     const id = crypto.randomUUID();
     set(s => ({ toasts: [...s.toasts, { id, msg, kind, action: opts?.action, ttlMs: opts?.ttlMs, sticky: opts?.sticky }] }));

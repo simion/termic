@@ -24,6 +24,9 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { SandboxPicker, KeychainBlockField } from "@/components/SandboxPicker";
+import { RolePicker, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
+import { useSecrets, ensureSecretsSync } from "@/store/secrets";
+import { roleDefault, roleToStore } from "@/lib/secretsUi";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { isTerminalCli, visibleCliIds, workDoneCapable, defaultCliFirst } from "@/lib/agents";
 import { settingsLoad } from "@/lib/ipc";
@@ -78,6 +81,13 @@ export function ScheduleDialog() {
   const [sbRw, setSbRw] = useState("");
   const [sbHosts, setSbHosts] = useState("");
   const [blockKc, setBlockKc] = useState(false);
+  // Secrets role for a NEW parent ("" = No secrets); its runs copy it
+  // (runSpecFromParent). Same coupling as New Task: a role turns the block
+  // on, and clearing the block or leaving Enforce clears the role.
+  const [rolePick, setRolePick] = useState("");
+  ensureSecretsSync();
+  const roles = useSecrets(s => s.roles);
+  const secretDefs = useSecrets(s => s.secrets);
   const [catchUp, setCatchUp] = useState(false);
   const [keepRuns, setKeepRuns] = useState(DEFAULT_KEEP_RUNS);
   const [reportDays, setReportDays] = useState<number | null>(DEFAULT_REPORT_DAYS);
@@ -121,7 +131,15 @@ export function ScheduleDialog() {
     setDockerSeeded(seeded === "docker");
     setSelection(seeded === "docker" ? null : seeded);
     setYolo(projectYoloDefault(p, usePrefs.getState().defaultYolo));
-    setBlockKc(false);
+    // a default role (project's, then the agent's) starts picked with the
+    // Keychain block it needs, as in New Task. Starting at "" read as an
+    // explicit No secrets once the block was ticked, overriding the default.
+    const role0 = roleDefault(p, agents.find(a => a.id === (cli || agentChoices[0]?.id)));
+    const sel0 = seeded === "docker" ? null : selectionToFields(seeded);
+    const roleOk0 = !!role0 && !!sel0 && !sel0.docker && (sel0.mode === "enforce" || sel0.mode === "enforce-fs")
+      && useSecrets.getState().roles.some(r => r.id === role0.id);
+    setBlockKc(roleOk0);
+    setRolePick(roleOk0 ? role0!.id : "");
     // Depends on the TARGET only: re-seeding when the task list moves would
     // throw away what the user typed.
   }, [target]);
@@ -152,6 +170,11 @@ export function ScheduleDialog() {
   const sandboxMode = selection ? selectionToFields(selection).mode : "off";
   // enforcing modes only, and only sent while shown (same rule as New Task).
   const kcRow = sandboxMode === "enforce" || sandboxMode === "enforce-fs";
+  const roleDef = roleDefault(project, agents.find(a => a.id === cli));
+  const roleDisabled = roleDisabledReason(t, { docker: false, mode: sandboxMode, seatbelt: SEATBELT_AVAILABLE });
+  const roleGate = kcRow && blockKc;
+  const pickRole = (id: string) => { setRolePick(id); if (id) setBlockKc(true); };
+  const chooseBlockKc = (v: boolean) => { setBlockKc(v); if (!v) setRolePick(""); };
   // The second column exists only while a Seatbelt mode is picked, so there
   // is no ghost width when the cage is off.
   const cage = newParent && sandboxMode !== "off";
@@ -191,7 +214,10 @@ export function ScheduleDialog() {
         const { mode } = selectionToFields(sel);
         const sandbox = mode === "off"
           ? { enabled: false, rwPaths: [], allowedHosts: [] }
-          : { enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts), blockKeychain: kcRow && blockKc };
+          : {
+              enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts), blockKeychain: kcRow && blockKc,
+              role: roleGate ? roleToStore(rolePick, roleDef) : null,
+            };
         await createSchedule({
           projectId,
           agent: {
@@ -377,13 +403,31 @@ export function ScheduleDialog() {
           <Field label={t("schedule.sandbox")}>
             <SandboxPicker
               value={selection}
-              onChange={s => { setSelection(s); setDockerSeeded(false); }}
+              onChange={s => {
+                setSelection(s); setDockerSeeded(false);
+                const m = selectionToFields(s).mode;
+                if (m !== "enforce" && m !== "enforce-fs") setRolePick("");
+              }}
               seatbeltUnavailable={!SEATBELT_AVAILABLE}
               dockerOffered={false}
               dockerUnavailableReason={t("schedule.dockerUnavailable")}
               compact
             />
-            {kcRow && <KeychainBlockField checked={blockKc} onChange={setBlockKc} compact />}
+            {kcRow && <KeychainBlockField checked={blockKc} onChange={chooseBlockKc} compact />}
+            {roles.length > 0 && (
+              <div className="mt-1">
+                <RolePicker
+                  roles={roles}
+                  secrets={secretDefs}
+                  value={roleGate ? rolePick : ""}
+                  onChange={withRoleCage(sandboxMode, m => { setSelection(m); setDockerSeeded(false); }, pickRole)}
+                  def={roleDef}
+                  disabledReason={roleDisabled}
+                  note={roleCageNote(t, { docker: false, mode: sandboxMode })}
+                  compact
+                />
+              </div>
+            )}
             {dockerSeeded && !selection && (
               <p className="text-[11.5px] text-[var(--color-warn)]" data-testid="schedule-docker-pick">{t("schedule.dockerPick")}</p>
             )}

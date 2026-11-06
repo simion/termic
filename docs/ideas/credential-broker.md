@@ -1,7 +1,13 @@
 # Credential broker
 
-**This is an IDEA, not a plan.** Nobody has committed to building it and
-it has no tracking issue.
+**Partly shipped.** The GitHub recipe (gh over its socket, git through
+the MITM proxy) and API key secrets (base URL and env proxy) are built;
+[sandbox.md](../sandbox.md) "Credential broker" is the reference for
+them, not this doc. What is still an idea, with no tracking issue: oras
+and registry tokens, AWS SigV4, Docker mode, other credential kinds, and
+rewriting credential-minting responses. The gh and git sections below are
+the original spikes, kept for their measurements. Resolved open
+questions are marked as such.
 
 Let an agent USE a credential without being able to SEE it. The agent's
 env holds a placeholder; Termic swaps in the real secret on the way out,
@@ -707,9 +713,8 @@ Older and adjacent:
   later Grant only flips broker state, or make Grant say "restart the
   agent to apply" like a sandbox allow. The first exposes which tools a
   role might reach in the agent's env, which is harmless.
-- **Two secrets for one host in a role** (e.g. two GitHub tokens) is
-  undefined. Proposal: one secret per host per role, enforced when the
-  role is saved.
+- **Two secrets for one host in a role.** Resolved: one secret per host
+  per role, enforced when the role is saved.
 - **Where secrets not in the Keychain come from.** gh and git already
   keep tokens in the Keychain, so a secret just points at their item.
   AWS keys usually live in `~/.aws/credentials` (which the cage already

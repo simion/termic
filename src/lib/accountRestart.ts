@@ -64,6 +64,18 @@ export function openSignInTab(taskId: string, agentId: string, account: string):
   return true;
 }
 
+/** Restart every running agent of a task in place (same respawn pattern as
+ *  below): what "Restart agents" after a role or sandbox change means. Plain
+ *  shell and Run tabs are left alone. Returns how many it restarted. */
+export function restartTaskAgents(taskId: string): number {
+  const tabs = (useApp.getState().tabs[taskId] ?? []) as TerminalTab[];
+  const ptys = tabs.filter(t => t.type === "terminal" && t.cli !== "shell" && !t.runTab && !!t.ptyId).map(t => t.ptyId!);
+  if (!ptys.length) return 0;
+  useUI.getState().markPendingPtyRestart(taskId);
+  for (const p of ptys) void ptyKill(p).catch(() => {});
+  return ptys.length;
+}
+
 /** The task's primary agent tab, which is the one an account switch is about. */
 export function primaryAgentTab(taskId: string, agentId: string): TerminalTab | undefined {
   const tabs = (useApp.getState().tabs[taskId] ?? []) as TerminalTab[];

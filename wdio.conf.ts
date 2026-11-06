@@ -83,6 +83,12 @@ export const config: WebdriverIO.Config = {
     // spec whose second machine is a fake in this process. Debug builds only
     // (src-tauri/src/peers.rs, Node::start).
     process.env.TERMIC_PEER_LOOPBACK = "1";
+    // a run launched from inside an agent tab inherits that agent's relocated
+    // login (agent_dirs.rs), and the app passes it to every fixture agent: they
+    // would read the developer's real login store, and the adopted-account
+    // case in credentials.e2e.ts sees a relocation that is not the app's.
+    // XDG_DATA_HOME is re-set below on Linux, after this.
+    for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "CURSOR_CONFIG_DIR", "GEMINI_CLI_HOME", "GROK_HOME", "XDG_DATA_HOME"]) delete process.env[k];
     // Windows: WebView2 keeps its profile (localStorage, so every pref) in a
     // folder named after the app identifier, NOT under TERMIC_DATA_DIR, and
     // runs one browser process per folder. Left alone, a run shares both with
@@ -122,6 +128,10 @@ export const config: WebdriverIO.Config = {
     // forced and the enable script is a stub (sudo_touchid.rs). Honoured only
     // by the `e2e`-feature binary.
     process.env.TERMIC_E2E_FAKE_SUDO = "1";
+    // A token-shaped var in the app's own environment, for the "Kept out of
+    // agents" list (secrets-settings.e2e.ts). Synthetic: the shape is a
+    // GitHub classic token, the characters spell out that it is not one.
+    process.env.TERMIC_E2E_FAKE_PAT = "ghp_" + "e2eFakeTokenNotReal0".repeat(2);
     // Purge accumulated tasks so every run starts lean (specs create their own;
     // archived tasks otherwise pile up across runs and bloat loadAll/sidebar).
     try {

@@ -57,12 +57,15 @@ trap 'set_title "✳ ${name}"; printf "\nFAKE-AGENT exiting\n"; exit 0' INT TERM
 # Guarded on TERMIC_DATA_DIR, which only the e2e/automation seam sets, so a
 # real run writes nothing.
 if [ -n "${TERMIC_DATA_DIR:-}" ]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' \
+  # TERMIC_E2E_FAKE_PAT logs only whether it arrived, never its value
+  # (the kept-out env case in secrets-settings.e2e.ts).
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${TERMIC_TASK_ID:-}" \
     "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-}" \
     "CODEX_HOME=${CODEX_HOME:-}" \
     "GEMINI_CLI_HOME=${GEMINI_CLI_HOME:-}" \
     "XDG_DATA_HOME=${XDG_DATA_HOME:-}" \
+    "TERMIC_E2E_FAKE_PAT=${TERMIC_E2E_FAKE_PAT:+set}" \
     >> "${TERMIC_DATA_DIR}/e2e-agent-login.log" 2>/dev/null || true
   # And the ARGV, for the same reason and with the same trick. The resume
   # block is composed frontend-side and only ever exists as a spawned
@@ -125,6 +128,8 @@ set_title "✳ ${name}"
 #   #hookdone   a plain hook turn that ENDS: 133;C then 133;D, nothing
 #               outstanding. What claude writes when its `Stop` payload has an
 #               empty `background_tasks`, and the only one of these that rings.
+#   #sh CMD     run CMD with bash inside the agent's cage and env, as a
+#               tool call would (the broker spec's gh-socket request).
 #   #bel        emit a REAL bell, distinct from the BEL that terminates an OSC.
 #   #iip        emit an inline PNG, then Pi's alternate-screen redraw.
 #   #hookattn   reproduce a claude PERMISSION PROMPT with termic's agent hook
@@ -293,6 +298,14 @@ while IFS= read -r line; do
     esac
   fi
   case "$line" in
+    "#sh "*)
+      # run a shell line as the agent would (inside its cage, with its env):
+      # the broker spec sends a request through gh's socket this way, so the
+      # peer check, the spawn dir's profile rules and the placeholder are the
+      # real ones. Its output goes to the canvas like any tool call's.
+      bash -c "${line#\#sh }"
+      set_title "✳ ${name}"
+      continue ;;
     "#pending "*)
       spin
       # Order matters: the status line must be the LAST thing painted, so it

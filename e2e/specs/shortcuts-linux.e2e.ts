@@ -312,21 +312,25 @@ const ptyBytes = () => browser.execute(() => {
     const original = await browser.execute(
       (id) => window.__termic!.ipc.taskFileRead(id, "README.md"), taskId,
     ) as unknown as string;
+    // not scoped by [data-task-id]: the file tree is the right panel's,
+    // outside every task mount, and it only ever shows the active task.
     const README = '[data-path="README.md"]';
+    // the editor IS inside the task mount, and hidden tasks keep theirs
+    const EDITOR = `[data-task-id="${taskId}"] .cm-content`;
     await browser.waitUntil(
       () => browser.execute((sel) => !!document.querySelector(sel), README),
       { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" },
     );
     await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), README);
     await browser.waitUntil(
-      () => browser.execute(() => !!document.querySelector(".cm-content")),
+      () => browser.execute((sel) => !!document.querySelector(sel), EDITOR),
       { timeout: 10_000, timeoutMsg: "the editor never opened README" },
     );
     try {
-      await clickFor(".cm-content");
+      await clickFor(EDITOR);
       press([], "q"); press([], "z"); press([], "q");
       await browser.waitUntil(
-        () => browser.execute(() => (document.querySelector(".cm-content")?.textContent ?? "").includes("qzq")),
+        () => browser.execute((sel) => (document.querySelector(sel)?.textContent ?? "").includes("qzq"), EDITOR),
         { timeout: 5_000, timeoutMsg: "keys typed into the editor never appeared in it" },
       );
       press(["Control_L"], "s");
@@ -605,6 +609,8 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
       { timeout: 5_000, timeoutMsg: "the split never produced a second pane" });
   };
   const openReadme = async () => {
+    // not scoped by [data-task-id]: the file tree is the right panel's,
+    // outside every task mount, and it only ever shows the active task.
     const README = '[data-path="README.md"]';
     await browser.waitUntil(() => browser.execute((sel) => !!document.querySelector(sel), README),
       { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" });
