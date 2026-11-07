@@ -1944,9 +1944,12 @@ const OPENCODE_TUI_REL: &str = "plugins/termic/tui.js";
 ///
 /// What it cannot assume: the event stream is the service's, "across all
 /// server locations", so it carries every other task's sessions and the desktop
-/// app's. A session moves this tab only once this TUI has shown it (its route
-/// or one of its tabs), and stays this tab's after the user navigates away, so
-/// a running turn's done is not dropped. A subagent belongs to its root.
+/// app's. A session moves this tab only once this TUI's route has shown it, and
+/// stays this tab's after the user navigates away, so a running turn's done is
+/// not dropped. Not its tab list: opencode 2 keeps one per directory
+/// (`tui/tabs.json` under `XDG_STATE_HOME`), shared by every TUI there, so two
+/// tasks in one folder each list the other's sessions. A subagent belongs to
+/// its root.
 ///
 /// The edges are opencode's own: its notifications plugin
 /// (`tui/src/feature-plugins/system/notifications.ts`) rings on exactly these
@@ -2037,17 +2040,15 @@ export default {{
 
     // The event stream is the shared service's, across every location it
     // serves: other termic tasks' sessions, the desktop app's. A root becomes
-    // this tab's once this TUI shows it, and stays this tab's.
+    // this tab's once this TUI's route shows it, and stays this tab's.
+    // Not its tab list: opencode keeps one list per directory, shared by every
+    // TUI there, so two tasks in one folder each list the other's sessions.
     const owned = new Set();
     const shown = (root) => {{
       try {{
         const r = ui?.router?.current?.();
-        if (r?.type === "session" && rootOf(r.sessionID) === root) return true;
-      }} catch {{}}
-      try {{
-        for (const t of ui?.tabs?.list?.() ?? []) if (rootOf(t.sessionID) === root) return true;
-      }} catch {{}}
-      return false;
+        return r?.type === "session" && rootOf(r.sessionID) === root;
+      }} catch {{ return false; }}
     }};
     const mine = (id) => {{
       if (typeof id !== "string" || !id) return false;
@@ -6635,9 +6636,16 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             await step("again", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
             await step("restart", () => emit("session.execution.started", { sessionID: "ses_a" }));
             await step("interrupted", () => emit("session.execution.interrupted", { sessionID: "ses_a", reason: "user" }));
-            // A session this TUI shows only as a tab is its own too.
-            tabs = [{ sessionID: "ses_t", active: false, busy: false, attention: false }];
-            await step("tab-start", () => emit("session.execution.started", { sessionID: "ses_t" }));
+            // A session only in the tab list is not this TUI's: opencode keeps
+            // one list per directory, shared by every TUI there, so it holds
+            // another task's sessions when two tasks share a folder.
+            tabs = [{ sessionID: "ses_u", active: false, busy: false, attention: false }];
+            await step("tab-only-start", () => emit("session.execution.started", { sessionID: "ses_u" }));
+            await step("tab-only-perm", () => emit("permission.asked", { id: "per_u", sessionID: "ses_u" }));
+            await step("tab-only-done", () => emit("session.execution.succeeded", { sessionID: "ses_u" }));
+            // Two of this TUI's own sessions at once: done waits for the last.
+            route = { type: "session", sessionID: "ses_t" };
+            await step("t-start", () => emit("session.execution.started", { sessionID: "ses_t" }));
             await step("a-start", () => emit("session.execution.started", { sessionID: "ses_a" }));
             await step("one-left", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
             await step("failed", () => emit("session.execution.failed", { sessionID: "ses_t", error: { type: "x", message: "m" } }));
@@ -6679,7 +6687,10 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert_eq!(at("again"), "", "one done per turn: {log}");
         assert_eq!(at("restart"), working, "{log}");
         assert_eq!(at("interrupted"), done, "{log}");
-        assert_eq!(at("tab-start"), working, "a tab is this TUI's session too: {log}");
+        assert_eq!(at("tab-only-start"), "", "a session only in the shared tab list moved this tab: {log}");
+        assert_eq!(at("tab-only-perm"), "", "a session only in the shared tab list rang here: {log}");
+        assert_eq!(at("tab-only-done"), "", "{log}");
+        assert_eq!(at("t-start"), working, "{log}");
         assert_eq!(at("a-start"), working, "{log}");
         assert_eq!(at("one-left"), "", "done while another of this tab's sessions runs: {log}");
         assert_eq!(at("failed"), done, "a failed execution ends the turn: {log}");

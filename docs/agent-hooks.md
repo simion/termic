@@ -608,9 +608,14 @@ its env and its terminal are this task's.
 
 **The event stream is not this task's either.** The TUI's `data.on` carries
 events "across all server locations": other tasks' sessions, the desktop
-app's. A root session becomes this tab's the first time this TUI shows it (its
-route, or one of its tabs) and stays this tab's after the user navigates away,
-so a running turn's done is not dropped. A subagent belongs to its root,
+app's. A root session becomes this tab's the first time this TUI's route shows
+it, and stays this tab's after the user navigates away, so a running turn's
+done is not dropped. The TUI's tab list does not count: opencode keeps one per
+directory (`tui/tabs.json` under `XDG_STATE_HOME`), shared by every TUI there,
+so two termic tasks in one folder each list the other's sessions, and claiming
+by tab made one task's tab spin for the other's turn (measured by hand on
+2.2.6). The cost is a session that runs in a restored tab nobody has opened
+yet: it reports once it is shown. A subagent belongs to its root,
 through `session.created`'s `parentID` or the TUI's store. Heartbeats only
 extend a turn already known to be this tab's, so another task's token stream
 costs a map lookup.
@@ -626,7 +631,8 @@ TUI's sessions running, done waits for the last. The context window is the
 footer's formula (`tui/src/util/session.ts`): the last step's input + output
 + reasoning + cache read + cache write, over the model's `limit.context`.
 
-Known gaps, all from the same shared service and none fixed here:
+Known gaps, all from what opencode 2 shares per machine (its service, its
+`XDG_STATE_HOME`) and none fixed here:
 
 - **Accounts.** termic moves an opencode login with `XDG_DATA_HOME`, but the
   service registers itself under `XDG_STATE_HOME`, which termic does not
@@ -634,6 +640,14 @@ Known gaps, all from the same shared service and none fixed here:
   first account's environment.
 - **Sandbox.** Tools run in the service (`core/src/session/model-request.ts`),
   not in the PTY termic wrapped in `sandbox-exec`. See docs/sandbox.md.
+- **Tabs in a shared folder.** Two termic tasks in one folder (a plain-folder
+  project, a multi-repo parent) show the same opencode tab bar, every
+  session of both tasks, because the list lives in
+  `XDG_STATE_HOME/opencode/<channel>/tui/tabs.json` per directory. termic no
+  longer claims by tab (above), but opening the other task's session there
+  makes both termic tabs follow it. Worktree tasks have their own folders and
+  are unaffected. A per-task `XDG_STATE_HOME` would split the list, and also
+  the service registration, so it belongs with the `--standalone` question.
 
 ## Transport
 
