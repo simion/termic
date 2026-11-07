@@ -40,6 +40,7 @@ import type { Tab, Task, TaskGroup, TerminalTab } from "@/lib/types";
 import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
+import { TaskRoleKey } from "@/components/secretsUi/RolePicker";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { taskLabel, useTaskLabel } from "@/lib/taskLabel";
 import { TaskLabelText } from "@/components/TaskLabelText";
@@ -3356,6 +3357,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <span data-testid="task-mode-slot" className="flex shrink-0 items-center">{mark}</span>
                 );
               })()}
+              {/* Secrets role key. Its own component with its own narrow
+                  selectors: nothing here polls, and a role change re-renders
+                  only the key, never the row. */}
+              <TaskRoleKey task={w} />
               {/* The task's tab properties, collected (GH #358): after the
                   name on the LEFT, never in the trailing badge/kebab slot.
                   Shrinks before the name does; the title lists every value

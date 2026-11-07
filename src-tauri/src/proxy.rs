@@ -26,10 +26,16 @@
 //     reactor doesn't matter and std-only keeps the dep tree clean.
 //
 // Shutdown:
-//   - SandboxBundle::Drop sends a () through a oneshot channel and
-//     joins the listener thread. Accept loop uses set_nonblocking +
-//     a short sleep so it polls the shutdown flag between accepts;
-//     ~50ms shutdown latency, fine for a process-teardown path.
+//   - ProxyHandle::Drop sets the shutdown flag, wakes the blocking
+//     accept with a loopback connection of its own and joins the
+//     listener thread. No sleep-poll loop (docs/performance.md bear
+//     trap 9): an idle proxy costs no wakeups.
+//
+// Credential broker: a spawn with a Secrets role attaches its broker
+// state (`attach_broker`). A CONNECT to a bound host carrying that
+// spawn's proxy credentials (git's, or the env proxy's) is terminated with
+// a leaf from the spawn's CA and handed to the broker; every other
+// CONNECT is the blind tunnel it always was.
 
 use anyhow::{anyhow, Result};
 use regex::Regex;
@@ -43,18 +49,34 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-const ACCEPT_POLL_MS: u64 = 50;
+/// Back-off after a failed accept (EMFILE and friends), so a persistent
+/// error cannot spin the thread.
+const ACCEPT_ERROR_BACKOFF_MS: u64 = 200;
 const READ_HEADER_TIMEOUT_MS: u64 = 5_000;
 const CONNECT_UPSTREAM_TIMEOUT_MS: u64 = 8_000;
+/// Head start each resolved address gets before the next one joins the
+/// race (RFC 8305 suggests 250ms).
+const DIAL_STAGGER: Duration = Duration::from_millis(250);
 // Max bytes we'll buffer for the request line + headers before bailing.
 // Real proxy requests are well under 8KB; anything larger is a buggy
 // or malicious client.
-const MAX_HEADER_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_HEADER_BYTES: usize = 16 * 1024;
 
 pub struct ProxyHandle {
     pub port: u16,
     shutdown: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
+    broker: BrokerHook,
+}
+
+/// The spawn's broker, set once after both are up.
+type BrokerHook = Arc<OnceLock<Arc<crate::broker::Spawn>>>;
+
+impl ProxyHandle {
+    /// Let this proxy MITM the spawn's git traffic to its bound hosts.
+    pub fn attach_broker(&self, spawn: Arc<crate::broker::Spawn>) {
+        let _ = self.broker.set(spawn);
+    }
 }
 
 /// Per-task per-host deny tracker. We record count + last-seen
@@ -84,7 +106,7 @@ fn now_unix_ms() -> u128 {
 
 /// Record a network deny: bumps count for (ws_id, host) and updates
 /// the last-seen timestamp. Called from CONNECT + plain-HTTP handlers.
-fn incr_network_deny(ws_id: &str, host: &str) {
+pub(crate) fn incr_network_deny(ws_id: &str, host: &str) {
     if ws_id.is_empty() { return; }
     if let Ok(mut g) = tracker().lock() {
         let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
@@ -203,11 +225,15 @@ pub fn clear_network_access(ws_id: &str) {
 
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::SeqCst);
         if let Some(t) = self.thread.take() {
-            // Join is best-effort; the accept loop checks the flag at
-            // most every ACCEPT_POLL_MS so worst case we wait that long.
-            let _ = t.join();
+            // wake the blocking accept; it sees the flag and exits. Only
+            // join when the wake went through, so a failed connect can
+            // never hang teardown (the thread then lives on, parked).
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
+            if TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -229,18 +255,20 @@ pub fn start(allowed_patterns: Vec<String>, ws_id: String, monitor: bool) -> Res
 
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    listener.set_nonblocking(true)?;
     dlog(&format!("[proxy] listening on 127.0.0.1:{port} ({} patterns)", regexes.len()));
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
     let regexes = Arc::new(regexes);
     let ws_id = Arc::new(ws_id);
+    let broker: BrokerHook = Arc::default();
+    let broker_clone = Arc::clone(&broker);
 
     let thread = thread::spawn(move || {
         loop {
-            if shutdown_clone.load(Ordering::Relaxed) { break; }
-            match listener.accept() {
+            let accepted = listener.accept();
+            if shutdown_clone.load(Ordering::SeqCst) { break; }
+            match accepted {
                 Ok((stream, _addr)) => {
                     // CRITICAL: accepted sockets inherit the listener's
                     // nonblocking flag on macOS. Without restoring the
@@ -253,36 +281,67 @@ pub fn start(allowed_patterns: Vec<String>, ws_id: String, monitor: bool) -> Res
                     let _ = stream.set_nonblocking(false);
                     let regexes = Arc::clone(&regexes);
                     let ws_id = Arc::clone(&ws_id);
+                    let broker = broker_clone.get().cloned();
                     // Each connection on its own thread. Slightly
                     // wasteful but keeps the code obvious and the
                     // per-PTY connection count low.
                     thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, &regexes, &ws_id, monitor) {
+                        if let Err(e) = handle_connection(stream, &regexes, &ws_id, monitor, broker.as_deref()) {
                             // Log only - we never want a malformed
                             // request to take down the proxy.
                             eprintln!("[proxy] connection error: {e}");
                         }
                     });
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(ACCEPT_POLL_MS));
-                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) => {
                     eprintln!("[proxy] accept failed: {e}");
                     // Don't break - transient errors (EMFILE etc.)
-                    // shouldn't kill the proxy. Sleep before retry.
-                    thread::sleep(Duration::from_millis(ACCEPT_POLL_MS * 4));
+                    // shouldn't kill the proxy. Back off before retry.
+                    thread::sleep(Duration::from_millis(ACCEPT_ERROR_BACKOFF_MS));
                 }
             }
         }
     });
 
-    Ok(ProxyHandle { port, shutdown, thread: Some(thread) })
+    Ok(ProxyHandle { port, shutdown, thread: Some(thread), broker })
+}
+
+/// Connect to `host:port`, racing every resolved address instead of
+/// trusting the first. The first is usually IPv6, and on a network with a
+/// dead v6 route it times out while v4 works, which failed every tunnel
+/// the agent opened (Claude reports the 502 as ERR_PROXY_TUNNEL).
+pub(crate) fn dial(host: &str, port: u16, timeout: Duration) -> std::io::Result<TcpStream> {
+    let addrs = (host, port).to_socket_addrs()?;
+    dial_addrs(addrs, timeout).map_err(|e| e.unwrap_or_else(|| std::io::Error::other(format!("no addresses for {host}"))))
+}
+
+/// Happy-eyeballs-lite: each address starts `DIAL_STAGGER` after the last
+/// unless an earlier one already answered. `Err(None)` means no addresses.
+/// A loser that connects after the winner sends into a closed channel and
+/// its stream drops, so it costs one stray connect, nothing more.
+fn dial_addrs(addrs: impl IntoIterator<Item = std::net::SocketAddr>, timeout: Duration) -> Result<TcpStream, Option<std::io::Error>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut last = None;
+    for a in addrs {
+        let tx = tx.clone();
+        thread::spawn(move || { let _ = tx.send(TcpStream::connect_timeout(&a, timeout)); });
+        match rx.recv_timeout(DIAL_STAGGER) {
+            Ok(Ok(s)) => return Ok(s),
+            Ok(Err(e)) => last = Some(e),
+            Err(_) => {}
+        }
+    }
+    drop(tx);
+    for r in rx {
+        match r { Ok(s) => return Ok(s), Err(e) => last = Some(e) }
+    }
+    Err(last)
 }
 
 // ─── connection handler ──────────────────────────────────────────────
 
-fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, monitor: bool) -> Result<()> {
+fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, monitor: bool, broker: Option<&crate::broker::Spawn>) -> Result<()> {
     // Bound how long we wait for the client's request headers so a
     // half-open connection can't pin a thread forever.
     stream.set_read_timeout(Some(Duration::from_millis(READ_HEADER_TIMEOUT_MS)))?;
@@ -295,9 +354,21 @@ fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, moni
     let _version = parts.next().unwrap_or("");
 
     if method == "CONNECT" {
+        if let Some(sp) = broker {
+            if let Some((host, delivery)) = mitm_target(sp, target, &headers) {
+                // the agent's git or an HTTPS_PROXY tool, for a host its role
+                // binds: the broker terminates TLS and substitutes. Not
+                // subject to the allow-list, the role binding is the allow.
+                // The credentials alone are a marker another process could
+                // read, so the client must also be one of the task's.
+                if !sp.admit_tcp(&stream) { return Ok(()); }
+                client_established(&mut stream)?;
+                return sp.serve_mitm(stream, &host, delivery);
+            }
+        }
         handle_connect(stream, target, regexes, ws_id, monitor)
     } else {
-        handle_plain_http(stream, &method, target, &headers, &leftover, regexes, ws_id, monitor)
+        handle_plain_http(stream, &method, target, &headers, &leftover, regexes, ws_id, monitor, broker)
     }
 }
 
@@ -327,6 +398,24 @@ fn read_http_headers(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>)
             return Ok((request_line, header_lines, leftover));
         }
     }
+}
+
+/// The CONNECT host and delivery, when the broker should MITM it: a bound
+/// host on 443 asked for with one of this spawn's proxy credentials.
+fn mitm_target(sp: &crate::broker::Spawn, target: &str, headers: &str) -> Option<(String, crate::broker::Delivery)> {
+    let (host, port) = target.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    let host = host.to_ascii_lowercase();
+    let auth = headers.split("\r\n").find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case("proxy-authorization").then_some(v.trim())
+    });
+    sp.mitm_delivery(&host, port, auth).map(|d| (host, d))
+}
+
+/// CONNECT 2xx: bare status line, see `handle_connect`.
+fn client_established(client: &mut TcpStream) -> std::io::Result<()> {
+    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
 }
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {
@@ -400,17 +489,7 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
 
     // Connect to the actual upstream. ToSocketAddrs handles DNS in
     // one call; we don't constrain IPv6 vs IPv4 - whichever resolves.
-    let upstream = match (host, port).to_socket_addrs()
-        .map_err(|e| anyhow!("resolve {host}: {e}"))?
-        .next()
-    {
-        Some(addr) => addr,
-        None => {
-            write_status(&mut client, 502, "Bad Gateway")?;
-            return Err(anyhow!("no addresses for {host}"));
-        }
-    };
-    let upstream = match TcpStream::connect_timeout(&upstream, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
+    let upstream = match dial(host, port, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
         Ok(s) => s,
         Err(e) => {
             dlog(&format!("[proxy] CONNECT {host}:{port} → 502 (upstream connect failed: {e})"));
@@ -427,7 +506,7 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
     // tear the socket down before the TLS handshake gets a chance,
     // which is the bug that made every sandboxed agent's curl come
     // back with HTTP 0. Bare status line + CRLF terminator only.
-    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    client_established(&mut client)?;
 
     // From here on it's a dumb byte pipe - the TLS handshake happens
     // end-to-end between the agent and the upstream; we never see the
@@ -440,6 +519,7 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
 
 // ─── Plain HTTP forwarding ───────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn handle_plain_http(
     mut client: TcpStream,
     method: &str,
@@ -449,6 +529,7 @@ fn handle_plain_http(
     regexes: &[Regex],
     ws_id: &str,
     monitor: bool,
+    broker: Option<&crate::broker::Spawn>,
 ) -> Result<()> {
     // Plain HTTP target is "http://host[:port]/path?query".
     if !target.to_ascii_lowercase().starts_with("http://") {
@@ -464,6 +545,11 @@ fn handle_plain_http(
         Some((h, p)) => (h, p.parse().unwrap_or(80)),
         None => (host_port, 80),
     };
+
+    // a secret placeholder never goes out over plain HTTP.
+    if broker.is_some_and(|sp| sp.refuse_plain_http(host, target, headers, &mut client)) {
+        return Ok(());
+    }
 
     let allowed = host_allowed(host, regexes);
     if monitor {
@@ -500,14 +586,13 @@ fn handle_plain_http(
         return Ok(());
     }
 
-    let upstream_addr = match (host, port).to_socket_addrs()?.next() {
-        Some(a) => a,
-        None => {
+    let mut upstream = match dial(host, port, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS)) {
+        Ok(s) => s,
+        Err(e) => {
             write_status(&mut client, 502, "Bad Gateway")?;
-            return Err(anyhow!("no addresses for {host}"));
+            return Err(anyhow!("connect upstream {host}:{port}: {e}"));
         }
     };
-    let mut upstream = TcpStream::connect_timeout(&upstream_addr, Duration::from_millis(CONNECT_UPSTREAM_TIMEOUT_MS))?;
 
     // Rewrite the request line into origin form (path-only) per
     // RFC 7230 §5.3.1; most upstreams require it. Strip any
@@ -578,6 +663,28 @@ mod tests {
 
     fn re(pattern: &str) -> Regex {
         Regex::new(pattern).expect("valid regex")
+    }
+
+    // ── dial ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dial_falls_past_a_dead_first_address() {
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = live.local_addr().unwrap();
+        // TEST-NET-1 never answers: it either times out (the dead v6 route
+        // case) or fails fast, and neither may stall or fail the dial.
+        let dead: std::net::SocketAddr = "192.0.2.1:9".parse().unwrap();
+        let t = std::time::Instant::now();
+        let s = dial_addrs([dead, live], Duration::from_secs(8)).expect("live address should win");
+        assert_eq!(s.peer_addr().unwrap(), live);
+        assert!(t.elapsed() < Duration::from_secs(2), "took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn dial_reports_the_last_error_when_all_fail() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(dial_addrs([closed], Duration::from_secs(1)).unwrap_err().is_some());
+        assert!(dial_addrs([], Duration::from_secs(1)).unwrap_err().is_none());
     }
 
     // ── find_double_crlf ─────────────────────────────────────────────

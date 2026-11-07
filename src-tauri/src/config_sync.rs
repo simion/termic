@@ -75,6 +75,8 @@ pub(crate) const PROJECT_LOCAL: &[&str] = &[
     "code_intel_servers", "code_intel_commands",
     // When THIS machine registered the project.
     "created",
+    // Names a role, and roles are local (see SETTINGS_LOCAL).
+    "default_role",
 ];
 
 pub(crate) const MEMBER_SYNC: &[&str] = &[
@@ -122,6 +124,14 @@ pub(crate) const SETTINGS_LOCAL: &[&str] = &[
     "welcomed", "schema_version",
     // This module's own per-profile state.
     "sync",
+    // Secrets point at Keychain items, which exist per machine (another Mac
+    // may have a different gh login or none). Roles name secret ids, so a
+    // role synced without its secrets would fail `secrets::validate` on
+    // arrival and block every settings save there. Both stay local in v1;
+    // syncing them is a later call, and would belong in the SAFETY lists.
+    "secrets", "roles",
+    // Names THIS machine's environment, which another Mac does not share.
+    "env_guard",
 ];
 
 pub(crate) const AGENT_SYNC: &[&str] = &[
@@ -138,6 +148,8 @@ pub(crate) const AGENT_SYNC: &[&str] = &[
 pub(crate) const AGENT_LOCAL: &[&str] = &[
     // Never. These are where people put API keys.
     "env", "docker_env",
+    // Names env vars THIS machine has (see env_guard in SETTINGS_LOCAL).
+    "pass_env",
     // The login that already existed on THIS machine.
     "adopted_account",
     // Often hides a CLI that is not installed here.
@@ -145,6 +157,8 @@ pub(crate) const AGENT_LOCAL: &[&str] = &[
     "sandbox_allowed_paths",
     // Derived from this build's built-in list, not a user choice.
     "builtin",
+    // Names a role, and roles are local (see SETTINGS_LOCAL).
+    "default_role",
 ];
 
 /// Project fields whose change is shown before or as it applies: they can
@@ -3611,6 +3625,7 @@ mod tests {
 
     fn full_project() -> Project {
         Project {
+            default_role: None,
             id: "p1".into(),
             name: "app".into(),
             root_path: "/Users/u/src/app".into(),
@@ -3654,6 +3669,7 @@ mod tests {
 
     fn full_agent() -> Agent {
         Agent {
+            default_role: None,
             id: "my-agent".into(),
             display_name: "My agent".into(),
             command: "claude".into(),
@@ -3665,6 +3681,7 @@ mod tests {
             capabilities: AgentCapabilities::default(),
             env: hm("API_KEY", "s3cret-token"),
             docker_env: hm("API_KEY", "s3cret-docker"),
+            pass_env: vec!["GITHUB_TOKEN".into()],
             sandbox_allowed_paths: vec!["$HOME/.my".into()],
             sandbox_allowed_hosts: vec!["api.acme.com".into()],
             work_done: true,
@@ -3681,6 +3698,9 @@ mod tests {
     fn full_settings() -> Settings {
         Settings {
             customizations_enabled: Some(true),
+            roles: Vec::new(),
+            secrets: Vec::new(),
+            env_guard: vec![crate::env_guard::Rule { name: "STRIPE_SECRET_KEY".into(), all: true }],
             repos_dir: "/Users/u/src".into(),
             welcomed: true,
             agents: vec![full_agent()],

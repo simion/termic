@@ -75,10 +75,14 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
   // elementFromPoint sees underneath.
   function hitTestDropTarget(clientX: number, clientY: number): { el: HTMLElement | null; toPaneId: string | null; zone: DropZone } | null {
     const raw = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    // scoped to this task: every visited task stays mounted, and a hidden
+    // task's main pane measures 0x0, which reads as "center" and turns an
+    // edge drop into a plain move.
+    const scope = `[data-task-id="${CSS.escape(task.id)}"]`;
     const mainHighlight = () =>
-      document.querySelector("[data-main-content][data-split-leaf]") as HTMLElement | null;
+      document.querySelector(`${scope} [data-main-content][data-split-leaf]`) as HTMLElement | null;
     const paneHighlight = (id: string) =>
-      document.querySelector(`[data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+      document.querySelector(`${scope} [data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
     const zoneOf = (el: HTMLElement | null): DropZone =>
       el ? detectDropZone(el.getBoundingClientRect(), clientX, clientY) : "center";
 

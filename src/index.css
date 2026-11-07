@@ -118,6 +118,16 @@
   --color-palette-purple: #9d6ee8;
   --color-palette-pink:   #d6409f;
 
+  /* Secrets role swatches (settings/secretsSettings/model.ts ROLE_COLOURS). Aliases
+     of the palette ramp, so every theme that tunes the ramp tunes these
+     too; amber is the ramp's yellow. A role's colour is user data, like a
+     project-group folder's. */
+  --color-role-blue:   var(--color-palette-blue);
+  --color-role-purple: var(--color-palette-purple);
+  --color-role-teal:   var(--color-palette-teal);
+  --color-role-amber:  var(--color-palette-yellow);
+  --color-role-pink:   var(--color-palette-pink);
+
   /* Pull-request state tints. Both were hard-coded hex at the point of use
      in the sidebar's PR glyph, which broke the "no hex outside @theme" rule
      and left light mode with two colours tuned for a dark background.

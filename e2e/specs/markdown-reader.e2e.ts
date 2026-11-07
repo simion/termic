@@ -226,11 +226,13 @@ describe("markdown reader", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", [mac ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true }));
     }, taskId);
     await browser.waitUntil(async () => (await counter()) !== null, { timeout: 5_000, timeoutMsg: "find never opened" });
-    await browser.execute(() => {
-      const input = document.activeElement as HTMLInputElement;
+    // the find input takes focus in a rAF, which a frozen e2e window may not
+    // run yet, so look it up instead of trusting activeElement.
+    await browser.execute((id) => {
+      const input = document.querySelector<HTMLInputElement>(`[data-task-id="${id}"] [data-testid="md-find"] input`)!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "paragraph");
       input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    }, taskId);
     await browser.waitUntil(async () => (await counter())?.includes("1/2") ?? false, { timeout: 5_000, timeoutMsg: "find never counted 2 matches" });
     await pressGoToFromFind();
     await browser.waitUntil(async () => (await counter())?.includes("2/2") ?? false, { timeout: 5_000, timeoutMsg: "⌘G did not step to the next match" });
@@ -253,6 +255,14 @@ describe("markdown reader", () => {
   });
 
   it("closes on Escape without jumping", async () => {
+    // with find open ⌘G steps matches instead, so a find the previous case
+    // left open (it failed before its own Escape) must not decide this one.
+    await browser.execute((id) => document.querySelector<HTMLElement>(`[data-task-id="${id}"] [data-testid="md-find"] input`)
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), taskId);
+    await browser.waitUntil(
+      () => browser.execute((id) => !document.querySelector(`[data-task-id="${id}"] [data-testid="md-find"]`), taskId),
+      { timeout: 5_000, timeoutMsg: "find never closed" },
+    );
     await pressGoTo();
     await browser.waitUntil(async () => (await gotoBar()) !== null, { timeout: 5_000, timeoutMsg: "go to line never opened" });
     await typeGoTo("1", "Escape");

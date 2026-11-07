@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { ProjectRoleCards } from "./secretsSettings/RolePickers";
 import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, projectTasksPathDefault, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
 import { stopSpotlight } from "@/lib/spotlight";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -518,6 +519,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const tabs: { id: SubTab; label: string }[] = [
     { id: "scripts",  label: t(isMulti ? "repo.tabScriptsMulti" : "repo.tabScripts") },
     { id: "sandbox",  label: t("repo.sandboxHeading") },
+    { id: "secrets",  label: t("secrets:manage.project.tab") },
     { id: "codenav",  label: codeIntelName(typeChecking) },
     { id: "git",      label: t("repo.tabGit") },
     { id: "advanced", label: t("repo.tabMore") },
@@ -918,6 +920,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         </div>
 
         </div>
+      )}
+
+      {/* Personal default only (projects.json). The .termic.yaml request
+          and an "On this Mac" check are not built yet. */}
+      {subTab === "secrets" && (
+        <ProjectRoleCards value={draft.default_role} onChange={v => patch("default_role", v)} />
       )}
 
       {subTab === "sandbox" && (
@@ -1377,7 +1385,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   );
 }
 
-type SubTab = "scripts" | "sandbox" | "codenav" | "git" | "advanced";
+type SubTab = "scripts" | "sandbox" | "secrets" | "codenav" | "git" | "advanced";
 
 function Field({ label, hint, control }: { label: string; hint?: string; control: React.ReactNode }) {
   return (

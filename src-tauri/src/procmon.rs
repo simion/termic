@@ -271,6 +271,104 @@ pub(crate) fn pid_path(pid: u32) -> Option<String> {
     String::from_utf8(buf).ok()
 }
 
+/// Direct children of `ppid`. One kernel call, no full process-table pass.
+pub(crate) fn child_pids(ppid: u32) -> Vec<u32> {
+    const PROC_PPID_ONLY: u32 = 6;
+    // with a null buffer the kernel sizes for every pid, whatever the filter.
+    let needed = unsafe { proc_listpids(PROC_PPID_ONLY, ppid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u32; needed as usize / 4 + 16];
+    let bytes = unsafe {
+        proc_listpids(PROC_PPID_ONLY, ppid, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
+    };
+    buf.truncate(bytes.max(0) as usize / 4);
+    buf.retain(|&p| p != 0);
+    buf
+}
+
+/// Whether `pid` holds the client end of the TCP connection whose client
+/// is at `peer` and whose server end is our listener at `listener`: what a
+/// listener needs to name its peer, since TCP has no `LOCAL_PEERPID`. The
+/// whole 4-tuple must match on a TCP stream socket. Costs one fd listing
+/// plus one call per socket.
+pub(crate) fn holds_tcp_client(pid: u32, peer: std::net::SocketAddr, listener: std::net::SocketAddr) -> bool {
+    // `struct socket_fdinfo` from <sys/proc_info.h>, which libc does not
+    // bind. Read by offset rather than mirrored: only these fields matter,
+    // all are in the struct's stable prefix (offsets checked with clang
+    // against the 26.x SDK), and the buffer is larger than the kernel's
+    // 792 bytes so a struct that grows at the end still copies out.
+    const PROC_PIDFDSOCKETINFO: libc::c_int = 3;
+    const SOI_TYPE: usize = 176; // psi.soi_type
+    const SOI_PROTOCOL: usize = 180;
+    const SOI_FAMILY: usize = 184;
+    const SOI_KIND: usize = 256;
+    const SOCKINFO_TCP: i32 = 2;
+    // psi.soi_proto.pri_tcp.tcpsi_ini (struct in_sockinfo)
+    const INSI_FPORT: usize = 264;
+    const INSI_LPORT: usize = 268;
+    const INSI_VFLAG: usize = 288;
+    const INSI_FADDR: usize = 296; // 16 bytes: in6_addr, or in4in6_addr (v4 at +12)
+    const INSI_LADDR: usize = 312;
+    const INI_IPV4: u8 = 0x1;
+    const INI_IPV6: u8 = 0x2;
+    // a v4-mapped v6 address compares as the v4 it carries, on both sides.
+    let want_l = (peer.ip().to_canonical(), peer.port());
+    let want_f = (listener.ip().to_canonical(), listener.port());
+    let fd_bytes = unsafe { proc_pidinfo(pid as libc::c_int, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+    if fd_bytes <= 0 {
+        return false;
+    }
+    let mut fds = vec![libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 }; fd_bytes as usize / 8 + 16];
+    let got = unsafe {
+        proc_pidinfo(pid as libc::c_int, libc::PROC_PIDLISTFDS, 0, fds.as_mut_ptr().cast(),
+            (fds.len() * std::mem::size_of::<libc::proc_fdinfo>()) as libc::c_int)
+    };
+    fds.truncate(got.max(0) as usize / std::mem::size_of::<libc::proc_fdinfo>());
+    let mut buf = [0u64; 128];
+    for fd in fds.iter().filter(|f| f.proc_fdtype as libc::c_int == libc::PROX_FDTYPE_SOCKET) {
+        let n = unsafe {
+            libc::proc_pidfdinfo(pid as libc::c_int, fd.proc_fd, PROC_PIDFDSOCKETINFO,
+                buf.as_mut_ptr().cast(), std::mem::size_of_val(&buf) as libc::c_int)
+        };
+        if n < (INSI_LADDR + 16) as libc::c_int {
+            continue;
+        }
+        // SAFETY: u64s viewed as bytes, same length.
+        let b: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast(), std::mem::size_of_val(&buf)) };
+        let i32_at = |o: usize| i32::from_ne_bytes(b[o..o + 4].try_into().unwrap());
+        // ports are network order in the low 16 bits (lsof does the same).
+        let port_at = |o: usize| u16::from_be(i32_at(o) as u16);
+        let family = i32_at(SOI_FAMILY);
+        let tcp = i32_at(SOI_KIND) == SOCKINFO_TCP
+            && i32_at(SOI_TYPE) == libc::SOCK_STREAM
+            && i32_at(SOI_PROTOCOL) == libc::IPPROTO_TCP
+            && (family == libc::AF_INET || family == libc::AF_INET6);
+        if !tcp {
+            continue;
+        }
+        // the vflag, not the family, says which form an address is in: an
+        // AF_INET6 socket talking to a v4 peer stores it v4-mapped.
+        let vflag = b[INSI_VFLAG];
+        let addr_at = |o: usize| -> Option<std::net::IpAddr> {
+            if vflag & INI_IPV4 != 0 {
+                Some(std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&b[o + 12..o + 16]).unwrap()).into())
+            } else if vflag & INI_IPV6 != 0 {
+                Some(std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&b[o..o + 16]).unwrap()).to_canonical())
+            } else {
+                None
+            }
+        };
+        let local = addr_at(INSI_LADDR).map(|a| (a, port_at(INSI_LPORT)));
+        let foreign = addr_at(INSI_FADDR).map(|a| (a, port_at(INSI_FPORT)));
+        if local == Some(want_l) && foreign == Some(want_f) {
+            return true;
+        }
+    }
+    false
+}
+
 /// mach absolute ticks -> milliseconds. `mach_timebase_info` is 1/1 on
 /// Intel but 125/3 on Apple silicon, so skipping it would report CPU
 /// times ~24x too small on every current Mac.

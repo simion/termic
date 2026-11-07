@@ -174,7 +174,7 @@ describe("a due slot", () => {
     await scheduleTickNow(SLOT + 60_000);
     expect(ipc.taskOpenRepo).toHaveBeenCalledWith(
       "p1", "claude", expect.any(String),
-      { enabled: true, mode: "enforce", rwPaths: ["/Users/u/cache"], allowedHosts: ["grafana.acme.com"], blockKeychain: false },
+      { enabled: true, mode: "enforce", rwPaths: ["/Users/u/cache"], allowedHosts: ["grafana.acme.com"], blockKeychain: false, role: null },
       undefined, undefined, undefined, ["--model", "opus"], true, undefined,
     );
     expect(ipc.taskSetAccount).toHaveBeenCalledWith("run-1", "claude", "work");
