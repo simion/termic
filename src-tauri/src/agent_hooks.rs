@@ -1937,8 +1937,8 @@ export default {{ id: "termic", server: TermicStatus, setup() {{}} }};
 /// loads only `plugins/*.{ts,js}`, one level deep, so it never sees this.
 const OPENCODE_TUI_REL: &str = "plugins/termic/tui.js";
 
-/// opencode 2's half: a TUI plugin, read out of the 2.2.5 source rather than
-/// measured (see docs/agent-hooks.md, "opencode 2").
+/// opencode 2's half: a TUI plugin, read out of the 2.2.5 source. What has
+/// been seen by hand since is listed in docs/agent-hooks.md, "opencode 2".
 ///
 /// It has to be the TUI. opencode 2's server plugins run in a background
 /// service shared by every client on the machine, spawned detached with

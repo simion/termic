@@ -41,7 +41,7 @@ target.
 | grok | not measured | `UserPromptSubmit`, `PreToolUse` | `Notification` | `Stop` + `StopCancelled`, `Stop` guarded on `backgroundTasks` (see Delegated work) | `StopCancelled` |
 | agy | not measured | `PreInvocation` | none exists (see below) | `Stop`, guarded on `fullyIdle`, which reports an unlabelled hold | none exists |
 | opencode 1 | not measured | `chat.message`, `permission.replied` | `permission.asked` | the final assistant `message.updated`, `session.idle` as the backstop | `session.idle`, on the SECOND escape |
-| opencode 2 (read from 2.2.5 source, not measured) | none | `session.execution.started` on a root, `permission.replied`, `form.replied` / `form.cancelled` | `permission.asked`, `form.created` | `session.execution.succeeded` / `.failed` on a root, held while a direct subagent runs | `session.execution.interrupted` |
+| opencode 2 (read from the 2.2.5 source, seen by hand on 2.2.6) | none | `session.execution.started` on a root, `permission.replied`, `form.replied` / `form.cancelled` | `permission.asked`, `form.created` | `session.execution.succeeded` / `.failed` on a root, held while a direct subagent runs | `session.execution.interrupted` |
 | codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | none: the `Action Required` title (see below) | `Stop` | none exists |
 | devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
 | copilot | none (trust dialog precedes `sessionStart`) | `userPromptSubmitted`, `preToolUse`, `postToolUse` | `permissionRequest` | `agentStop` | none exists |
@@ -573,9 +573,13 @@ finishes booting, so the probe was typing into a splash screen.
 
 opencode 2 (`@opencode/cli`, 2.x; opencode 1 is still `opencode-ai` on npm and
 is what the Docker image installs) rebuilt plugins, and three things broke the
-opencode 1 plugin at once. Everything in this section was READ out of the
-2.2.5 source, not measured on a live binary: re-measure before trusting a
-detail, and fix this section when it disagrees.
+opencode 1 plugin at once. This section was READ out of the 2.2.5 source.
+Seen by hand on 2.2.6 since: the module loads (and the v16 one is refused),
+working, attention and done, the context gauge, two tasks in one folder
+staying apart, and each resuming its own session after a relaunch. The rest,
+the subagent hold, an interrupt and opencode's in-TUI tabs among it, is still
+unmeasured: re-measure before trusting a detail, and fix this section when it
+disagrees.
 
 1. **The loader refuses the old module.** A server plugin must default-export
    `{ id, setup }` or `{ id, effect }`; a module with only named exports fails
@@ -1122,7 +1126,7 @@ tokens/window.
 | grok | status line (`[ui.status_line]` in `~/.grok/config.toml`) | `context_tokens` over `context_window_size` (`session_input_tokens` only grows) |
 | codex | `Stop` hook | `transcript_path` is the rollout; its last `token_count` has `last_token_usage.total_tokens` and `model_context_window`. The percent is codex's own, with its 12000-token baseline reserved (`codex-rs/protocol`), so plain tokens/window would disagree with the TUI |
 | opencode 1 | plugin | the last assistant `message.updated` with output: input + output + reasoning + cache read + write, over the model's `limit.context` from `chat.params` (the TUI's formula, read out of 1.18.31) |
-| opencode 2 | TUI plugin | `session.step.ended`'s `tokens`, same sum, over `limit.context` of the model `session.step.started` named, from the session location's model list (the footer's formula, read from the 2.2.5 source) |
+| opencode 2 | TUI plugin | `session.step.ended`'s `tokens`, same sum, over `limit.context` of the model `session.step.started` named, from the session location's model list (the footer's formula, read from the 2.2.5 source; the gauge shows on 2.2.6) |
 | pi | extension | `ctx.getContextUsage()`, pi's own footer figure |
 | omp | extension | `ctx.getContextUsage()` — the identical `{tokens, contextWindow, percent}` shape pi reports (measured: `{tokens: 5788, contextWindow: 1000000, percent: 0.5788}`) |
 | devin | read at turn end | nothing live: no status line, no token count in any hook. `num_tokens_preceding` of the last assistant node in `cli/sessions.db`, over `max_context_tokens` from `devin models list` (`agent_context_devin`) |
