@@ -599,6 +599,17 @@ setup() {} }`. opencode 1's `readV1Plugin` (1.18.31 and 1.19.5) runs
 does nothing. No named export, because opencode 1's fallback registers every
 export it finds.
 
+**opencode 1.3.4 is the floor.** `readV1Plugin` first shipped in 1.3.4
+(2026-03-29). 1.0.0 through 1.3.3 call every export as a function
+(`hooks.push(await fn(input))` in `packages/opencode/src/plugin/index.ts`), so
+the object default fails with "Failed to load plugin ...: fn is not a
+function". That is caught and shown as a session error: opencode keeps
+running and nothing reports. Read from the tagged sources (a bisect over the
+v1 tags), not run. A callable default (a function carrying `id`, `server` and
+`setup`) would cover them, but whether opencode 2's schema accepts a function
+is unmeasured, and a seven-month-old release is not worth that risk on the
+current one.
+
 The reporting is `plugins/termic/tui.js`, a TUI plugin. opencode 2 discovers
 TUI plugins only as DIRECTORIES under `plugins/`, resolves `tui` by its
 conventional name without a package.json, and its server skips a directory
