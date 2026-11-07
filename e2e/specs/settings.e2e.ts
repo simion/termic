@@ -4225,6 +4225,38 @@ describe("agent hooks", () => {
     rmTree(devinDir, { bestEffort: true });
   });
 
+  // opencode's install is two files: the module opencode 1 and 2 both load,
+  // and opencode 2's TUI plugin, which opencode 2 finds only as a DIRECTORY
+  // under plugins/ (docs/agent-hooks.md "opencode 2"). Both go on install,
+  // both go on remove, and a plugin of the user's beside them stays.
+  (process.platform === "win32" ? it.skip : it)("installs opencode's module and its opencode 2 TUI plugin, and removes only those", async () => {
+    const st = await browser.execute(async () =>
+      await window.__termic!.invoke("agent_hooks_status", { agentId: "opencode" }));
+    const mod = (st as { host: { settings_path: string } }).host.settings_path;
+    expect(mod.endsWith("/plugins/termic.js")).toBe(true);
+    const plugins = mod.slice(0, -"/termic.js".length);
+    const tuiDir = `${plugins}/termic`;
+    const theirs = `${plugins}/mine.js`;
+    mkdirSync(plugins, { recursive: true });
+    writeFileSync(theirs, "export default {};\n");
+
+    const after = await browser.execute(async () =>
+      await window.__termic!.invoke("agent_hooks_install", { agentId: "opencode" }));
+    expect((after as { host: { installed: boolean } }).host.installed).toBe(true);
+    // One default export for both loaders, no named one.
+    const body = readFileSync(mod, "utf8");
+    expect(body).toContain('export default { id: "termic", server: TermicStatus, setup() {} };');
+    expect(body).not.toContain("export const");
+    expect(readFileSync(`${tuiDir}/tui.js`, "utf8")).toContain("termic agent hook for opencode 2");
+
+    await browser.execute(async () =>
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: "opencode" }));
+    expect(existsSync(mod)).toBe(false);
+    expect(existsSync(tuiDir)).toBe(false);
+    expect(readFileSync(theirs, "utf8")).toBe("export default {};\n");
+    rmTree(plugins, { bestEffort: true });
+  });
+
   it("refuses a malformed config rather than clobbering it", async () => {
     mkdirSync(`${dataDir}/.claude`, { recursive: true });
     writeFileSync(settingsPath, "{ this is not json");

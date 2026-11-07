@@ -227,6 +227,12 @@ in that tree, so Docker can never mount it), `ParentDir` (gemini appends
 says out loud), `HomeOnly` (pi), `TokenVar` (no agent currently, kept because it is the
 shape an agent that reads only a token variable would take).
 
+opencode 2 may defeat `XdgRoot` (read from the 2.2.5 source, not measured):
+its TUI is a client of one background service per machine, which registers
+under `XDG_STATE_HOME` (not moved) and keeps the environment of whichever
+client started it, so a second account's tab can land on the first
+account's service. See docs/agent-hooks.md "opencode 2".
+
 `None` is a THIRD answer, distinct from both a shape and an unmeasured agent,
 and `login_unsupported_reason` is what makes it distinct: copilot and muse
 return `None` WITH a reason, and the UI shows that reason instead of an "add

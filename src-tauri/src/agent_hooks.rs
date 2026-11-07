@@ -113,7 +113,14 @@ use std::path::{Path, PathBuf};
 // any event the current set no longer registers (an upgrade only ever merged,
 // so a dropped event kept firing). Stale-and-harmful: a v15 codex install
 // rings needs-you for every auto-reviewed command.
-pub const SCHEMA_VERSION: u32 = 16;
+// v17 makes opencode's plugin load under opencode 2, which refuses a module
+// without `default.{id, setup}` and runs server plugins in a shared background
+// service whose env is not this task's; the reporting moves to a TUI plugin in
+// `plugins/termic/tui.js`. Stale-and-harmful for opencode: a v16 install is
+// rejected outright by opencode 2 and reports nothing at all. The TUI plugin
+// also reports the session id of the root a turn starts in, because
+// `opencode session list` only knows the newest session in the folder.
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -231,9 +238,10 @@ const NOTIFY_PREFIX: &str = "777;notify;termic;";
 /// KEEP IN SYNC with `HOOK_OSC_BODY` in `lib/agentHooks.ts`.
 const ATTENTION_BODY: &str = "agent needs your input";
 
-/// Prefix of the body that reports the agent's own session id. Only codex sends
-/// it, because it is the only agent that can resume a session by id and cannot
-/// be handed one at launch. KEEP IN SYNC with `HOOK_OSC_SESSION_PREFIX` in
+/// Prefix of the body that reports the agent's own session id: sent by an agent
+/// that can resume a session by id but cannot be handed one at launch (codex,
+/// devin, omp, opencode 2), or whose session moves inside a running process
+/// (claude). KEEP IN SYNC with `HOOK_OSC_SESSION_PREFIX` in
 /// `lib/agentHooks.ts`.
 const SESSION_BODY_PREFIX: &str = "session ";
 
@@ -1765,6 +1773,9 @@ fn opencode_plugin_body() -> String {
 // terminal termic handed it ($TERMIC_PTY). opencode emits no busy/idle OSC of
 // its own, so without this every turn ends in termic's byte-quiet fallback.
 //
+// This file is opencode 1's. opencode 2 loads it too, and is handed a no-op
+// (see the export at the bottom); its reporting is plugins/termic/tui.js.
+//
 // Runs IN-PROCESS: no timeout, no exit code, and a throw in a tool handler
 // blocks the tool. Every handler below is wrapped for that reason.
 import {{ openSync, writeSync, closeSync, constants as fsConstants }} from "fs";
@@ -1852,7 +1863,7 @@ const beat = () => {{
   send(WORKING);
 }};
 
-export const TermicStatus = async ({{ client }} = {{}}) => ({{
+const TermicStatus = async ({{ client }} = {{}}) => ({{
   // One per turn, on submit.
   "chat.message": async () => {{ try {{ turnDone = false; send(WORKING); lastBeat = Date.now(); }} catch {{}} }},
   "chat.params": async (input) => {{
@@ -1896,8 +1907,315 @@ export const TermicStatus = async ({{ client }} = {{}}) => ({{
     }} catch {{ /* never throw into opencode */ }}
   }},
 }});
+
+// One module, two loaders.
+//
+// opencode 1 reads `default.server` (`readV1Plugin`, 1.18.31 and 1.19.5) and
+// runs the hooks above.
+//
+// opencode 2 refuses a module without `default.{{id, setup}}` (named exports
+// alone fail with "Plugin must export a default definition"), and runs `setup`
+// in its BACKGROUND SERVICE: one detached process shared by every opencode
+// client on the machine, spawned with the environment of whichever client
+// started it. Its $TERMIC_PTY is another task's terminal, or nothing, so the
+// server half must stay a no-op. `server` is an unknown key there and is
+// stripped by the module schema.
+//
+// Nothing else is exported: opencode 1's fallback (`getLegacyPlugins`)
+// registers every export it finds, and a second one would be a second copy of
+// these hooks.
+export default {{ id: "termic", server: TermicStatus, setup() {{}} }};
 "#
     )
+}
+
+/// Where opencode 2 finds `opencode_tui_plugin_body`, relative to its config
+/// dir. A DIRECTORY with a `tui.js` and nothing else: opencode 2 discovers TUI
+/// plugins only as directories under `plugins/` (`discoverPluginTargets`),
+/// resolves `tui` by its conventional file name when there is no package.json,
+/// and its server skips a directory with no `server`/`index` entry. opencode 1
+/// loads only `plugins/*.{ts,js}`, one level deep, so it never sees this.
+const OPENCODE_TUI_REL: &str = "plugins/termic/tui.js";
+
+/// opencode 2's half: a TUI plugin, read out of the 2.2.5 source. What has
+/// been seen by hand since is listed in docs/agent-hooks.md, "opencode 2".
+///
+/// It has to be the TUI. opencode 2's server plugins run in a background
+/// service shared by every client on the machine, spawned detached with
+/// `{...process.env}` of whichever client started it, so its `$TERMIC_PTY` is
+/// another task's terminal or nobody's. The TUI is the process termic spawned.
+///
+/// What it cannot assume: the event stream is the service's, "across all
+/// server locations", so it carries every other task's sessions and the desktop
+/// app's. A session moves this tab only once this TUI's route has shown it, and
+/// stays this tab's after the user navigates away, so a running turn's done is
+/// not dropped. Not its tab list: opencode 2 keeps one per directory
+/// (`tui/tabs.json` under `XDG_STATE_HOME`), shared by every TUI there, so two
+/// tasks in one folder each list the other's sessions. A subagent belongs to
+/// its root.
+///
+/// The edges are opencode's own: its notifications plugin
+/// (`tui/src/feature-plugins/system/notifications.ts`) rings on exactly these
+/// events, including the rule that a root which succeeds while a subagent is
+/// still running is not done (the subagent's report wakes it again). The
+/// context window is the TUI footer's formula (`tui/src/util/session.ts`).
+fn opencode_tui_plugin_body() -> String {
+    let attention = Signal::Attention.payload();
+    let working = Signal::Working.payload();
+    let done = Signal::Done.payload();
+    let ctx = format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}");
+    let session = format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}");
+    format!(
+        r#"// termic agent hook for opencode 2 (generated, schema v{SCHEMA_VERSION}). Safe to delete.
+//
+// Reports opencode's state, context window and session id to termic by
+// writing one OSC sequence to the terminal termic handed it ($TERMIC_PTY).
+//
+// A TUI plugin, not a server one: opencode 2 runs server plugins in a
+// background service shared by every opencode on this machine, started with
+// the environment of whichever client launched it, so its $TERMIC_PTY is some
+// other task's terminal. This file runs in the opencode termic spawned.
+//
+// Runs IN-PROCESS in opencode's TUI: a throw here lands there. Every handler
+// is wrapped.
+import {{ openSync, writeSync, closeSync, constants as fsConstants }} from "fs";
+
+const PTY = process.env.TERMIC_PTY;
+// Not spawned by a termic pty (this file is installed globally, so it also
+// loads under a plain `opencode` in any terminal). Do nothing there.
+const ACTIVE = Boolean(PTY && process.env.TERMIC_TASK_ID);
+
+// Same three targets as the shell hooks, same reason: $TERMIC_PTY is a HOST
+// path, so a Docker-sandboxed opencode cannot see it. /proc/1/fd/1 is the
+// container's main process stdout, which docker relays to that same pty.
+const TARGETS = [PTY, "/proc/1/fd/1", "/dev/tty"];
+
+// Several payloads go out as ONE write, like the shell hooks' single printf.
+const send = (...payloads) => {{
+  if (!ACTIVE) return;
+  const out = payloads.map((p) => `\x1b]${{p}}\x07`).join("");
+  for (const t of TARGETS) {{
+    if (!t) continue;
+    try {{
+      // NON-BLOCKING: a tty whose reader is gone fills up, and a blocking
+      // write would freeze the agent itself (this runs in its process) and
+      // hold the tty's lock, which hangs anything else that stats /dev.
+      const fd = openSync(t, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
+      try {{ writeSync(fd, out); }} finally {{ closeSync(fd); }}
+      return;
+    }} catch {{ /* try the next */ }}
+  }}
+}};
+
+const ATTENTION = "{attention}";
+const WORKING   = "{working}";
+const DONE      = "{done}";
+const CTX       = "{ctx}";
+const SESSION   = "{session}";
+
+// Streaming events. Each one re-asserts working (throttled), so anything that
+// clears the spinner mid-turn is undone by the next token, as with opencode 1.
+const BEAT = [
+  "session.step.started", "session.text.delta", "session.reasoning.delta",
+  "session.tool.input.delta", "session.tool.called", "session.tool.progress",
+];
+
+export default {{
+  id: "termic",
+  setup(ctx) {{
+    if (!ACTIVE || typeof ctx?.data?.on !== "function") return;
+    const data = ctx.data;
+    const ui = ctx.ui;
+
+    // Parent links, from `session.created` and, for a session created before
+    // this plugin loaded, the TUI's own store.
+    const parents = new Map();
+    const parentOf = (id) => {{
+      if (parents.has(id)) return parents.get(id);
+      try {{ return data.session.get(id)?.parentID || undefined; }} catch {{ return undefined; }}
+    }};
+    const rootOf = (id) => {{
+      let cur = id;
+      // Bounded: a malformed link must never hang the TUI.
+      for (let i = 0; i < 64; i++) {{
+        const p = parentOf(cur);
+        if (!p) return cur;
+        cur = p;
+      }}
+      return cur;
+    }};
+
+    // The event stream is the shared service's, across every location it
+    // serves: other termic tasks' sessions, the desktop app's. A root becomes
+    // this tab's once this TUI's route shows it, and stays this tab's.
+    // Not its tab list: opencode keeps one list per directory, shared by every
+    // TUI there, so two tasks in one folder each list the other's sessions.
+    const owned = new Set();
+    const shown = (root) => {{
+      try {{
+        const r = ui?.router?.current?.();
+        return r?.type === "session" && rootOf(r.sessionID) === root;
+      }} catch {{ return false; }}
+    }};
+    const mine = (id) => {{
+      if (typeof id !== "string" || !id) return false;
+      const root = rootOf(id);
+      if (owned.has(root)) return true;
+      if (!shown(root)) return false;
+      owned.add(root);
+      return true;
+    }};
+    const isRoot = (id) => !parentOf(id);
+
+    // Roots of this tab with an execution in flight, and the prompts (a
+    // permission or a form) still waiting on the user, keyed to their root.
+    const running = new Set();
+    const blocked = new Map();
+    let lastBeat = 0;
+    const working = () => {{ lastBeat = Date.now(); send(WORKING); }};
+    // The resume binding. A turn starting in one of this TUI's roots is the
+    // session the user works in, so it is the one a relaunch should reopen.
+    // termic's fallback, `opencode session list`, only knows the newest
+    // session in the folder, which is another task's when two share one. Sent
+    // when it changes, and only in the id shape termic accepts.
+    let reported = "";
+    const binding = (id) => {{
+      if (id === reported || !/^[0-9a-zA-Z][0-9a-zA-Z_-]{{0,127}}$/.test(id)) return [];
+      reported = id;
+      return [SESSION + id];
+    }};
+    const beat = () => {{
+      if (!running.size || blocked.size) return;
+      const now = Date.now();
+      if (now - lastBeat < {HEARTBEAT_MS}) return;
+      lastBeat = now;
+      send(WORKING);
+    }};
+    const block = (key, sessionID) => {{
+      const root = rootOf(sessionID);
+      blocked.set(key, root);
+      running.add(root);
+      send(ATTENTION);
+    }};
+    // The release: attention is cleared exactly, not inferred from the next
+    // token.
+    const unblock = (key) => {{
+      if (blocked.delete(key) && !blocked.size) working();
+    }};
+    // Only direct children, and only running ones: opencode's own rule for
+    // holding a root's done (a grandchild reports to its own parent).
+    const hasRunningChild = (id) => {{
+      try {{
+        return data.session.family(id).some((child) =>
+          child !== id && data.session.get(child)?.parentID === id && data.session.status(child) === "running");
+      }} catch {{ return false; }}
+    }};
+    const finish = (root) => {{
+      if (!running.delete(root)) return;
+      for (const [key, r] of blocked) if (r === root) blocked.delete(key);
+      if (!running.size) send(DONE);
+    }};
+
+    // Context window, the TUI footer's formula: the last assistant step's
+    // input + output + reasoning + cache read + cache write, over the model's
+    // `limit.context` from the session location's model list.
+    const models = new Map();
+    const limits = new Map();
+    let lastCtx = "";
+    const limitFor = async (sessionID, ref) => {{
+      const location = data.session.get(sessionID)?.location;
+      const find = () => data.location?.model?.list?.(location)
+        ?.find((m) => m.providerID === ref.providerID && m.id === ref.id);
+      let model = find();
+      if (!model && data.location?.model?.sync) {{
+        await data.location.model.sync(location);
+        model = find();
+      }}
+      return model?.limit?.context || 0;
+    }};
+    const reportContext = async (sessionID, t) => {{
+      const ref = models.get(sessionID);
+      if (!ref || !t) return;
+      const used = (t.input || 0) + (t.output || 0) + (t.reasoning || 0)
+        + (t.cache?.read || 0) + (t.cache?.write || 0);
+      if (!(used > 0)) return;
+      const key = `${{ref.providerID}}/${{ref.id}}`;
+      let limit = limits.get(key);
+      if (limit === undefined) {{
+        limits.set(key, 0); // one lookup per model, not one per step
+        try {{ limit = await limitFor(sessionID, ref); }} catch {{ limit = 0; }}
+        limits.set(key, limit);
+      }}
+      if (!(limit > 0)) return;
+      const body = `${{used}} ${{limit}} ${{Math.round(used / limit * 100)}}`;
+      if (body === lastCtx) return;
+      lastCtx = body;
+      send(CTX + body);
+    }};
+
+    const off = [];
+    const on = (type, fn) => {{
+      try {{
+        off.push(data.on(type, (event) => {{
+          try {{
+            const r = fn(event?.data ?? {{}});
+            if (r && typeof r.catch === "function") r.catch(() => {{}});
+          }} catch {{ /* never throw into opencode */ }}
+        }}));
+      }} catch {{ /* an event this build does not know */ }}
+    }};
+
+    on("session.created", (d) => {{ if (d.parentID) parents.set(d.sessionID, d.parentID); }});
+    on("session.execution.started", (d) => {{
+      if (!mine(d.sessionID) || !isRoot(d.sessionID)) return;
+      running.add(d.sessionID);
+      lastBeat = Date.now();
+      send(WORKING, ...binding(d.sessionID));
+    }});
+    on("session.execution.succeeded", (d) => {{
+      if (!mine(d.sessionID) || !isRoot(d.sessionID)) return;
+      // A running subagent's report wakes this session again: not done yet.
+      if (hasRunningChild(d.sessionID)) return;
+      finish(d.sessionID);
+    }});
+    on("session.execution.interrupted", (d) => {{
+      if (mine(d.sessionID) && isRoot(d.sessionID)) finish(d.sessionID);
+    }});
+    on("session.execution.failed", (d) => {{
+      if (mine(d.sessionID) && isRoot(d.sessionID)) finish(d.sessionID);
+    }});
+    on("permission.asked", (d) => {{ if (mine(d.sessionID)) block(`p:${{d.id}}`, d.sessionID); }});
+    on("permission.replied", (d) => unblock(`p:${{d.requestID}}`));
+    on("form.created", (d) => {{ if (mine(d.form?.sessionID)) block(`f:${{d.form.id}}`, d.form.sessionID); }});
+    on("form.replied", (d) => unblock(`f:${{d.id}}`));
+    on("form.cancelled", (d) => unblock(`f:${{d.id}}`));
+    on("session.step.started", (d) => {{
+      if (d.model && mine(d.sessionID) && isRoot(d.sessionID)) models.set(d.sessionID, d.model);
+    }});
+    on("session.step.ended", (d) => {{
+      if (mine(d.sessionID) && isRoot(d.sessionID)) return reportContext(d.sessionID, d.tokens);
+    }});
+    // Heartbeats only ever extend a turn already known to be this tab's, so
+    // the stream's other locations cost a map lookup, not a tab scan.
+    for (const type of BEAT) on(type, (d) => {{
+      if (running.size && owned.has(rootOf(d.sessionID))) beat();
+    }});
+
+    return () => {{ for (const dispose of off.reverse()) try {{ dispose?.(); }} catch {{}} }};
+  }},
+}};
+"#
+    )
+}
+
+/// Files a `Schema::PluginFile` agent needs BESIDE its main module, relative
+/// to its config dir. Written by install, required by status, deleted by
+/// remove: the same lifecycle as the module itself.
+fn plugin_companions(agent: &str) -> Vec<(&'static str, String)> {
+    match agent {
+        "opencode" => vec![(OPENCODE_TUI_REL, opencode_tui_plugin_body())],
+        _ => Vec::new(),
+    }
 }
 
 // ───────────────────────── Pure JSON surgery ───────────────────────────
@@ -2301,9 +2619,17 @@ pub fn status(target: &Target) -> HookStatus {
     };
     if schema_for(&agent) == Schema::PluginFile {
         // A JS file, not JSON: presence IS the install, and there are no
-        // per-event entries, so consent and completeness coincide.
-        out.installed = settings.exists();
-        out.ours_present = out.installed;
+        // per-event entries. With a companion (opencode 2's TUI plugin) the
+        // module alone is incomplete rather than absent, so consent is ANY of
+        // our files and completeness is all. A v16 opencode install is exactly
+        // that, and stale, so sync writes the rest.
+        let config = config_dir(target).ok();
+        let companions: Vec<bool> = plugin_companions(&agent)
+            .iter()
+            .map(|(rel, _)| config.as_ref().is_some_and(|c| c.join(rel).exists()))
+            .collect();
+        out.installed = settings.exists() && companions.iter().all(|&c| c);
+        out.ours_present = settings.exists() || companions.iter().any(|&c| c);
         out.schema_version = std::fs::read_to_string(script.join(MANIFEST_NAME))
             .ok()
             .and_then(|s| serde_json::from_str::<Manifest>(&s).ok())
@@ -2883,6 +3209,12 @@ pub fn install(target: &Target) -> Result<(), String> {
         std::fs::create_dir_all(settings.parent().ok_or("no plugin dir")?)
             .map_err(|e| format!("create plugin dir: {e}"))?;
         write_atomic(&settings, plugin_body(&agent).as_bytes())?;
+        let config = config_dir(target)?;
+        for (rel, body) in plugin_companions(&agent) {
+            // `write_atomic` creates the parent, which for opencode 2 is the
+            // plugin DIRECTORY itself.
+            write_atomic(&config.join(rel), body.as_bytes())?;
+        }
         let manifest = Manifest {
             schema_version: SCHEMA_VERSION,
             command: settings.to_string_lossy().into_owned(),
@@ -3029,6 +3361,18 @@ pub fn remove(target: &Target) -> Result<(), String> {
         if settings.exists() {
             std::fs::remove_file(&settings)
                 .map_err(|e| format!("remove {}: {e}", settings.display()))?;
+        }
+        let config = config_dir(target)?;
+        for (rel, _) in plugin_companions(&agent) {
+            let file = config.join(rel);
+            if file.exists() {
+                std::fs::remove_file(&file).map_err(|e| format!("remove {}: {e}", file.display()))?;
+            }
+            // The directory opencode 2 discovers the plugin BY. `remove_dir`
+            // only takes an empty one, so anything a user put beside ours stays.
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
         }
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(|e| format!("remove {}: {e}", dir.display()))?;
@@ -3295,6 +3639,15 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
              for grok tabs it launches."
                 .into(),
         );
+    }
+    if base == "opencode" {
+        notes.push(format!(
+            "Also writes {OPENCODE_TUI_REL}, the part opencode 2 runs. opencode 2 \
+             runs ordinary plugins in one background service shared by every \
+             opencode on this computer, which cannot tell which terminal is this \
+             task's, so its reporting runs in opencode's terminal UI instead. \
+             opencode 1 does not load that folder."
+        ));
     }
     if agent_id == "grok" {
         notes.push(
@@ -4679,8 +5032,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // skips it and the user keeps that set forever: v3 types into startup
         // dialogs, v4 holds a tab on `working` for the rest of the session,
         // v14 says nothing at all when a done is held and spins until the
-        // ceiling.
-        assert_eq!(SCHEMA_VERSION, 16, "bump me with the hook set, or installs go stale silently");
+        // ceiling, v16 is refused outright by opencode 2's plugin loader.
+        assert_eq!(SCHEMA_VERSION, 17, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -5414,6 +5767,12 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert!(!"needs your permission: Bash".starts_with(READY_BODY));
     }
 
+    /// `TERMIC_E2E_AGENT_HOME` is process-global and the test harness runs
+    /// tests in parallel: two tests that each point it at their own temp home
+    /// install into each other's. Every test that sets it holds this.
+    #[cfg(all(unix, feature = "e2e"))]
+    static AGENT_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// An UPGRADE of a plugin-file install. The plugin is JS/TS, and install
     /// used to parse the existing file as JSON before reaching the plugin
     /// branch, so every upgrade was refused and opencode sat on v9 for a day.
@@ -5421,6 +5780,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[test]
     #[cfg(all(unix, feature = "e2e"))]
     fn a_plugin_install_upgrades_over_an_old_one() {
+        let _home = AGENT_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = std::env::temp_dir().join(format!("termic-plugin-upgrade-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("TERMIC_E2E_AGENT_HOME", &home);
@@ -5441,6 +5801,50 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             assert!(body.contains(CONTEXT_BODY_PREFIX), "{agent}: the new module was not written");
             remove(&target).unwrap();
         }
+        std::env::remove_var("TERMIC_E2E_AGENT_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// opencode's install is TWO files: the module both versions load and
+    /// opencode 2's TUI plugin directory. A v16 install (the module alone) is
+    /// incomplete rather than absent, so sync writes the rest; removal takes
+    /// both and the directory, but nothing a user put in it.
+    #[test]
+    #[cfg(all(unix, feature = "e2e"))]
+    fn an_opencode_install_writes_and_removes_the_opencode_2_plugin_too() {
+        let _home = AGENT_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =std::env::temp_dir().join(format!("termic-opencode2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("TERMIC_E2E_AGENT_HOME", &home);
+        let target = Target::Host("opencode".into());
+        let tui = config_dir(&target).unwrap().join(OPENCODE_TUI_REL);
+
+        install(&target).expect("install");
+        assert_eq!(std::fs::read_to_string(&tui).unwrap(), opencode_tui_plugin_body());
+        let st = status(&target);
+        assert!(st.installed && st.ours_present && !st.stale);
+
+        // What a v16 install left: the module, no TUI plugin.
+        std::fs::remove_file(&tui).unwrap();
+        let st = status(&target);
+        assert!(!st.installed, "the module alone reported as a complete install");
+        assert!(st.ours_present, "the module alone reported as no install");
+        install(&target).expect("reinstall");
+        assert!(status(&target).installed && tui.exists());
+
+        remove(&target).unwrap();
+        assert!(!tui.exists() && !tui.parent().unwrap().exists(), "the plugin directory was left");
+        assert!(!settings_path(&target).unwrap().exists());
+        let st = status(&target);
+        assert!(!st.installed && !st.ours_present);
+
+        // A file of the user's beside ours keeps the directory.
+        install(&target).expect("install again");
+        let theirs = tui.parent().unwrap().join("notes.txt");
+        std::fs::write(&theirs, "mine").unwrap();
+        remove(&target).unwrap();
+        assert!(!tui.exists() && theirs.exists());
+
         std::env::remove_var("TERMIC_E2E_AGENT_HOME");
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -5466,7 +5870,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[ignore = "needs a real codex binary on PATH"]
     #[cfg(all(unix, feature = "e2e"))]
     fn codex_hooks_install_is_trusted_by_codex_and_leaves_nothing_behind() {
-        let home = std::env::temp_dir().join(format!("termic-codex-e2e-{}", std::process::id()));
+        let _home = AGENT_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =std::env::temp_dir().join(format!("termic-codex-e2e-{}", std::process::id()));
         let codex_home = home.join(".codex");
         std::fs::create_dir_all(&codex_home).unwrap();
         std::env::set_var("TERMIC_E2E_AGENT_HOME", &home);
@@ -5591,7 +5996,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[ignore = "spends a real codex turn on the user's account"]
     #[cfg(all(unix, feature = "e2e"))]
     fn codex_hooks_fire_on_a_real_turn() {
-        let home = std::env::temp_dir().join(format!("termic-codex-fire-{}", std::process::id()));
+        let _home = AGENT_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =std::env::temp_dir().join(format!("termic-codex-fire-{}", std::process::id()));
         let codex_home = home.join(".codex");
         let work = home.join("work");
         std::fs::create_dir_all(&codex_home).unwrap();
@@ -6080,6 +6486,259 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert!(!js.contains('\u{1b}') && !js.contains('\u{7}'));
     }
 
+    // ── opencode 2 ──────────────────────────────────────────────────
+    #[test]
+    fn opencode_2_gets_a_tui_plugin_directory_beside_the_module() {
+        let companions = plugin_companions("opencode");
+        assert_eq!(companions.len(), 1);
+        let (rel, body) = &companions[0];
+        // A DIRECTORY under plugins/ holding `tui.js`: opencode 2 discovers TUI
+        // plugins only as directories, and a top-level file there would be
+        // handed to its server (the shared background service) instead.
+        assert_eq!(*rel, "plugins/termic/tui.js");
+        assert_eq!(Path::new(rel).parent(), Some(Path::new("plugins/termic")));
+        // opencode 1 globs `{plugin,plugins}/*.{ts,js}`, one level deep, so the
+        // module stays top-level and the TUI plugin never is.
+        assert_eq!(Path::new(settings_rel("opencode")).parent(), Some(Path::new("plugins")));
+        assert_eq!(body, &opencode_tui_plugin_body());
+        // pi and omp have one module and nothing beside it.
+        assert!(plugin_companions("pi").is_empty() && plugin_companions("omp").is_empty());
+    }
+
+    #[test]
+    fn the_opencode_2_plugin_can_never_throw_into_its_host() {
+        let js = opencode_tui_plugin_body();
+        assert!(js.contains("export default {"), "opencode 2 loads `default` only");
+        assert!(js.contains(r#"id: "termic""#) && js.contains("setup(ctx)"));
+        // Every event handler goes through the one wrapper, which swallows.
+        assert!(js.contains("never throw into opencode"));
+        assert!(!js.contains("data.on(\"") && !js.contains("ctx.data.on("), "a handler bypassed the wrapper");
+        assert!(js.contains("TERMIC_PTY") && js.contains("TERMIC_TASK_ID"));
+        assert!(js.contains(&Signal::Attention.payload()));
+        assert!(js.contains(WORKING_BODY) && js.contains(DONE_BODY));
+        assert!(js.contains(&format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}")));
+        assert!(!js.contains('\u{1b}') && !js.contains('\u{7}'));
+    }
+
+    /// The one module both opencode loaders read. opencode 1 takes
+    /// `default.server`; opencode 2 refuses anything without `default.{id,
+    /// setup}` and runs `setup` in its shared background service, where it
+    /// must do nothing even with a $TERMIC_PTY (inherited from whichever task
+    /// started that service). Runs the real module under node.
+    #[test]
+    #[cfg(unix)]
+    fn the_opencode_module_loads_under_both_opencode_loaders() {
+        use std::process::Command;
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("termic.mjs");
+        let pty = dir.path().join("pty");
+        std::fs::write(&plugin, opencode_plugin_body()).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let driver = dir.path().join("drive.mjs");
+        std::fs::write(&driver, r#"
+            const mod = await import(process.argv[2]);
+            const d = mod.default;
+            const ret = await d.setup({ client: {}, event: {}, session: {} });
+            const hooks = await d.server({});
+            console.log(JSON.stringify({
+              keys: Object.keys(mod), id: d.id, server: typeof d.server, setup: typeof d.setup,
+              setupReturned: ret === undefined, hooks: Object.keys(hooks).sort(),
+            }));
+        "#).unwrap();
+        let out = Command::new("node").arg(&driver).arg(&plugin)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let got: Value = serde_json::from_slice(&out.stdout).unwrap();
+        // Only `default`: opencode 1's fallback registers every export.
+        assert_eq!(got["keys"], serde_json::json!(["default"]));
+        assert_eq!(got["id"], "termic");
+        assert_eq!(got["server"], "function");
+        assert_eq!(got["setup"], "function");
+        assert_eq!(got["setupReturned"], true);
+        assert_eq!(got["hooks"], serde_json::json!(["chat.message", "chat.params", "event"]));
+        assert_eq!(std::fs::read_to_string(&pty).unwrap(), "", "the server half wrote to a terminal");
+    }
+
+    /// Drives the opencode 2 TUI plugin under node against a fake TUI context
+    /// shaped like `@opencode/plugin/tui`'s (`data.on`, `data.session`,
+    /// `data.location.model`, `ui.router`, `ui.tabs`), with event payloads from
+    /// opencode 2.2.5's schemas. Each step snapshots the pty, so a step's
+    /// value is what it alone sent.
+    #[test]
+    #[cfg(unix)]
+    fn the_opencode_2_plugin_follows_only_its_own_sessions() {
+        use std::process::Command;
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("tui.mjs");
+        let log = dir.path().join("log");
+        let pty = dir.path().join("pty");
+        std::fs::write(&plugin, opencode_tui_plugin_body()).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let driver = dir.path().join("drive.mjs");
+        std::fs::write(&driver, r#"
+            import { readFileSync, writeFileSync, appendFileSync } from "fs";
+            const [,, plugin, pty, log] = process.argv;
+            const mod = await import(plugin);
+            const handlers = new Map();
+            let route = { type: "home" };
+            let tabs = [];
+            const sessions = new Map();
+            const models = [{ providerID: "acme", id: "small", limit: { context: 200000 } }];
+            const ctx = {
+              data: {
+                on(type, fn) {
+                  if (!handlers.has(type)) handlers.set(type, new Set());
+                  handlers.get(type).add(fn);
+                  return () => handlers.get(type).delete(fn);
+                },
+                session: {
+                  get: (id) => sessions.get(id),
+                  family: (id) => [id, ...[...sessions.keys()].filter((k) => sessions.get(k)?.parentID === id)],
+                  status: (id) => sessions.get(id)?.status ?? "idle",
+                },
+                location: { model: { list: () => models, sync: async () => {} } },
+              },
+              ui: { router: { current: () => route }, tabs: { list: () => tabs } },
+            };
+            const cleanup = await mod.default.setup(ctx);
+            const emit = (type, data) => { for (const fn of handlers.get(type) ?? []) fn({ id: "evt", type, data }); };
+            const flush = () => new Promise((r) => setTimeout(r, 0));
+            const step = async (name, fn) => {
+              writeFileSync(pty, "");
+              await fn();
+              await flush();
+              appendFileSync(log, name + "=" + JSON.stringify(readFileSync(pty, "utf8")) + "\n");
+            };
+
+            // Another task's session on the same shared service.
+            await step("foreign", () => emit("session.execution.started", { sessionID: "ses_other" }));
+            await step("foreign-perm", () => emit("permission.asked", { id: "per_x", sessionID: "ses_other" }));
+            // This TUI's own.
+            route = { type: "session", sessionID: "ses_a" };
+            await step("start", () => emit("session.execution.started", { sessionID: "ses_a" }));
+            // A subagent: its own execution edges never move the tab...
+            sessions.set("ses_c", { parentID: "ses_a", status: "running" });
+            await step("child-start", () => {
+              emit("session.created", { sessionID: "ses_c", parentID: "ses_a" });
+              emit("session.execution.started", { sessionID: "ses_c" });
+            });
+            // ...but its permission is the user's to answer.
+            await step("perm", () => emit("permission.asked", { id: "per_1", sessionID: "ses_c" }));
+            await step("beat-blocked", () => emit("session.text.delta", { sessionID: "ses_c" }));
+            await step("replied", () => emit("permission.replied", { sessionID: "ses_c", requestID: "per_1", reply: "once" }));
+            await step("form", () => emit("form.created", { form: { id: "frm_1", sessionID: "ses_a", title: "Pick" } }));
+            await step("form-done", () => emit("form.replied", { id: "frm_1", sessionID: "ses_a", answer: {} }));
+            await step("step-start", () => emit("session.step.started", {
+              sessionID: "ses_a", assistantMessageID: "msg_1", agent: "build",
+              model: { providerID: "acme", id: "small" }, started: 1 }));
+            await step("ctx", () => emit("session.step.ended", {
+              sessionID: "ses_a", assistantMessageID: "msg_1", finish: "stop", cost: 0,
+              tokens: { input: 9189, output: 3, reasoning: 14, cache: { read: 1024, write: 0 } } }));
+            await step("ctx-again", () => emit("session.step.ended", {
+              sessionID: "ses_a", assistantMessageID: "msg_1", finish: "stop", cost: 0,
+              tokens: { input: 9189, output: 3, reasoning: 14, cache: { read: 1024, write: 0 } } }));
+            // The root finishes while its subagent still runs: held.
+            await step("held", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
+            sessions.get("ses_c").status = "idle";
+            await step("child-done", () => emit("session.execution.succeeded", { sessionID: "ses_c" }));
+            await step("wake", () => emit("session.execution.started", { sessionID: "ses_a" }));
+            // The user navigated away: the turn is still this tab's.
+            route = { type: "home" };
+            await step("done", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
+            await step("trailing", () => emit("session.text.delta", { sessionID: "ses_a" }));
+            await step("again", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
+            await step("restart", () => emit("session.execution.started", { sessionID: "ses_a" }));
+            await step("interrupted", () => emit("session.execution.interrupted", { sessionID: "ses_a", reason: "user" }));
+            // A session only in the tab list is not this TUI's: opencode keeps
+            // one list per directory, shared by every TUI there, so it holds
+            // another task's sessions when two tasks share a folder.
+            tabs = [{ sessionID: "ses_u", active: false, busy: false, attention: false }];
+            await step("tab-only-start", () => emit("session.execution.started", { sessionID: "ses_u" }));
+            await step("tab-only-perm", () => emit("permission.asked", { id: "per_u", sessionID: "ses_u" }));
+            await step("tab-only-done", () => emit("session.execution.succeeded", { sessionID: "ses_u" }));
+            // Two of this TUI's own sessions at once: done waits for the last.
+            route = { type: "session", sessionID: "ses_t" };
+            await step("t-start", () => emit("session.execution.started", { sessionID: "ses_t" }));
+            await step("a-start", () => emit("session.execution.started", { sessionID: "ses_a" }));
+            await step("one-left", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
+            await step("failed", () => emit("session.execution.failed", { sessionID: "ses_t", error: { type: "x", message: "m" } }));
+            // An id termic would refuse never goes out as one.
+            route = { type: "session", sessionID: "ses x;y" };
+            await step("odd-start", () => emit("session.execution.started", { sessionID: "ses x;y" }));
+            await step("odd-done", () => emit("session.execution.succeeded", { sessionID: "ses x;y" }));
+            await cleanup();
+            await step("disposed", () => emit("session.execution.started", { sessionID: "ses_a" }));
+            appendFileSync(log, "handlers=" + [...handlers.values()].reduce((n, s) => n + s.size, 0) + "\n");
+        "#).unwrap();
+        let out = Command::new("node").arg(&driver).arg(&plugin).arg(&pty).arg(&log)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = std::fs::read_to_string(&log).unwrap();
+        let at = |k: &str| {
+            let line = log.lines().find(|l| l.starts_with(&format!("{k}="))).unwrap_or_else(|| panic!("no {k}: {log}"));
+            serde_json::from_str::<String>(&line[k.len() + 1..]).unwrap_or_default()
+        };
+        let osc = |p: String| format!("\x1b]{p}\x07");
+        let (working, done, attention) =
+            (osc(Signal::Working.payload()), osc(Signal::Done.payload()), osc(Signal::Attention.payload()));
+        let ctx = |b: &str| osc(format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}{b}"));
+        // A turn's root is the resume binding, reported when it changes.
+        let started = |id: &str| format!("{working}{}", osc(format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{id}")));
+
+        assert_eq!(at("foreign"), "", "another task's session moved this tab: {log}");
+        assert_eq!(at("foreign-perm"), "", "another task's permission rang here: {log}");
+        assert_eq!(at("start"), started("ses_a"), "{log}");
+        assert_eq!(at("child-start"), "", "a subagent's start is not a turn edge: {log}");
+        assert_eq!(at("perm"), attention, "a subagent's permission is the user's: {log}");
+        assert_eq!(at("beat-blocked"), "", "a heartbeat cleared a pending prompt: {log}");
+        assert_eq!(at("replied"), working, "the release clears attention exactly: {log}");
+        assert_eq!(at("form"), attention, "{log}");
+        assert_eq!(at("form-done"), working, "{log}");
+        assert_eq!(at("step-start"), "", "a heartbeat inside the throttle wrote: {log}");
+        // opencode's footer formula: 9189 + 3 + 14 + 1024 + 0 over 200000.
+        assert_eq!(at("ctx"), ctx("10230 200000 5"), "{log}");
+        assert_eq!(at("ctx-again"), "", "the same reading twice: {log}");
+        assert_eq!(at("held"), "", "done while a subagent still runs: {log}");
+        assert_eq!(at("child-done"), "", "a subagent's done ended the turn: {log}");
+        assert_eq!(at("wake"), working, "the same session reported twice: {log}");
+        assert_eq!(at("done"), done, "navigating away dropped the done: {log}");
+        assert_eq!(at("trailing"), "", "a trailing token re-asserted working: {log}");
+        assert_eq!(at("again"), "", "one done per turn: {log}");
+        assert_eq!(at("restart"), working, "{log}");
+        assert_eq!(at("interrupted"), done, "{log}");
+        assert_eq!(at("tab-only-start"), "", "a session only in the shared tab list moved this tab: {log}");
+        assert_eq!(at("tab-only-perm"), "", "a session only in the shared tab list rang here: {log}");
+        assert_eq!(at("tab-only-done"), "", "{log}");
+        assert_eq!(at("t-start"), started("ses_t"), "{log}");
+        assert_eq!(at("a-start"), started("ses_a"), "a turn back in the first session moves the binding: {log}");
+        assert_eq!(at("one-left"), "", "done while another of this tab's sessions runs: {log}");
+        assert_eq!(at("failed"), done, "a failed execution ends the turn: {log}");
+        assert_eq!(at("odd-start"), working, "an id termic refuses was reported: {log}");
+        assert_eq!(at("odd-done"), done, "{log}");
+        assert_eq!(at("disposed"), "", "a handler outlived cleanup: {log}");
+        assert!(log.contains("handlers=0"), "{log}");
+
+        // Outside a termic pty it registers nothing at all.
+        let out = Command::new("node")
+            .arg("--input-type=module")
+            .arg("-e")
+            .arg(format!(
+                "const m = await import({:?}); const n = []; \
+                 const r = m.default.setup({{ data: {{ on: (t) => {{ n.push(t); return () => {{}}; }} }} }}); \
+                 console.log(n.length, r === undefined);",
+                plugin.to_string_lossy()
+            ))
+            .env("TERMIC_PTY", &pty).env_remove("TERMIC_TASK_ID").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0 true");
+    }
+
     /// Runs the generated plugin for real under node, with the event shapes
     /// opencode 1.18.31 was measured sending, and reads what reached the pty.
     /// Skipped where there is no node (the plugin itself runs under opencode's
@@ -6098,7 +6757,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         std::fs::write(&pty, "").unwrap();
         let driver = dir.path().join("drive.mjs");
         std::fs::write(&driver, r#"
-            const { TermicStatus } = await import(process.argv[2]);
+            const { default: { server: TermicStatus } } = await import(process.argv[2]);
             const client = { config: { providers: async () => ({ data: { providers: [
               { id: "acme", models: { "big": { limit: { context: 400000 } } } },
             ] } }) } };
@@ -6129,7 +6788,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // And the first reading, run on its own, is opencode's formula.
         std::fs::write(&pty, "").unwrap();
         std::fs::write(&driver, r#"
-            const { TermicStatus } = await import(process.argv[2]);
+            const { default: { server: TermicStatus } } = await import(process.argv[2]);
             const h = await TermicStatus({});
             await h["chat.params"]({ model: { providerID: "acme", id: "small", limit: { context: 200000 } } });
             await h.event({ event: { type: "message.updated", properties: { info: { role: "assistant",
@@ -6166,7 +6825,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         std::fs::write(&driver, r#"
             import { readFileSync, writeFileSync, appendFileSync } from "fs";
             const [,, plugin, pty, log] = process.argv;
-            const { TermicStatus } = await import(plugin);
+            const { default: { server: TermicStatus } } = await import(plugin);
             const h = await TermicStatus({});
             const step = async (name, fn) => {
               writeFileSync(pty, "");

@@ -23068,6 +23068,20 @@ pub struct AgentCapabilities {
     pub match_output: bool,
 }
 
+/// opencode's session-id capture (`post_launch_capture`), which must read
+/// both versions' `session list`. opencode 1 pads its table with spaces;
+/// opencode 2 separates the columns with TABS (`id\ttitle\tupdated`,
+/// `cli/src/commands/handlers/session/list.ts`). The old `cut -d' ' -f1` took
+/// a v2 line up to the first space in its title, and opencode 2's `--session`
+/// CREATES a session it does not know, so the relaunch opened an empty one
+/// instead of resuming. awk's default field split is any run of blanks.
+/// KEEP IN SYNC with the fallback in `lib/agents.ts`.
+const OPENCODE_CAPTURE: &str = "opencode session list | awk '/^ses_/ { print $1; exit }'";
+
+/// What `OPENCODE_CAPTURE` shipped as before opencode 2. A built-in opencode
+/// whose capture still equals it was never edited, so it is upgraded on load.
+const OPENCODE_CAPTURE_V1: &str = "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1";
+
 fn default_agents() -> Vec<Agent> {
     vec![
         Agent {
@@ -23432,7 +23446,7 @@ fn default_agents() -> Vec<Agent> {
             //   - worktrees: `--continue` resumes the last CWD session
             //     (safe because each worktree has its own unique directory).
             //   - on first PTY exit: post_launch_capture runs
-            //     `opencode session list | grep … | cut …`, stores the ID.
+            //     `opencode session list | awk …`, stores the ID.
             //   - subsequent spawns: `--session <captured-id>` via resume_id_args.
             id: "opencode".into(),
             display_name: "opencode".into(),
@@ -23472,7 +23486,7 @@ fn default_agents() -> Vec<Agent> {
             extends: None,
             kind: "agent".into(),
             post_launch_capture: Some(PostLaunchCapture {
-                command: "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1".into(),
+                command: OPENCODE_CAPTURE.into(),
             }),
         },
         Agent {
@@ -23964,6 +23978,17 @@ pub(crate) fn load_settings_in(id: &ProfileId) -> Settings {
     if s.docker_shared_config_dirs == legacy_shared_config_dirs_pre_azure() {
         s.docker_shared_config_dirs = docker::default_shared_config_dirs();
         migrated = true;
+    }
+    // Migration (opencode 2): the capture command could not read opencode 2's
+    // tab-separated `session list`. Only a command that still EXACTLY equals
+    // the shipped one is replaced; one the user wrote is theirs.
+    for a in s.agents.iter_mut().filter(|a| a.builtin && a.id == "opencode") {
+        if let Some(cap) = a.post_launch_capture.as_mut() {
+            if cap.command == OPENCODE_CAPTURE_V1 {
+                cap.command = OPENCODE_CAPTURE.into();
+                migrated = true;
+            }
+        }
     }
     for def in default_agents() {
         if let Some(a) = s.agents.iter_mut().find(|a| a.id == def.id && a.builtin) {
@@ -30833,6 +30858,57 @@ mod tests {
         let cwd = dir.path().to_string_lossy().into_owned();
         let seen = run_capture_command_blocking("printf %s \"$PATH\"", &cwd, None, false).unwrap();
         assert_eq!(seen, shell_env::spawn_env().0);
+    }
+
+    /// opencode 1 pads `session list` with spaces, opencode 2 separates it
+    /// with tabs (`id\ttitle\tupdated`). Synthetic fixtures in each shape; the
+    /// tab one is the hard case, because the title has spaces in it.
+    #[cfg(unix)]
+    #[test]
+    fn the_opencode_capture_reads_both_session_list_formats() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("v1"),
+            "ses_1a2b3c4d  Fix the login form           10/29/2026, 9:00 AM\n\
+             ses_0f0e0d0c  Older session                10/28/2026, 8:00 AM\n").unwrap();
+        fs::write(dir.path().join("v2"),
+            "ses_9z8y7x6w\tFix the login form\t11/4/2026, 1:20:08 AM\n\
+             ses_5v4u3t2s\tUntitled session\t11/3/2026, 7:00:00 PM\n").unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let run = |cmd: &str, file: &str| {
+            run_capture_command_blocking(&cmd.replace("opencode session list", &format!("cat {file}")), &cwd, None, false)
+                .unwrap()
+        };
+        assert_eq!(run(OPENCODE_CAPTURE, "v1"), "ses_1a2b3c4d");
+        assert_eq!(run(OPENCODE_CAPTURE, "v2"), "ses_9z8y7x6w");
+        // The control: the command this replaced, on opencode 2's output,
+        // captured the id glued to the title's first word.
+        assert_eq!(run(OPENCODE_CAPTURE_V1, "v1"), "ses_1a2b3c4d");
+        assert_eq!(run(OPENCODE_CAPTURE_V1, "v2"), "ses_9z8y7x6w\tFix");
+        // No session yet: nothing, not a header word.
+        fs::write(dir.path().join("none"), "").unwrap();
+        assert_eq!(run(OPENCODE_CAPTURE, "none"), "");
+    }
+
+    #[test]
+    fn the_opencode_capture_upgrades_only_when_it_is_still_the_shipped_one() {
+        crate::test_support::with_scratch_data_dir(|_| {
+            let set = |cmd: &str| {
+                let mut s = crate::load_settings_in(&ProfileId::Root);
+                let oc = s.agents.iter_mut().find(|a| a.id == "opencode").unwrap();
+                oc.post_launch_capture = Some(PostLaunchCapture { command: cmd.into() });
+                crate::save_settings_in(&ProfileId::Root, &s).unwrap();
+            };
+            let get = || {
+                crate::load_settings_in(&ProfileId::Root).agents.into_iter()
+                    .find(|a| a.id == "opencode").unwrap()
+                    .post_launch_capture.unwrap().command
+            };
+            set(OPENCODE_CAPTURE_V1);
+            assert_eq!(get(), OPENCODE_CAPTURE);
+            // A command the user wrote is theirs.
+            set("opencode session list --format json | jq -r '.[0].id'");
+            assert_eq!(get(), "opencode session list --format json | jq -r '.[0].id'");
+        });
     }
 
     #[test]

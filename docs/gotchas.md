@@ -1033,6 +1033,24 @@ another, and exercised only on the empty case. `a_plugin_install_upgrades_over_a
 now installs, fakes an old version on disk, and upgrades; with the parse moved
 back it fails with "termic.js is not valid JSON" (the control was run).
 
+## An agent's plugin process may not be the process termic spawned
+
+opencode 2 kept the `plugins/` directory and the in-process plugin idea, so the
+opencode 1 module looked like it only needed a new export shape. It did not:
+opencode 2's server plugins run in ONE background service per machine, spawned
+detached with the environment of whichever client started it, and the TUI in
+termic's pty is only a client. A plugin reading `$TERMIC_PTY` there reads some
+other task's terminal, and its event stream carries every location the service
+serves. The fix is to report from the process termic actually spawned (the TUI
+plugin, `plugins/termic/tui.js`) and to follow only sessions that TUI shows.
+
+Before trusting "in-process" for an agent, find out which process: for a
+client/server agent, the env, the tty and the event stream all belong to
+whoever owns the server. Also, the old module was not merely stale under
+opencode 2, it was REFUSED by the loader ("Plugin must export a default
+definition"), which from termic's side is indistinguishable from an agent that
+never reports. See docs/agent-hooks.md "opencode 2".
+
 ## Two senders on one signal cannot be told apart
 
 termic's hooks said "turn started / over" with OSC `133;C` / `133;D`, and so

@@ -212,9 +212,12 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
       // so termic can't mint or pass a UUID at spawn time. Instead:
       //   - worktrees: `--continue` resumes the most-recent CWD session
       //     (safe because each worktree has its own directory).
-      //   - after first message: post_launch_capture fires, captures the
-      //     session ID from `opencode session list`, stores it on the tab.
-      //   - subsequent spawns: `--session <captured-id>` via resume_id_args.
+      //   - opencode 2 with hooks: the TUI plugin reports the session a turn
+      //     starts in (`session <id>`), which is stored on the tab.
+      //   - otherwise, after first message: post_launch_capture fires,
+      //     captures the newest session ID from `opencode session list`,
+      //     stores it on the tab. Wrong when two tasks share a folder.
+      //   - subsequent spawns: `--session <stored-id>` via resume_id_args.
       resume_args: ["--continue"],
       resume_id_args: ["--session", "{UUID}"],
       yolo_args: [],
@@ -223,7 +226,9 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
     post_launch_capture: {
       // Run on first PTY exit when no session ID is stored yet. stdout
       // (trimmed) becomes the tab's resume session ID for subsequent spawns.
-      command: "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1",
+      // awk, not `cut -d' '`: opencode 2 separates the columns with tabs.
+      // KEEP IN SYNC with `OPENCODE_CAPTURE` in lib.rs.
+      command: "opencode session list | awk '/^ses_/ { print $1; exit }'",
     },
   },
   // Muse Code (Meta). Mirrors the Rust seeded default in lib.rs; the two

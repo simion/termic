@@ -2328,7 +2328,8 @@ const captureArmedRef = useRef(false);
       // The agent reporting the id of the session it is running, so termic can
       // resume THAT session later rather than "whatever ran last in this
       // directory". codex and devin report it at every start (they cannot be
-      // told an id at launch); claude reports it only when the session MOVES
+      // told an id at launch), opencode 2 whenever a turn starts in another
+      // of its sessions; claude reports it only when the session MOVES
       // inside a running process, on `/clear`, `/resume` and `/compact`
       // (GH #306), because a relaunch otherwise resumes the pre-`/clear` one.
       //
