@@ -631,6 +631,19 @@ TUI's sessions running, done waits for the last. The context window is the
 footer's formula (`tui/src/util/session.ts`): the last step's input + output
 + reasoning + cache read + cache write, over the model's `limit.context`.
 
+**The session id comes from the plugin.** Each time a turn starts in one of
+this TUI's roots, and the root differs from the last one sent, it reports
+`session <id>`, the same body codex, devin and omp send. That is
+the tab's resume binding, so a relaunch passes `--session <id>` for the
+conversation the user actually worked in. termic's other source, the
+`post_launch_capture` (`opencode session list`, first `ses_` line), is the
+newest session in the folder: two tasks sharing one folder both resumed the
+same one (seen by hand on 2.2.6, two spawns under a second apart with one
+`--session` id). The capture is still the fallback for opencode 1 and for a
+tab whose plugin never reported. A turn run in another task's session (its
+tab is on this TUI's bar too, see below) is refused by `sessionHolder`, which
+says whose it is instead of moving the binding.
+
 Known gaps, all from what opencode 2 shares per machine (its service, its
 `XDG_STATE_HOME`) and none fixed here:
 

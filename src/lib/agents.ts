@@ -212,9 +212,12 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
       // so termic can't mint or pass a UUID at spawn time. Instead:
       //   - worktrees: `--continue` resumes the most-recent CWD session
       //     (safe because each worktree has its own directory).
-      //   - after first message: post_launch_capture fires, captures the
-      //     session ID from `opencode session list`, stores it on the tab.
-      //   - subsequent spawns: `--session <captured-id>` via resume_id_args.
+      //   - opencode 2 with hooks: the TUI plugin reports the session a turn
+      //     starts in (`session <id>`), which is stored on the tab.
+      //   - otherwise, after first message: post_launch_capture fires,
+      //     captures the newest session ID from `opencode session list`,
+      //     stores it on the tab. Wrong when two tasks share a folder.
+      //   - subsequent spawns: `--session <stored-id>` via resume_id_args.
       resume_args: ["--continue"],
       resume_id_args: ["--session", "{UUID}"],
       yolo_args: [],

@@ -117,7 +117,9 @@ use std::path::{Path, PathBuf};
 // without `default.{id, setup}` and runs server plugins in a shared background
 // service whose env is not this task's; the reporting moves to a TUI plugin in
 // `plugins/termic/tui.js`. Stale-and-harmful for opencode: a v16 install is
-// rejected outright by opencode 2 and reports nothing at all.
+// rejected outright by opencode 2 and reports nothing at all. The TUI plugin
+// also reports the session id of the root a turn starts in, because
+// `opencode session list` only knows the newest session in the folder.
 pub const SCHEMA_VERSION: u32 = 17;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
@@ -236,9 +238,10 @@ const NOTIFY_PREFIX: &str = "777;notify;termic;";
 /// KEEP IN SYNC with `HOOK_OSC_BODY` in `lib/agentHooks.ts`.
 const ATTENTION_BODY: &str = "agent needs your input";
 
-/// Prefix of the body that reports the agent's own session id. Only codex sends
-/// it, because it is the only agent that can resume a session by id and cannot
-/// be handed one at launch. KEEP IN SYNC with `HOOK_OSC_SESSION_PREFIX` in
+/// Prefix of the body that reports the agent's own session id: sent by an agent
+/// that can resume a session by id but cannot be handed one at launch (codex,
+/// devin, omp, opencode 2), or whose session moves inside a running process
+/// (claude). KEEP IN SYNC with `HOOK_OSC_SESSION_PREFIX` in
 /// `lib/agentHooks.ts`.
 const SESSION_BODY_PREFIX: &str = "session ";
 
@@ -1961,11 +1964,12 @@ fn opencode_tui_plugin_body() -> String {
     let working = Signal::Working.payload();
     let done = Signal::Done.payload();
     let ctx = format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}");
+    let session = format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}");
     format!(
         r#"// termic agent hook for opencode 2 (generated, schema v{SCHEMA_VERSION}). Safe to delete.
 //
-// Reports opencode's state and context window to termic by writing one OSC
-// sequence to the terminal termic handed it ($TERMIC_PTY).
+// Reports opencode's state, context window and session id to termic by
+// writing one OSC sequence to the terminal termic handed it ($TERMIC_PTY).
 //
 // A TUI plugin, not a server one: opencode 2 runs server plugins in a
 // background service shared by every opencode on this machine, started with
@@ -1986,8 +1990,10 @@ const ACTIVE = Boolean(PTY && process.env.TERMIC_TASK_ID);
 // container's main process stdout, which docker relays to that same pty.
 const TARGETS = [PTY, "/proc/1/fd/1", "/dev/tty"];
 
-const send = (payload) => {{
+// Several payloads go out as ONE write, like the shell hooks' single printf.
+const send = (...payloads) => {{
   if (!ACTIVE) return;
+  const out = payloads.map((p) => `\x1b]${{p}}\x07`).join("");
   for (const t of TARGETS) {{
     if (!t) continue;
     try {{
@@ -1995,7 +2001,7 @@ const send = (payload) => {{
       // write would freeze the agent itself (this runs in its process) and
       // hold the tty's lock, which hangs anything else that stats /dev.
       const fd = openSync(t, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
-      try {{ writeSync(fd, `\x1b]${{payload}}\x07`); }} finally {{ closeSync(fd); }}
+      try {{ writeSync(fd, out); }} finally {{ closeSync(fd); }}
       return;
     }} catch {{ /* try the next */ }}
   }}
@@ -2005,6 +2011,7 @@ const ATTENTION = "{attention}";
 const WORKING   = "{working}";
 const DONE      = "{done}";
 const CTX       = "{ctx}";
+const SESSION   = "{session}";
 
 // Streaming events. Each one re-asserts working (throttled), so anything that
 // clears the spinner mid-turn is undone by the next token, as with opencode 1.
@@ -2066,6 +2073,17 @@ export default {{
     const blocked = new Map();
     let lastBeat = 0;
     const working = () => {{ lastBeat = Date.now(); send(WORKING); }};
+    // The resume binding. A turn starting in one of this TUI's roots is the
+    // session the user works in, so it is the one a relaunch should reopen.
+    // termic's fallback, `opencode session list`, only knows the newest
+    // session in the folder, which is another task's when two share one. Sent
+    // when it changes, and only in the id shape termic accepts.
+    let reported = "";
+    const binding = (id) => {{
+      if (id === reported || !/^[0-9a-zA-Z][0-9a-zA-Z_-]{{0,127}}$/.test(id)) return [];
+      reported = id;
+      return [SESSION + id];
+    }};
     const beat = () => {{
       if (!running.size || blocked.size) return;
       const now = Date.now();
@@ -2151,7 +2169,8 @@ export default {{
     on("session.execution.started", (d) => {{
       if (!mine(d.sessionID) || !isRoot(d.sessionID)) return;
       running.add(d.sessionID);
-      working();
+      lastBeat = Date.now();
+      send(WORKING, ...binding(d.sessionID));
     }});
     on("session.execution.succeeded", (d) => {{
       if (!mine(d.sessionID) || !isRoot(d.sessionID)) return;
@@ -6649,6 +6668,10 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             await step("a-start", () => emit("session.execution.started", { sessionID: "ses_a" }));
             await step("one-left", () => emit("session.execution.succeeded", { sessionID: "ses_a" }));
             await step("failed", () => emit("session.execution.failed", { sessionID: "ses_t", error: { type: "x", message: "m" } }));
+            // An id termic would refuse never goes out as one.
+            route = { type: "session", sessionID: "ses x;y" };
+            await step("odd-start", () => emit("session.execution.started", { sessionID: "ses x;y" }));
+            await step("odd-done", () => emit("session.execution.succeeded", { sessionID: "ses x;y" }));
             await cleanup();
             await step("disposed", () => emit("session.execution.started", { sessionID: "ses_a" }));
             appendFileSync(log, "handlers=" + [...handlers.values()].reduce((n, s) => n + s.size, 0) + "\n");
@@ -6665,10 +6688,12 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         let (working, done, attention) =
             (osc(Signal::Working.payload()), osc(Signal::Done.payload()), osc(Signal::Attention.payload()));
         let ctx = |b: &str| osc(format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}{b}"));
+        // A turn's root is the resume binding, reported when it changes.
+        let started = |id: &str| format!("{working}{}", osc(format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{id}")));
 
         assert_eq!(at("foreign"), "", "another task's session moved this tab: {log}");
         assert_eq!(at("foreign-perm"), "", "another task's permission rang here: {log}");
-        assert_eq!(at("start"), working, "{log}");
+        assert_eq!(at("start"), started("ses_a"), "{log}");
         assert_eq!(at("child-start"), "", "a subagent's start is not a turn edge: {log}");
         assert_eq!(at("perm"), attention, "a subagent's permission is the user's: {log}");
         assert_eq!(at("beat-blocked"), "", "a heartbeat cleared a pending prompt: {log}");
@@ -6681,7 +6706,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert_eq!(at("ctx-again"), "", "the same reading twice: {log}");
         assert_eq!(at("held"), "", "done while a subagent still runs: {log}");
         assert_eq!(at("child-done"), "", "a subagent's done ended the turn: {log}");
-        assert_eq!(at("wake"), working, "{log}");
+        assert_eq!(at("wake"), working, "the same session reported twice: {log}");
         assert_eq!(at("done"), done, "navigating away dropped the done: {log}");
         assert_eq!(at("trailing"), "", "a trailing token re-asserted working: {log}");
         assert_eq!(at("again"), "", "one done per turn: {log}");
@@ -6690,10 +6715,12 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert_eq!(at("tab-only-start"), "", "a session only in the shared tab list moved this tab: {log}");
         assert_eq!(at("tab-only-perm"), "", "a session only in the shared tab list rang here: {log}");
         assert_eq!(at("tab-only-done"), "", "{log}");
-        assert_eq!(at("t-start"), working, "{log}");
-        assert_eq!(at("a-start"), working, "{log}");
+        assert_eq!(at("t-start"), started("ses_t"), "{log}");
+        assert_eq!(at("a-start"), started("ses_a"), "a turn back in the first session moves the binding: {log}");
         assert_eq!(at("one-left"), "", "done while another of this tab's sessions runs: {log}");
         assert_eq!(at("failed"), done, "a failed execution ends the turn: {log}");
+        assert_eq!(at("odd-start"), working, "an id termic refuses was reported: {log}");
+        assert_eq!(at("odd-done"), done, "{log}");
         assert_eq!(at("disposed"), "", "a handler outlived cleanup: {log}");
         assert!(log.contains("handlers=0"), "{log}");
 
