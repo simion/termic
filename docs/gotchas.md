@@ -636,6 +636,23 @@ resume, then no `pty-exit` and no respawn. The waiter now does what
 halves (EOF or not with the pseudoconsole open, then once it is closed),
 with macOS as the control.
 
+## A Dock-launched app gets 256 fds, and every terminal costs 4
+
+launchd's default `maxfiles` soft limit is 256, and a GUI app opened from
+the Dock or Finder inherits it. A dev build started from a shell inherits
+the shell's (usually much higher) limit, so this never reproduces under
+`npm run tauri:dev`. Each host PTY holds 4 fds on `/dev/ptmx` (master,
+reader dup, writer dup, `SudoWatch` dup) over a ~70 fd baseline, so about
+50 terminals across all tasks made the next `openpty` fail with "Too many
+open files (os error 24)". It looked like a leak and was not: the ptmx
+count tracked live terminals exactly.
+
+`fd_limit::raise` lifts the soft limit to 1024 at the top of `run()`.
+Children inherit it on purpose (portable-pty gives no `pre_exec` hook to
+restore the original the way Ghostty does), which is why the number is
+modest rather than the hard limit. If you add an fd per PTY, redo the
+arithmetic in `fd_limit.rs`.
+
 ## A Windows path that mixes separators opens Documents, and reports success
 
 `explorer.exe` does not reject a path it cannot parse. It opens the user's

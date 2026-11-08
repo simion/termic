@@ -34,6 +34,7 @@ use uuid::Uuid;
 pub mod agent_hooks;
 pub mod agent_usage;
 pub mod codex_trust;
+mod fd_limit;
 mod sandbox;
 mod proxy;
 mod secrets;
@@ -26968,6 +26969,12 @@ pub fn run() {
     // this a panic that aborts the process leaves a crash report with no message.
     if let Ok(dir) = global_dir() {
         panic_log::install(dir.join("logs").join("panic.log"));
+    }
+    // Before any PTY is opened: a Dock-launched macOS app starts with a soft
+    // limit of 256 fds, which ~50 live terminals exhaust. Children inherit
+    // the raised limit (see fd_limit.rs).
+    if let Some((before, after)) = fd_limit::raise() {
+        dlog(&format!("[boot] RLIMIT_NOFILE soft {before} -> {after}"));
     }
     // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. It's the FAST path on
     // AMD/Intel (X11 and Wayland) and MUST stay on there: disabling it drops
