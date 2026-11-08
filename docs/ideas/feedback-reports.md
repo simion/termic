@@ -5,15 +5,38 @@ Termic's constraints, so the decision can be made on something concrete.
 
 ## The problem
 
-Today a user who hits a bug or has a suggestion has to leave the app, open
-GitHub, and describe the problem from memory. Most never do. A crash is worse:
-the app is gone, the context is gone, and `logs/panic.log` (see
-[data-model.md](../data-model.md)) is a file the user would have to find and
-paste by hand.
+## What exists today
 
-A "Send feedback" action inside the app lowers that cost. A "report this crash"
-prompt after an abnormal exit captures the one moment the user has the
-evidence in front of them.
+The sidebar footer has two support buttons (`Sidebar.tsx`, `openIssue` and
+`openMailto`), and the command palette has "open issue":
+
+- **Report a bug** (the bug icon) opens a prefilled "New issue" on
+  `github.com/simion/termic` in the browser.
+- **Contact** (the mail icon) opens a `mailto:` to `contact@termic.dev` and
+  copies the address, because the `mailto:` handler on macOS can end up in a
+  browser and do nothing (#103).
+
+Both hand the user to another app. Neither sends anything from Termic.
+
+## The problem
+
+What that leaves out:
+
+1. **A GitHub account is required** to file the issue. Users without one, or
+   who do not want a public identity on the tracker, drop out at the login page.
+2. **Nothing is captured.** The prefilled body is a template, so the user
+   describes the problem from memory. Version, OS and the evidence of a crash
+   are not attached.
+3. **Crashes are out of reach.** The app is gone, the context is gone, and
+   `logs/panic.log` (see [data-model.md](../data-model.md)) is a file the user
+   would have to find and paste by hand.
+4. **Suggestions are public by construction**, which suits some and stops
+   others from writing at all.
+
+This idea adds an in-app path that needs no account, attaches the facts the
+app already knows, and can offer a report at the one moment after a crash when
+the evidence exists. It does not replace the GitHub button: that stays for
+people who want a public, discussable issue.
 
 ## Constraints (decided up front)
 
