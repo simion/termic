@@ -26,7 +26,8 @@ import { Input } from "@/components/ui/Input";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/Tooltip";
-import { Check, Info, RefreshCw, TriangleAlert } from "lucide-react";
+import { Check, RefreshCw, TriangleAlert } from "lucide-react";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** peer_status, kept fresh by the backend's change event while mounted. */
 function usePeerStatus(): [PeerStatus | null, () => void] {
@@ -276,9 +277,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
           {nearby.length === 0 ? (
             <p data-testid="peers-nearby-empty" className="mt-3 flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-faint)]">
               {t("peers.nearby.empty")}
-              <Tip content={<span className="block max-w-[340px] whitespace-normal">{t("peers.nearby.emptyTip")}</span>} side="top">
-                <Info className="h-3.5 w-3.5 hover:text-[var(--color-fg-dim)]" />
-              </Tip>
+              <InfoTip text={t("peers.nearby.emptyTip")} />
             </p>
           ) : (
             <div className="mt-3 flex flex-col gap-2">
@@ -383,9 +382,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
       {enabled && <Block>
         <div className="flex items-center gap-1.5 text-[14px] font-medium">
           {t("peers.self.title")}
-          <Tip content={<span className="block max-w-[340px] whitespace-normal">{t("peers.self.hint")}</span>} side="top">
-            <Info className="h-3.5 w-3.5 text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]" />
-          </Tip>
+          <InfoTip text={t("peers.self.hint")} />
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <Input

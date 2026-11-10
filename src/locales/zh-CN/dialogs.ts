@@ -775,7 +775,6 @@ export default {
     blockKeychainHint: "阻止智能体访问你的 macOS 钥匙串（gh 令牌、git 密码）。claude 会要求你在此任务中登录一次。",
     leaveDockerKeychainNote: "此任务将重新阻止访问钥匙串。",
     yoloNote: "<b>沙箱内自动开启 YOLO。</b>智能体自己的权限提示会被跳过，因为 seatbelt 配置才是真正的边界。此任务的全局 YOLO 开关将仅供参考。",
-    presetLabel: "预设：",
     resetProjectDefaults: "重置为项目默认值",
     resetProjectDefaultsTitle: "从 {{project}} 当前的沙箱默认值重新同步（设置 → 项目）。",
     allowedPathsLabel: "允许的路径",

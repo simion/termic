@@ -782,7 +782,6 @@ export default {
     blockKeychainHint: "Keeps the agent out of your macOS Keychain (gh token, git passwords). claude will ask you to sign in once inside this task.",
     leaveDockerKeychainNote: "Keychain access will be blocked again for this task.",
     yoloNote: "<b>YOLO auto-on inside the cage.</b> The agent's own permission prompts are skipped because the seatbelt profile is the real boundary. The global YOLO toggle becomes informational for this task.",
-    presetLabel: "Preset:",
     resetProjectDefaults: "Reset to project defaults",
     resetProjectDefaultsTitle: "Re-sync from {{project}}'s current sandbox defaults (Settings → Projects).",
     allowedPathsLabel: "Allowed paths",

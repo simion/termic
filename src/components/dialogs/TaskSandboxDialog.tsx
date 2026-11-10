@@ -21,9 +21,8 @@ import {
 } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode, type SandboxSelection, type Settings } from "@/lib/types";
 import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
-import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
 import { RolePicker, roleCageNote, roleDisabledReason, useRoleDraft, withRoleCage } from "@/components/secretsUi/RolePicker";
-import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
 
 export function TaskSandboxDialog() {
@@ -556,21 +555,13 @@ export function TaskSandboxDialog() {
             because the project's current defaults are user-owned
             (vs the bundled Presets which are app-owned). */}
         {enabled && (
-          <div className="flex flex-wrap items-center gap-2 text-[13px]">
-            <span className="text-[var(--color-fg-faint)]">{t("taskSandbox.presetLabel")}</span>
-            {SANDBOX_PRESETS.map(p => (
-              <button
-                key={p.id} type="button"
-                title={presetHint(p)}
-                onClick={() => {
-                  setRwText(p.rwPaths.join("\n"));
-                  setHostsText(p.allowedHosts.join("\n"));
-                }}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-              >
-                {presetLabel(p)}
-              </button>
-            ))}
+          <SandboxPresetRow
+            mode={mode}
+            rw={rwText}
+            hosts={hostsText}
+            onPick={p => { setRwText(p.rwPaths.join("\n")); setHostsText(p.allowedHosts.join("\n")); }}
+            className="text-[13px]"
+          >
             {project && (
               <button
                 type="button"
@@ -584,7 +575,7 @@ export function TaskSandboxDialog() {
                 {t("taskSandbox.resetProjectDefaults")}
               </button>
             )}
-          </div>
+          </SandboxPresetRow>
         )}
 
         {/* Allow-list config only matters when there's a cage (Monitoring

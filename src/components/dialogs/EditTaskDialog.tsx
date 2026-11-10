@@ -24,11 +24,10 @@ import { taskSetRole, taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride
 import { readMemberModes, seedMemberMode, persistMemberMode } from "./memberModes";
 import { cn } from "@/lib/utils";
 import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Settings, type Task, type TaskMember } from "@/lib/types";
-import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
 import { RolePicker, roleCageNote, roleDisabledReason, useRoleDraft, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { memberSandboxUnion } from "@/lib/projectSandboxDefault";
 import { ListField } from "@/components/settings/Controls";
-import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
 import { restartTaskAgents } from "@/lib/accountRestart";
 import { AlertTriangle, GitBranch, History, Link2, Loader2, Zap } from "lucide-react";
@@ -884,22 +883,12 @@ export function EditTaskDialog() {
             <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
               {t("editTask.sandboxPaneTitle")}
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
-              {SANDBOX_PRESETS.map(p => (
-                <button
-                  key={p.id} type="button"
-                  title={p.hint}
-                  onClick={() => {
-                    setSbRw(p.rwPaths.join("\n"));
-                    setSbHosts(p.allowedHosts.join("\n"));
-                  }}
-                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            <SandboxPresetRow
+              mode={selMode}
+              rw={sbRw}
+              hosts={sbHosts}
+              onPick={p => { setSbRw(p.rwPaths.join("\n")); setSbHosts(p.allowedHosts.join("\n")); }}
+            />
             <Field label={t("newTask.allowedPathsLabel")} hint={t("editTask.allowedPathsHint")}>
               <textarea
                 data-testid="sandbox-rw-paths"

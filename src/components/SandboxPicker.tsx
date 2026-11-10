@@ -4,12 +4,14 @@
 // Still a UI-only view over the SAME two independent backend fields
 // (`sandbox_mode` / `docker_sandbox_enabled`, see SandboxSelection in
 // lib/types.ts) - no new data model, just one picker instead of two.
+import type { ReactNode } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { SandboxMode, SandboxSelection } from "@/lib/types";
 import { SANDBOX_VISUALS, sandboxPickerLabelT, sandboxModeText, SandboxIcon, DockerSandboxIcon, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { SANDBOX_PRESETS, presetHint, presetLabel, type SandboxPreset } from "@/lib/sandboxPresets";
 
 /** Row-major order: OFF / ENFORCING (FS) on top, MONITORING / ENFORCING
  *  below, DOCKER on its own row - it's a different MECHANISM, not another
@@ -168,6 +170,54 @@ export function DockerEngineNote({ compact = false }: { compact?: boolean }) {
   return (
     <div className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>
       <Trans i18nKey="sandbox.dockerNote" ns="chrome" components={{ u: <u /> }} />
+    </div>
+  );
+}
+
+const lines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
+const same = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+/** "Preset:" and one button per bundled preset, shared by every dialog that
+ *  edits a task's sandbox lists. The preset the lists already match stays
+ *  pressed, so a click always shows. The presets differ only in their hosts,
+ *  so in Enforcing (FS), where the host list is hidden, they change nothing
+ *  you can see and are left out (`children`, such as a reset button, stay). */
+export function SandboxPresetRow({ mode, rw, hosts, onPick, className, children }: {
+  mode: SandboxMode;
+  /** The two textareas' current text, newline separated. */
+  rw: string;
+  hosts: string;
+  onPick: (p: SandboxPreset) => void;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation("dialogs");
+  const presets = mode === "enforce-fs" ? [] : SANDBOX_PRESETS;
+  if (!presets.length && !children) return null;
+  return (
+    <div data-testid="sandbox-presets" className={cn("flex flex-wrap items-center gap-2 text-[12px]", className)}>
+      <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
+      {presets.map(p => {
+        const on = same(lines(rw), p.rwPaths) && same(lines(hosts), p.allowedHosts);
+        return (
+          <button
+            key={p.id} type="button"
+            data-preset={p.id}
+            aria-pressed={on}
+            title={presetHint(p)}
+            onClick={() => onPick(p)}
+            className={cn(
+              "rounded-md border px-2 py-0.5",
+              on
+                ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-fg)]"
+                : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            {presetLabel(p)}
+          </button>
+        );
+      })}
+      {children}
     </div>
   );
 }
