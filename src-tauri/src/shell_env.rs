@@ -867,21 +867,32 @@ pub fn which_in(bin: &str, path: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// The program a PTY should start for `cmd`, on Windows: a bare name
-/// (no directory, no extension) resolved against `path` with PATHEXT, so
-/// `pi` becomes `...\npm\pi.cmd`. portable-pty's own lookup tries the exact
-/// name first in every directory, and npm installs an extensionless shell
-/// shim next to each `.cmd`; it found that shim, and CreateProcess refused
-/// it ("%1 is not a valid Win32 application"). Anything else, and every
-/// name off Windows, is returned unchanged.
+/// The program a PTY should start for `cmd`: a bare name resolved against
+/// `path` to an absolute file.
+///
+/// Unix: portable-pty's own lookup tries `<cwd>/<name>` BEFORE `PATH`, and
+/// a PTY's cwd is the task worktree, which a caged agent (or a committed
+/// file) can write. A bare `sandbox-exec`, `docker` or `env` would run that
+/// file uncaged. Resolving here means the worktree never gets a say.
+///
+/// Windows: same resolution with PATHEXT, so `pi` becomes `...\npm\pi.cmd`.
+/// portable-pty tries the exact name first in every directory, and npm
+/// installs an extensionless shell shim next to each `.cmd`; it found that
+/// shim, and CreateProcess refused it ("%1 is not a valid Win32
+/// application"). A name with an extension is taken as given there.
+///
+/// A path, or a name found nowhere, is returned unchanged, so the spawn
+/// error names what was asked (`pty_spawn` refuses the unresolved name if
+/// the cwd holds a file by it).
 pub fn resolve_program(cmd: &str, path: &str) -> String {
-    if !cfg!(windows)
-        || cmd.contains(['/', '\\'])
-        || std::path::Path::new(cmd).extension().is_some()
+    if cmd.contains(['/', '\\'])
+        || (cfg!(windows) && std::path::Path::new(cmd).extension().is_some())
     {
         return cmd.to_string();
     }
     which_in(cmd, path)
+        // a relative PATH entry (`.`) would hand the name back to the cwd.
+        .filter(|p| p.is_absolute())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| cmd.to_string())
 }
@@ -1094,10 +1105,21 @@ mod tests {
         assert_eq!(merge_path_lists(&["", ""]), "");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn resolve_program_is_the_identity_off_windows() {
-        if cfg!(windows) { return; }
-        assert_eq!(resolve_program("pi", "/usr/bin"), "pi");
+    fn resolve_program_never_hands_a_bare_name_to_the_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        let env = bin.path().join("env");
+        std::fs::write(&env, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = join_path_dirs(&[std::path::PathBuf::from("."), bin.path().to_path_buf()]);
+        // found on PATH: absolute, so portable-pty skips its `<cwd>/env` probe.
+        // The leading `.` entry is skipped even though the name is relative.
+        assert_eq!(resolve_program("env", &path), env.to_string_lossy());
+        // a path is taken as given; nothing found stays bare.
+        assert_eq!(resolve_program("/bin/sh", &path), "/bin/sh");
+        assert_eq!(resolve_program("nope-not-here", &path), "nope-not-here");
     }
 
     #[test]

@@ -4405,9 +4405,19 @@ fn pty_spawn(
         _ => None,
     };
 
-    // Windows: resolve a bare name ourselves (see shell_env::resolve_program),
-    // against the PATH the child gets below.
+    // resolve a bare name ourselves (see shell_env::resolve_program), against
+    // the PATH the child gets below. Off Windows a name left bare makes
+    // portable-pty try `<cwd>/<name>` first, and the cwd is a worktree an
+    // agent can write: refuse rather than run what it planted.
     let effective_cmd = shell_env::resolve_program(&effective_cmd, &shell_env::spawn_env().0);
+    if cfg!(unix)
+        && !effective_cmd.contains('/')
+        && std::path::Path::new(&args.cwd).join(&effective_cmd).exists()
+    {
+        return Err(format!(
+            "refusing to start {effective_cmd}: not found on PATH, and the working directory holds a file by that name"
+        ));
+    }
     let mut cmd = CommandBuilder::new(&effective_cmd);
     for a in &effective_args {
         cmd.arg(a);
