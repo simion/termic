@@ -505,8 +505,10 @@ describe("new task dialog: side rail", () => {
       w.__sawIsolation = false;
       w.__obs?.disconnect();
       w.__obs = new MutationObserver(() => {
+        // panes hide with the `hidden` CLASS, not the attribute, so ask
+        // the computed style: `p.hidden` is false on every pane.
         const p = document.querySelector('[data-testid="new-task-pane-isolation"]') as HTMLElement | null;
-        if (p && !p.hidden) w.__sawIsolation = true;
+        if (p && getComputedStyle(p).display !== "none") w.__sawIsolation = true;
       });
       w.__obs.observe(document.body, { subtree: true, childList: true, attributes: true });
     });
