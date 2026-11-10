@@ -4,5 +4,6 @@
 // `task` = New Task / sandbox dialogs, footer chip, popover, sidebar.
 import manage from "./secretsManage";
 import task from "./secretsTask";
+import shell from "./secretsShell";
 
-export default { manage, task };
+export default { manage, task, shell };

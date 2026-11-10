@@ -169,6 +169,46 @@ fn another_spawns_placeholder_is_not_swapped() {
 }
 
 #[test]
+fn foreign_token_on_the_socket_is_forwarded_and_recorded() {
+    let up = upstream("200 OK");
+    let h = start_for("t-foreign", &role(vec![]), &up, true, None, false);
+    let resp = over_socket(&h, "GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: token gho_FROMZSHRC\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    // today's behaviour stands: forwarded untouched, nothing swapped in.
+    let got = up.rx.recv().unwrap();
+    assert!(got.contains("Authorization: token gho_FROMZSHRC") && !got.contains(REAL));
+    let c = counts("t-foreign");
+    assert_eq!((c.foreign_token, c.suspicious, c.used), (1, 1, 0));
+    let ev = events("t-foreign");
+    assert_eq!((ev.suspicious[0].kind.as_str(), ev.suspicious[0].host.as_str()), ("foreign_token", "api.github.com"));
+    assert!(!format!("{ev:?}").contains("gho_FROMZSHRC"), "never any part of the value");
+    // the spawn's own placeholder, or no token at all, is not foreign.
+    let ph = gh_token(&h);
+    over_socket(&h, &format!("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: token {ph}\r\n\r\n"));
+    over_socket(&h, "GET /zen HTTP/1.1\r\nHost: api.github.com\r\n\r\n");
+    assert_eq!(counts("t-foreign").foreign_token, 1);
+    // a request the role denies still says whose token it carried.
+    let h = start_for("t-foreign-denied", &reviewer(), &up, true, None, false);
+    let resp = over_socket(&h, "DELETE /repos/acme/widget HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: token gho_FROMZSHRC\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 403"), "{resp}");
+    assert_eq!(counts("t-foreign-denied").foreign_token, 1);
+}
+
+#[test]
+fn shell_keys_never_collide_with_an_agent_key() {
+    let task = "0b6f2d1e-aaaa-bbbb-cccc-1234567890ab";
+    let k = shell_key(task, "tab-1");
+    assert_ne!(k, task);
+    assert_ne!(k, shell_key(task, "tab-2"));
+    assert_eq!(parse_shell_key(&k), Some((task, "tab-1")));
+    assert_eq!(parse_shell_key(task), None, "an agent's key is not a shell key");
+    // events and pause are per key.
+    set_paused(&k, true);
+    assert!(is_paused(&k) && !is_paused(task));
+    set_paused(&k, false);
+}
+
+#[test]
 fn placeholder_to_an_unbound_host_is_refused_and_flagged() {
     let up = upstream("200 OK");
     let h = start_for("t-unbound", &role(vec![]), &up, true, None, true);
@@ -812,4 +852,30 @@ fn bindings_changed_flags_only_what_a_spawn_baked_in() {
     let added = Role { secrets: vec!["gh".into(), "gh2".into()], ..started.clone() };
     assert!(ch(&[added], &[secret(), other]), "secret added");
     assert!(ch(std::slice::from_ref(&started), &[SecretDef { hosts: vec!["api.github.com".into()], ..secret() }]), "hosts edited");
+}
+
+#[test]
+fn a_task_pause_covers_its_shells_and_a_forgotten_shell_starts_clean() {
+    let k = shell_key("t-pause-shells", "tab1");
+    set_paused("t-pause-shells", true);
+    assert!(counts(&k).paused, "pausing the task pauses its shell");
+    set_paused("t-pause-shells", false);
+    assert!(!counts(&k).paused);
+    // a shell's own pause ends with the shell (Restart, close).
+    set_paused(&k, true);
+    forget_shell(&k);
+    assert!(!counts(&k).paused);
+    // archive forgets every shell of the task, and only that task's.
+    let other = shell_key("t-pause-other", "tab1");
+    set_paused(&k, true);
+    set_paused(&other, true);
+    forget_task_shells("t-pause-shells");
+    assert!(!counts(&k).paused);
+    assert!(counts(&other).paused);
+    // an agent's key is never a shell's to forget.
+    set_paused("t-pause-shells", true);
+    forget_shell("t-pause-shells");
+    assert!(counts("t-pause-shells").paused);
+    set_paused("t-pause-shells", false);
+    forget_task_shells("t-pause-other");
 }

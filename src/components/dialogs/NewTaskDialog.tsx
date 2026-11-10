@@ -30,7 +30,7 @@ import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, Circ
 import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
 import { RolePicker, SecretsForTask, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { useSecrets, ensureSecretsSync } from "@/store/secrets";
-import { roleDefault, roleToStore } from "@/lib/secretsUi";
+import { roleDefault } from "@/lib/secretsUi";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
@@ -394,13 +394,18 @@ export function NewTaskDialog() {
   const blockKcArg = kcRow && blockKc;
   const roles = useSecrets(s => s.roles);
   const secretDefs = useSecrets(s => s.secrets);
-  const roleDef = roleDefault(project, agents.find(a => a.id === cli));
+  const roleAgent = agents.find(a => a.id === cli);
+  const roleDef = roleDefault(project, roleAgent);
   const roleDisabled = roleDisabledReason(t, { docker: dockerWanted, mode: sandboxMode, seatbelt: osSandboxOk !== false });
   // What the task gets: the pick, but only while the block applies.
   const roleEff = roleDisabled === null && blockKcArg ? rolePick : "";
-  // Not blocked: null, so the task inherits a default that applies once the
-  // block is turned on (the footer's uncaged notice offers exactly that).
-  const roleArg = roleDisabled === null && blockKcArg ? roleToStore(roleEff, roleDef) : null;
+  // Saved on the task as picked. Not blocked: null, so Rust seeds it from
+  // the defaults (seed_task_role), which apply once the block is turned on
+  // (the footer's uncaged notice offers exactly that).
+  const roleArg = roleDisabled === null && blockKcArg ? roleEff : null;
+  const roleSeededFrom = roleDef && roleEff && roleEff === roleDef.id
+    ? (roleDef.source === "project" ? { source: "project" as const } : { source: "agent" as const, agent: roleAgent?.display_name || cli })
+    : null;
   const roleObj = roleEff ? roles.find(r => r.id === roleEff) ?? null : null;
   const pickRole = (id: string) => { setRolePick(id); if (id) setBlockKc(true); };
   const chooseBlockKc = (v: boolean) => { setBlockKc(v); if (!v) setRolePick(""); };
@@ -2292,7 +2297,7 @@ export function NewTaskDialog() {
             secrets={secretDefs}
             value={roleEff}
             onChange={withRoleCage(dockerWanted ? "off" : sandboxMode, chooseSelection, pickRole)}
-            def={roleDef}
+            seededFrom={roleSeededFrom}
             disabledReason={roleDisabled}
             note={roleCageNote(t, { docker: dockerWanted, mode: sandboxMode })}
           />

@@ -315,10 +315,11 @@ counted in `KEYCHAIN_OPEN`: a caged one whose profile left it open
 (`provision`), and an uncaged one, Off or a failed provision
 (`pty_spawn`, which knows there is no bundle). `sandbox_deny_counts`
 reports that count (`keychain_open`) on the poll the footer already
-makes. Nonzero reads "Keychain block applies on restart"; zero reads
-"Keychain blocked"; before the first answer, or after a failed poll, the
-suffix is not shown at all, since "blocked" is a claim and never a
-default. Whether the profile blocks comes from one function,
+makes. Nonzero reads "restart to apply" on the cage chip and "Blocked
+from the next restart" on the popover's Keychain row; zero reads
+"Blocked"; before the first answer, or after a failed poll, the chip
+claims nothing and the row reads "Checking", since "blocked" is a claim
+and never a default (the chip carries it as `data-keychain`). Whether the profile blocks comes from one function,
 `blocks_keychain`, which both the renderer and `provision` call.
 
 When set, `render_profile_with` emits `KEYCHAIN_MACH_DENY` and a
@@ -535,7 +536,10 @@ through.
 
 **Out of scope.** The AuxTerminal, scripts and shell tabs see everything:
 they are the user's, not the threat model. Docker needs nothing, since a
-container never gets host env (only `TERM` and the relocation vars).
+container never gets host env (only `TERM` and the relocation vars). The
+one exception is a shell the user started with a Secrets role: it loses
+what its role's recipes strip (`GH_TOKEN` and friends, an API key's own
+vars), and nothing else (see "Shells" below).
 
 ## Credential broker (Secrets roles)
 
@@ -544,11 +548,18 @@ an API key without ever holding it. Code: `src-tauri/src/broker/`, wired in
 `sandbox::provision` / `wrap_command`, MITM hook in `proxy.rs`.
 
 **When it applies.** Seatbelt Enforce or EnforceFs, the Keychain block
-on (`sandbox::blocks_keychain`), and a role resolved (task, then
-project default, then agent default; `lib.rs` `spawn_broker_setup`). An
+on (`sandbox::blocks_keychain`), and the task's own role (`lib.rs`
+`spawn_broker_setup`, every agent of the task runs it). Defaults are
+read only at creation: a task created with no role is given the
+project's default, else its primary agent's, else No secrets
+(`seed_task_role`), so a default changed later never moves an existing
+task. An
 agent that can read the Keychain can read the real token itself, so
 without the block the spawn is exactly what it would be with no role.
-Only agent PTYs: the AuxTerminal and scripts never reach `provision`.
+Agent PTYs get it through `provision`; a shell (a main-area shell tab or
+the bottom split) gets one only when the user starts that shell with a
+role (see "Shells" below), and no default ever applies to one. Scripts
+never do.
 Docker never gets a role (no proxy there yet). So picking a role in a
 task dialog (New Task, Edit, Sandbox, Schedule) moves an uncaged or
 Monitor draft to Enforcing (FS) and ticks the block, and the picker says
@@ -716,7 +727,7 @@ role, or deleted, is refused 403 `secret-revoked` from the next request:
 its rule sets went with it, and judging it would allow. The other way
 round (a secret added or swapped onto the role, or a bound secret's hosts
 or Keychain item edited) only lands on restart, so `broker_counts`
-reports `stale` and the footer chip shows the restart banner. A deleted role (or
+reports `stale` and the cage chip reads "restart to apply". A deleted role (or
 settings that fail to parse) reads as a role with no secrets, so it
 revokes everything instead of falling back to the spawn-time rules. Task allows
 first, then the role's rule set for (secret, host), first match, then its
@@ -809,14 +820,86 @@ and host, by method or fetch/push), Blocked, No secret, Suspicious
 (`placeholder_unbound_host`, `wrong_peer`, and `keychain_denied`: a
 brokered task's path deny under `~/Library/Keychains`). Used and Blocked
 rows name the role the spawn runs, which is the role a role-scoped Allow
-lands on (not the task's saved role, which a switch or a second agent can
-make differ), and `broker_counts.roles` lists the roles live spawns run.
+lands on (not the task's saved role, which a switch makes differ until
+the agent restarts), and `broker_counts.roles` lists the roles live spawns run.
 Each map keeps at most 200 rows (oldest evicted) and clips fields to 512
 bytes, since paths and hosts are agent-chosen. Cleared at `provision` only
 when none of the task's agents still holds a broker, so a second tab or a
 restart keeps a running agent's evidence; an Allow clears the rows it
 covers. Pause refuses every brokered request of the task until resumed,
 live.
+
+**The cage chip** (`CageChip.tsx`, state in `lib/cageChip.ts`, a vitest
+table per state) is the status bar's one control for what an agent can
+reach, as one pill with two targets. The left part reads `[shield] <mode> ·
+[key] <role>` ("Sandbox off · No secrets" when nothing is set; "No
+secrets" only shows when a role exists to pick), then "restart to apply"
+when something saved waits for a restart (a role switch, a stale role, a
+store block the live agent predates). A role set but unable to apply (no
+store block, Monitor, Docker) is struck through in amber. The right part,
+the tail, is the one thing that needs you, highest first: `N suspicious`
+(red, pill tinted), `paused`, then one `N blocked` that adds the cage's
+denies to the role's blocks (`N accesses` in Monitor); it is absent when
+nothing does.
+
+The left part opens **Settings**, a compact popover with no lists: one row
+per setting, each led by the glyph the chip and the sidebar already use.
+Sandbox mode is five glyph buttons (Off, Monitoring, Enforcing FS,
+Enforcing, and Docker once it is offered), the credential-store block a
+lock switch (only inside the enforcing modes), the Secrets role the one
+role list with an "Edit <role> in Settings" link, and YOLO a bolt switch
+(forced on, disabled, inside a cage). Edits are a draft until Save or Save
+& restart: picking a role on an uncaged draft turns on Enforcing FS and the
+block, leaving the cage or the block takes the role with it, and a role
+saved where it cannot apply offers "Turn both on". Docker switches at once
+with its own confirm, as in the Sandbox dialog. "Sandbox settings…" opens
+that dialog for the allow-lists.
+
+The tail opens **Cage activity** (`CageActivity.tsx`), a wide panel that floats
+above the task's status bar, inside that task's column, and blocks nothing
+(no dialog, no backdrop: it takes focus when it opens and hands it back to
+where it came from, usually the terminal, when Esc from inside it, its ✕,
+or the tail again closes it). It lists what the agent AND
+the task's role shells were blocked from, flagged for, or used, one table
+of one-line rows: when, times, kind, what and the row's action, each
+with a status stripe (amber blocked, green allowed, red suspicious). Every
+header sorts (a click sorts, a second flips, a third goes back to newest
+first). Clicking a row opens its detail under it, one at a time: a
+header (the whole request, why, and who / process / when on one line)
+over two equal panels. The left is the evidence: the role's rules for that
+host with the one that matched marked, the allow-lists a host was checked
+against, a path's segments (where you pick the file or a folder above it;
+the home folder and top-level folders are never offered), the role's
+secrets for a host with none. The right is the decision: the scopes as a
+radio list with an Allow, saying when it takes effect (a rule from the
+next request, a host or path at the agent's next restart), or once
+allowed, where and an Undo.
+An allowed row stays, its button a green "✓ Allowed · <scope>" that
+undoes it (`sandbox_remove_allowed`, `broker_unallow`). "Allow by
+default" on the filter row sets what an Allow button's face does, for
+hosts and paths and for secret requests; not set (the default) means
+every Allow asks, and the ▾ always allows somewhere else for that row
+only. A shell's request always asks, since its role may be shared. One row
+of filters: keyword, show (blocked, suspicious, used) as a segmented
+control, then kind (network, file, role rule, no secret), who, role and
+time window as compact menus that name their value. A shell's tab badge opens it pre-filtered to that shell. Pause sits in its header and belongs to the shell picked in Who,
+else the agent. In Monitor it shows the access view (aggregate and
+detailed, with its recording filters) instead of the agent's rows. It polls
+once (cage lists plus every broker key's events and counts, 1.5s) only
+while open; the chip rides the footer's 2s tick. The command palette
+reaches it too ("Sandbox and secrets activity").
+
+**Allow scopes** are per row kind, on a split button whose label carries
+the remembered scope ("Allow · this project", "Allow · Reviewer"); the
+caret lists the scopes that row can take, and a pick there both allows and
+becomes that kind's memory. Cage hosts and paths: this project (writes the
+task and the project, `task_sandbox_add_allowed_*`), the agent in every
+project, or `.termic.yaml`, remembered in `prefs.allowScope`, which starts
+empty: with nothing remembered a click opens the menu instead of acting.
+Role rules: this task or everyone on the blocking role, remembered in
+`prefs.secretsAllowScope` (default the role). No-secret rows only offer
+Grant. A role-rule Allow applies to the next request; a host or path Allow
+lands on the next spawn, as before.
 
 **Listeners** (gh socket, base URL) share one accept loop
 (`broker/accept.rs`): shutdown is a self-pipe, never a connection to the
@@ -826,6 +909,78 @@ listener, and the gh socket's pid check runs before a connection takes
 one. Client sockets time out after 15s idle while sending the request
 (60s on writes), upstream ones after 120s / 60s. The
 per-spawn CA and its leaves are valid from a day ago to 90 days out.
+
+### Shells
+
+A shell gets nothing until the user assigns a role to that shell.
+`SpawnArgs.shell_secrets` (`{ task_id, tab_id, role }`) is the only way
+in; without it the spawn is exactly what it always was: no broker, no
+proxy, no placeholder or CA env, no root pid (`plan_shell_secrets`, pure,
+so that is a unit test). It never comes with `task_id` (that would be an
+agent, which gets its role from the task), and off macOS, or with a role
+or task that no longer exists, the spawn fails. So does a role that fails
+to start, instead of falling back to a plain shell: a silent plain shell
+would leave the user's real `gh` login in play while the tab claims a
+role. Agents keep their "secrets lost, spawn kept" behaviour.
+
+- **Own identity.** The broker key is `shell:<task_id>:<tab_id>`
+  (`broker::shell_key`), used everywhere the broker takes a task id:
+  root pid registration, events, counts, pause, the peer check. A shell
+  never shares the agent's identity, so it never passes the agent's peer
+  check and its requests never count on the agent's chip. `live_rules`
+  finds no task under that key, so a shell gets the role's rules and no
+  task allows.
+- **No cage.** `sandbox::provision_shell` reuses the broker start without
+  Seatbelt: no profile, path watcher or Keychain hold, and an allow-all
+  proxy only when the role has a MITM delivery (git, an API key's env
+  proxy), as EnforceFs does. The `ShellBundle` rides the PTY slot, broker
+  dropped before proxy.
+- **Env.** `sandbox::wrap_shell_command` is `env -u <strip_env>
+  TERMIC_SECRETS_ROLE=<role name> <broker env> <shell>`: none of the
+  cage's vars (`TERMIC_SANDBOX*`, the generic `http_proxy`). The env
+  proxy's `HTTPS_PROXY` and CA vars are part of the broker's own env, so
+  both wraps share them. The shell's rc files run after that, so a
+  `~/.zshrc` that exports `GH_TOKEN` wins; gh then sends that token to the
+  socket, which forwards it untouched (as it always has) and records a
+  `foreign_token` event (host and count, never the value;
+  `BrokerCounts.foreign_token`). On an agent it shows under Suspicious;
+  on a shell it drives the rc-file banner. An rc file that overwrites
+  `HTTPS_PROXY` cannot be detected.
+- **Allow.** A shell's blocked row only takes the `role` scope:
+  `broker_allow` with the shell's key as `id`, like every `broker_*`
+  command; the task (and so the profile) is read off the key.
+- **Lifetime.** A shell key belongs to one tab. `pty_kill` drops its
+  broker and root pid at once, not after the kill grace, so a Restart's
+  new shell never shares the key with the dying one, and forgets its
+  events and pause; archive forgets every shell key of the task. A
+  task-level pause also pauses its shells.
+- **Activity.** `broker_all_events` returns shell keys too; Settings >
+  Secrets > Activity shows one as "<task> › shell".
+
+**UI.** The role is chosen per shell, at start, and nowhere else: the
+⌘T launcher (main area, or the pane it was opened from), where → on the
+Terminal row swaps the list for the roles and typing a role name finds
+"Terminal as <role>"; the default list never carries a role, so every
+agent keeps its 1-9. And "Restart with secrets ▸" on a shell tab's menu (main,
+split pane or bottom split; the bottom `+` stays a plain shell). The pick
+lives on the tab (`TerminalTab.secretsRole`, `bottomTabs[].secretsRole`),
+session-only: shell tabs in the main area and the bottom split are never
+persisted, and a split-pane shell that is persisted comes back without its
+role. Switching a role respawns the shell (`setShellSecretsRole`), after a
+confirm naming what still runs under it (`pty_children`). The role shows on
+the shell's own tab, never in the status bar (it stays the agent's); see
+ui.md "A shell's Secrets role". Every entry point is hidden off macOS and
+when no role exists (`useShellRoles`).
+
+What it guarantees:
+
+- A pasted secret on a signed build: the shell cannot read it (data
+  protection keychain); only the broker sees the value.
+- A pasted secret on a dev or ad-hoc build: it falls back to the login
+  keychain, readable with `security find-generic-password`.
+- A gh login secret: `gh:github.com` trusts `/usr/bin/security`, so any
+  shell can print it. The role still keeps it out of env, history and
+  dotfiles and puts rules on it.
 
 ## Known gap: Monitor mode reaches the CLI control plane
 

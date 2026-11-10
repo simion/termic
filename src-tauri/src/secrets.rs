@@ -264,27 +264,25 @@ pub struct TaskAllow {
     pub rule: Rule,
 }
 
-/// The role a task's agent runs with, first match wins: the task's own pick,
-/// the project's default, the agent's default, else none. `Some("")` on the
-/// task is an explicit "No secrets" that overrides the defaults.
+/// The role a task's agent runs with: the task's own pick, nothing else
+/// (`Some("")` is "No secrets"). Defaults never reach a spawn, they only
+/// seed a new task's pick (`seed_role`).
 ///
 /// Gated on the Keychain block: an agent that can read the Keychain can read
 /// the real token itself, so brokering for it would protect nothing.
-pub fn resolve_role<'a>(
-    task_role: Option<&str>,
-    project_default: Option<&str>,
-    agent_default: Option<&str>,
-    keychain_blocked: bool,
-    roles: &'a [Role],
-) -> Option<&'a Role> {
+pub fn resolve_role<'a>(task_role: Option<&str>, keychain_blocked: bool, roles: &'a [Role]) -> Option<&'a Role> {
     if !keychain_blocked {
         return None;
     }
-    let id = task_role.or(project_default).or(agent_default)?;
-    if id.is_empty() {
-        return None;
-    }
+    let id = task_role.filter(|id| !id.is_empty())?;
     roles.iter().find(|r| r.id == id)
+}
+
+/// The role a new task starts with when its creator picks none: the
+/// project's default (`Some("")` counts, as No secrets), else its agent's,
+/// else No secrets.
+pub fn seed_role(project_default: Option<&str>, agent_default: Option<&str>) -> String {
+    project_default.or(agent_default).unwrap_or("").to_string()
 }
 
 /// Save-time checks. Returns the human-readable problems, empty when valid.
@@ -417,6 +415,20 @@ pub fn allow_on_task(allows: &mut Vec<TaskAllow>, secret: &str, host: &str, rule
     if !allows.contains(&a) {
         allows.push(a);
     }
+}
+
+/// The undo of [`allow_on_role`]: drops that exact rule from the role's set
+/// for (secret, host). A set left empty is equivalent to none (its fallback
+/// is the role's default), so it stays.
+pub fn unallow_on_role(role: &mut Role, secret: &str, host: &str, rule: &Rule) {
+    if let Some(rs) = role.rule_sets.iter_mut().find(|rs| rs.secret == secret && rs.host == host) {
+        rs.rules.retain(|r| r != rule);
+    }
+}
+
+/// The undo of [`allow_on_task`].
+pub fn unallow_on_task(allows: &mut Vec<TaskAllow>, secret: &str, host: &str, rule: &Rule) {
+    allows.retain(|a| !(a.secret == secret && a.host == host && &a.rule == rule));
 }
 
 // ───────────────────────────── gh accounts ─────────────────────────────
@@ -643,6 +655,19 @@ mod tests {
     }
 
     #[test]
+    fn unallow_undoes_allow() {
+        let rule = Rule { effect: Effect::Allow, methods: vec!["PUT".into()], pattern: "/repos/acme/widget/pulls/1/merge".into(), note: String::new(), disabled: false };
+        let mut allows = Vec::new();
+        allow_on_task(&mut allows, "gh", "api.github.com", rule.clone());
+        unallow_on_task(&mut allows, "gh", "api.github.com", &rule);
+        assert!(allows.is_empty());
+        let mut role = Role { id: "r".into(), ..Default::default() };
+        allow_on_role(&mut role, "gh", "api.github.com", rule.clone());
+        unallow_on_role(&mut role, "gh", "api.github.com", &rule);
+        assert!(role.rule_sets[0].rules.is_empty());
+    }
+
+    #[test]
     fn allow_on_task_dedups() {
         let mut v = Vec::new();
         allow_on_task(&mut v, "s", "api.github.com", allow("/a"));
@@ -745,23 +770,29 @@ ghe.acme.com:
     }
 
     #[test]
-    fn precedence_task_then_project_then_agent() {
-        let roles = vec![role("a"), role("b"), role("c")];
-        let r = |t, p, g| resolve_role(t, p, g, true, &roles).map(|r| r.id.clone());
-        assert_eq!(r(Some("a"), Some("b"), Some("c")), Some("a".into()));
-        assert_eq!(r(None, Some("b"), Some("c")), Some("b".into()));
-        assert_eq!(r(None, None, Some("c")), Some("c".into()));
-        assert_eq!(r(None, None, None), None);
-        // explicit "No secrets" on the task beats the defaults.
-        assert_eq!(r(Some(""), Some("b"), Some("c")), None);
+    fn resolve_reads_the_task_pick_only() {
+        let roles = vec![role("a"), role("b")];
+        let r = |t| resolve_role(t, true, &roles).map(|r| r.id.clone());
+        assert_eq!(r(Some("a")), Some("a".into()));
+        assert_eq!(r(None), None);
+        assert_eq!(r(Some("")), None);
         // a dangling id resolves to nothing rather than another role.
-        assert_eq!(r(Some("gone"), Some("b"), None), None);
+        assert_eq!(r(Some("gone")), None);
+    }
+
+    #[test]
+    fn seed_takes_project_then_agent_then_none() {
+        assert_eq!(seed_role(Some("p"), Some("a")), "p");
+        // the project's explicit No secrets stops the chain.
+        assert_eq!(seed_role(Some(""), Some("a")), "");
+        assert_eq!(seed_role(None, Some("a")), "a");
+        assert_eq!(seed_role(None, None), "");
     }
 
     #[test]
     fn no_keychain_block_no_role() {
         let roles = vec![role("a")];
-        assert!(resolve_role(Some("a"), None, None, false, &roles).is_none());
+        assert!(resolve_role(Some("a"), false, &roles).is_none());
     }
 
     #[test]

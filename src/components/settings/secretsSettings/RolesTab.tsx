@@ -34,7 +34,7 @@ export function RolesTab({ model, initialRole }: { model: SecretsModel; initialR
   const tasks = useApp(s => s.tasks);
   const projects = useApp(s => s.projects);
   const agents = useApp(s => s.agents);
-  const byRole = useMemo(() => tasksByRole(tasks, projects, agents, roles), [tasks, projects, agents, roles]);
+  const byRole = useMemo(() => tasksByRole(tasks, roles), [tasks, roles]);
 
   const saveRole = (next: Role) => model.save({ roles: roles.map(r => r.id === next.id ? next : r) });
 

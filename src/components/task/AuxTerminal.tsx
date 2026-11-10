@@ -7,6 +7,8 @@
 // bottom banner with a "New shell" button — clicking it bumps a generation
 // counter that retears down the xterm + spawns a fresh PTY.
 
+import { ShellRcBanner } from "@/components/secretsUi/ShellRcBanner";
+import { setShellPty, shellSecretsArg } from "@/lib/shellSecrets";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
@@ -45,7 +47,10 @@ import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 // `currentTerminalTheme()` picks the matching palette at mount; the
 // themeMode effect below pushes updates into live instances.
 
-export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
+export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput, secretsRole }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
+  /** The Secrets role this shell runs (docs/sandbox.md "Shells"). Changing it
+   *  respawns the shell, since the broker binding is fixed at spawn. */
+  secretsRole?: string;
   /** Typed at the prompt on spawn. Runs only if it ends with a CR. */
   initialInput?: string }) {
   const { t } = useTranslation("task");
@@ -299,10 +304,13 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           // Reporting only (Activity monitor). Safe to set even where
           // `task_id` above must stay unset: nothing branches on it.
           owner: { task_id: taskId, tab_id: tabId, kind: "aux" as const },
+          // absent unless the user started this shell with a role.
+          ...shellSecretsArg(taskId, tabId, secretsRole),
           rows: Math.max(8, term.rows), cols: Math.max(40, term.cols),
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
+        setShellPty(tabId, ptyId);
         // The prefill waits for the shell's FIRST OUTPUT, which is its prompt.
         //
         // Writing it right after the spawn puts it into the tty before zsh has
@@ -329,6 +337,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         });
         unlistenExit = await ipc.onPtyExit(ptyId, () => {
           ptyRef.current = null;
+          setShellPty(tabId, null);
           setSudoOffer(false);
           // Bottom-split shells: parent passes onExited to close the
           // tab immediately (the tab strip is the affordance for
@@ -412,6 +421,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       disposeImeBridge();
       unlistenData?.(); unlistenExit?.(); unlistenSudo?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
+      setShellPty(tabId, null);
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.
       try { rendererAddon?.dispose(); } catch {}
@@ -424,7 +434,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     };
     // taskId moves in lockstep with taskPath, so listing it can't cause an
     // extra respawn.
-  }, [taskPath, taskId, gen]);
+  }, [taskPath, taskId, gen, secretsRole]);
 
   // ⌘K clear handler — fires only when this aux terminal owns
   // focus. Cheap to subscribe per-instance; the dispatch is rare.
@@ -481,6 +491,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
 
   return (
     <div className="relative flex h-full w-full flex-col">
+      {secretsRole && taskId && tabId && <ShellRcBanner taskId={taskId} tabId={tabId} active={active} />}
       {sudoOffer && offerTouchIdForSudo && !exited && (
         <SudoTouchIdBanner taskId={taskId} onDismiss={() => setSudoOffer(false)} />
       )}

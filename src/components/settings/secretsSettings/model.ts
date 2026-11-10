@@ -331,16 +331,13 @@ export function duplicateRole(role: Role, id: string, roles: Role[], copyName: (
   return { ...structuredClone(role), id, name, colour };
 }
 
-/** Live (non-archived) tasks per role id. Tasks with no role land under "".
- *  ponytail: resolves through the task's primary agent (`task.cli`); a second
- *  agent with a different default role is not counted. The footer chip shows
- *  what is actually running (BrokerCounts.roles); add per-tab resolution here
- *  if multi-agent tasks with mixed defaults turn out to be common. */
-export function tasksByRole(tasks: Task[], projects: Project[], agents: Agent[], roles: Role[]): Map<string, Task[]> {
+/** Live (non-archived) tasks per role id, by each task's own role (every
+ *  agent of a task runs it). Tasks with no role land under "". */
+export function tasksByRole(tasks: Task[], roles: Role[]): Map<string, Task[]> {
   const out = new Map<string, Task[]>();
   for (const t of tasks) {
     if (t.archived) continue;
-    const role = resolveRole(t, projects.find(p => p.id === t.project_id), agents.find(a => a.id === t.cli), roles);
+    const role = resolveRole(t, roles);
     const k = role?.id ?? "";
     const list = out.get(k);
     if (list) list.push(t); else out.set(k, [t]);

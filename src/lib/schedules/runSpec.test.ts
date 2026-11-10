@@ -42,6 +42,13 @@ describe("runSpecFromParent: the one inheritance point", () => {
     });
   });
 
+  it("a blocked parent with no role schedules No secrets, never a seed", () => {
+    // null would reach create as "take the defaults" and could give the run
+    // a role the parent does not run.
+    const spec = runSpecFromParent(parent({ sandbox_mode: "enforce", sandbox_block_keychain: true, role: null }));
+    expect(spec.sandbox).toMatchObject({ blockKeychain: true, role: "" });
+  });
+
   it("reads a legacy sandbox_enabled record as enforce", () => {
     expect(runSpecFromParent(parent({ sandbox_enabled: true })).sandbox).toMatchObject({ enabled: true, mode: "enforce" });
   });

@@ -458,10 +458,11 @@ export function TaskView({ task }: { task: Task }) {
       onClose={() => closeBottomTab(task.id, t.id)}
       // Plain shells: nothing to confirm, nothing to resume.
       onCloseMany={(ids) => ids.forEach(id => closeBottomTab(task.id, id))}
+      shell={{ taskId: task.id, role: t.secretsRole }}
     >
       <TabPill
         task={task}
-        tab={{ id: t.id, type: "terminal", cli: "shell", title: t.title, liveTitle: t.liveTitle, pinned: t.pinned } as TerminalTab}
+        tab={{ id: t.id, type: "terminal", cli: "shell", title: t.title, liveTitle: t.liveTitle, pinned: t.pinned, secretsRole: t.secretsRole } as TerminalTab}
         active={t.id === activeBottom}
         paneFocused
         compact
@@ -787,6 +788,7 @@ export function TaskView({ task }: { task: Task }) {
                       // so Ctrl+D'ing through shells never dumps focus.
                       onExited={() => closeBottomTab(task.id, t.id)}
                       onTitle={(title) => setBottomLiveTitle(task.id, t.id, title)}
+                      secretsRole={t.secretsRole}
                     />
                   </div>
                 ))}

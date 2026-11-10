@@ -75,25 +75,15 @@ export function ensureSecretsSync(): void {
   });
 }
 
-type RoleTask = Pick<Task, "id" | "project_id" | "role" | "sandbox_mode" | "sandbox_enabled" | "sandbox_block_keychain" | "docker_sandbox_enabled"> & { cli?: string };
+type RoleTask = Pick<Task, "id" | "role" | "sandbox_mode" | "sandbox_enabled" | "sandbox_block_keychain" | "docker_sandbox_enabled">;
 
 /** The role a task runs with (`role`), and the one it would run with if its
- *  Keychain were blocked (`configured`, for the uncaged notice). Both
- *  selectors return strings or stable references, so an unrelated app-store
- *  write never re-renders the caller (performance.md bear trap 8). */
+ *  Keychain were blocked (`configured`, for the uncaged notice). Reads the
+ *  task's own pick only, so it subscribes to nothing in the app store
+ *  (performance.md bear trap 8). */
 export function useTaskRole(task: RoleTask | null | undefined): { role: Role | null; configured: Role | null } {
   ensureSecretsSync();
   const roles = useSecrets(s => s.roles);
-  // with no roles (most installs) every row skips the two finds, which would
-  // otherwise run on each app-store write for nothing.
-  const live = !!task && roles.length > 0;
-  const pDef = useApp(s => (live ? s.projects.find(p => p.id === task.project_id)?.default_role : undefined));
-  const aDef = useApp(s => (live ? s.agents.find(a => a.id === task.cli)?.default_role : undefined));
-  if (!live) return { role: null, configured: null };
-  const project = { default_role: pDef };
-  const agent = { default_role: aDef };
-  return {
-    role: resolveRole(task, project, agent, roles),
-    configured: configuredRole(task, project, agent, roles),
-  };
+  if (!task || roles.length === 0) return { role: null, configured: null };
+  return { role: resolveRole(task, roles), configured: configuredRole(task, roles) };
 }

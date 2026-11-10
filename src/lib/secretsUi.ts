@@ -14,40 +14,29 @@ import {
  *  `var(--color-role-${c})` string painted nothing. */
 export const roleColour = (c: string | undefined | null) => roleColourVar(c ?? undefined);
 
-/** Where a new task's role comes from when it picks nothing: the project's
- *  default, then the agent's. Mirrors the tail of `resolveRole`. */
+/** The role a create dialog starts picked, and where it came from: the
+ *  project's default, then the agent's. Only ever SEEDS a new task (Rust's
+ *  `seed_role` does the same for a create that picks nothing). */
 export function roleDefault(
   project: Pick<Project, "default_role"> | null | undefined,
   agent: Pick<Agent, "default_role"> | null | undefined,
 ): { id: string; source: "project" | "agent" } | null {
-  // "" on the project is an explicit No secrets and stops the chain, like
-  // resolveRole's `??`.
+  // "" on the project is an explicit No secrets and stops the chain.
   if (project?.default_role != null) return project.default_role ? { id: project.default_role, source: "project" } : null;
   if (agent?.default_role) return { id: agent.default_role, source: "agent" };
   return null;
 }
 
-/** What to store as `Task.role` for a dialog's pick: null (inherit) when the
- *  pick IS the inherited default, so a later change to the project default
- *  still reaches the task. */
-export function roleToStore(pick: string, def: { id: string } | null): string | null {
-  if (def && pick === def.id) return null;
-  if (!def && pick === "") return null;
-  return pick;
-}
-
 /** The role this task WOULD run with if its Keychain were blocked: what the
  *  uncaged notice talks about. */
 export function configuredRole(
-  task: { role?: string | null; cli?: string } | null | undefined,
-  project: Pick<Project, "default_role"> | null | undefined,
-  agent: Pick<Agent, "default_role"> | null | undefined,
+  task: { role?: string | null } | null | undefined,
   roles: Role[] | undefined,
 ): Role | null {
   if (!task) return null;
   return resolveRole(
     { ...task, sandbox_mode: "enforce-fs", sandbox_block_keychain: true, docker_sandbox_enabled: false },
-    project, agent, roles,
+    roles,
   );
 }
 
@@ -95,10 +84,11 @@ export function allowRuleFor(b: Pick<BrokerBlocked, "method" | "path">): Rule | 
 export function suspiciousKey(kind: string): string {
   return kind === "placeholder_unbound_host" ? "task.suspPlaceholder"
     : kind === "keychain_denied" ? "task.suspKeychain"
-    : kind === "wrong_peer" ? "task.suspPeer" : "task.suspOther";
+    : kind === "wrong_peer" ? "task.suspPeer"
+    : kind === "foreign_token" ? "task.suspForeignToken" : "task.suspOther";
 }
 
 export const sameCounts = (a: BrokerCounts | null, b: BrokerCounts) =>
-  !!a && a.blocked === b.blocked && a.suspicious === b.suspicious && a.no_secret === b.no_secret
+  !!a && a.blocked === b.blocked && a.suspicious === b.suspicious && a.foreign_token === b.foreign_token && a.no_secret === b.no_secret
   && a.used === b.used && a.paused === b.paused && a.live === b.live && a.stale === b.stale
   && a.roles.length === b.roles.length && a.roles.every((r, i) => r === b.roles[i]);

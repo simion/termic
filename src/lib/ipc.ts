@@ -469,11 +469,6 @@ export const taskSandboxAddAllowedHost = (id: string, host: string) =>
 export const taskSandboxAddAllowedPath = (id: string, path: string) =>
   invoke<number>("task_sandbox_add_allowed_path", { id, path });
 
-/** Undo of add-allowed-path. Drops the entry from the task's
- *  sandbox_rw_paths list (matches both raw and $HOME-tokenized form). */
-export const taskSandboxRemoveAllowedPath = (id: string, path: string) =>
-  invoke<void>("task_sandbox_remove_allowed_path", { id, path });
-
 /** "Allow · per agent" — append a path/host to the AGENT registry so
  *  every task running that CLI (across all projects) inherits it.
  *  Picked up at the next agent restart. */
@@ -619,6 +614,12 @@ export const repoConfigAddAllowedHost = (id: string, host: string) =>
 /** Mirror for filesystem paths — append to the repo's `.termic.yaml`. */
 export const repoConfigAddAllowedPath = (id: string, path: string) =>
   invoke<void>("repo_config_add_allowed_path", { id, path });
+
+/** Undo of an Allow from Activity, for any of its scopes: drops `value`
+ *  from the list that scope wrote ("project": the task's own and the
+ *  project defaults; "agent": the task's agent; "repo": `.termic.yaml`). */
+export const sandboxRemoveAllowed = (id: string, scope: "project" | "agent" | "repo", kind: "host" | "path", value: string) =>
+  invoke<void>("sandbox_remove_allowed", { id, scope, kind, value });
 
 /** Read a project's committed `.termic.yaml` (at its repo root).
  *  Resolves to null when the repo has no such file; rejects when it
@@ -1096,6 +1097,9 @@ export interface SpawnArgs {
    *  CLI-addressable and allocates a retention ring), this field has no
    *  behavior attached to it. */
   owner?: { task_id?: string; tab_id?: string; kind: PtyOwnerKind };
+  /** A Secrets role for a SHELL spawn (never with `task_id`). Omit for a
+   *  plain shell, which then spawns exactly as it always has. */
+  shell_secrets?: { task_id: string; tab_id: string; role: string };
 }
 
 /** What a PTY is running, for the Activity monitor's icon + fallback label. */
@@ -1127,6 +1131,9 @@ export const ptySpawn  = (a: SpawnArgs) => invoke<SpawnResult>("pty_spawn", { ar
 export const ptyWrite  = orderedPerKey((ptyId: string, data: number[]) => invoke<void>("pty_write", { ptyId, data }));
 export const ptyResize = (ptyId: string, rows: number, cols: number) => invoke<void>("pty_resize", { ptyId, rows, cols });
 export const ptyKill   = (ptyId: string) => invoke<void>("pty_kill", { ptyId });
+/** Names of what runs under a PTY's root (macOS; empty elsewhere or when
+ *  nothing does), for a restart confirm. */
+export const ptyChildren = (ptyId: string) => invoke<string[]>("pty_children", { id: ptyId });
 
 // ── Activity monitor (src-tauri/src/procmon.rs) ────────────────────────
 // Sampling is PULL-based: the Activity window's interval is the clock, so
@@ -1632,7 +1639,7 @@ export const envGuardSave = (rules: import("./types").EnvGuardRule[]) =>
 /** One agent's pass-through names (read-modify-write on disk). */
 export const agentSetPassEnv = (agentId: string, names: string[]) =>
   invoke<void>("agent_set_pass_env", { agentId, names });
-/** role: role id, "" for explicit No secrets, null to inherit. */
+/** role: role id, or "" / null for No secrets (stored as ""). */
 export const taskSetRole = (id: string, role: string | null) =>
   invoke<void>("task_set_role", { id, role });
 export const brokerCounts = (id: string) =>
@@ -1643,12 +1650,27 @@ export const brokerAllEvents = () =>
   invoke<[string, import("./types").BrokerEvents][]>("broker_all_events");
 export const brokerSetPaused = (id: string, paused: boolean) =>
   invoke<void>("broker_set_paused", { id, paused });
-/** Save an allow from the popover. scope "task" -> Task.secret_allows,
- *  "role" -> `role`'s rule set for (secret, host), prepended. `role` is the
- *  blocked entry's role (what the spawn ran), required for scope "role" and
- *  ignored for "task". Rust also clears the matching blocked rows. */
+/** Save an allow from the popover. `id` is the broker key the row came from
+ *  (the task id, or a shell's `shellBrokerKey`, which only takes scope
+ *  "role"). scope "task" -> Task.secret_allows, "role" -> `role`'s rule set
+ *  for (secret, host), prepended. `role` is the blocked entry's role (what the
+ *  spawn ran), required for scope "role" and ignored for "task". Rust also
+ *  clears the matching blocked rows. */
 export const brokerAllow = (id: string, scope: "task" | "role", secret: string, host: string, rule: import("./types").Rule, role: string | null) =>
   invoke<void>("broker_allow", { id, scope, secret, host, rule, role });
+/** Undo of `brokerAllow`: drops that exact rule again. */
+export const brokerUnallow = (id: string, scope: "task" | "role", secret: string, host: string, rule: import("./types").Rule, role: string | null) =>
+  invoke<void>("broker_unallow", { id, scope, secret, host, rule, role });
+/** The broker key of a shell running a role, mirroring Rust's
+ *  `broker::shell_key`. Events, counts and pause for that shell live here. */
+export const shellBrokerKey = (taskId: string, tabId: string) => `shell:${taskId}:${tabId}`;
+/** (task id, tab id) of a shell broker key, null for an agent's (a task id). */
+export const parseShellBrokerKey = (key: string): { taskId: string; tabId: string } | null => {
+  if (!key.startsWith("shell:")) return null;
+  const rest = key.slice("shell:".length);
+  const i = rest.indexOf(":");
+  return i < 0 ? null : { taskId: rest.slice(0, i), tabId: rest.slice(i + 1) };
+};
 /** Judge a typed request on `role` (unsaved is fine) with the broker's own
  *  rule walk. `method` is an HTTP verb (`target` a path) or QUERY /
  *  MUTATION name / fetch owner/repo / push owner/repo. Rejects on a request

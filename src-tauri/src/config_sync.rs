@@ -115,7 +115,7 @@ pub(crate) const SETTINGS_LOCAL: &[&str] = &[
     "docker_shared_config_dirs",
     "discovery_dismissed",
     // CLI and MCP install state, one-time migration markers.
-    "cli_enabled", "cli_default_migrated", "hooks_auto_default_migrated",
+    "cli_enabled", "cli_default_migrated", "hooks_auto_default_migrated", "task_roles_seeded_migrated",
     "cli_user_link_installed", "mcp_enabled", "mcp_bind_address", "mcp_port",
     // Opening this machine to its network is a decision about THIS machine
     // and THIS network; a synced `true` would switch sharing on somewhere
@@ -3722,6 +3722,7 @@ mod tests {
             cli_enabled: true,
             cli_default_migrated: true,
             hooks_auto_default_migrated: true,
+            task_roles_seeded_migrated: true,
             cli_user_link_installed: true,
             mcp_enabled: true,
             mcp_bind_address: "0.0.0.0".into(),
