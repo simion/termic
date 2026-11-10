@@ -1,6 +1,7 @@
 // Single flat selector for "how is this task caged", replacing the earlier
 // two-tier SandboxEngineSelector (engine) + SandboxModeSelector (Seatbelt
-// submode) split. Five peer cards: Off, Seatbelt's three modes, and Docker.
+// submode) split. Five peer options: Off, Seatbelt's three modes, and
+// Docker, as cards or (`layout="row"`, New Task) one segmented strip.
 // Still a UI-only view over the SAME two independent backend fields
 // (`sandbox_mode` / `docker_sandbox_enabled`, see SandboxSelection in
 // lib/types.ts) - no new data model, just one picker instead of two.
@@ -11,6 +12,7 @@ import type { SandboxMode, SandboxSelection } from "@/lib/types";
 import { SANDBOX_VISUALS, sandboxPickerLabelT, sandboxModeText, SandboxIcon, DockerSandboxIcon, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { SANDBOX_PRESETS, presetHint, presetLabel, type SandboxPreset } from "@/lib/sandboxPresets";
 
 /** Row-major order: OFF / ENFORCING (FS) on top, MONITORING / ENFORCING
@@ -18,10 +20,11 @@ import { SANDBOX_PRESETS, presetHint, presetLabel, type SandboxPreset } from "@/
  *  intensity level of the same one, so it reads as a break from the grid
  *  rather than a fifth peer crammed into it. */
 const ORDER: SandboxMode[] = ["off", "enforce-fs", "monitor", "enforce"];
+const ROW_ORDER: SandboxMode[] = ["off", "monitor", "enforce-fs", "enforce"];
 
 export function SandboxPicker({
   value, onChange, seatbeltUnavailable = false, dockerOffered, dockerUnavailableReason,
-  onEnableDocker, compact = false,
+  onEnableDocker, compact = false, layout = "cards",
 }: {
   /** null: nothing picked yet, no card highlighted (the schedule dialog,
    *  when the default it would seed is a cage it cannot offer). */
@@ -40,6 +43,10 @@ export function SandboxPicker({
    *  a dead end that names a feature and no way to reach it. */
   onEnableDocker?: () => void;
   compact?: boolean;
+  /** "row": one segmented strip with the picked mode's description under it,
+   *  used by the New Task dialog's Isolation pane. Every other surface keeps
+   *  the cards. `compact` only applies to the cards. */
+  layout?: "cards" | "row";
 }) {
   // Off this OS's map entirely (Windows, Linux): the Seatbelt cards are not
   // shown at all, rather than shown disabled, so the choice reads as what it
@@ -47,6 +54,76 @@ export function SandboxPicker({
   const hideSeatbelt = !SEATBELT_AVAILABLE;
   const order: SandboxMode[] = hideSeatbelt ? ["off"] : ORDER;
   const { t } = useTranslation("chrome");
+  // A disabled card with a tooltip is not a route anywhere: it says the
+  // option exists and leaves the reader to guess where to turn it on, and a
+  // tooltip is invisible to anyone who does not hover a control that looks
+  // dead. When Docker is not offered, the way to fix that is a click here.
+  const dockerLink = !dockerOffered && onEnableDocker && (
+    <button
+      type="button"
+      onClick={onEnableDocker}
+      data-testid="sandbox-picker-enable-docker"
+      className="self-start rounded text-left text-[11.5px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-accent)]"
+    >
+      {dockerUnavailableReason ?? t("sandbox.picker.dockerSetup")}
+    </button>
+  );
+  if (layout === "row") {
+    const opts: { id: SandboxSelection; label: string; desc: string; color: string; disabled: boolean; title: string }[] = [
+      // the row reads as a scale, loosest to tightest: off, monitor, fs-only, full.
+      ...(hideSeatbelt ? ["off" as const] : ROW_ORDER).map(id => {
+        const text = sandboxModeText(id, t);
+        const unsupported = seatbeltUnavailable && id !== "off";
+        return {
+          id, label: text.shortLabel, desc: text.desc, color: SANDBOX_VISUALS[id].color,
+          disabled: unsupported, title: unsupported ? t("sandbox.picker.macOnly") : text.desc,
+        };
+      }),
+      {
+        id: "docker", label: t("sandbox.picker.dockerShort"), desc: t("sandbox.picker.dockerDesc"),
+        color: DOCKER_SANDBOX_COLOR, disabled: !dockerOffered,
+        title: !dockerOffered ? (dockerUnavailableReason ?? t("sandbox.picker.dockerEnableHint")) : t("sandbox.picker.dockerDesc"),
+      },
+    ];
+    const picked = opts.find(o => o.id === value);
+    return (
+      <div className="flex flex-col gap-1.5">
+        {/* No transition-colors: WKWebView does not repaint a themed colour
+            mid-transition (docs/gotchas.md), and the tint IS the selection. */}
+        <div className="flex gap-1 rounded-lg bg-[var(--color-bg)] p-1">
+          {opts.map(o => {
+            const active = value === o.id;
+            return (
+              <button
+                key={o.id}
+                type="button"
+                disabled={o.disabled}
+                data-sandbox-option={o.id}
+                aria-pressed={active}
+                onClick={() => onChange(o.id)}
+                title={o.title}
+                className={cn(
+                  "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-1.5 text-center text-[12px] font-medium leading-tight",
+                  active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                  o.disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-[var(--color-fg-dim)]",
+                )}
+                style={active ? { background: `color-mix(in srgb, ${o.color} 18%, transparent)`, boxShadow: `inset 0 0 0 1px ${o.color}` } : undefined}
+              >
+                {o.id === "docker"
+                  ? <DockerSandboxIcon className="h-3.5 w-3.5 shrink-0" />
+                  : <SandboxIcon mode={o.id as SandboxMode} className="h-3.5 w-3.5 shrink-0" />}
+                <span className="min-w-0 truncate">{o.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {picked && (
+          <p data-testid="sandbox-mode-desc" className="text-[11.5px] leading-snug text-[var(--color-fg-dim)]">{picked.desc}</p>
+        )}
+        {dockerLink}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-2">
       <div className={cn("grid gap-2", hideSeatbelt ? "grid-cols-1" : "grid-cols-2")}>
@@ -122,21 +199,7 @@ export function SandboxPicker({
         );
       })()}
 
-      {/* A disabled card with a tooltip is not a route anywhere: it says the
-          option exists and leaves the reader to guess where to turn it on,
-          and a tooltip is invisible to anyone who does not hover a control
-          that looks dead. When Docker is not offered, the way to fix that is
-          a click here. */}
-      {!dockerOffered && onEnableDocker && (
-        <button
-          type="button"
-          onClick={onEnableDocker}
-          data-testid="sandbox-picker-enable-docker"
-          className="self-start rounded text-left text-[11.5px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-accent)]"
-        >
-          {dockerUnavailableReason ?? t("sandbox.picker.dockerSetup")}
-        </button>
-      )}
+      {dockerLink}
     </div>
   );
 }
@@ -146,8 +209,24 @@ export function SandboxPicker({
  *  showing it; callers render it only for enforce / enforce-fs. `compact`
  *  matches the compact SandboxPicker it sits under (the create dialogs
  *  have a fixed height, so every line here costs a scrollbar). */
-export function KeychainBlockField({ checked, onChange, compact = false }: { checked: boolean; onChange: (v: boolean) => void; compact?: boolean }) {
+export function KeychainBlockField({ checked, onChange, compact = false, tip = false }: {
+  checked: boolean; onChange: (v: boolean) => void; compact?: boolean;
+  /** Hint behind an (i) instead of under the label. */
+  tip?: boolean;
+}) {
   const { t } = useTranslation("dialogs");
+  if (tip) {
+    // the (i) sits outside the label, so clicking it never toggles the box.
+    return (
+      <div className="flex items-center gap-1.5">
+        <label className="flex cursor-pointer items-center gap-2 select-none">
+          <Checkbox checked={checked} onChange={onChange} data-testid="sandbox-block-keychain" />
+          <span className="text-[12.5px] font-medium text-[var(--color-fg)]">{t("taskSandbox.blockKeychainLabel")}</span>
+        </label>
+        <InfoTip text={t("taskSandbox.blockKeychainHint")} />
+      </div>
+    );
+  }
   return (
     <label className={cn("flex cursor-pointer items-start select-none", compact ? "gap-2" : "gap-3")}>
       <Checkbox checked={checked} onChange={onChange} data-testid="sandbox-block-keychain" />

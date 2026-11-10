@@ -419,7 +419,7 @@ describe("the Scheduled view and dialog", () => {
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, String((new Date().getDay() + 3) % 7));
       s.dispatchEvent(new Event("change", { bubbles: true }));
     }, inDialog('[data-testid="schedule-weekday"]'));
-    // The dialog takes New Task's two widths: one column until a Seatbelt
+    // The dialog takes the two widths New Task used to: one column until a Seatbelt
     // cage is picked, then a second column with the cage's allow-lists. It
     // shipped capped at AppDialog's 448px and with no second column at all.
     const dialogWidth = () => browser.execute(

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree, textOf, newTaskSection } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -251,6 +251,532 @@ describe("create task wizard", () => {
   });
 });
 
+/** Argv of every spawn a task has made, oldest first (the fixture logs it:
+ *  terminal output is a canvas, so this is the only way to read it). */
+const spawnArgv = (id: string): string[] => {
+  const log = path.join(dataDir, "e2e-agent-argv.log");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8").split("\n")
+    .filter((l) => l.startsWith(id + "\t"))
+    .map((l) => l.slice(id.length + 1));
+};
+
+const firstSpawnArgv = async (id: string) => {
+  await browser.waitUntil(async () => spawnArgv(id).length > 0, {
+    timeout: 20_000, timeoutMsg: "the agent never spawned",
+  });
+  return spawnArgv(id)[0];
+};
+
+// The New Task dialog's layout: one fixed size, a rail of sections on the
+// left, one pane per section. These cases pin what the redesign promised: the
+// size never moves under the pointer, the rail shows every section's value
+// and flags a warning in a pane you have not opened, explanations live behind
+// (i) while warnings stay on screen, a disabled Create says what is missing
+// and goes there from any section, and Cmd+Enter creates.
+describe("new task dialog: side rail", () => {
+  const NAME = '[data-testid="new-task-name"]';
+  const created: string[] = [];
+  let projectId!: string;
+
+  after(async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
+    for (const id of created) await archiveTask(id);
+  });
+
+  const open = async () => {
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    await waitVisible(`[role="dialog"] ${NAME}`, 8_000);
+  };
+  const close = async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
+    await waitGone(`[role="dialog"] ${NAME}`);
+  };
+  const typeName = (v: string) => setInputValue(NAME, v);
+  const dialogSize = () =>
+    browser.execute((sel) => {
+      const b = (document.querySelector(sel)!.closest('[role="dialog"]') as HTMLElement).getBoundingClientRect();
+      return { w: Math.round(b.width), h: Math.round(b.height) };
+    }, NAME);
+  /** Which pane shows, and the rail's entries as label + value. */
+  const railState = () =>
+    browser.execute(() => {
+      const panes = [...document.querySelectorAll('[role="dialog"] [role="tabpanel"]')] as HTMLElement[];
+      return {
+        showing: panes.filter((p) => getComputedStyle(p).display !== "none").map((p) => p.getAttribute("data-testid")),
+        rail: [...document.querySelectorAll('[data-testid="new-task-rail"] [role="tab"]')].map((b) => b.getAttribute("data-testid")),
+        selected: document.querySelector('[data-testid="new-task-rail"] [aria-selected="true"]')?.getAttribute("data-testid"),
+      };
+    });
+  const sub = (id: string) => textOf(`[data-testid="rail-${id}-sub"]`);
+  const railWarn = (id: string) =>
+    browser.execute((i) => document.querySelector(`[data-testid="rail-${i}"] [data-testid="rail-warn"]`)?.getAttribute("data-warn") ?? null, id);
+  const blocked = () =>
+    browser.execute(() => document.querySelector('[data-testid="new-task-create"]')?.getAttribute("data-blocked") ?? null);
+  const focusedTestId = () =>
+    browser.execute(() => (document.activeElement as HTMLElement | null)?.getAttribute("data-testid") ?? null);
+  /** Click the disabled Create's wrapper. Blurs first: `setInputValue`
+   *  focuses the field it fills, which would make the jump look done. */
+  const clickCreateWrap = () =>
+    browser.execute(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      (document.querySelector('[data-testid="new-task-create-wrap"]') as HTMLElement).click();
+    });
+  /** Snap with every transition in the dialog run to its end. A snap right
+   *  after a click otherwise catches the task-type tabs' 150ms colour change
+   *  half done, showing the old tab filled while the form is already on the
+   *  new one. Waiting does not work: the e2e window is hidden, and a hidden
+   *  page never advances a transition (measured: currentTime stays 0). */
+  const settledSnap = async (name: string) => {
+    await browser.execute((sel) => {
+      const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
+      dlg?.getAnimations({ subtree: true }).forEach((a) => { if (a instanceof CSSTransition) a.finish(); });
+    }, NAME);
+    await snap(name);
+  };
+  const optionEnabled = (m: string) =>
+    browser.execute((mode) => {
+      const b = document.querySelector(`[role="dialog"] [data-sandbox-option="${mode}"]`) as HTMLButtonElement | null;
+      return !!b && !b.disabled;
+    }, m);
+
+  it("opens on Task with Name focused and the rest of the sections in the rail", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    projectId = await browser.execute(() =>
+      window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo").id);
+    await open();
+    // Focus starts on Name, not on the first (i): a focused (i) shows its
+    // tooltip, which would then swallow the first Escape.
+    await browser.waitUntil(async () => (await focusedTestId()) === "new-task-name",
+      { timeout: 5_000, timeoutMsg: "the dialog did not open with Name focused" });
+    expect(await browser.execute(() => document.querySelectorAll("[data-radix-popper-content-wrapper]").length)).toBe(0);
+    // ...which is what the gotcha is about: ONE Escape closes it.
+    await browser.keys("Escape");
+    await waitGone(`[role="dialog"] ${NAME}`);
+    await open();
+    await clickDialogButton("Main checkout");
+    await clickDialogButton("FakeAgent");
+    // Single repo, no roles in this profile, an agent picked: no Repos, no
+    // Secrets.
+    expect(await railState()).toEqual({
+      showing: ["new-task-pane-task"],
+      rail: ["rail-task", "rail-agent", "rail-isolation"],
+      selected: "rail-task",
+    });
+    expect(await sub("task")).toBe("Main checkout, blank");
+    await settledSnap("new-task-c-task.png");
+  });
+
+  it("keeps one size through task type, source, section and sandbox mode", async () => {
+    const before = await dialogSize();
+    const same = async (what: string) => expect({ what, ...(await dialogSize()) }).toEqual({ what, ...before });
+    await clickDialogButton("Worktree");
+    await same("worktree");
+    expect(await sub("task")).toBe("Worktree, new branch");
+    await clickWhenVisible('[data-source-tab="branch"]');
+    await same("existing branch source");
+    expect(await sub("task")).toBe("Worktree, existing branch");
+    await clickWhenVisible('[data-source-tab="new"]');
+    for (const s of ["agent", "isolation", "task"]) {
+      await newTaskSection(s);
+      await same(`${s} section`);
+    }
+    // The sandbox config is the tallest pane. Seatbelt is macOS-only, so
+    // elsewhere this step has nothing to open.
+    await newTaskSection("isolation");
+    if (await optionEnabled("enforce")) {
+      await clickWhenVisible('[role="dialog"] [data-sandbox-option="enforce"]');
+      await waitVisible('[data-testid="new-task-pane-isolation"] [data-testid="sandbox-config"]');
+      await same("enforcing sandbox");
+      expect(await sub("isolation")).toBe("Enforcing");
+      const overflow = await browser.execute(() => {
+        const p = document.querySelector('[data-testid="new-task-pane-isolation"]') as HTMLElement;
+        return { scroll: p.scrollHeight, client: p.clientHeight };
+      });
+      expect(overflow.scroll).toBeLessThanOrEqual(overflow.client);
+      await settledSnap("new-task-c-isolation-enforcing.png");
+      await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
+      await waitGone('[data-testid="sandbox-config"]');
+    }
+    expect(await sub("isolation")).toBe("Off");
+    await same("sandbox off again");
+  });
+
+  it("says what the picked sandbox mode does under the row", async () => {
+    await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
+    expect(await textOf('[data-testid="sandbox-mode-desc"]')).toBe("Full filesystem + network access.");
+    const pressed = await browser.execute(() =>
+      [...document.querySelectorAll('[role="dialog"] [data-sandbox-option]')]
+        .filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-sandbox-option")));
+    expect(pressed).toEqual(["off"]);
+    // loosest to tightest, Docker last. Off Mac only off + docker render.
+    const order = await browser.execute(() =>
+      [...document.querySelectorAll('[role="dialog"] [data-sandbox-option]')].map((b) => b.getAttribute("data-sandbox-option")));
+    expect(order).toEqual(["off", "monitor", "enforce-fs", "enforce", "docker"].filter((id) => order.includes(id)));
+  });
+
+  it("flags uncaged YOLO on the Agent entry from any section, and walks the rail with the arrows", async () => {
+    await newTaskSection("agent");
+    const yoloBox = '[data-testid="new-task-yolo"] input[type="checkbox"]';
+    const yoloOn = () => browser.execute((s) => (document.querySelector(s) as HTMLInputElement).checked, yoloBox);
+    const wasOn = await yoloOn();
+    if (!wasOn) await clickWhenVisible(yoloBox);
+    await newTaskSection("task");
+    await browser.waitUntil(async () => (await railWarn("agent")) === "uncaged",
+      { timeoutMsg: "YOLO with the sandbox off did not flag the Agent entry" });
+    expect(await sub("agent")).toBe("FakeAgent, YOLO on");
+    // The reason is on hover and for a screen reader, not just a colour.
+    expect(await textOf('[data-testid="rail-agent"] [data-testid="rail-warn"]'))
+      .toBe("Nothing cages the agent: it runs every command without asking. Change it later from the task menu.");
+    await settledSnap("new-task-c-yolo-flag.png");
+    // A cage turns it auto-on and the flag goes.
+    if (await optionEnabled("enforce")) {
+      await newTaskSection("isolation");
+      await clickWhenVisible('[role="dialog"] [data-sandbox-option="enforce"]');
+      await browser.waitUntil(async () => (await railWarn("agent")) === null,
+        { timeoutMsg: "a full cage left the Agent entry flagged" });
+      expect(await sub("agent")).toBe("FakeAgent, YOLO auto-on");
+      await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
+    }
+    await newTaskSection("agent");
+    if (!wasOn) await clickWhenVisible(yoloBox);
+
+    // Down from Agent lands on Isolation, up wraps past Task to the last.
+    const key = (k: string) =>
+      browser.execute((kk) => {
+        const b = document.querySelector('[data-testid="rail-agent"]') as HTMLElement;
+        b.focus();
+        b.dispatchEvent(new KeyboardEvent("keydown", { key: kk, bubbles: true, cancelable: true }));
+      }, k);
+    await key("ArrowDown");
+    expect((await railState()).selected).toBe("rail-isolation");
+    expect(await focusedTestId()).toBe("rail-isolation");
+    await newTaskSection("task");
+  });
+
+  it("counts the agent's YOLO flag typed into Extra args as YOLO on", async () => {
+    await newTaskSection("isolation");
+    await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
+    await newTaskSection("agent");
+    // the checkbox off, so the args are the only YOLO there is
+    const yoloBox = '[data-testid="new-task-yolo"] input[type="checkbox"]';
+    const wasOn = await browser.execute((s) => (document.querySelector(s) as HTMLInputElement).checked, yoloBox);
+    if (wasOn) await clickWhenVisible(yoloBox);
+    await setInputValue('[data-testid="agent-args"]', "--e2e-flag --dangerously-skip-permissions");
+    await newTaskSection("task");
+    await browser.waitUntil(async () => (await railWarn("agent")) === "uncaged",
+      { timeoutMsg: "a YOLO flag in Extra args did not flag the Agent entry" });
+    expect(await sub("agent")).toBe("FakeAgent, YOLO on, extra args");
+    // A prefix of the flag is not the flag.
+    await newTaskSection("agent");
+    await setInputValue('[data-testid="agent-args"]', "--dangerously-skip-permissions-not");
+    await browser.waitUntil(async () => (await railWarn("agent")) === null,
+      { timeoutMsg: "a different flag sharing the prefix still flagged YOLO" });
+    await setInputValue('[data-testid="agent-args"]', "");
+    if (wasOn) await clickWhenVisible(yoloBox);
+    await newTaskSection("task");
+  });
+
+  it("dots Task only for a warning the Task pane is showing", async () => {
+    // A name with no slug: a worktree needs a branch from it, Main checkout
+    // does not, so only the worktree pane says so and only it gets a dot.
+    await clickDialogButton("Main checkout");
+    await typeName("修复登录");
+    await browser.waitUntil(async () => (await sub("task")).startsWith("Main checkout"));
+    expect({ warn: await railWarn("task"), shown: await browser.execute(() => !!document.querySelector('[data-testid="name-unslugabble"]')) })
+      .toEqual({ warn: null, shown: false });
+    await clickDialogButton("Worktree");
+    await waitVisible('[data-testid="name-unslugabble"]');
+    expect(await railWarn("task")).toBe("warn");
+    await clickDialogButton("Main checkout");
+    await browser.waitUntil(async () => (await railWarn("task")) === null,
+      { timeoutMsg: "the Task dot outlived its warning" });
+    await typeName("");
+  });
+
+  it("reopens on Task, without a frame of the section it closed on", async () => {
+    await newTaskSection("isolation");
+    await close();
+    // Record every DOM commit while it reopens: a section reset that runs
+    // after paint commits the Isolation pane first, then Task.
+    await browser.execute(() => {
+      const w = window as any;
+      w.__sawIsolation = false;
+      w.__obs?.disconnect();
+      w.__obs = new MutationObserver(() => {
+        const p = document.querySelector('[data-testid="new-task-pane-isolation"]') as HTMLElement | null;
+        if (p && !p.hidden) w.__sawIsolation = true;
+      });
+      w.__obs.observe(document.body, { subtree: true, childList: true, attributes: true });
+    });
+    await open();
+    const saw = await browser.execute(() => { const w = window as any; w.__obs.disconnect(); return w.__sawIsolation; });
+    expect(saw).toBe(false);
+    expect((await railState()).selected).toBe("rail-task");
+    await browser.waitUntil(async () => (await focusedTestId()) === "new-task-name",
+      { timeout: 5_000, timeoutMsg: "the reopened dialog did not focus Name" });
+  });
+
+  it("opens an import on a worktree, without changing the remembered task type", async () => {
+    await clickDialogButton("Main checkout");
+    await close();
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid, { importMode: true }), projectId);
+    await waitVisible(`[role="dialog"] ${NAME}`, 8_000);
+    const form = () => browser.execute(() => {
+      const f = document.querySelector("#new-task-form")!;
+      return { mode: f.getAttribute("data-task-mode"), source: f.getAttribute("data-task-source") };
+    });
+    expect(await form()).toEqual({ mode: "worktree", source: "import" });
+    expect(await sub("task")).toBe("Worktree, import");
+    await close();
+    await open();
+    expect((await form()).mode).toBe("repo_root");
+    await clickDialogButton("Worktree");
+  });
+
+  it("keeps explanations behind (i) and warnings on screen", async () => {
+    // Worktree: the branch hint is an (i), not a line of text.
+    await typeName("fix login bug");
+    const PANE = '[data-testid="new-task-pane-task"]';
+    const wt = await browser.execute((sel) => {
+      const pane = document.querySelector(sel) as HTMLElement;
+      return {
+        shown: pane.innerText.includes("Auto-fills from the name."),
+        tip: !!pane.querySelector('[data-info-tip][aria-label="Auto-fills from the name."]'),
+        realFiles: !!document.querySelector('[data-testid="real-files-warn"]'),
+      };
+    }, PANE);
+    expect(wt).toEqual({ shown: false, tip: true, realFiles: false });
+
+    // Main checkout: the description goes behind the (i), its warning stays.
+    await clickDialogButton("Main checkout");
+    await waitVisible('[data-testid="real-files-warn"]');
+    const main = await browser.execute((sel) => {
+      const pane = document.querySelector(sel) as HTMLElement;
+      return {
+        shown: pane.innerText.includes("No worktree. The agent runs"),
+        tip: !!pane.querySelector('[data-info-tip][aria-label^="No worktree. The agent runs"]'),
+        warn: (document.querySelector('[data-testid="real-files-warn"]') as HTMLElement).innerText.trim(),
+      };
+    }, PANE);
+    expect(main).toEqual({ shown: false, tip: true, warn: "Edits land on your real files." });
+  });
+
+  it("a disabled Create says what is missing and goes to it from any section", async () => {
+    // Main checkout needs only a name. Asked from another section, the jump
+    // brings Task back first: a hidden field cannot take focus.
+    await typeName("");
+    await browser.waitUntil(async () => (await blocked()) === "name", { timeoutMsg: "no name, but Create was not blocked on it" });
+    await newTaskSection("isolation");
+    await clickCreateWrap();
+    expect((await railState()).selected).toBe("rail-task");
+    expect(await focusedTestId()).toBe("new-task-name");
+
+    // Worktree with a name but no branch.
+    await clickDialogButton("Worktree");
+    await typeName("fix login bug");
+    await setInputValue('[data-testid="new-task-branch"]', "");
+    await browser.waitUntil(async () => (await blocked()) === "branch", { timeoutMsg: "empty branch, but Create was not blocked on it" });
+    await clickCreateWrap();
+    expect(await focusedTestId()).toBe("new-task-branch");
+
+    // Existing branch source: the branch to check out comes first.
+    await clickWhenVisible('[data-source-tab="branch"]');
+    await browser.waitUntil(async () => (await blocked()) === "checkout", { timeoutMsg: "no branch picked, but Create was not blocked on it" });
+    await clickCreateWrap();
+    expect(await focusedTestId()).toBe("checkout-branch-input");
+    await clickWhenVisible('[data-source-tab="new"]');
+
+    // Nothing missing: no reason, and Create is live.
+    await setInputValue('[data-testid="new-task-branch"]', "e2e/side-rail");
+    await browser.waitUntil(async () => (await blocked()) === null, { timeoutMsg: "Create stayed blocked with nothing missing" });
+    expect(await browser.execute(() =>
+      (document.querySelector('[data-testid="new-task-create"]') as HTMLButtonElement).disabled)).toBe(false);
+    await close();
+  });
+
+  it("Cmd+Enter creates from any section, and plain Enter in the prompt is still a newline", async () => {
+    await open();
+    await clickDialogButton("Main checkout");
+    await clickDialogButton("FakeAgent");
+    const press = (sel: string, meta: boolean) =>
+      browser.execute((s, m) => {
+        const el = document.querySelector(s) as HTMLElement;
+        el.focus();
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: m, ctrlKey: false, bubbles: true, cancelable: true }));
+      }, sel, meta);
+    const prompt = '[role="dialog"] textarea[placeholder^="Describe the task"]';
+    // Blocked, Cmd+Enter does what clicking the disabled Create does: it
+    // goes to the missing field and creates nothing.
+    await typeName("");
+    await browser.waitUntil(async () => (await blocked()) === "name", { timeoutMsg: "no name, but Create was not blocked on it" });
+    await press(prompt, true);
+    expect(await focusedTestId()).toBe("new-task-name");
+    expect(await browser.execute((s) => !!document.querySelector(s), `[role="dialog"] ${NAME}`)).toBe(true);
+    await typeName("e2e-cmd-enter");
+    await press(prompt, false);
+    // Still open: a plain Enter in the prompt never creates.
+    expect(await browser.execute((s) => !!document.querySelector(s), `[role="dialog"] ${NAME}`)).toBe(true);
+    // From the rail of another section, it still creates.
+    await newTaskSection("isolation");
+    await press('[data-testid="rail-isolation"]', true);
+    await waitGone(`[role="dialog"] ${NAME}`);
+    const id = await browser.waitUntil(
+      () => browser.execute(() =>
+        window.__termic!.useApp.getState().tasks.find((t: any) => t.name === "e2e-cmd-enter" && !t.archived)?.id ?? false),
+      { timeout: 15_000, timeoutMsg: "Cmd+Enter did not create the task" },
+    );
+    created.push(id as string);
+  });
+
+  it("puts the existing-branch list beside the fields, and a pick says it is checked out as is", async () => {
+    await open();
+    await clickDialogButton("Worktree");
+    await clickWhenVisible('[data-source-tab="branch"]');
+    const LIST = '[data-testid="new-task-pane-task"] [data-testid="branch-column"] [data-testid="checkout-branch-list"]';
+    await waitVisible(LIST);
+    // Beside, not under: the same split as an issue or a PR.
+    const side = await browser.execute(() => {
+      const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const fields = r('[data-testid="new-task-fields"]');
+      const picker = r('[data-testid="new-task-picker"]');
+      return { right: picker.x >= fields.x + fields.width, top: Math.abs(picker.y - fields.y) <= 1 };
+    });
+    expect(side).toEqual({ right: true, top: true });
+    expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Branches/);
+
+    // main is the one branch every seed has.
+    await clickWhenVisible(`${LIST} [data-branch-ref="main"]`);
+    expect(await browser.execute(() =>
+      (document.querySelector('[data-testid="checkout-branch-input"]') as HTMLInputElement).value)).toBe("main");
+    // Typing filters the column.
+    await setInputValue('[data-testid="checkout-branch-input"]', "mai");
+    await browser.waitUntil(() => browser.execute((sel) => {
+      const refs = [...document.querySelectorAll(`${sel} [data-branch-ref]`)].map((b) => b.getAttribute("data-branch-ref")!);
+      return refs.length > 0 && refs.every((r) => r.includes("mai"));
+    }, LIST), { timeoutMsg: "typing did not filter the branch column" });
+    await setInputValue('[data-testid="checkout-branch-input"]', "main");
+    await waitVisible('[data-testid="checkout-as-is"]');
+    expect(await textOf('[data-testid="checkout-as-is"]'))
+      .toBe("Checks out main as it is. To start a new branch from it, use New branch.");
+    await settledSnap("new-task-c-existing-branch.png");
+
+    // "New branch" in that line: a new branch, cut from the one picked.
+    await clickWhenVisible('[data-testid="checkout-branch-from"]');
+    await browser.waitUntil(() => browser.execute(() =>
+      document.querySelector("#new-task-form")?.getAttribute("data-task-source") === "new"),
+    { timeoutMsg: "New branch did not switch the source" });
+    expect(await browser.execute(() => ({
+      base: (document.querySelector('[data-testid="new-task-base"]') as HTMLInputElement).value,
+      picker: !!document.querySelector('[data-testid="new-task-picker"]'),
+    }))).toEqual({ base: "main", picker: false });
+    await close();
+  });
+
+  it("sends the Agent pane's extra args, session and resume override with the task", async () => {
+    await open();
+    await clickDialogButton("Main checkout");
+    await clickDialogButton("FakeNoResume");
+    await newTaskSection("agent");
+    // An agent that cannot resume by id gets no session field.
+    await waitVisible('[data-testid="agent-args"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="resume-session"]'))).toBe(false);
+    await clickDialogButton("FakeAgent");
+    await waitVisible('[data-testid="resume-session"]');
+    await setInputValue('[data-testid="agent-args"]', '--e2e-flag "two words"');
+    await setInputValue('[data-testid="resume-session"]', "e2e-session-1");
+    await browser.waitUntil(async () =>
+      (await sub("agent")) === "FakeAgent, asks first, extra args, resumes a session",
+    { timeoutMsg: "the Agent rail entry did not list the session" });
+    // The override wins outright at spawn, so with one set the session is
+    // not used: its field disables, says why, and the rail stops claiming it.
+    await setInputValue('[data-testid="resume-override"]', "--e2e-resume {BRANCH}");
+    await browser.waitUntil(async () =>
+      (await sub("agent")) === "FakeAgent, asks first, extra args, custom resume args",
+    { timeoutMsg: "the rail still claimed the session beside an override" });
+    expect(await browser.execute(() =>
+      (document.querySelector('[data-testid="resume-session"]') as HTMLInputElement).disabled)).toBe(true);
+    expect(await textOf('[data-testid="new-task-pane-agent"]'))
+      .toContain("Not used: the resume args override below replaces it.");
+    await settledSnap("new-task-c-agent.png");
+    // A terminal has none of them, and the rail stops listing them.
+    await clickDialogButton("Terminal");
+    await browser.waitUntil(async () => (await sub("agent")) === "Terminal", { timeoutMsg: "a terminal still listed agent options" });
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="agent-args"]'))).toBe(false);
+    await clickDialogButton("FakeAgent");
+
+    await newTaskSection("task");
+    const name = `e2e-launch-${Date.now()}`;
+    await typeName(name);
+    await clickWhenVisible('[data-testid="new-task-create"]');
+    const task = await browser.waitUntil(
+      () => browser.execute((n) =>
+        window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived) ?? false, name),
+      { timeout: 15_000, timeoutMsg: "the task was not created" },
+    ) as any;
+    created.push(task.id);
+    expect({ args: task.agent_args, session: task.agent_session_ids?.fakeagent, resume: task.resume_override })
+      .toEqual({ args: ["--e2e-flag", "two words"], session: undefined, resume: "--e2e-resume {BRANCH}" });
+    // ...and the first spawn carries the args, one word for the quoted value.
+    const argv = await firstSpawnArgv(task.id);
+    expect(argv).toContain("--e2e-flag");
+    expect(argv).toContain("two words");
+  });
+
+  it("seeds a resume session on its own, and its first spawn resumes it", async () => {
+    await open();
+    await clickDialogButton("Main checkout");
+    await clickDialogButton("FakeAgent");
+    await newTaskSection("agent");
+    await setInputValue('[data-testid="resume-session"]', "e2e-session-2");
+    await newTaskSection("task");
+    const name = `e2e-session-${Date.now()}`;
+    await typeName(name);
+    await clickWhenVisible('[data-testid="new-task-create"]');
+    const task = await browser.waitUntil(
+      () => browser.execute((n) =>
+        window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived) ?? false, name),
+      { timeout: 15_000, timeoutMsg: "the task was not created" },
+    ) as any;
+    created.push(task.id);
+    expect(task.agent_session_ids?.fakeagent).toBe("e2e-session-2");
+    expect(await firstSpawnArgv(task.id)).toContain("e2e-session-2");
+  });
+
+  it("shows which sandbox preset is in effect, and hides the presets in Enforcing (FS)", async () => {
+    await open();
+    await newTaskSection("isolation");
+    if (!(await optionEnabled("enforce"))) { await close(); return; }
+    await clickWhenVisible('[role="dialog"] [data-sandbox-option="enforce"]');
+    await waitVisible('[data-testid="sandbox-presets"]');
+    const pressed = () => browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="sandbox-presets"] [data-preset]')]
+        .filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-preset")));
+    const hosts = () => browser.execute(() =>
+      (document.querySelector('[data-testid="sandbox-allowed-hosts"]') as HTMLTextAreaElement).value);
+    await clickWhenVisible('[data-testid="sandbox-presets"] [data-preset="standard"]');
+    expect(await pressed()).toEqual(["standard"]);
+    await clickWhenVisible('[data-testid="sandbox-presets"] [data-preset="permissive"]');
+    expect(await pressed()).toEqual(["permissive"]);
+    expect(await hosts()).toContain("quay.io");
+    // A hand edit matches neither.
+    await browser.execute(() => {
+      const ta = document.querySelector('[data-testid="sandbox-allowed-hosts"]') as HTMLTextAreaElement;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta, ta.value + "\nacme.com");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(await pressed()).toEqual([]);
+    await clickWhenVisible('[data-testid="sandbox-presets"] [data-preset="standard"]');
+    expect(await hosts()).toBe("");
+    // Enforcing (FS) has no host list, and the presets differ only in hosts.
+    await clickWhenVisible('[role="dialog"] [data-sandbox-option="enforce-fs"]');
+    await waitGone('[data-testid="sandbox-presets"]');
+    await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
+    await close();
+  });
+});
+
 // Default YOLO for new tasks (Settings → Sandbox, overridable per project).
 //
 // A default must never be a silent auto-approve on an uncaged task, so all it
@@ -307,15 +833,12 @@ describe("YOLO default for new tasks", () => {
       (dlg?.querySelector('[data-testid="new-task-yolo"] input') as HTMLElement).click();
     }, NAME_INPUT);
 
-  /** Click one of the sandbox picker's cards by its heading. */
-  const pickSandbox = (heading: string) =>
-    browser.execute((sel, h) => {
+  /** Pick a sandbox mode in the dialog's picker, by its option id. */
+  const pickSandbox = (mode: string) =>
+    browser.execute((sel, m) => {
       const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
-      const btn = [...(dlg?.querySelectorAll("button") ?? [])].find(
-        (b) => b.querySelector("span")?.textContent?.trim() === h,
-      );
-      (btn as HTMLElement).click();
-    }, NAME_INPUT, heading);
+      (dlg?.querySelector(`[data-sandbox-option="${m}"]`) as HTMLElement).click();
+    }, NAME_INPUT, mode);
 
   /** Name the task, Create, and return the created task once it lands. */
   const createNamed = async (name: string) => {
@@ -335,23 +858,6 @@ describe("YOLO default for new tasks", () => {
       window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived), name) as any;
     created.push(task.id);
     return task;
-  };
-
-  /** Argv of every spawn a task has made, oldest first (the fixture logs it:
-   *  terminal output is a canvas, so this is the only way to read it). */
-  const spawnArgv = (id: string): string[] => {
-    const log = path.join(dataDir, "e2e-agent-argv.log");
-    if (!existsSync(log)) return [];
-    return readFileSync(log, "utf8").split("\n")
-      .filter((l) => l.startsWith(id + "\t"))
-      .map((l) => l.slice(id.length + 1));
-  };
-
-  const firstSpawnArgv = async (id: string) => {
-    await browser.waitUntil(async () => spawnArgv(id).length > 0, {
-      timeout: 20_000, timeoutMsg: "the agent never spawned",
-    });
-    return spawnArgv(id)[0];
   };
 
   /** The red ⚡ on the task's sidebar row: YOLO without a cage. */
@@ -455,17 +961,17 @@ describe("YOLO default for new tasks", () => {
   (process.platform === "darwin" ? it : it.skip)("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
     await setAppDefault(false);
     await openDialog();
-    await pickSandbox("ENFORCING (filesystem + network)");
+    await pickSandbox("enforce");
     await browser.waitUntil(async () => (await yoloControl())?.state === "auto", {
       timeout: 5_000, timeoutMsg: "the YOLO control never switched to auto under Enforcing",
     });
     expect(await yoloControl()).toEqual({ state: "auto", checked: true, disabled: true });
     // Monitoring blocks nothing, so it is not a cage: the choice is live again.
-    await pickSandbox("MONITORING");
+    await pickSandbox("monitor");
     await browser.waitUntil(async () => (await yoloControl())?.state === "off", {
       timeout: 5_000, timeoutMsg: "the YOLO control stayed on auto under Monitoring",
     });
-    await pickSandbox("OFF");
+    await pickSandbox("off");
     await closeDialog();
   });
 
@@ -1738,7 +2244,10 @@ describe("check out an existing branch", () => {
     const shape = () =>
       browser.execute(() => {
         const dlg = document.querySelector('[data-testid="new-task-name"]')?.closest('[role="dialog"]');
-        const labels = [...(dlg?.querySelectorAll("label") ?? [])].map((l) => l.textContent?.trim());
+        // each field is a group named by its label (aria-labelledby), so this
+        // also proves the name reaches the accessibility tree.
+        const labels = [...(dlg?.querySelectorAll('[role="group"][aria-labelledby]') ?? [])]
+          .map((g) => document.getElementById(g.getAttribute("aria-labelledby")!)?.textContent?.trim());
         return {
           labels,
           // The Main checkout tab, and whether it can be chosen. It used to

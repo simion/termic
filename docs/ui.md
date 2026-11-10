@@ -1368,7 +1368,8 @@ task unchecked — check = add, with the same Main-checkout/Worktree toggle and
 branch/base fields the New Task dialog shows; on a live main-checkout task
 additions always link). Sandbox and Resume-args-override are the SAME fields
 as New Task — the real `SandboxPicker` (with the per-mode config pane to the
-right, same two-column layout New Task uses) and the inline override field —
+right, holding the same `SandboxPresetRow` and lists as New Task's Isolation
+pane) and the inline override field —
 saved through the same commands their dedicated dialogs use (`task_set_sandbox`
 with `kill_live = false`, `task_set_docker` behind its mounted-agents confirm,
 `task_set_resume_override`). The restart affordance those dialogs have becomes
@@ -1404,8 +1405,8 @@ open issues" and mean something else entirely.
 
 ### The issue picker is a COLUMN, not a field
 
-It sits beside the form as a second pane, the same treatment the PR picker and
-the sandbox config get.
+It sits beside the fields in the Task pane, the same treatment the PR
+picker gets (see "The new-task dialog is a rail of sections at ONE size").
 
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.
@@ -1468,26 +1469,83 @@ sequence number so a slow answer for a scope you already left cannot
 overwrite the one you picked. The column starts back on All every time it
 is entered.
 
-### The new-task dialog has TWO columns and TWO widths
+### The new-task dialog is a rail of sections at ONE size
 
-Left is the form. Right is whatever context the chosen source needs (the issue
-list, or the PR picker) with the sandbox config stacked **under** it. Nothing
-gets a third column.
+A rail on the left, one pane per section on the right:
 
-The dialog's width depends on exactly one thing: whether that right column
-exists. `max-w-xl` without it, `max-w-[72rem]` with it.
+- **Task**: task type, source, the import list, name, branch (or the
+  branch to check out), base, initial prompt. An existing-branch, issue or
+  PR picker sits beside these fields inside the Task pane, because a pick
+  writes the branch to check out, or Name, Branch and the prompt, and the
+  list belongs next to what it fills.
+- **Repos** (multi-repo only): members, set all, member sets, live warnings.
+- **Agent**: default CLI, YOLO, then the launch options (agents only, never
+  a terminal): extra args (`Task.agent_args`, split like the resume
+  override, quotes keep a value whole), a session to resume (GH #169, the
+  dialog's `termic new --resume`; only for an agent with `resume_id_args`,
+  and not for multi-repo, whose create takes no session id) and the resume
+  args override. All shown open, not behind a toggle: the pane has room.
+- **Isolation**: the sandbox (`SandboxPicker` `layout="row"`, one segmented
+  strip, off / monitor / enforce FS / enforce / Docker, with the picked
+  mode's description under it), its config, Docker mounts, Keychain.
+- **Secrets** (only once a role exists): role picker and secrets summary.
+  The rail marks it "Exp", the same experimental status the role picker
+  carries.
 
-Both rules are there because the obvious composition is wrong. Each pane used
-to own a column and carry its own `ml-8 border-l pl-6`, and the width was a
-six-way ternary over (issue AND sandbox), (issue OR sandbox) x (multi, import,
-checkout). So the dialog jumped between four visible widths as you clicked
-through the sources, and when the PR picker arrived it was not in the matrix at
-all, which is how a FOURTH column appeared. A per-pane column does not scale:
-every new source is another multiplication. A single stacked right column is
-the same layout whatever is in it.
+It opens on Task every time, and a section that goes away falls back to
+Task. Each rail entry shows its section's current
+value (`rail-<id>-sub`: "Worktree, new branch", "FakeAgent, YOLO on",
+"Enforcing, Keychain blocked", the role name) so every answer is on screen
+without opening its pane, and a dot (`rail-warn`) when the section holds a
+warning: red on Agent when YOLO is on with nothing caging the agent, amber
+for the rest (an unknown agent, YOLO under a files-only cage with the
+network open, a branch the name cannot make, an unknown base, members that
+run live). A warning never sits unannounced in a pane you did not open, and
+the dot never points at one the pane is not showing: each warning is one
+value (`warnSlug`, `warnBase`, ...) that the pane renders and the dot reads.
+The agent's own YOLO flags typed into Extra args count as YOLO on. A resume
+override wins outright at spawn (`spawnArgsForCli`), so while one is set,
+"Resume a session" is disabled, says why, and is not sent. Every open starts
+on Task, reset in the member rows' layout effect so a reopen never paints a
+frame of the section it was closed on.
+Up / down walk the rail. `#new-task-form[data-section]` says which pane
+shows.
 
-One fixed width for both cases is not the answer either. The plain form is one
-narrow column, and at 72rem it sprawls across an empty dialog.
+The panes stay MOUNTED and toggle `hidden` (display: none, never
+`visibility`), so a typed PR number, a filter or a fetched list survives a
+section switch. A field in a hidden pane cannot take focus, so jumping to a
+missing field shows its pane first, synchronously (`flushSync`).
+
+The size is fixed (`h-[min(calc(100vh-4rem),54rem)] max-w-[82rem]`) and
+depends on nothing. It used to be a ternary over the sources and the
+sandbox, so the dialog jumped under the pointer as you clicked through them. Each pane scrolls on its own; in
+the Task pane the fields and the picker each scroll on their own from a
+1100px viewport and stack below it. Flex, not grid: WebKit mis-sizes grid
+tracks inside an overflow container on fractionally scaled displays (see
+`Dialog.tsx`).
+
+**Explanations go behind an (i)** (`ui/InfoTip.tsx`, on `Tip`, the one (i)
+in the app; its `aria-label` is the text, so a screen reader and a spec get
+it without a hover). It is a focusable span, not a button, so it can sit in
+a `<label>` without becoming the labelled control. `Field` is a
+`role="group"` named by its label. `Field` takes `info` for that and `hint` for text that must stay on
+screen: warnings, and why something is off (YOLO held for a link or an
+issue, YOLO on and uncaged). The main checkout's description goes behind
+the (i) but its warning, "Edits land on your real files.", stays as a line.
+
+**A disabled Create says why.** The button sits in a wrapper that takes the
+hover and the click a disabled button cannot (`Button` is
+`pointer-events: none` when disabled): the tooltip names the missing thing
+(a worktree to import, a branch to check out, a name, a branch name) and the
+click focuses that field. `data-blocked` on the button names it for specs.
+**It opens with Name focused** through `onOpenAutoFocus`, never Radix's
+first tabbable: that is the Task type (i), whose tooltip opens on focus and
+eats the first Escape (docs/gotchas.md). Cmd+Enter while blocked does what
+the click does: it focuses the missing field, from whichever section.
+**Cmd/Ctrl+Enter creates** from any field in any section, the prompt
+included, where plain
+Enter stays a newline. It is a key handler on the form, not a registered
+shortcut: like the command dialogs, it only means anything inside this one.
 
 ### A pick fills the form; it does not send anything
 
@@ -1517,7 +1575,7 @@ read live, so editing it there changes every future issue task
 (`src/lib/issuePrompt.ts`).
 
 A plain shell or registry terminal has no prompt box, so the composed prompt has
-nowhere to go: the column says so at the point the issue was chosen rather than
+nowhere to go: the picker says so at the point the issue was chosen rather than
 letting Create drop it silently.
 
 ## Checking out an existing branch
@@ -2715,8 +2773,8 @@ Seatbelt sandbox and YOLO seeded the way New Task seeds them, catch-up,
 runs to keep, report retention) or from a task's "Schedule..." menu item,
 where the agent settings are the task's and are not asked for. A Docker
 default seeds no sandbox at all and Create waits for a choice. The dialog
-takes New Task's two widths (`max-w-xl`, or `max-w-[72rem]` with a right
-column): picking a Seatbelt mode for a new parent opens the cage's allowed
+takes the two widths New Task used to (`max-w-xl`, or `max-w-[72rem]` with a
+right column): picking a Seatbelt mode for a new parent opens the cage's allowed
 paths and hosts beside the form, seeded from the app-wide and project lists
 and editable for this schedule, exactly as New Task does. Size it with
 `max-w-*`, never `w-*`: AppDialog's own `max-w-md` caps a bare width, which is

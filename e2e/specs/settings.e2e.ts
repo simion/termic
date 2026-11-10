@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clearLanguagePref, clickPresent, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, textOf, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
+import { archiveTask, clearLanguagePref, clickPresent, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, textOf, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree, newTaskSection } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
  *  Toggle rows are label + switch inside one .justify-between wrapper
@@ -1788,6 +1788,7 @@ describe("task sandbox", () => {
     }, dialog);
     await clickButton("Terminal");
 
+    await newTaskSection("isolation");
     await clickWhenVisible(`${dialog} [data-sandbox-option="monitor"]`);
     await waitGone(box);
     await clickWhenVisible(`${dialog} [data-sandbox-option="enforce"]`);

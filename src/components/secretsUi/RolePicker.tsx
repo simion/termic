@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { keychainBlocked, type Agent, type Project, type Role, type SecretDef, type Task } from "@/lib/types";
 import { roleColour, ruleSummary, brokerEnvPreview, roleDefault, roleToStore, configuredRole } from "@/lib/secretsUi";
 import { useSecrets, useTaskRole, ensureSecretsSync } from "@/store/secrets";
+import { InfoTip } from "@/components/ui/InfoTip";
 
 /** Role cards: No secrets + one per role. `disabledReason` greys them all
  *  out with that text underneath (the sandbox choice cannot carry a role);
@@ -16,7 +17,7 @@ import { useSecrets, useTaskRole, ensureSecretsSync } from "@/store/secrets";
  *  Keychain block (`withRoleCage`), and clearing the block must clear the
  *  role. */
 export function RolePicker({
-  roles, secrets, value, onChange, def, disabledReason, note = null, compact = false,
+  roles, secrets, value, onChange, def, disabledReason, note = null, compact = false, tip = false,
 }: {
   roles: Role[];
   secrets: SecretDef[];
@@ -27,6 +28,8 @@ export function RolePicker({
   disabledReason: string | null;
   note?: string | null;
   compact?: boolean;
+  /** The hint behind an (i) beside the label instead of under it. */
+  tip?: boolean;
 }) {
   const { t } = useTranslation("secrets");
   const disabled = disabledReason !== null;
@@ -51,8 +54,9 @@ export function RolePicker({
           <KeyRound className="h-3.5 w-3.5 text-[var(--color-accent)]" />
           <span className={cn("font-medium text-[var(--color-fg)]", compact ? "text-[12.5px]" : "text-[13px]")}>{t("task.roleLabel")}</span>
           <span className="rounded bg-[var(--color-accent)]/15 px-1 text-[10px] uppercase tracking-wider text-[var(--color-accent)]">{t("task.experimental")}</span>
+          {tip && <InfoTip text={t("task.roleHint")} />}
         </div>
-        <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[12px]")}>{t("task.roleHint")}</span>
+        {!tip && <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[12px]")}>{t("task.roleHint")}</span>}
       </div>
       <div role="radiogroup" className={cn("grid gap-2", compact ? "grid-cols-2" : "grid-cols-3")}>
         {cards.map(c => {

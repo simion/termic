@@ -9,8 +9,8 @@
 // The sandbox is seeded from the project the way New Task seeds it, except
 // Docker: scheduled runs do not support it, so a Docker default seeds NOTHING
 // and Create waits for a choice, rather than quietly running on the host.
-// A Seatbelt choice opens the cage's allow-lists in a second column, the
-// layout New Task uses, and the dialog takes New Task's two widths for it.
+// A Seatbelt choice opens the cage's allow-lists in a second column and the
+// dialog widens for it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -246,8 +246,8 @@ export function ScheduleDialog() {
       open={open}
       onOpenChange={v => { if (!v) close(); }}
       title={title}
-      // New Task's two widths, on the one thing they depend on: whether
-      // there is a right column. A `w-*` here does nothing, because
+      // two widths, on the one thing they depend on: whether there is a
+      // right column. A `w-*` here does nothing, because
       // AppDialog's own `max-w-md` still caps it.
       className={cage ? "max-w-[72rem]" : "max-w-xl"}
       stickyFooter={

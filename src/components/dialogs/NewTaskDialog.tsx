@@ -1,7 +1,8 @@
 // New task dialog: name + CLI segmented pills + branch name +
 // branch-from. Calls task_create on submit.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useUI } from "@/store/ui";
@@ -16,7 +17,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { AgentPills } from "./AgentPills";
-import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
+import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName, tokenizeArgs, cliSupportsResumeById } from "@/lib/agents";
 import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus, projectForgePrs, projectFetchPrBranch, projectGitCheckout} from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
@@ -26,14 +27,16 @@ import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
 import { yoloModeName } from "@/lib/yoloModeName";
-import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X, GitPullRequest} from "lucide-react";
-import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
+import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, Zap, X, GitPullRequest, KeyRound } from "lucide-react";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
+import { SandboxIcon, DockerSandboxIcon, sandboxModeText, SANDBOX_VISUALS, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
+import { InfoTip } from "@/components/ui/InfoTip";
+import { Tip } from "@/components/ui/Tooltip";
 import { RolePicker, SecretsForTask, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { useSecrets, ensureSecretsSync } from "@/store/secrets";
-import { roleDefault, roleToStore } from "@/lib/secretsUi";
+import { roleColour, roleDefault, roleToStore } from "@/lib/secretsUi";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
-import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type IssueScope, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { afterRevalidate, cachedForgeList, fetchForgeList } from "@/store/forgeLists";
@@ -82,6 +85,7 @@ function growPrompt(el: HTMLTextAreaElement | null) {
 
 export function NewTaskDialog() {
   const { t } = useTranslation("dialogs");
+  const { t: tc } = useTranslation("chrome");
   ensureSecretsSync();
   const projectId = useUI(s => s.newTaskProjectId);
   // Subscribed, not read imperatively: this is what makes a re-open (a second
@@ -386,7 +390,7 @@ export function NewTaskDialog() {
   // for single AND multi hosts), and the multi wrapper carries its own.
   const canSandbox = true;
   // Derived: Seatbelt cage on (Docker is its own separate flag below).
-  // Drives the 2-column layout + "send lists" gating.
+  // Drives the "send lists" gating.
   const sandbox = !dockerWanted && sandboxMode !== "off" && canSandbox;
   // Keychain row: enforcing modes only, and only sent while shown, so a
   // tick left behind by switching to Monitor never rides along.
@@ -478,6 +482,8 @@ export function NewTaskDialog() {
   // ("All open"), fetched only on that click and capped at a page, and
   // anything older is reached by typing its number.
   const [prMode, setPrMode] = useState(false);
+  // Which rail section's pane is showing. Every open starts on Task.
+  const [section, setSection] = useState<Section>("task");
   const [prLookup, setPrLookup] = useState<PrPickList | null>(null);
   // The second list: open PRs waiting on YOUR review. Still scoped to you, so
   // it stays as small as the first. Fetched beside it, never blocking it.
@@ -502,12 +508,19 @@ export function NewTaskDialog() {
   // (Task.resume_override, task_set_resume_override): same storage, same
   // placeholder expansion, same "the agent owns a missing session" stance.
   //
-  // It replaced a "Resume session ID" box that only accepted a bare uuid and
-  // only appeared for agents declaring `resume_id_args` (claude, opencode,
-  // copilot). Codex, gemini and agy resume with `--continue` / `resume
-  // --last`, which take no id, so those agents got no field at all even
-  // though raw resume args work fine for them (GH #169).
+  // Every agent gets this one. Codex, gemini and agy resume with
+  // `--continue` / `resume --last`, which take no id, and raw resume args
+  // work fine for them (GH #169). The "Resume a session" field below is the
+  // narrower case: an external session id, only for agents declaring
+  // `resume_id_args`. When both are filled the override wins, so the
+  // session field steps aside (`sessionOverridden`).
   const [resumeOverride, setResumeOverride] = useState("");
+  // Extra argv pinned to this task's agent (`Task.agent_args`), typed as one
+  // line and split like the resume override, quotes keeping a value whole.
+  const [agentArgsText, setAgentArgsText] = useState("");
+  // An externally-started session the first spawn resumes (GH #169), the
+  // dialog's version of `termic new --resume`.
+  const [resumeSession, setResumeSession] = useState("");
   // Optional first message, typed into the agent once it finishes booting
   // (GH #192). Blank by default and blank for every existing entry point —
   // this exists so a `termic://` link can arrive with a summarized ticket
@@ -544,36 +557,74 @@ export function NewTaskDialog() {
   /** The override as sent to Rust: capability-gated, trimmed, blank → unset. */
   const resumeOverrideArg = () =>
     canResumeOverride ? resumeOverride.trim() || undefined : undefined;
-  // Collapsed by default: a label + hint + input is three lines of a form
-  // that already scrolls, spent on something almost nobody sets at create
-  // time (the task menu edits it afterwards for the rest). Expanded state is
-  // per-open, not remembered: typing a value keeps it visible on its own.
-  const [resumeOpen, setResumeOpen] = useState(false);
-  // Same copy as ResumeOverrideDialog, trimmed to one line: this one is a
-  // field in a long form, not a dialog whose whole subject is the override.
-  const resumeOverrideField = resumeOpen ? (
-    <Field
-      label={t("newTask.resumeOverrideLabel")}
-      hint={t("newTask.resumeOverrideHint", { agent: agentLabel })}
-    >
-      <Input
-        value={resumeOverride}
-        onChange={e => setResumeOverride(e.target.value)}
-        placeholder={t("newTask.resumeOverridePlaceholder")}
-        className="font-mono"
-        autoFocus
-      />
-    </Field>
-  ) : (
-    <button
-      type="button"
-      data-testid="resume-override-toggle"
-      onClick={() => setResumeOpen(true)}
-      className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
-    >
-      <History className="h-3.5 w-3.5" />
-      {t("newTask.overrideResumeToggle")}
-    </button>
+  // Same capability gate for the extra args: a terminal has no agent to pass
+  // them to, and a value typed before switching to one must not ride along.
+  const agentArgsArg = () => {
+    const a = canResumeOverride ? tokenizeArgs(agentArgsText.trim()) : [];
+    return a.length ? a : undefined;
+  };
+  // the agent's own YOLO flags typed as extra args turn YOLO on for every
+  // launch, out of reach of the checkbox and the issue / link hold, so they
+  // count as YOLO for the warnings. A cage turns YOLO on anyway.
+  const argsYolo = yoloApplies && !yoloCaged && !!yoloArgs?.length
+    && `\0${(agentArgsArg() ?? []).join("\0")}\0`.includes(`\0${yoloArgs.join("\0")}\0`);
+  // Resuming by id needs an agent that can address a session, and a single
+  // task to seed it on (a multi-repo create takes no session id).
+  const canResumeSession = canResumeOverride && cliSupportsResumeById(cli) && !isMulti;
+  // spawnArgsForCli lets a resume override win outright, so a session id
+  // beside one would never be used: not sent, and its field says why.
+  const sessionOverridden = canResumeOverride && !!resumeOverride.trim();
+  const resumeSessionArg = () => canResumeSession && !sessionOverridden ? resumeSession.trim() || undefined : undefined;
+  // The launch options under the agent: extra args, a session to resume, and
+  // the resume args override (same copy as ResumeOverrideDialog). Agents
+  // only, never a terminal.
+  const agentLaunchFields = (
+    <>
+      <Field
+        label={t("newTask.agentArgsLabel")}
+        info={t("newTask.agentArgsHint", { agent: agentLabel })}
+        hint={argsYolo ? <span className="text-[var(--color-err)]">{t("newTask.agentArgsYolo", { agent: agentLabel })}</span> : undefined}
+      >
+        <Input
+          data-testid="agent-args"
+          value={agentArgsText}
+          onChange={e => setAgentArgsText(e.target.value)}
+          placeholder={t("newTask.agentArgsPlaceholder")}
+          className="font-mono"
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+        />
+      </Field>
+      {canResumeSession && (
+        <Field
+          label={t("newTask.resumeSessionLabel")}
+          info={t("newTask.resumeSessionHint", { agent: agentLabel })}
+          hint={sessionOverridden ? t("newTask.resumeSessionOverridden") : undefined}
+        >
+          <Input
+            data-testid="resume-session"
+            disabled={sessionOverridden}
+            value={resumeSession}
+            onChange={e => setResumeSession(e.target.value)}
+            placeholder={t("newTask.resumeSessionPlaceholder")}
+            className="font-mono"
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+          />
+        </Field>
+      )}
+      <Field
+        label={t("newTask.resumeOverrideLabel")}
+        info={t("newTask.resumeOverrideHint", { agent: agentLabel })}
+      >
+        <Input
+          data-testid="resume-override"
+          value={resumeOverride}
+          onChange={e => setResumeOverride(e.target.value)}
+          placeholder={t("newTask.resumeOverridePlaceholder")}
+          className="font-mono"
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+        />
+      </Field>
+    </>
   );
   // Existing local branch names in the project's repo, loaded on open so the
   // auto-filled branch can dodge one still hanging around from an archived
@@ -588,6 +639,7 @@ export function NewTaskDialog() {
   // task" bug). The ref is checked + flipped synchronously inside
   // submit() so concurrent calls see the truth immediately.
   const submittingRef = useRef(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Reset the form ONLY when the dialog opens for a different project —
@@ -736,7 +788,9 @@ export function NewTaskDialog() {
     const canImp = (p?.type ?? "single") !== "multi" && !p?.non_git;
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
-    setResumeOverride(""); setResumeOpen(false);
+    setResumeOverride("");
+    setAgentArgsText("");
+    setResumeSession("");
     if (seed?.issue) {
       setPrompt(buildIssuesPrompt([seed.issue], MAX_PROMPT_CHARS, ""));
       setYolo(false);
@@ -804,7 +858,9 @@ export function NewTaskDialog() {
     // this only ever catches a project that lost its git dir since.
     // Same rule as `canWorktree` above, computed off the effect's own project.
     const clamped = !!p?.non_git && (p?.type ?? "single") !== "multi";
-    setMode(clamped ? "repo_root" : (seed?.mode ?? readLastMode() ?? "repo_root"));
+    // An import seed (the launcher's "Import worktree") needs a worktree to
+    // put it in, so it opens on one without touching the remembered mode.
+    setMode(clamped ? "repo_root" : wantImport ? "worktree" : (seed?.mode ?? readLastMode() ?? "repo_root"));
     if (canImp) loadImportable(projectId);
     setBusy(false);
     submittingRef.current = false;
@@ -842,6 +898,9 @@ export function NewTaskDialog() {
       setMemberSets([]);
     }
     setSetSaveOpen(false); setSetSaveName("");
+    // Per-open, and here rather than in the passive reset above so a reopen
+    // never paints one frame of the section it was closed on.
+    setSection("task");
   }, [projectId, seedNonce]);
 
   // Tauri event unlisten handles. Owned by submit() (which registers them
@@ -872,6 +931,11 @@ export function NewTaskDialog() {
   // `slugify` folds out because the slug is a path segment as well as a ref).
   // Only when the user has not typed their own branch — theirs is theirs.
   const nameSlugsAway = !!name.trim() && !derived && !branchEdited;
+  // each warning the Task pane can show, gated exactly as the pane renders
+  // it, so the rail's dot never points at text the pane is not showing.
+  const branchFields = !importMode && mode === "worktree";
+  const warnSlug = branchFields && !checkoutMode && nameSlugsAway;
+  const warnBase = branchFields && !isMulti && !!baseUnknown && base === baseUnknown;
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
   /** A fetch that outlives a close must not land in the NEXT open. Two
@@ -957,6 +1021,15 @@ export function NewTaskDialog() {
       .then(refs => { if (!stale()) setCheckoutRefs(refs); })
       .catch(e => { if (!stale()) setErr(String(e)); })
       .finally(() => { if (!stale()) setCheckoutLoading(false); });
+  }
+
+  /** "I want a new branch off this one": New branch, cut from the branch
+   *  that was about to be checked out. */
+  function branchFromCheckout() {
+    const b = checkoutBranch.trim();
+    chooseSource("new");
+    setBase(b);
+    setBaseUnknown(null);
   }
 
   function exitCheckout() {
@@ -1265,6 +1338,8 @@ export function NewTaskDialog() {
   const cliBin = forgeCli(forgeProvider);
   const forgeRow = forges?.find(f => f.provider === forgeProvider);
   const forgeCliReady = !!forgeRow?.authed;
+  const warnForge = (source === "issue" || source === "pr") && !!forges && !forgeCliReady;
+  const warnNoPromptBox = issuePicks.length > 0 && !canPrompt;
 
   // Client-side filter over the already-fetched list: no extra round-trip
   // for typing, and 50 issues is small enough to scan in the renderer.
@@ -1374,12 +1449,13 @@ export function NewTaskDialog() {
           blockKeychain: blockKcArg, role: roleArg,
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
-        undefined, // no externally-started session id from this dialog
+        resumeSessionArg(),
         // Gated on capability, not just field state: the input hides when
         // the agent switches to one with nothing to resume, but the typed
         // value would otherwise still ride along.
         resumeOverrideArg(),
         yoloArg,
+        agentArgsArg(),
       ));
       await loadAll();
       setActive(w.id);
@@ -1413,9 +1489,9 @@ export function NewTaskDialog() {
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
         undefined,
-        undefined, // no externally-started session id from this dialog
+        resumeSessionArg(),
         resumeOverrideArg(),
-        undefined, // no agent args from this dialog
+        agentArgsArg(),
         yoloArg,
         // Multi-repo: link only the checked members into the live host
         // checkout. Single-repo takes no member list at all.
@@ -1516,6 +1592,7 @@ export function NewTaskDialog() {
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           resume_override: resumeOverrideArg(),
+          agent_args: agentArgsArg(),
           yolo: yoloArg,
         }));
       } else {
@@ -1533,6 +1610,8 @@ export function NewTaskDialog() {
           // Capability-gated like import: the field hides when the agent has
           // nothing to resume, but typed state would otherwise ride along.
           resume_override: resumeOverrideArg(),
+          agent_args: agentArgsArg(),
+          resume_session_id: resumeSessionArg(),
           sandbox_enabled: sandbox,
           sandbox_mode: sandboxMode,
           // Only send lists when sandbox is on - keeps the JSON tidy
@@ -1573,6 +1652,187 @@ export function NewTaskDialog() {
     }
   }
 
+  // Issue pane copy. Lifted out of the pane: the picker's title and the
+  // Task rail entry name the noun too.
+  // The lookup's provider wins over the cached project map: when
+  // resolveProvider failed but project_forge_issues still resolved
+  // one, the copy must name the CLI that actually failed, not the
+  // stale/null guess.
+  const paneProvider = issueLookup?.provider ?? forgeProvider;
+  const paneNoun = issueNoun(paneProvider);
+  const paneCli = forgeCli(paneProvider);
+  // Noun morphology for the parameterized newTask.issue* keys:
+  // issue/issues/Issue/Issues vs work item/work items/…
+  const paneNouns = {
+    noun: paneNoun,
+    nouns: `${paneNoun}s`,
+    cap: paneNoun[0].toUpperCase() + paneNoun.slice(1),
+    caps: `${paneNoun[0].toUpperCase()}${paneNoun.slice(1)}s`,
+  };
+  // az is two installs (CLI + extension) - the suffix carries the
+  // second requirement so mono styling stays on the binary name.
+  const cliSuffix = paneProvider === "azure" ? t("common:azureCliSuffix") : "";
+  // Existing branch gets the same split as an issue or a PR: the branch list
+  // beside the fields, a pick filling the branch to check out on the left.
+  const branchPicker = checkoutMode && !importMode && mode === "worktree";
+  const hasPicker = prMode || issueMode || branchPicker;
+  const runModeLabel = dockerWanted ? tc("sandbox.picker.dockerShort") : sandboxModeText(sandboxMode, tc).shortLabel;
+  // The YOLO warning the Agent rail entry carries while its pane is hidden.
+  // Uncaged reads straight off what Create sends. A files-only cage (Docker,
+  // Enforcing (FS)) still turns YOLO on with the network open, which is
+  // the exfiltration path when an issue wrote the prompt (docs/sandbox.md).
+  const yoloWarn: { kind: "uncaged" | "net-open"; text: string } | null =
+    yoloArg ? { kind: "uncaged", text: t("newTask.yoloHintOn") }
+    : argsYolo ? { kind: "uncaged", text: t("newTask.agentArgsYolo", { agent: agentLabel }) }
+    : yoloApplies && yoloCaged && (dockerWanted || sandboxMode === "enforce-fs")
+      ? { kind: "net-open", text: t("newTask.yoloTabNetOpen") }
+      : null;
+  // The rail. Repos only for a multi-repo project, Secrets only once a role
+  // exists.
+  const sections: Section[] = [
+    "task",
+    ...(isMulti ? ["repos" as const] : []),
+    "agent",
+    "isolation",
+    ...(roles.length > 0 ? ["secrets" as const] : []),
+  ];
+  // a section that went away (a project's roles deleted) falls back to Task.
+  const at: Section = sections.includes(section) ? section : "task";
+  const pane = (id: Section) => ({ id: `new-task-pane-${id}`, role: "tabpanel", "data-testid": `new-task-pane-${id}` });
+  const taskSourceSub = source === "issue" && issuePicks.length > 0
+    ? issuePicks.map(issueRef).join(", ")
+    : {
+      new: mode === "worktree" ? t("newTask.railSrcNew") : t("newTask.railSrcBlank"),
+      branch: t("newTask.railSrcBranch"),
+      import: t("newTask.railSrcImport"),
+      issue: paneProvider === "azure" ? t("newTask.railSrcWorkItem") : t("newTask.railSrcIssue"),
+      pr: t("newTask.railSrcPr"),
+    }[source];
+  const taskWarn = warnSlug || warnBase || warnForge || warnNoPromptBox;
+  // in host Main checkout every included member runs live (the pane's amber
+  // note); in worktree mode it is the members set to Main checkout, or none.
+  const reposWarn = isMulti && (mode === "repo_root"
+    ? includedMembers.length > 0
+    : includedMembers.length === 0 || includedMembers.some(m => m.mode === "repo_root"));
+  const agentWarn: { kind: "uncaged" | "net-open" | "warn"; text: string } | null =
+    yoloWarn
+    ?? (agentUnknown ? { kind: "warn", text: t("newTask.agentUnknown", { agent: agentUnknown, fallback: agentLabel }) } : null);
+  const roleColourCss = roleObj ? roleColour(roleObj.colour) : undefined;
+  const rail: { id: Section; icon: React.ReactNode; sub: string; subColour?: string; warn?: { kind: string; text: string } | null; badge?: string }[] = [
+    {
+      id: "task",
+      icon: mode === "worktree" ? <GitBranch className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />,
+      sub: `${mode === "worktree" ? t("newTask.worktree") : t("newTask.mainCheckout")}, ${taskSourceSub}`,
+      warn: taskWarn ? { kind: "warn", text: t("newTask.railWarn") } : null,
+    },
+    {
+      id: "repos",
+      icon: <FolderGit2 className="h-3.5 w-3.5" />,
+      sub: t("newTask.railRepos", { included: includedMembers.length, count: members.length }),
+      warn: reposWarn ? { kind: "warn", text: t("newTask.railWarn") } : null,
+    },
+    {
+      id: "agent",
+      icon: <CliIcon cli={cli} className="h-3.5 w-3.5" />,
+      sub: [
+        agentLabel,
+        yoloApplies && (yoloCaged ? t("newTask.railYoloAuto") : yolo || argsYolo ? t("newTask.railYoloOn") : t("newTask.railYoloOff")),
+        !!agentArgsArg() && t("newTask.railArgs"),
+        !!resumeSessionArg() && t("newTask.railResumesSession"),
+        canResumeOverride && resumeOverride.trim() && t("newTask.railResumeSet"),
+      ].filter(Boolean).join(", "),
+      warn: agentWarn,
+    },
+    {
+      id: "isolation",
+      icon: dockerWanted ? <DockerSandboxIcon className="h-3.5 w-3.5" /> : <SandboxIcon mode={sandboxMode} className="h-3.5 w-3.5" />,
+      sub: kcRow && blockKc ? `${runModeLabel}, ${t("newTask.railKcBlocked")}` : runModeLabel,
+      subColour: dockerWanted ? DOCKER_SANDBOX_COLOR : sandboxMode === "off" ? undefined : SANDBOX_VISUALS[sandboxMode].color,
+    },
+    {
+      id: "secrets",
+      icon: <KeyRound className="h-3.5 w-3.5" style={roleColourCss ? { color: roleColourCss } : undefined} />,
+      sub: roleDisabled ? t("newTask.railRoleUnavailable") : roleObj ? roleObj.name : t("newTask.railNoSecrets"),
+      subColour: roleDisabled ? undefined : roleColourCss,
+      badge: t("newTask.railExp"),
+    },
+  ].filter(r => sections.includes(r.id as Section)) as typeof rail;
+  const railLabel: Record<Section, string> = {
+    task: t("newTask.secTask"), repos: t("newTask.secRepos"), agent: t("newTask.secAgent"),
+    isolation: t("newTask.secIsolation"), secrets: t("newTask.secSecrets"),
+  };
+  const railButton = (r: (typeof rail)[number]) => (
+    <button
+      key={r.id}
+      type="button"
+      role="tab"
+      data-testid={`rail-${r.id}`}
+      aria-selected={at === r.id}
+      aria-controls={`new-task-pane-${r.id}`}
+      tabIndex={at === r.id ? 0 : -1}
+      onClick={() => setSection(r.id)}
+      className={cn(
+        "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left",
+        at === r.id ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+      )}
+    >
+      <span className="mt-0.5 flex shrink-0">{r.icon}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="flex items-center gap-1.5 text-[13px] font-medium">
+          {railLabel[r.id]}
+          {r.badge && (
+            <span className="rounded bg-[var(--color-accent)]/15 px-1 text-[9.5px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">{r.badge}</span>
+          )}
+        </span>
+        <span data-testid={`rail-${r.id}-sub`} title={r.sub} className="truncate text-[11.5px] leading-snug text-[var(--color-fg-faint)]" style={r.subColour ? { color: r.subColour } : undefined}>
+          {r.sub}
+        </span>
+      </span>
+      {/* A dot, with its reason for a screen reader and on hover: red for
+          YOLO with nothing caging the agent, amber for everything else. */}
+      {r.warn && (
+        <span
+          data-testid="rail-warn"
+          data-warn={r.warn.kind}
+          title={r.warn.text}
+          className={cn("mt-1.5 h-[7px] w-[7px] shrink-0 rounded-full", r.warn.kind === "uncaged" ? "bg-[var(--color-err)]" : "bg-[var(--color-warn)]")}
+        >
+          <span className="sr-only">{r.warn.text}</span>
+        </span>
+      )}
+    </button>
+  );
+  // up / down walk the rail, the way a vertical tab list does.
+  const railKeys = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const i = sections.indexOf(at);
+    const next = sections[(i + (e.key === "ArrowDown" ? 1 : sections.length - 1)) % sections.length];
+    setSection(next);
+    e.currentTarget.querySelector<HTMLElement>(`[data-testid="rail-${next}"]`)?.focus();
+  };
+  // Why Create is disabled, if it is, and where to go to fix it. Ordered
+  // like submit()'s dispatch (import wins over the task type), so the
+  // reason named is the one submit would trip on. A disabled button that
+  // explains nothing reads as broken.
+  // every blocker lives in Task: show that pane first (synchronously, a
+  // display: none field cannot take focus), then focus the field.
+  const goTo = (sel: string) => () => {
+    flushSync(() => setSection("task"));
+    formRef.current?.querySelector<HTMLElement>(sel)?.focus();
+  };
+  const worktreeish = mode !== "repo_root";
+  const createBlocked: { why: string; reason: string; go: () => void } | null =
+    importMode && !importSelected
+      ? { why: "import", reason: t("newTask.createBlockedImport"), go: goTo('[data-testid="import-list"] button') }
+    : worktreeish && !importMode && checkoutMode && !checkoutBranch.trim()
+      ? { why: "checkout", reason: t("newTask.createBlockedCheckout"), go: goTo('[data-testid="checkout-branch-input"]') }
+    : !effectiveName
+      ? { why: "name", reason: t("newTask.createBlockedName"), go: goTo('[data-testid="new-task-name"]') }
+    : worktreeish && !importMode && !checkoutMode && !branch.trim()
+      ? { why: "branch", reason: t("newTask.createBlockedBranch"), go: goTo('[data-testid="new-task-branch"]') }
+    : null;
+
   return (
     <AppDialog
       // Locked only while busy — which, since GH #242, is just the brief
@@ -1580,6 +1840,13 @@ export function NewTaskDialog() {
       // (worktree/multi creates close the dialog immediately; see submit()).
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
+      // Focus Name, never the first tabbable: that is the Task (i), whose
+      // tooltip opens on focus and then takes the first Escape, so the
+      // dialog popped a tooltip on open and needed two Escapes to close.
+      onOpenAutoFocus={(e) => {
+        e.preventDefault();
+        formRef.current?.querySelector<HTMLElement>('[data-testid="new-task-name"]')?.focus();
+      }}
       title={isMulti
         ? (mode === "repo_root" ? t("newTask.titleMultiRoot") : t("newTask.titleMulti"))
         : importMode
@@ -1588,90 +1855,107 @@ export function NewTaskDialog() {
             ? t("newTask.titleCheckout")
             : mode === "repo_root" ? t("newTask.titleRoot") : t("newTask.titleWorktree")}
       description={undefined}
-      // The four mode switches ride the title line rather than each taking a
-      // `gap-4` form row. They are chrome - "make this a different KIND of
-      // task" - not fields, and the one that shows most often was costing a
-      // whole row on every open of a dialog that usually has nothing to do
-      // with issues. Labels are short because worktree mode can show two of
-      // them at once; the row wraps if a title ever leaves no space.
-      // The "where does this task come from" choices moved OUT of the title
-      // line and into sub-tabs under Task type: four of them crowded the header
-      // and read as unrelated chrome when they are one question.
-      // Two widths, and they depend on exactly ONE thing: whether there is a
-      // right column. One fixed width would leave the plain form sprawling
-      // across an empty dialog; six (the old matrix: issue+sandbox, then
-      // issue-or-sandbox times multi/import/checkout, then three more) made
-      // the dialog jump as you clicked through the sources, and PR mode was
-      // not in it at all, which is how a FOURTH column appeared.
+      // ONE size, on every open, for every source and every section. It used
+      // to switch between one column and two (and before that, six widths)
+      // as the source and sandbox mode changed what it held, so the dialog
+      // jumped under the pointer.
       //
-      // The HEIGHT is fixed for the same reason, and it has to be fixed rather
-      // than merely capped: every source swaps a different-length block into
-      // the left column (a branch list, a PR list, an issue hint, nothing at
-      // all), so an auto-height dialog resized vertically on every tab click,
-      // moving Create out from under the pointer.
+      // The HEIGHT is fixed, not capped, for the same reason: every source
+      // and section is a different-length pane, and an auto-height dialog
+      // resized on every click. The window's height less a margin, capped at
+      // 54rem: one section at a time is shorter than the old single form, so
+      // edge to edge was more than any pane needs.
       //
-      // A share of the WINDOW with a ceiling, not a fixed rem and not plain
-      // vh. `80vh` alone turns a tall display into a skyscraper with one short
-      // form floating in it; a fixed rem overflows a laptop. The `max-h` on
-      // Content still applies under it, so a very short window shrinks instead
-      // of clipping.
-      className={cn(
-        "h-[min(80vh,54rem)]",
-        prMode || issueMode || sandbox ? "max-w-[72rem]" : "max-w-xl",
-      )}
-      // A long worktree form (sandbox panel, multi-repo members, …) can
-      // exceed the viewport — pin Cancel/Create to the bottom instead of
-      // letting them scroll away with the fields (the user has to be able
-      // to see and press Create without scrolling to find it).
+      // WIDE because the Task pane holds the fields AND a branch / issue / PR
+      // picker side by side, next to the rail; at 74rem the halves were
+      // cramped, at 88rem the fields stretched further than they needed.
+      className="h-[min(calc(100vh-4rem),54rem)] max-w-[82rem]"
       stickyFooter={
         <>
           {err && <p className="mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[13.5px] text-[var(--color-err)]">{err}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" type="button" onClick={close}>{t("common:cancel")}</Button>
-            <Button
-              variant="primary"
-              type="submit"
-              form="new-task-form"
-              disabled={busy || !effectiveName || (mode === "repo_root" ? false : importMode ? !importSelected : checkoutMode ? !checkoutBranch.trim() : !branch.trim())}
-            >
-              {importMode ? t("newTask.import") : t("common:create")}
-            </Button>
+            <Tip content={createBlocked?.reason} stable>
+              {/* The wrapper takes the hover and the click a disabled button
+                  cannot (Button sets pointer-events: none when disabled). */}
+              <span data-testid="new-task-create-wrap" onClick={createBlocked?.go} className="inline-flex">
+                <Button
+                  variant="primary"
+                  type="submit"
+                  form="new-task-form"
+                  data-testid="new-task-create"
+                  data-blocked={createBlocked?.why}
+                  disabled={busy || !!createBlocked}
+                >
+                  {importMode ? t("newTask.import") : t("common:create")}
+                </Button>
+              </span>
+            </Tip>
           </div>
         </>
       }
     >
       <form
         id="new-task-form"
+        ref={formRef}
         onSubmit={(e) => { e.preventDefault(); submit(); }}
-        // The two answers the whole dialog is shaped by. Exposed because the
+        // Cmd/Ctrl+Enter creates from any field in any section, the prompt
+        // included (plain Enter there is a newline). Blocked, it goes to the
+        // missing field, the keyboard's version of clicking the disabled
+        // Create. A handler that already used the key (the PR number box,
+        // holding a number) called preventDefault, so it is left alone.
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || e.defaultPrevented) return;
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          e.preventDefault();
+          if (busy) return;
+          if (createBlocked) createBlocked.go();
+          else submit();
+        }}
+        // The answers the whole dialog is shaped by. Exposed because the
         // e2e was reduced to inferring the task type from a computed
         // background colour, which is a test that fails for the wrong reason
         // the moment the styling changes.
         data-task-mode={mode}
         data-task-source={source}
-        className="mt-1.5 flex flex-col gap-4"
+        data-section={at}
+        className="mt-1.5 flex min-h-0 flex-1"
       >
-      {/* Two columns, never more. Left is the form. Right is whatever context
-          the chosen source needs (the PR picker or the issue list) with the
-          sandbox config stacked UNDER it, rather than each claiming a column
-          of its own and pushing the dialog wider, which is how a FOURTH column
-          appeared. The picker goes on top because choosing an issue or a PR
-          writes into the form beside it (name, branch, prompt), so the two
-          want to be adjacent; the cage is set-and-forget. */}
-      <div className="flex">
-      <div className="flex min-w-0 flex-1 flex-col gap-4">
-        {/* Every field uses the same structure: label on its own line, optional
-            hint underneath, control on a new line. Previous version inlined
-            the segmented controls next to the label and put hints on the same
-            line as the label — both caused the spacing weirdness + wrapped
-            hint text. */}
-        {/* Two levels, top to bottom: WHAT kind of task, then WHERE it comes
-            from. They were a segmented control plus four buttons in the title
-            line, which read as five unrelated switches; as tabs and sub-tabs
-            the second row is plainly a consequence of the first. Both rows
-            always render (never conditionally hidden) so the dialog does not
-            change shape as you move through it. */}
+      {/* The rail: one entry per section with its current value, so every
+          answer is on screen without opening its pane, and a dot when the
+          section holds a warning, so nothing goes unseen behind a pane you
+          never opened. */}
+      <nav
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label={t("newTask.railLabel")}
+        data-testid="new-task-rail"
+        onKeyDown={railKeys}
+        className="flex w-[220px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--color-border-soft)] pr-3"
+      >
+        {rail.map(railButton)}
+      </nav>
+
+      {/* One pane per section. All stay mounted and only toggle `hidden`
+          (display: none, never visibility), so a filter, a scroll position or
+          a fetched list survives switching sections. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col pl-6">
+      <section {...pane("task")} className={cn("flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto min-[1100px]:flex-row min-[1100px]:overflow-hidden", at !== "task" && "hidden")}>
+        {/* Fields on the left. An issue or PR picker sits beside them,
+            because a pick writes into them (name, branch, prompt) and the two
+            want to be side by side. Each scrolls on its own; below 1100px
+            they stack and the pane scrolls instead. */}
+        <div data-testid="new-task-fields" className="flex min-w-0 flex-col gap-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:overflow-y-auto min-[1100px]:pr-1">
         <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-1.5">
+            <label className="text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.taskTypeLabel")}</label>
+            {/* What the choice below MEANS, behind the (i). The one part of
+                it that is a warning, the main checkout's "edits land on your
+                real files", stays on screen under the rows. */}
+            <InfoTip text={mode === "worktree"
+              ? (isMulti ? t("newTask.descWorktreeMulti") : t("newTask.descWorktreeSingle"))
+              : (isMulti ? t("newTask.descRootMulti") : t("newTask.descRootSingle"))} />
+          </div>
           {/* Full width, half each: this is the first and biggest choice in
               the dialog, and a pair of small underlined labels read as chrome
               rather than as the fork they are. */}
@@ -1749,7 +2033,7 @@ export function NewTaskDialog() {
                 {label}
               </button>
             ) : null)}
-            {(source === "issue" || source === "pr") && forges && !forgeCliReady && (
+            {warnForge && (
               <span className="text-[11.5px] text-[var(--color-fg-faint)]">
                 {/* `found` covers the CLI AND, for az, the extension — so
                     "needs az" is right only when the tool itself is absent;
@@ -1762,22 +2046,18 @@ export function NewTaskDialog() {
             )}
           </div>
 
-          {/* The one line that says what the choice above MEANS. It used to
-              live under a second, duplicate task-type control below; the
-              control is gone (two of them on one screen, one of them carrying
-              the same data-testid) and its sentence moved here. */}
-          <p className="text-[12px] text-[var(--color-fg-faint)]">
-            {mode === "worktree"
-              ? (isMulti ? t("newTask.descWorktreeMulti") : t("newTask.descWorktreeSingle"))
-              : (isMulti ? t("newTask.descRootMulti") : t("newTask.descRootSingle"))}
-          </p>
+          {mode === "repo_root" && (
+            <p data-testid="real-files-warn" className="flex items-center gap-1.5 text-[12px] text-[var(--color-warn)]">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {t("newTask.realFilesWarn")}
+            </p>
+          )}
         </div>
 
         {/* The worktree being adopted, UNDER the tabs. It rendered above them,
             which put the answer before the question: you saw a worktree
             selector and only then the row saying what kind of task this is. */}
         {importMode && (
-          <Field label={t("newTask.existingWorktreeLabel")} hint={t("newTask.existingWorktreeHint")}>
+          <Field label={t("newTask.existingWorktreeLabel")} info={t("newTask.existingWorktreeHint")}>
             {importLoading ? (
               <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
                 <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
@@ -1787,7 +2067,7 @@ export function NewTaskDialog() {
                 <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
               </div>
             ) : (
-              <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
+              <div data-testid="import-list" className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
                 {importList.map(wt => (
                   <button
                     key={wt.path}
@@ -1830,7 +2110,6 @@ export function NewTaskDialog() {
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder={checkoutMode && checkoutName ? checkoutName : t("newTask.namePlaceholder")}
-              autoFocus
               required={!checkoutMode}
             />
           </Field>
@@ -1840,7 +2119,7 @@ export function NewTaskDialog() {
           // The branch to check out: typed, or picked from the repo's own
           // refs. The typed text is the value (the rows only fill it in), so
           // a branch this repo has never fetched is still one keystroke away.
-          <Field label={t("newTask.checkoutBranchLabel")} hint={t("newTask.checkoutBranchHint")}>
+          <Field label={t("newTask.checkoutBranchLabel")} info={t("newTask.checkoutBranchHint")}>
             <div className="flex flex-col gap-1.5">
               <Input
                 data-testid="checkout-branch-input"
@@ -1849,43 +2128,41 @@ export function NewTaskDialog() {
                 placeholder={t("newTask.checkoutPlaceholder")}
                 autoFocus
               />
-              {checkoutLoading ? (
-                <div className="flex items-center gap-2 px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.checkoutReading")}
-                </div>
-              ) : checkoutView && checkoutView.choices.length > 0 ? (
-                <div data-testid="checkout-branch-list" className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
-                  {checkoutView.choices.map(c => {
-                    const picked = checkoutBranch.trim() === c.ref;
-                    return (
-                      <button
-                        key={c.ref}
-                        type="button"
-                        data-branch-ref={c.ref}
-                        onClick={() => setCheckoutBranch(c.ref)}
-                        title={c.ref}
-                        className={cn(
-                          "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
-                          picked && "bg-[var(--color-accent-deep)]/10",
-                        )}
-                      >
-                        <GitBranch className={cn("h-3.5 w-3.5 shrink-0", picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
-                        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--color-fg)]">{c.ref}</span>
-                        <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{c.source}</span>
-                        {picked && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
-                      </button>
-                    );
-                  })}
-                  {checkoutView.truncated && (
-                    <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-                      {t("newTask.checkoutTruncated", { count: BRANCH_CHOICES_MAX })}
-                    </div>
-                  )}
-                </div>
-              ) : null}
               {checkoutUnfetched && (
                 <p data-testid="checkout-branch-unfetched" className="text-[11.5px] text-[var(--color-fg-dim)]">
                   {t("newTask.checkoutUnfetched")}
+                </p>
+              )}
+              {/* A branch the repo has is checked out as it is, never renamed:
+                  a different name is a new branch. Said once one is chosen,
+                  with the one-click way to that instead. */}
+              {!!checkoutRefs && !!checkoutBranch.trim() && !checkoutUnfetched && (
+                <p data-testid="checkout-as-is" className="text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
+                  <Trans
+                    ns="dialogs"
+                    i18nKey="newTask.checkoutAsIs"
+                    values={{ branch: checkoutBranch.trim() }}
+                    // the branch comes from the repo or a fork PR's head, and
+                    // Trans parses the interpolated string as markup: with
+                    // the app's escapeValue: false a branch holding `<action>`
+                    // would become a live component. Escaped here, unescaped
+                    // for display.
+                    tOptions={{ interpolation: { escapeValue: true } }}
+                    shouldUnescape
+                    components={{
+                      mono: <span className="mono" />,
+                      // not `link`: that is a void HTML tag, and the parser
+                      // closed it at once, leaving plain text and no button.
+                      action: (
+                        <button
+                          type="button"
+                          data-testid="checkout-branch-from"
+                          onClick={branchFromCheckout}
+                          className="text-[var(--color-accent)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg)]"
+                        />
+                      ),
+                    }}
+                  />
                 </p>
               )}
             </div>
@@ -1895,9 +2172,10 @@ export function NewTaskDialog() {
               the name, then stops the moment you touch it, so pasting a
               branch from Linear (“username/my-feature”) is a true one-shot:
               select all, paste, done. No prefix control to fight (#15). */
-          <FieldInline label={t("newTask.branchName")} hint={t("newTask.branchNameHint")}>
+          <Field label={t("newTask.branchName")} info={t("newTask.branchNameHint")}>
             <div className="flex flex-col gap-1">
               <Input
+                data-testid="new-task-branch"
                 value={branch}
                 onChange={e => { setBranch(e.target.value); setBranchEdited(true); }}
                 placeholder={t("newTask.branchPlaceholder")}
@@ -1908,23 +2186,20 @@ export function NewTaskDialog() {
                   nothing: the name looks perfectly good to the person who
                   typed it. Same sentence the CLI and quick-create give, at the
                   field that is actually empty. */}
-              {nameSlugsAway && (
+              {warnSlug && (
                 <p data-testid="name-unslugabble" className="text-[11.5px] text-[var(--color-warn)]">
                   {t("newTask.nameSlugsAway", { name: name.trim() })}
                 </p>
               )}
             </div>
-          </FieldInline>
+          </Field>
           )}
 
-          {/* The multi-repo host variant's hint is a full sentence (members
-              fall back separately) — too long for FieldInline's one line,
-              so it keeps Field's stacked layout. */}
           {isMulti ? (
             // A plain-folder host has no branches to cut from; the members
             // still do, and they carry their own defaults in the list below.
             hostNonGit ? null : (
-            <Field label={t("newTask.hostBranchFrom")} hint={t("newTask.hostBranchHint")}>
+            <Field label={t("newTask.hostBranchFrom")} info={t("newTask.hostBranchHint")}>
               <Input
                 value={base}
                 onChange={e => { setBase(e.target.value); setBaseUnknown(null); }}
@@ -1935,50 +2210,29 @@ export function NewTaskDialog() {
           ) : (
             // A checkout cuts nothing, so here the base only decides what the
             // diff pane compares the branch against.
-            <FieldInline
+            <Field
               label={checkoutMode ? t("newTask.compareAgainst") : t("newTask.branchFrom")}
-              hint={checkoutMode ? t("newTask.compareAgainstHint") : t("newTask.branchFromHint")}
+              info={checkoutMode ? t("newTask.compareAgainstHint") : t("newTask.branchFromHint")}
             >
               <div className="flex flex-col gap-1">
                 <Input
+                  data-testid="new-task-base"
                   value={base}
                   // Typing here is the user taking ownership of the field, so
                   // the link's warning stops applying.
                   onChange={e => { setBase(e.target.value); setBaseUnknown(null); }}
                   placeholder={t("newTask.basePlaceholder")}
                 />
-                {baseUnknown && base === baseUnknown && (
+                {warnBase && (
                   <p data-testid="base-unknown" className="text-[11.5px] text-[var(--color-warn)]">
                     {t("newTask.baseUnknown", { base: baseUnknown })}
                   </p>
                 )}
               </div>
-            </FieldInline>
+            </Field>
           )}
           </>)}
         </div>
-
-        <Field label={t("newTask.defaultCli")}>
-          {/* Pulled from the editable agent registry (Settings → Agent
-              CLIs), not hard-coded — custom agents show up here. Disabled
-              and not-installed agents are filtered out (see cliChoices).
-              "Terminal" (cli="shell") is appended as a no-agent fallback. */}
-          {/* Picking one yourself answers the warning, so it goes. */}
-          <AgentPills
-            choices={cliChoices}
-            value={cli}
-            onChange={id => { setCli(id); setAgentUnknown(null); }}
-          />
-          {/* Same deal as the base warning below: a link naming an agent this
-              install doesn't offer falls back to the normal pick, which is
-              right, but doing it silently means the user creates a task with
-              a different agent than the link asked for and never learns why. */}
-          {agentUnknown && (
-            <p data-testid="agent-unknown" className="mt-1 text-[11.5px] text-[var(--color-warn)]">
-              {t("newTask.agentUnknown", { agent: agentUnknown, fallback: cliChoices.find(a => a.id === cli)?.display_name ?? cli })}
-            </p>
-          )}
-        </Field>
 
         {/* Optional first message (GH #192). Sent to the agent once it
             finishes booting. Hidden for a plain terminal, which has no
@@ -2001,8 +2255,9 @@ export function NewTaskDialog() {
                 // Enter inserts a newline and nothing else. A textarea
                 // never submits its form on Enter, but the dialog above it
                 // does bind keys, and a multi-line first message must not
-                // be able to trip anything mid-sentence.
-                onKeyDown={e => { if (e.key === "Enter") e.stopPropagation(); }}
+                // be able to trip anything mid-sentence. Cmd/Ctrl+Enter goes
+                // through to the form: that is Create.
+                onKeyDown={e => { if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) e.stopPropagation(); }}
                 // No native autocorrect / autocapitalize / spellcheck: this
                 // is agent input, not prose, and macOS text substitution
                 // mangling a path or a flag is never wanted. Same reasoning
@@ -2012,7 +2267,7 @@ export function NewTaskDialog() {
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={t("newTask.promptPlaceholder")}
-                className="max-h-[30vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
+                className="min-h-[9rem] max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
               />
               {/* Counter appears only as the cap gets close, so the common
                   case (a couple of sentences) stays uncluttered. */}
@@ -2029,275 +2284,596 @@ export function NewTaskDialog() {
             </div>
           </Field>
         )}
-
-        {/* Resume-args override: the same field the task menu's "Resume
-            override" edits, just available before the first spawn instead of
-            after it. Sits BELOW the first message because it is the rarer of
-            the two: almost every task types a first message, almost none
-            override resume args at create. Shown for multi as well, where it
-            lands on the host task. */}
-        {canResumeOverride && resumeOverrideField}
-
-        {/* Multi-repo: per-member mode + branch picker. Each member
-            row renders a small toggle (Worktree | Repo root) and, when
-            in Worktree mode, a branch + base override. RepoRoot mode
-            collapses to a single warning line. */}
-        {isMulti && mode === "repo_root" && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
-              </label>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                {t("newTask.membersLinkedHint")}
-              </span>
+        </div>
+        {hasPicker && (
+          <div data-testid="new-task-picker" className="flex min-w-0 flex-col border-t border-[var(--color-border-soft)] pt-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:border-t-0 min-[1100px]:pl-6 min-[1100px]:pt-0">
+            <div className="mb-3 shrink-0 text-[13px] font-medium text-[var(--color-fg)]">
+              {branchPicker ? t("newTask.branchColumnTitle") : prMode ? t("newTask.prColumnTitle") : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
             </div>
-            {memberSetsBar}
-            <div className="flex flex-col gap-1.5">
-              {members.map((m, idx) => (
-                <label
-                  key={m.root_path}
-                  data-testid="member-mode-row"
-                  data-member-name={m.name}
-                  data-member-mode="repo_root"
-                  data-member-included={m.included ? "true" : "false"}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
-                    !m.included && "opacity-50",
+            <div className="flex min-w-0 flex-col min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:overflow-y-auto">
+              {branchPicker && (
+                <div data-testid="branch-column" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">{t("newTask.branchColumnIntro")}</p>
+                  {checkoutLoading ? (
+                    <div className="flex items-center gap-2 px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
+                      <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.checkoutReading")}
+                    </div>
+                  ) : checkoutView && checkoutView.choices.length > 0 ? (
+                    <div data-testid="checkout-branch-list" className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                      {checkoutView.choices.map(c => {
+                        const picked = checkoutBranch.trim() === c.ref;
+                        return (
+                          <button
+                            key={c.ref}
+                            type="button"
+                            data-branch-ref={c.ref}
+                            onClick={() => setCheckoutBranch(c.ref)}
+                            title={c.ref}
+                            className={cn(
+                              "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                              picked && "bg-[var(--color-accent-deep)]/10",
+                            )}
+                          >
+                            <GitBranch className={cn("h-3.5 w-3.5 shrink-0", picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                            <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--color-fg)]">{c.ref}</span>
+                            <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{c.source}</span>
+                            {picked && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
+                          </button>
+                        );
+                      })}
+                      {checkoutView.truncated && (
+                        <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
+                          {t("newTask.checkoutTruncated", { count: BRANCH_CHOICES_MAX })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">{t("newTask.branchColumnEmpty")}</p>
                   )}
-                >
-                  <Checkbox
-                    data-testid="member-include"
-                    aria-label={t("newTask.memberInclude", { name: m.name })}
-                    checked={m.included}
-                    onChange={v => setIncluded(x => x.root_path === m.root_path ? v : x.included)}
-                  />
-                  <div className="min-w-0">
-                    <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
-                    <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
-                  </div>
-                </label>
-              ))}
-            </div>
-            {includedMembers.length > 0 ? (
-              <div
-                data-testid="members-live-note"
-                className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
-              >
-                <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                {/* One wording for both, "N of M members run live": the all
-                    case used to get a separate "All N members…" string, which
-                    read differently for no reason and is what this spec's
-                    "2 of 2 members run live" assertion always expected. */}
-                {t("newTask.membersLiveNote", { included: includedMembers.length, count: members.length })}
-              </div>
-            ) : (
-              <div
-                data-testid="members-live-note"
-                className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-fg-faint)]"
-              >
-                {t("newTask.membersLiveNoteNone")}
-              </div>
-            )}
-          </div>
-        )}
-        {isMulti && mode === "worktree" && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
-              </label>
-              {members.length > 1 ? (
-                // Bulk flip, for compositions with many members. Same wording
-                // and order as the per-row toggle (main left, worktree right).
-                // Non-git members stay on repo_root: the constraint outranks
-                // the bulk ask, exactly like their disabled per-row button.
-                <div className="flex items-center gap-1 text-[11.5px]">
-                  <span className="text-[var(--color-fg-faint)]">{t("newTask.setAll")}</span>
-                  <button
-                    type="button"
-                    data-testid="members-all-main"
-                    onClick={() => setAllMemberModes("repo_root")}
-                    className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
-                  >
-                    {t("newTask.mainCheckout")}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="members-all-worktree"
-                    onClick={() => setAllMemberModes("worktree")}
-                    className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
-                  >
-                    {t("newTask.worktree")}
-                  </button>
                 </div>
-              ) : (
-                <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  {t("newTask.perRepo")}
-                </span>
+              )}
+              {prMode && (
+                <div
+                  data-testid="pr-column"
+                  className="flex min-h-0 min-w-0 flex-1 flex-col gap-3"
+                >
+                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">
+                    {t("newTask.prColumnIntro")}
+                  </p>
+
+                  {/* The number box comes FIRST, and is always available. It is the
+                      path that works on a repo with thousands of open PRs, and the one
+                      you use for somebody else's PR, so it is not buried under a list
+                      that may not contain what you want. */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      data-testid="pr-number-input"
+                      value={prQuery}
+                      onChange={e => setPrQuery(e.target.value)}
+                      // enter picks the typed PR, Cmd+Enter too: a number in the box is
+                      // what the user is asking for. An empty box lets Cmd+Enter
+                      // through to the form.
+                      onKeyDown={e => {
+                        if (e.key !== "Enter" || ((e.metaKey || e.ctrlKey) && !prQuery.trim())) return;
+                        e.preventDefault(); void pickPrByNumber();
+                      }}
+                      placeholder={t("newTask.prNumberPlaceholder")}
+                      autoComplete="off" autoCorrect="off" spellCheck={false}
+                      className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+                    />
+                    <Button variant="ghost" size="sm" disabled={!prQuery.trim() || prBusy > 0} onClick={() => void pickPrByNumber()}>
+                      {t("newTask.prOpen")}
+                    </Button>
+                  </div>
+
+                  {/* Chips only once the forge has answered: a lookup that failed
+                      already says why, and an "All open" under it would only fail
+                      the same way a second time. */}
+                  {prLookup?.status === "ok" && (
+                    <div data-testid="pr-scope" className="flex flex-wrap items-center gap-1">
+                      {([
+                        ["you", t("newTask.prScopeYou")],
+                        ["open", t("newTask.prScopeOpen")],
+                      ] as const).map(([v, label]) => (
+                        <button
+                          key={v}
+                          type="button"
+                          data-pr-scope={v}
+                          aria-pressed={prView === v}
+                          onClick={() => choosePrView(v)}
+                          className={cn(
+                            "rounded-md px-2 py-1 text-[12px] transition-colors",
+                            prView === v
+                              ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                              : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {listRefreshErr && listRefreshErr.list === prView && (
+                    <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
+                      {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
+                    </p>
+                  )}
+                  {prView === "open" ? (
+                    prOpenLoading ? (
+                      <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                        <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingOpenPrs")}
+                      </div>
+                    ) : prOpenLookup && prOpenLookup.status !== "ok" ? (
+                      <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                        {prOpenLookup.message}
+                      </div>
+                    ) : (prOpenLookup?.prs.length ?? 0) === 0 ? (
+                      <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                        {t("newTask.prNoneOpen")}
+                      </div>
+                    ) : (
+                      <>
+                        <ul data-testid="pr-open-list" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                          {(prOpenLookup?.prs ?? []).map(prRow)}
+                        </ul>
+                        {/* A full page means there may be more: say so, and where
+                            the rest are, rather than letting the list pass for all. */}
+                        {(prOpenLookup?.prs.length ?? 0) >= PR_OPEN_LIMIT && (
+                          <p data-testid="pr-open-capped" className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
+                            {t("newTask.prOpenCapped", { count: PR_OPEN_LIMIT })}
+                          </p>
+                        )}
+                      </>
+                    )
+                  ) : (
+                    <>
+                      {prLoading ? (
+                        <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                          <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
+                        </div>
+                      ) : prLookup && prLookup.status !== "ok" ? (
+                        <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                          {prLookup.message}
+                        </div>
+                      ) : (prLookup?.prs.length ?? 0) === 0 ? (
+                        <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                          {t("newTask.prNoneOfYours")}
+                        </div>
+                      ) : (
+                        <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                          {(prLookup?.prs ?? []).map(prRow)}
+                        </ul>
+                      )}
+                      {/* BELOW yours, not above: it lands on its own clock, and a list
+                          that arrives late must not push down the rows you may be
+                          about to click. Shown only when there is something in it. */}
+                      {prReviewLookup?.status === "ok" && prReviewLookup.prs.length > 0 && (
+                        <div data-testid="pr-review-section" className="flex min-w-0 flex-col gap-1.5">
+                          <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+                            {t("newTask.prReviewTitle")}
+                          </div>
+                          <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+                            {prReviewLookup.prs.map(prRow)}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {prBusy > 0 && (
+                    <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" /> {t("newTask.prFetching")}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {issueMode && (
+                <div
+                  data-testid="issue-column"
+                  data-issue-picked={issuePicks.length > 0 ? String(issuePicks[issuePicks.length - 1].number) : undefined}
+                  data-issue-count={issuePicks.length}
+                  className="flex min-h-0 min-w-0 flex-1 flex-col gap-3"
+                >
+                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">
+                    {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
+                  </p>
+                  {/* Scope chips: chosen, never arriving on their own, so the list
+                      below only changes when you click, or once when a list painted
+                      from the shared cache is replaced by its re-fetch (an unchanged
+                      list keeps its rows as they are). GitHub offers All,
+                      Assigned to you, and Mentions you; GitLab and Azure DevOps
+                      offer All and Assigned to you. */}
+                  {paneProvider && (
+                    <div data-testid="issue-scope" className="flex flex-wrap items-center gap-1">
+                      {(
+                        paneProvider === "github"
+                          ? ([
+                              ["all", t("newTask.issueScopeAll")],
+                              ["assigned", t("newTask.issueScopeAssigned")],
+                              ["mentions", t("newTask.issueScopeMentions")],
+                            ] as const)
+                          : ([
+                              ["all", t("newTask.issueScopeAll")],
+                              ["assigned", t("newTask.issueScopeAssigned")],
+                            ] as const)
+                      ).map(([sv, label]) => (
+                        <button
+                          key={sv}
+                          type="button"
+                          data-issue-scope={sv}
+                          aria-pressed={issueScope === sv}
+                          onClick={() => chooseIssueScope(sv)}
+                          className={cn(
+                            "rounded-md px-2 py-1 text-[12px] transition-colors",
+                            issueScope === sv
+                              ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                              : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {listRefreshErr?.list === "issues" && (
+                    <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
+                      {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
+                    </p>
+                  )}
+                  {issueLoading ? (
+                    <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                      <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues", { nouns: paneNouns.nouns })}
+                    </div>
+                  ) : issueLookup && issueLookup.status !== "ok" ? (
+                    <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                      {issueLookup.status === "cli-missing" ? (
+                        <>
+                          <div className="text-[var(--color-fg)]">
+                            <Trans ns="dialogs" i18nKey="newTask.issuesNeedCli" values={{ nouns: paneNouns.caps, cli: paneCli, suffix: cliSuffix }} components={{ mono: <span className="mono" /> }} />
+                          </div>
+                          <div className="mt-1">
+                            <Trans ns="dialogs" i18nKey="newTask.issuesNeedCliBody" values={{ install: forgeInstallCmd(paneProvider), auth: forgeLoginCmd(paneProvider) }} components={{ code: <code className="mono" /> }} />
+                          </div>
+                        </>
+                      ) : issueLookup.status === "cli-unauthed" ? (
+                        <>
+                          <div className="text-[var(--color-fg)]">{t("newTask.signInTitle", { nouns: paneNouns.nouns })}</div>
+                          <div className="mt-1">
+                            <Trans ns="dialogs"
+                              i18nKey={paneProvider === "azure" ? "newTask.signInBodyAzure" : "newTask.signInBody"}
+                              values={{ auth: forgeLoginCmd(paneProvider), alt: azurePatLoginCmd }}
+                              components={{ code: <code className="mono" /> }} />
+                          </div>
+                        </>
+                      ) : (
+                        <span className="break-words">{issueLookup.message}</span>
+                      )}
+                    </div>
+                  ) : (issueLookup?.issues.length ?? 0) === 0 ? (
+                    <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                      {issueScope === "assigned"
+                        ? t("newTask.noIssuesAssigned", { nouns: paneNouns.nouns })
+                        : issueScope === "mentions"
+                          ? t("newTask.noIssuesMentioned", { nouns: paneNouns.nouns })
+                          : t("newTask.noOpenIssues", { nouns: paneNouns.nouns })}
+                    </div>
+                  ) : (
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <input
+                        value={issueQuery}
+                        onChange={e => setIssueQuery(e.target.value)}
+                        placeholder={t("newTask.filterIssues", { field: paneProvider === "azure" ? "tag" : "label" })}
+                        spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
+                        className="mb-1.5 h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
+                      />
+                      <div className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                        {visibleIssues.map(issue => {
+                          const picked = issuePicks.some(p => p.number === issue.number);
+                          return (
+                          <button
+                            key={issue.number}
+                            type="button"
+                            aria-pressed={picked}
+                            onClick={() => toggleIssue(issue)}
+                            title={issue.title}
+                            className={cn(
+                              "flex w-full items-start gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                              picked && "bg-[var(--color-accent-deep)]/10",
+                            )}
+                          >
+                            <CircleDot className={cn(
+                              "mt-px h-4 w-4 shrink-0",
+                              picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]",
+                            )} />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[13px] text-[var(--color-fg)]">
+                                <span className="text-[var(--color-fg-faint)]">{issueRef(issue)}</span> {issue.title}
+                              </div>
+                              <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--color-fg-faint)]">
+                                {issue.author && <span className="truncate">{issue.author}</span>}
+                                {issue.comments > 0 && (
+                                  <span className="shrink-0">
+                                    {t(issue.comments === 1 ? "newTask.commentCountOne" : "newTask.commentCountMany", { count: issue.comments })}
+                                  </span>
+                                )}
+                                {issue.labels.slice(0, 3).map(l => (
+                                  <span key={l} className="shrink-0 truncate rounded bg-[var(--color-bg-3)] px-1 text-[10.5px]">{l}</span>
+                                ))}
+                              </div>
+                            </div>
+                            {picked && (
+                              <Check className="mt-px h-4 w-4 shrink-0 text-[var(--color-accent)]" />
+                            )}
+                          </button>
+                          );
+                        })}
+                        {visibleIssues.length === 0 && (
+                          <div className="px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                            {t("newTask.noFilterMatch")}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {/* A plain shell / registry terminal has no prompt box, so the
+                      composed prompt has nowhere to go. Say so here, where the issue
+                      was chosen, rather than letting Create silently drop it. */}
+                  {/* Multi-pick reads as one line under the list, not a mode: every
+                      ticked row is still just "that issue, filled in". */}
+                  {issuePicks.length > 1 && (
+                    <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">
+                      {t("newTask.picksHint", { count: issuePicks.length })}
+                    </p>
+                  )}
+                  {warnNoPromptBox && (
+                    <p className="text-[12px] leading-snug text-[var(--color-warn)]">
+                      {t("newTask.noPromptBoxWarn", { agent: agentLabel, noun: paneNouns.noun })}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
-            {memberSetsBar}
+          </div>
+        )}
+      </section>
+
+      {isMulti && (
+        <section {...pane("repos")} className={cn("flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto", at !== "repos" && "hidden")}>
+          {/* Multi-repo: per-member mode + branch picker. Each member
+              row renders a small toggle (Worktree | Repo root) and, when
+              in Worktree mode, a branch + base override. RepoRoot mode
+              collapses to a single warning line. */}
+          {isMulti && mode === "repo_root" && (
             <div className="flex flex-col gap-2">
-              {members.map((m, idx) => {
-                const update = (patch: Partial<MemberSpec>) =>
-                  setMembers(prev => {
-                    const next = prev.map((x, i) => (i === idx ? { ...x, ...patch } : x));
-                    if ("included" in patch) resyncSandbox(prev, next);
-                    return next;
-                  });
-                // Write the flip through to storage right away (not on
-                // submit), mirroring chooseMode above: a cancelled dialog
-                // still teaches the next open. Non-git rows never persist —
-                // their repo_root is a constraint, not a choice.
-                const chooseMemberMode = (mode: MemberMode) => {
-                  update({ mode });
-                  if (!m.non_git) persistMemberMode(m.root_path, mode);
-                };
-                return (
-                  <div
+              <div className="flex items-center justify-between">
+                <label className="text-[13px] font-medium text-[var(--color-fg)]">
+                  {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
+                </label>
+                <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                  {t("newTask.membersLinkedHint")}
+                </span>
+              </div>
+              {memberSetsBar}
+              <div className="flex flex-col gap-1.5">
+                {members.map((m, idx) => (
+                  <label
                     key={m.root_path}
                     data-testid="member-mode-row"
                     data-member-name={m.name}
-                    data-member-mode={m.mode}
+                    data-member-mode="repo_root"
                     data-member-included={m.included ? "true" : "false"}
                     className={cn(
-                      "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
+                      "flex cursor-pointer items-center gap-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
                       !m.included && "opacity-50",
                     )}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <label className="flex min-w-0 cursor-pointer items-center gap-2.5">
-                        <Checkbox
-                          data-testid="member-include"
-                          aria-label={t("newTask.memberInclude", { name: m.name })}
-                          checked={m.included}
-                          onChange={v => update({ included: v })}
-                        />
-                        <div className="min-w-0">
-                          <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
-                          <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
-                        </div>
-                      </label>
-                      {m.included && (
-                      <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-[2px] text-[11.5px]">
-                        {/* Main checkout first, matching the single-repo toggle
-                            and the sidebar quick menu (left = main, right =
-                            worktree everywhere). */}
-                        <button
-                          type="button"
-                          onClick={() => chooseMemberMode("repo_root")}
-                          className={cn(
-                            "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
-                            m.mode === "repo_root"
-                              ? "bg-[var(--color-accent-deep)] text-white"
-                              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                          )}
-                        >
-                          <Link2 className="h-3 w-3" /> {t("newTask.mainCheckout")}
-                        </button>
-                        <button
-                          type="button"
-                          // Non-git members have no branches → worktree is
-                          // impossible; lock them to repo-root like a non-git
-                          // single project.
-                          disabled={m.non_git}
-                          title={m.non_git ? t("newTask.nonGitMemberTitle") : undefined}
-                          onClick={() => chooseMemberMode("worktree")}
-                          className={cn(
-                            "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
-                            m.mode === "worktree"
-                              ? "bg-[var(--color-accent-deep)] text-white"
-                              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                            m.non_git && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
-                          )}
-                        >
-                          <GitBranch className="h-3 w-3" /> {t("newTask.worktree")}
-                        </button>
-                      </div>
-                      )}
+                    <Checkbox
+                      data-testid="member-include"
+                      aria-label={t("newTask.memberInclude", { name: m.name })}
+                      checked={m.included}
+                      onChange={v => setIncluded(x => x.root_path === m.root_path ? v : x.included)}
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
+                      <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
                     </div>
-                    {m.included && (m.mode === "worktree" ? (
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <Input
-                          value={m.branch}
-                          onChange={e => update({ branch: e.target.value })}
-                          placeholder={branch || t("newTask.memberBranchPlaceholder")}
-                        />
-                        <Input
-                          value={m.base_branch}
-                          onChange={e => update({ base_branch: e.target.value })}
-                          placeholder={m.base_branch || t("newTask.memberBasePlaceholder")}
-                        />
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
-                        {t("newTask.liveSymlinkWarn")}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-            {members.some(m => m.included && m.mode === "repo_root") && (
-              <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
-                <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                {t("newTask.someLiveWarn")}
+                  </label>
+                ))}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Sandbox panel - same shape as the Edit Sandbox dialog so
-            users see one consistent control. Wrapped in a Field so the
-            OFF / MONITORING / ENFORCING band reads as a labelled "Sandbox"
-            control like every other row (otherwise it's an unlabelled
-            strip of buttons whose purpose isn't obvious). Pinned at
-            creation - lists below freeze onto the task and can't be
-            edited after (archive + recreate to change). */}
-        {/* Offered in every shape (see canSandbox). */}
-        {canSandbox && (
-        <Field label={t("newTask.sandboxLabel")} hint={t("newTask.sandboxHint")}>
-          <SandboxPicker
-          onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
-            value={selection}
-            onChange={chooseSelection}
-            seatbeltUnavailable={osSandboxOk === false}
-            dockerOffered={dockerOffered}
-            compact
-          />
-          {kcRow && (
-            <div className="mt-2">
-              <KeychainBlockField checked={blockKc} onChange={chooseBlockKc} compact />
+              {includedMembers.length > 0 ? (
+                <div
+                  data-testid="members-live-note"
+                  className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
+                >
+                  <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                  {/* One wording for both, "N of M members run live": the all
+                      case used to get a separate "All N members…" string, which
+                      read differently for no reason and is what this spec's
+                      "2 of 2 members run live" assertion always expected. */}
+                  {t("newTask.membersLiveNote", { included: includedMembers.length, count: members.length })}
+                </div>
+              ) : (
+                <div
+                  data-testid="members-live-note"
+                  className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-fg-faint)]"
+                >
+                  {t("newTask.membersLiveNoteNone")}
+                </div>
+              )}
             </div>
           )}
-          {selection === "docker" && (
-            <div className="mt-2 flex flex-col gap-2">
-              <DockerEngineNote compact />
-              <ListField
-                label={t("newTask.extraMounts")}
-                placeholder={"$HOME/mcp-data:/data/mcp"}
-                value={dockerMounts}
-                onChange={setDockerMounts}
-              />
+          {isMulti && mode === "worktree" && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[13px] font-medium text-[var(--color-fg)]">
+                  {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
+                </label>
+                {members.length > 1 ? (
+                  // Bulk flip, for compositions with many members. Same wording
+                  // and order as the per-row toggle (main left, worktree right).
+                  // Non-git members stay on repo_root: the constraint outranks
+                  // the bulk ask, exactly like their disabled per-row button.
+                  <div className="flex items-center gap-1 text-[11.5px]">
+                    <span className="text-[var(--color-fg-faint)]">{t("newTask.setAll")}</span>
+                    <button
+                      type="button"
+                      data-testid="members-all-main"
+                      onClick={() => setAllMemberModes("repo_root")}
+                      className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
+                    >
+                      {t("newTask.mainCheckout")}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="members-all-worktree"
+                      onClick={() => setAllMemberModes("worktree")}
+                      className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
+                    >
+                      {t("newTask.worktree")}
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                    {t("newTask.perRepo")}
+                  </span>
+                )}
+              </div>
+              {memberSetsBar}
+              <div className="flex flex-col gap-2">
+                {members.map((m, idx) => {
+                  const update = (patch: Partial<MemberSpec>) =>
+                    setMembers(prev => {
+                      const next = prev.map((x, i) => (i === idx ? { ...x, ...patch } : x));
+                      if ("included" in patch) resyncSandbox(prev, next);
+                      return next;
+                    });
+                  // Write the flip through to storage right away (not on
+                  // submit), mirroring chooseMode above: a cancelled dialog
+                  // still teaches the next open. Non-git rows never persist:
+                  // their repo_root is a constraint, not a choice.
+                  const chooseMemberMode = (mode: MemberMode) => {
+                    update({ mode });
+                    if (!m.non_git) persistMemberMode(m.root_path, mode);
+                  };
+                  return (
+                    <div
+                      key={m.root_path}
+                      data-testid="member-mode-row"
+                      data-member-name={m.name}
+                      data-member-mode={m.mode}
+                      data-member-included={m.included ? "true" : "false"}
+                      className={cn(
+                        "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
+                        !m.included && "opacity-50",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <label className="flex min-w-0 cursor-pointer items-center gap-2.5">
+                          <Checkbox
+                            data-testid="member-include"
+                            aria-label={t("newTask.memberInclude", { name: m.name })}
+                            checked={m.included}
+                            onChange={v => update({ included: v })}
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
+                            <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
+                          </div>
+                        </label>
+                        {m.included && (
+                        <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-[2px] text-[11.5px]">
+                          {/* Main checkout first, matching the single-repo toggle
+                              and the sidebar quick menu (left = main, right =
+                              worktree everywhere). */}
+                          <button
+                            type="button"
+                            onClick={() => chooseMemberMode("repo_root")}
+                            className={cn(
+                              "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
+                              m.mode === "repo_root"
+                                ? "bg-[var(--color-accent-deep)] text-white"
+                                : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                            )}
+                          >
+                            <Link2 className="h-3 w-3" /> {t("newTask.mainCheckout")}
+                          </button>
+                          <button
+                            type="button"
+                            // Non-git members have no branches → worktree is
+                            // impossible; lock them to repo-root like a non-git
+                            // single project.
+                            disabled={m.non_git}
+                            title={m.non_git ? t("newTask.nonGitMemberTitle") : undefined}
+                            onClick={() => chooseMemberMode("worktree")}
+                            className={cn(
+                              "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
+                              m.mode === "worktree"
+                                ? "bg-[var(--color-accent-deep)] text-white"
+                                : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                              m.non_git && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
+                            )}
+                          >
+                            <GitBranch className="h-3 w-3" /> {t("newTask.worktree")}
+                          </button>
+                        </div>
+                        )}
+                      </div>
+                      {m.included && (m.mode === "worktree" ? (
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <Input
+                            value={m.branch}
+                            onChange={e => update({ branch: e.target.value })}
+                            placeholder={branch || t("newTask.memberBranchPlaceholder")}
+                          />
+                          <Input
+                            value={m.base_branch}
+                            onChange={e => update({ base_branch: e.target.value })}
+                            placeholder={m.base_branch || t("newTask.memberBasePlaceholder")}
+                          />
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
+                          {t("newTask.liveSymlinkWarn")}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+              {members.some(m => m.included && m.mode === "repo_root") && (
+                <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
+                  <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                  {t("newTask.someLiveWarn")}
+                </div>
+              )}
             </div>
+          )}
+        </section>
+      )}
+
+      <section {...pane("agent")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto", at !== "agent" && "hidden")}>
+        <Field label={t("newTask.defaultCli")}>
+          {/* Pulled from the editable agent registry (Settings → Agent
+              CLIs), not hard-coded, so custom agents show up here. Disabled
+              and not-installed agents are filtered out (see cliChoices).
+              "Terminal" (cli="shell") is appended as a no-agent fallback. */}
+          {/* Picking one yourself answers the warning, so it goes. */}
+          <AgentPills
+            choices={cliChoices}
+            value={cli}
+            onChange={id => { setCli(id); setAgentUnknown(null); }}
+          />
+          {/* Same deal as the base warning below: a link naming an agent this
+              install doesn't offer falls back to the normal pick, which is
+              right, but doing it silently means the user creates a task with
+              a different agent than the link asked for and never learns why. */}
+          {agentUnknown && (
+            <p data-testid="agent-unknown" className="mt-1 text-[11.5px] text-[var(--color-warn)]">
+              {t("newTask.agentUnknown", { agent: agentUnknown, fallback: cliChoices.find(a => a.id === cli)?.display_name ?? cli })}
+            </p>
           )}
         </Field>
-        )}
-
-        {/* Secrets role. Hidden until a role exists in Settings. */}
-        {canSandbox && roles.length > 0 && (
-          <RolePicker
-            roles={roles}
-            secrets={secretDefs}
-            value={roleEff}
-            onChange={withRoleCage(dockerWanted ? "off" : sandboxMode, chooseSelection, pickRole)}
-            def={roleDef}
-            disabledReason={roleDisabled}
-            note={roleCageNote(t, { docker: dockerWanted, mode: sandboxMode })}
-          />
-        )}
-
         {/* YOLO, seeded from the defaults (this project's, then Settings →
             Sandbox) and shown BEFORE Create, so a default is never a silent
             auto-approve on an uncaged task. The same two states as the Race
@@ -2306,13 +2882,16 @@ export function NewTaskDialog() {
         {yoloApplies && (
           <Field
             label={t("newTask.yoloLabel")}
+            // Warning (on, uncaged) and why-it-is-off (held) stay on screen;
+            // the plain explanations go behind the (i).
+            info={yoloCaged ? t("newTask.yoloHintAuto") : !yolo && !yoloHeld ? t("newTask.yoloHintOff") : undefined}
             hint={yoloCaged
-              ? t("newTask.yoloHintAuto")
+              ? undefined
               : !yolo && yoloHeld
                 ? t(yoloHeld === "link" ? "newTask.yoloHintHeldLink" : "newTask.yoloHintHeldIssue")
                 : yolo
-                ? t("newTask.yoloHintOn")
-                : t("newTask.yoloHintOff")}
+                  ? <span data-testid="yolo-uncaged-warn" className="text-[var(--color-err)]">{t("newTask.yoloHintOn")}</span>
+                  : undefined}
           >
             <label
               data-testid="new-task-yolo"
@@ -2343,445 +2922,125 @@ export function NewTaskDialog() {
             </label>
           </Field>
         )}
-      </div>
+      {canResumeOverride && agentLaunchFields}
+      </section>
 
-      {/* Issue picker: its own column, not a box wedged into the form. It is a
-          TABLE the user reads and scans (number, title, author, labels), and
-          220px of it above the fields meant scrolling a list inside a dialog
-          you were already scrolling. Same second-pane treatment the sandbox
-          config gets, and mutually compatible with it - both can be open, and
-          the dialog widens to three columns.
-
-          Picking a row fills Name, Branch and Initial prompt on the left, all
-          of which stay editable. That is the whole point of it being beside
-          the form rather than above it: you see what the choice did. */}
-      {/* THE right column: at most one contextual pane (PR or issue, never
-          both, since choosing a source turns the other off) and the sandbox
-          config beneath it. Previously each of these was its own flex-1
-          column, so a PR pane plus an issue pane plus a cage made four
-          columns and a dialog wider than most screens. */}
-      {(prMode || issueMode || sandbox) && (
-        <div className="ml-8 flex min-w-0 flex-1 flex-col gap-6 overflow-y-auto border-l border-[var(--color-border-soft)] pl-6">
-      {prMode && (
-        <div
-          data-testid="pr-column"
-          className="flex min-w-0 flex-col gap-3"
-        >
-          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            {t("newTask.prColumnTitle")}
-          </div>
-          <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
-            {t("newTask.prColumnIntro")}
-          </p>
-
-          {/* The number box comes FIRST, and is always available. It is the
-              path that works on a repo with thousands of open PRs, and the one
-              you use for somebody else's PR, so it is not buried under a list
-              that may not contain what you want. */}
-          <div className="flex items-center gap-2">
-            <input
-              data-testid="pr-number-input"
-              value={prQuery}
-              onChange={e => setPrQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void pickPrByNumber(); } }}
-              placeholder={t("newTask.prNumberPlaceholder")}
-              autoComplete="off" autoCorrect="off" spellCheck={false}
-              className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+      <section {...pane("isolation")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto", at !== "isolation" && "hidden")}>
+        {/* Pinned at creation: the lists below freeze onto the task and
+            can't be edited after (archive + recreate to change). */}
+        <Field label={t("newTask.sandboxLabel")} info={t("newTask.sandboxHint")}>
+          <SandboxPicker
+            layout="row"
+            onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
+            value={selection}
+            onChange={chooseSelection}
+            seatbeltUnavailable={osSandboxOk === false}
+            dockerOffered={dockerOffered}
+          />
+        </Field>
+        {sandbox && (
+          <div data-testid="sandbox-config" className="flex min-w-0 flex-col gap-3">
+            <div className={EYEBROW}>
+              {t("newTask.sandboxConfigTitle")}
+            </div>
+            <SandboxPresetRow
+              mode={sandboxMode}
+              rw={sbRw}
+              hosts={sbHosts}
+              onPick={p => { setSbRw(p.rwPaths.join("\n")); setSbHosts(p.allowedHosts.join("\n")); }}
             />
-            <Button variant="ghost" size="sm" disabled={!prQuery.trim() || prBusy > 0} onClick={() => void pickPrByNumber()}>
-              {t("newTask.prOpen")}
-            </Button>
-          </div>
-
-          {/* Chips only once the forge has answered: a lookup that failed
-              already says why, and an "All open" under it would only fail
-              the same way a second time. */}
-          {prLookup?.status === "ok" && (
-            <div data-testid="pr-scope" className="flex flex-wrap items-center gap-1">
-              {([
-                ["you", t("newTask.prScopeYou")],
-                ["open", t("newTask.prScopeOpen")],
-              ] as const).map(([v, label]) => (
-                <button
-                  key={v}
-                  type="button"
-                  data-pr-scope={v}
-                  aria-pressed={prView === v}
-                  onClick={() => choosePrView(v)}
-                  className={cn(
-                    "rounded-md px-2 py-1 text-[12px] transition-colors",
-                    prView === v
-                      ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
-                      : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {listRefreshErr && listRefreshErr.list === prView && (
-            <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
-              {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
-            </p>
-          )}
-          {prView === "open" ? (
-            prOpenLoading ? (
-              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingOpenPrs")}
-              </div>
-            ) : prOpenLookup && prOpenLookup.status !== "ok" ? (
-              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                {prOpenLookup.message}
-              </div>
-            ) : (prOpenLookup?.prs.length ?? 0) === 0 ? (
-              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                {t("newTask.prNoneOpen")}
-              </div>
-            ) : (
-              <>
-                <ul data-testid="pr-open-list" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-                  {(prOpenLookup?.prs ?? []).map(prRow)}
-                </ul>
-                {/* A full page means there may be more: say so, and where
-                    the rest are, rather than letting the list pass for all. */}
-                {(prOpenLookup?.prs.length ?? 0) >= PR_OPEN_LIMIT && (
-                  <p data-testid="pr-open-capped" className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
-                    {t("newTask.prOpenCapped", { count: PR_OPEN_LIMIT })}
-                  </p>
-                )}
-              </>
-            )
-          ) : (
-            <>
-              {prLoading ? (
-                <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
-                </div>
-              ) : prLookup && prLookup.status !== "ok" ? (
-                <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                  {prLookup.message}
-                </div>
-              ) : (prLookup?.prs.length ?? 0) === 0 ? (
-                <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                  {t("newTask.prNoneOfYours")}
-                </div>
-              ) : (
-                <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-                  {(prLookup?.prs ?? []).map(prRow)}
-                </ul>
-              )}
-              {/* BELOW yours, not above: it lands on its own clock, and a list
-                  that arrives late must not push down the rows you may be
-                  about to click. Shown only when there is something in it. */}
-              {prReviewLookup?.status === "ok" && prReviewLookup.prs.length > 0 && (
-                <div data-testid="pr-review-section" className="flex min-w-0 flex-col gap-1.5">
-                  <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-                    {t("newTask.prReviewTitle")}
-                  </div>
-                  <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
-                    {prReviewLookup.prs.map(prRow)}
-                  </ul>
-                </div>
-              )}
-            </>
-          )}
-          {prBusy > 0 && (
-            <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" /> {t("newTask.prFetching")}
-            </div>
-          )}
-        </div>
-      )}
-
-      {issueMode && (() => {
-        // The lookup's provider wins over the cached project map: when
-        // resolveProvider failed but project_forge_issues still resolved
-        // one, the copy must name the CLI that actually failed, not the
-        // stale/null guess.
-        const paneProvider = issueLookup?.provider ?? forgeProvider;
-        const paneNoun = issueNoun(paneProvider);
-        const paneCli = forgeCli(paneProvider);
-        // Noun morphology for the parameterized newTask.issue* keys:
-        // issue/issues/Issue/Issues vs work item/work items/…
-        const paneNouns = {
-          noun: paneNoun,
-          nouns: `${paneNoun}s`,
-          cap: paneNoun[0].toUpperCase() + paneNoun.slice(1),
-          caps: `${paneNoun[0].toUpperCase()}${paneNoun.slice(1)}s`,
-        };
-        // az is two installs (CLI + extension) - the suffix carries the
-        // second requirement so mono styling stays on the binary name.
-        const cliSuffix = paneProvider === "azure" ? t("common:azureCliSuffix") : "";
-        return (
-        <div
-          data-testid="issue-column"
-          data-issue-picked={issuePicks.length > 0 ? String(issuePicks[issuePicks.length - 1].number) : undefined}
-          data-issue-count={issuePicks.length}
-          className="flex min-w-0 flex-col gap-3"
-        >
-          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            {t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
-          </div>
-          <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
-            {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
-          </p>
-          {/* Scope chips: chosen, never arriving on their own, so the list
-              below only changes when you click, or once when a list painted
-              from the shared cache is replaced by its re-fetch (an unchanged
-              list keeps its rows as they are). GitHub offers All,
-              Assigned to you, and Mentions you; GitLab and Azure DevOps
-              offer All and Assigned to you. */}
-          {paneProvider && (
-            <div data-testid="issue-scope" className="flex flex-wrap items-center gap-1">
-              {(
-                paneProvider === "github"
-                  ? ([
-                      ["all", t("newTask.issueScopeAll")],
-                      ["assigned", t("newTask.issueScopeAssigned")],
-                      ["mentions", t("newTask.issueScopeMentions")],
-                    ] as const)
-                  : ([
-                      ["all", t("newTask.issueScopeAll")],
-                      ["assigned", t("newTask.issueScopeAssigned")],
-                    ] as const)
-              ).map(([sv, label]) => (
-                <button
-                  key={sv}
-                  type="button"
-                  data-issue-scope={sv}
-                  aria-pressed={issueScope === sv}
-                  onClick={() => chooseIssueScope(sv)}
-                  className={cn(
-                    "rounded-md px-2 py-1 text-[12px] transition-colors",
-                    issueScope === sv
-                      ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
-                      : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-          {listRefreshErr?.list === "issues" && (
-            <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
-              {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
-            </p>
-          )}
-          {issueLoading ? (
-            <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues", { nouns: paneNouns.nouns })}
-            </div>
-          ) : issueLookup && issueLookup.status !== "ok" ? (
-            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-              {issueLookup.status === "cli-missing" ? (
-                <>
-                  <div className="text-[var(--color-fg)]">
-                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCli" values={{ nouns: paneNouns.caps, cli: paneCli, suffix: cliSuffix }} components={{ mono: <span className="mono" /> }} />
-                  </div>
-                  <div className="mt-1">
-                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCliBody" values={{ install: forgeInstallCmd(paneProvider), auth: forgeLoginCmd(paneProvider) }} components={{ code: <code className="mono" /> }} />
-                  </div>
-                </>
-              ) : issueLookup.status === "cli-unauthed" ? (
-                <>
-                  <div className="text-[var(--color-fg)]">{t("newTask.signInTitle", { nouns: paneNouns.nouns })}</div>
-                  <div className="mt-1">
-                    <Trans ns="dialogs"
-                      i18nKey={paneProvider === "azure" ? "newTask.signInBodyAzure" : "newTask.signInBody"}
-                      values={{ auth: forgeLoginCmd(paneProvider), alt: azurePatLoginCmd }}
-                      components={{ code: <code className="mono" /> }} />
-                  </div>
-                </>
-              ) : (
-                <span className="break-words">{issueLookup.message}</span>
-              )}
-            </div>
-          ) : (issueLookup?.issues.length ?? 0) === 0 ? (
-            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-              {issueScope === "assigned"
-                ? t("newTask.noIssuesAssigned", { nouns: paneNouns.nouns })
-                : issueScope === "mentions"
-                  ? t("newTask.noIssuesMentioned", { nouns: paneNouns.nouns })
-                  : t("newTask.noOpenIssues", { nouns: paneNouns.nouns })}
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <input
-                value={issueQuery}
-                onChange={e => setIssueQuery(e.target.value)}
-                placeholder={t("newTask.filterIssues", { field: paneProvider === "azure" ? "tag" : "label" })}
-                spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
-                className="mb-1.5 h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
-              />
-              <div className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
-                {visibleIssues.map(issue => {
-                  const picked = issuePicks.some(p => p.number === issue.number);
-                  return (
-                  <button
-                    key={issue.number}
-                    type="button"
-                    aria-pressed={picked}
-                    onClick={() => toggleIssue(issue)}
-                    title={issue.title}
-                    className={cn(
-                      "flex w-full items-start gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
-                      picked && "bg-[var(--color-accent-deep)]/10",
-                    )}
-                  >
-                    <CircleDot className={cn(
-                      "mt-px h-4 w-4 shrink-0",
-                      picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]",
-                    )} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] text-[var(--color-fg)]">
-                        <span className="text-[var(--color-fg-faint)]">{issueRef(issue)}</span> {issue.title}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--color-fg-faint)]">
-                        {issue.author && <span className="truncate">{issue.author}</span>}
-                        {issue.comments > 0 && (
-                          <span className="shrink-0">
-                            {t(issue.comments === 1 ? "newTask.commentCountOne" : "newTask.commentCountMany", { count: issue.comments })}
-                          </span>
-                        )}
-                        {issue.labels.slice(0, 3).map(l => (
-                          <span key={l} className="shrink-0 truncate rounded bg-[var(--color-bg-3)] px-1 text-[10.5px]">{l}</span>
-                        ))}
-                      </div>
-                    </div>
-                    {picked && (
-                      <Check className="mt-px h-4 w-4 shrink-0 text-[var(--color-accent)]" />
-                    )}
-                  </button>
-                  );
-                })}
-                {visibleIssues.length === 0 && (
-                  <div className="px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                    {t("newTask.noFilterMatch")}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-          {/* A plain shell / registry terminal has no prompt box, so the
-              composed prompt has nowhere to go. Say so here, where the issue
-              was chosen, rather than letting Create silently drop it. */}
-          {/* Multi-pick reads as one line under the list, not a mode: every
-              ticked row is still just "that issue, filled in". */}
-          {issuePicks.length > 1 && (
-            <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">
-              {t("newTask.picksHint", { count: issuePicks.length })}
-            </p>
-          )}
-          {issuePicks.length > 0 && !canPrompt && (
-            <p className="text-[12px] leading-snug text-[var(--color-warn)]">
-              {t("newTask.noPromptBoxWarn", { agent: agentLabel, noun: paneNouns.noun })}
-            </p>
-          )}
-        </div>
-        );
-      })()}
-      {/* Right column: sandbox config, an equal-width second pane (flex-1, so
-          it matches the left; the dialog is sized to 2x base). Rendered ONLY
-          when a cage is enabled, so there's no ghost width/height when off. */}
-      {roleObj && <SecretsForTask role={roleObj} secrets={secretDefs} />}
-      {sandbox && (
-        <div className="flex min-w-0 flex-col gap-3">
-          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            {t("newTask.sandboxConfigTitle")}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
-            {SANDBOX_PRESETS.map(p => (
-              <button
-                key={p.id} type="button"
-                title={presetHint(p)}
-                onClick={() => {
-                  setSbRw(p.rwPaths.join("\n"));
-                  setSbHosts(p.allowedHosts.join("\n"));
-                }}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-              >
-                {presetLabel(p)}
-              </button>
-            ))}
-          </div>
-          <Field label={t("newTask.allowedPathsLabel")} hint={t("newTask.allowedPathsHint")}>
-            <textarea
-              data-testid="sandbox-rw-paths"
-              value={sbRw}
-              onChange={e => setSbRw(e.target.value)}
-              rows={3}
-              placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
-          {/* ENFORCING (FS) disables the network sandbox, so the host
-              allow-list is irrelevant — hide it in that mode. */}
-          {sandboxMode !== "enforce-fs" && (
-            <Field label={t("newTask.allowedHostsLabel")} hint={t("newTask.allowedHostsHint")}>
+            <Field label={t("newTask.allowedPathsLabel")} info={t("newTask.allowedPathsHint")}>
               <textarea
-                data-testid="sandbox-allowed-hosts"
-                value={sbHosts}
-                onChange={e => setSbHosts(e.target.value)}
+                data-testid="sandbox-rw-paths"
+                value={sbRw}
+                onChange={e => setSbRw(e.target.value)}
                 rows={3}
-                placeholder={"*.mycompany.com\nbitbucket.org"}
+                placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
                 className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
             </Field>
-          )}
-          {sandboxMode === "enforce-fs" && (
-            <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
-              {t("newTask.enforceFsNote")}
-            </p>
-          )}
-        </div>
+            {/* ENFORCING (FS) disables the network sandbox, so the host
+                allow-list is irrelevant, so hide it in that mode. */}
+            {sandboxMode !== "enforce-fs" && (
+              <Field label={t("newTask.allowedHostsLabel")} info={t("newTask.allowedHostsHint")}>
+                <textarea
+                  data-testid="sandbox-allowed-hosts"
+                  value={sbHosts}
+                  onChange={e => setSbHosts(e.target.value)}
+                  rows={3}
+                  placeholder={"*.mycompany.com\nbitbucket.org"}
+                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+                />
+              </Field>
+            )}
+            {sandboxMode === "enforce-fs" && (
+              <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
+                {t("newTask.enforceFsNote")}
+              </p>
+            )}
+          </div>
+        )}
+        {selection === "docker" && (
+          <div className="flex flex-col gap-2">
+            <DockerEngineNote compact />
+            <ListField
+              label={t("newTask.extraMounts")}
+              placeholder={"$HOME/mcp-data:/data/mcp"}
+              value={dockerMounts}
+              onChange={setDockerMounts}
+            />
+          </div>
+        )}
+        {kcRow && <KeychainBlockField checked={blockKc} onChange={chooseBlockKc} tip />}
+      </section>
+
+      {roles.length > 0 && (
+        <section {...pane("secrets")} className={cn("flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto", at !== "secrets" && "hidden")}>
+          <RolePicker
+            roles={roles}
+            secrets={secretDefs}
+            value={roleEff}
+            onChange={withRoleCage(dockerWanted ? "off" : sandboxMode, chooseSelection, pickRole)}
+            def={roleDef}
+            disabledReason={roleDisabled}
+            note={roleCageNote(t, { docker: dockerWanted, mode: sandboxMode })}
+            tip
+          />
+          {roleObj && <SecretsForTask role={roleObj} secrets={secretDefs} />}
+        </section>
       )}
-        </div>
-      )}
-      </div>{/* end columns row */}
+
+      </div>
       </form>
     </AppDialog>
   );
 }
 
-/** Form field layout: label / optional hint / control, each on its own line.
- *  Keeps spacing consistent and prevents hint text from wrapping next to the
- *  label (which produced the previous "Branch name (auto-generated from
- *  name; edit to..." 2-line mess). */
-function Field({ label, hint, children }: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <label className="text-[13px] font-medium text-[var(--color-fg)]">{label}</label>
-      {hint && <div className="text-[12px] leading-snug text-[var(--color-fg-faint)] -mt-1">{hint}</div>}
-      {children}
-    </div>
-  );
-}
+/** A rail entry and its pane. */
+type Section = "task" | "repos" | "agent" | "isolation" | "secrets";
 
-/** Field variant for when the hint is short enough to share the label's
- *  line instead of wrapping to its own — Branch name / Branch from's hints
- *  ("Auto-fills from the name.", "Blank = repo default.") are a few words,
- *  so a whole extra line for them was pure air. Falls back to Field's
- *  stacked layout the instant a longer hint (e.g. the multi-repo host
- *  variant) would crowd the label — pass it via `hint` on Field instead. */
-function FieldInline({ label, hint, children }: {
+/** Small uppercase section label. */
+const EYEBROW = "text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]";
+
+/** Form field layout: label (+ an (i) holding `info`) / optional visible
+ *  hint / control, each on its own line. `hint` is for text that must stay
+ *  on screen (a warning, why something is off); explanations go in `info`. */
+function Field({ label, hint, info, children }: {
   label: string;
-  hint?: string;
+  hint?: React.ReactNode;
+  info?: string;
   children: React.ReactNode;
 }) {
+  // a group named by the label, as AgentsSection's Field does: a bare
+  // `<label>` here wrapped only text, so it named nothing.
+  const id = useId();
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline gap-2">
-        <label className="text-[13px] font-medium text-[var(--color-fg)]">{label}</label>
-        {hint && <span className="truncate text-[12px] text-[var(--color-fg-faint)]">{hint}</span>}
+    <div role="group" aria-labelledby={id} className="flex flex-col gap-2">
+      <div className="flex items-center gap-1.5">
+        <span id={id} className="text-[13px] font-medium text-[var(--color-fg)]">{label}</span>
+        {info && <InfoTip text={info} />}
       </div>
+      {hint && <div className="text-[12px] leading-snug text-[var(--color-fg-faint)] -mt-1">{hint}</div>}
       {children}
     </div>
   );
