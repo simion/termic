@@ -1,0 +1,17 @@
+
+\033[1m> Add rate limiting to POST /login and cover it with tests. Plan is in
+  docs/plans/rate-limiting.md.\033[0m
+
+\033[32m●\033[0m Read docs/plans/rate-limiting.md
+\033[32m●\033[0m Read src/auth/login.ts
+\033[32m●\033[0m Read src/middleware/index.ts
+\033[32m●\033[0m Write src/auth/rateLimit.ts \033[2m(+31)\033[0m
+\033[32m●\033[0m Edit src/auth/login.ts \033[2m(+6 -1)\033[0m
+\033[32m●\033[0m Write tests/rateLimit.test.ts \033[2m(+27)\033[0m
+\033[32m●\033[0m Run npm test -- auth
+    \033[32m✓\033[0m 14 passed \033[2m(1.2s)\033[0m
+
+Login attempts are now limited to 5 a minute per IP, with a token bucket
+in src/auth/rateLimit.ts. Over the limit, /login answers 429 with a
+Retry-After header. Two open questions are in the plan, under "Later".
+

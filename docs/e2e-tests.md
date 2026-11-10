@@ -121,6 +121,31 @@ CARGO_TARGET_DIR=$PWD/src-tauri/target/e2e-build npm run e2e:build
 TERMIC_E2E_BINARY=$PWD/src-tauri/target/e2e-build/debug/termic npm run test:e2e
 ```
 
+### The README's screenshots
+
+`docs/hero.png` and `docs/screenshots/*.png` come from
+`e2e/specs/readme-shots.e2e.ts`, which the suite skips unless asked for. It
+stages three `acme-*` demo repos and a handful of tasks in every state, with
+agents labelled claude and codex that run `e2e/fixtures/readme-agent.sh`, so
+nothing on screen comes from a real machine. Each shot is refused if the page
+text holds the home path, user name or host name. To retake them after a
+`make e2e`:
+
+```sh
+TERMIC_E2E_README_SHOTS=1 npm run test:e2e -- --spec e2e/specs/readme-shots.e2e.ts
+sips -Z 2000 .e2e/artifacts/readme-hero.png --out docs/hero.png
+for n in markdown-review scheduled; do
+  sips -Z 2000 .e2e/artifacts/readme-$n.png --out docs/screenshots/$n.png
+done
+# The board's cards fill the top of the window: keep the top 60%.
+# (--cropOffset 0 0 means "centred" to sips; 1 1 anchors the top.)
+sips -c 1080 2880 --cropOffset 1 1 .e2e/artifacts/readme-board.png --out /tmp/board.png
+sips -Z 2000 /tmp/board.png --out docs/screenshots/board.png
+```
+
+The window is 1440x900. The driver's `setWindowSize` counts physical pixels,
+so the spec asks for twice that on a 2x display.
+
 ## CI
 
 The suite runs on all three platforms for PRs and pushes to `main`: `e2e`

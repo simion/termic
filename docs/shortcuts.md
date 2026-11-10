@@ -11,7 +11,7 @@ token or `"1-9"` sentinel.
 
 The rows' **wording is not in that file**: labels, hints and the mode select's
 options are locale entries (`settings:shortcuts.defs.*`), reached by id
-through `src/lib/shortcutCopy.ts`. The Shortcuts page and the ⌘/ sheet both
+through `src/lib/shortcutCopy.ts`. The Shortcuts page and the cheat sheet both
 draw the same rows, so one copy is the only way they cannot disagree, and a
 new `ShortcutId` is a compile error until it has a key there. A dynamic key
 like that is invisible to `usedKeys.test.ts` (it reads literals) and to
@@ -217,8 +217,9 @@ select (`prefs.ctrlTabMode`, which keeps its historic name so stored prefs
 carry over). It cannot be a `SHORTCUT_DEFS` entry, because a `Binding` folds
 Cmd and Ctrl into one flag, and it needs keyup (see the next section).
 
-The ⌘/ sheet prints what each currently IS: the recorded hold gesture (dropped
-while Off), and for Search everywhere the chord if one is set plus the
+The cheat sheet (Keyboard shortcuts in the palette) prints what each
+currently IS: the recorded hold gesture (dropped while Off), and for
+Search everywhere the chord if one is set plus the
 double-Shift mode's own label if it is on, dropping the row only when both are
 off. A sheet printing something inert is an instruction to press nothing.
 

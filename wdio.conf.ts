@@ -35,6 +35,9 @@ export const config: WebdriverIO.Config = {
   // macOS only.
   exclude: [
     ...(process.platform === "darwin" ? [] : ["sudo-touchid"]),
+    // Stages the README's screenshots and asserts nothing about features;
+    // run on purpose with TERMIC_E2E_README_SHOTS=1 (see the spec's header).
+    ...(process.env.TERMIC_E2E_README_SHOTS ? [] : ["readme-shots"]),
   ].map(n => path.join(repoRoot, "e2e", "specs", `${n}.e2e.ts`)),
   maxInstances: 1,
 
