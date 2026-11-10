@@ -4278,6 +4278,17 @@ export function FooterBar({ task, sandboxWarning }: {
   return (
     <div
       data-testid="task-footer"
+      // Activity is not a Radix popover, so nothing dismisses it when another
+      // status item opens. Pressing any other item in the bar closes it, the
+      // same as the popovers close each other. `contains` skips portaled
+      // content (the panel's filter menus), whose events bubble here through
+      // React.
+      onPointerDownCapture={activityOpen ? e => {
+        const el = e.target as Element;
+        if (e.currentTarget.contains(el) && !el.closest('[data-testid="cage-activity"],[data-testid="cage-chip-tail"]')) {
+          useUI.getState().closeCageActivity();
+        }
+      } : undefined}
       className={cn(
         // --bottom-bar-h is the shared height for every bottom bar. text-[12.5px]
         // matches the queue/terminal buttons and the right-panel footer tabs.
