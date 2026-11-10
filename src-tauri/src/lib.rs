@@ -4689,9 +4689,10 @@ fn pty_spawn(
     #[cfg(unix)]
     let share_history = args.env.get(SHARE_HISTORY_ENV).is_some_and(|v| v == "1");
     cmd.env_remove(SHARE_HISTORY_ENV);
-    #[cfg(unix)]
     // a shell's role wraps it in `env`; the shell is still the original cmd.
+    #[cfg(unix)]
     let shim_cmd = if shell_bundle.is_some() { args.cmd.as_str() } else { effective_cmd.as_str() };
+    #[cfg(unix)]
     if share_history && !is_docker && sandbox_bundle.is_none() && is_zsh_command(shim_cmd) {
         if let Some(dir) = zsh_history_shim_dir() {
             // A caller's own ZDOTDIR (task .env, or the app's environment)
