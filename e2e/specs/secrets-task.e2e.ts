@@ -244,7 +244,9 @@ const openMenu = (sel: string) => browser.execute((s) => {
     }, taskId!);
     const cleared = await browser.execute((id) =>
       window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.role ?? null, taskId!);
-    expect(cleared).toBeNull();
+    // "", not null: a drop is an explicit No secrets (Task::role), so the
+    // project default set above can never seed it back.
+    expect(cleared).toBe("");
     const chip = `[data-task-id="${taskId}"] [data-testid="cage-chip"]`;
     await waitGone(`${chip}[data-role]`);
     await waitVisible(`${chip} [data-testid="cage-chip-no-secrets"]`);

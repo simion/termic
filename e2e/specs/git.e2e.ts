@@ -2905,6 +2905,49 @@ describe("the forge pickers: work that pulled you in", () => {
     await snap("pr-pane-no-forge.png");
   });
 
+  it("lists your PRs and the review queue in one scroller, rows truncated", async () => {
+    // Seeded through the shared list cache (the fixture is no forge, so the
+    // re-fetch fails and the painted rows stay). Long titles are the case:
+    // they used to push a sideways scrollbar under the review list, and yours
+    // grew to the bottom with a gap above the review queue.
+    const pr = (n: number, title: string, draft = false) => ({
+      provider: "github", number: n, title, url: "", body: "", author: "alice",
+      head_ref: `feature/e2e-${n}`, cross_repository: false, draft, updated_at: "2026-11-01T10:00:00Z",
+    });
+    const long = "Add a read-only integration API with personal access tokens and per-project scopes";
+    await browser.execute((id, mine, review) => {
+      const t = window.__termic!;
+      const entry = (scope: string, prs: unknown[]) => ({
+        query: { projectId: id, kind: "prs", scope }, status: "ok", okAt: Date.now(), fetchedAt: Date.now(),
+        ok: { provider: "github", remote_url: "", status: "ok", message: "", prs },
+      });
+      t.useForgeLists.setState((s: any) => ({
+        entries: { ...s.entries, [`${id}:prs:mine:30`]: entry("mine", mine), [`${id}:prs:review:30`]: entry("review", review) },
+      }));
+    }, projectId, [pr(23, long, true)], [pr(30, long), pr(28, long, true), pr(27, "Short one")]);
+    await clickWhenVisible('[data-source-tab="new"]');
+    await clickWhenVisible('[data-source-tab="pr"]');
+    await waitVisible('[data-testid="pr-review-section"]');
+    const m = await browser.execute(() => {
+      const lists = document.querySelector('[data-testid="pr-lists"]') as HTMLElement;
+      const mine = lists.querySelector("ul")!.getBoundingClientRect();
+      const review = document.querySelector('[data-testid="pr-review-section"]')!.getBoundingClientRect();
+      return { overflowX: lists.scrollWidth - lists.clientWidth, gap: Math.round(review.top - mine.bottom), rows: lists.querySelectorAll('[data-testid="pr-row"]').length };
+    });
+    expect(m.rows).toBe(4);
+    expect(m.overflowX).toBe(0);
+    expect(m.gap).toBeLessThanOrEqual(16);
+    await snap("pr-pane-lists.png");
+    // a worktree offers every source; they still sit on one line.
+    await clickWhenVisible('[data-testid="task-type-worktree"]');
+    await browser.waitUntil(() => browser.execute(() => document.querySelectorAll('[data-source-tab]').length >= 4),
+      { timeout: 5_000, timeoutMsg: "the worktree sources never showed" });
+    const tops = await browser.execute(() => [...new Set([...document.querySelectorAll('[data-source-tab]')]
+      .map(b => Math.round(b.getBoundingClientRect().top)))].length);
+    expect(tops).toBe(1);
+    await snap("pr-pane-lists-worktree.png");
+  });
+
   // The picker sits in Task, beside the fields a pick fills. How the task
   // runs moved to other sections of the rail, whose entries say what they hold,
   // and a YOLO warning in one of them is flagged from wherever you are.

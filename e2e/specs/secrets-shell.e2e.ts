@@ -257,7 +257,8 @@ import {
 
   it("gh sending its own token shows the rc-file banner", async () => {
     // what an rc file exporting GH_TOKEN after Termic looks like on the socket.
-    const resp = await capture(roleTab, "foreign", ghCurl("DELETE", "/repos/acme/widget", "gho_FROMZSHRC"));
+    // acme/gadget, not acme/widget: the case above allowed DELETE on widget.
+    const resp = await capture(roleTab, "foreign", ghCurl("DELETE", "/repos/acme/gadget", "gho_FROMZSHRC"));
     expect(resp).toContain("blocked by Termic role");
     const banner = `[data-task-id="${taskId}"] [data-testid="shell-rc-banner"]`;
     await waitVisible(banner);

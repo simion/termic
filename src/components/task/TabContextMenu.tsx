@@ -92,7 +92,7 @@ export function TabContextMenu({
                 ))}
                 {shell.role && (
                   <ContextMenuItem onSelect={() => void restartShellWithRole(shell.taskId, tabId, null)}>
-                    <span data-testid="shell-role-none" className="contents">{t("secrets:shell.noSecrets")}</span>
+                    <span data-testid="shell-role-none" className="flex items-center gap-2">{t("secrets:shell.noSecrets")}</span>
                   </ContextMenuItem>
                 )}
               </ContextMenuSubContent>

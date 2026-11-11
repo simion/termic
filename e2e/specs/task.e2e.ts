@@ -562,7 +562,7 @@ describe("new task dialog: side rail", () => {
         warn: (document.querySelector('[data-testid="real-files-warn"]') as HTMLElement).innerText.trim(),
       };
     }, PANE);
-    expect(main).toEqual({ shown: false, tip: true, warn: "Edits land on your real files." });
+    expect(main).toEqual({ shown: false, tip: true, warn: "No worktree: the agent edits this checkout directly, on its current branch." });
   });
 
   it("a disabled Create says what is missing and goes to it from any section", async () => {

@@ -1227,16 +1227,16 @@ export function NewTaskDialog() {
    *  review" is the same pick as one of yours: fetch the head, then check it
    *  out into the task. */
   const prRow = (pr: ForgePr) => (
-    <li key={pr.number}>
+    <li key={pr.number} className="min-w-0">
       <button
         type="button"
         data-testid="pr-row"
         data-pr-number={pr.number}
         disabled={prBusy > 0}
         onClick={() => void pickPr(pr)}
-        className="flex w-full flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
+        className="flex w-full min-w-0 flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
       >
-        <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
+        <span className="flex w-full min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
           <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">{prRef(pr.provider, pr.number)}</span>
           <span className="min-w-0 truncate">{pr.title}</span>
           {pr.draft && (
@@ -1955,8 +1955,8 @@ export function NewTaskDialog() {
           <div className="flex items-center gap-1.5">
             <label className="text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.taskTypeLabel")}</label>
             {/* What the choice below MEANS, behind the (i). The one part of
-                it that is a warning, the main checkout's "edits land on your
-                real files", stays on screen under the rows. */}
+                it that is a warning, that the main checkout has no worktree,
+                stays on screen under the rows. */}
             <InfoTip text={mode === "worktree"
               ? (isMulti ? t("newTask.descWorktreeMulti") : t("newTask.descWorktreeSingle"))
               : (isMulti ? t("newTask.descRootMulti") : t("newTask.descRootSingle"))} />
@@ -2001,10 +2001,20 @@ export function NewTaskDialog() {
             })}
           </div>
 
+          {/* The warning belongs to the choice it qualifies, so it sits right
+              under it rather than below the sources. */}
+          {mode === "repo_root" && (
+            <p data-testid="real-files-warn" className="flex items-center gap-1.5 text-[12px] text-[var(--color-warn)]">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {t("newTask.realFilesWarn")}
+            </p>
+          )}
+
           {/* Sources. Which ones exist depends on the row above: importing a
               worktree and checking a branch into one need a worktree to put it
-              in, while an issue or a PR seeds either kind. */}
-          <div className="flex flex-wrap items-center gap-1">
+              in, while an issue or a PR seeds either kind. Labelled and drawn
+              like Task type: a bare row of small words read as stray links. */}
+          <label className="mt-1 text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.startFrom")}</label>
+          <div role="group" aria-label={t("newTask.startFrom")} className="flex flex-wrap items-stretch gap-1 rounded-lg bg-[var(--color-bg)] p-1">
             {([
               // "New branch" is only true of a worktree. In the main checkout
               // there is no branch to cut, so the default source is a blank
@@ -2029,9 +2039,9 @@ export function NewTaskDialog() {
                 aria-pressed={source === sv}
                 onClick={() => chooseSource(sv as TaskSource)}
                 className={cn(
-                  "rounded-md px-2 py-1 text-[12px] transition-colors",
+                  "flex-1 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[12.5px] transition-colors",
                   source === sv
-                    ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                    ? "bg-[var(--color-bg-3)] font-medium text-[var(--color-fg)]"
                     : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
                 )}
               >
@@ -2051,11 +2061,6 @@ export function NewTaskDialog() {
             )}
           </div>
 
-          {mode === "repo_root" && (
-            <p data-testid="real-files-warn" className="flex items-center gap-1.5 text-[12px] text-[var(--color-warn)]">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {t("newTask.realFilesWarn")}
-            </p>
-          )}
         </div>
 
         {/* The worktree being adopted, UNDER the tabs. It rendered above them,
@@ -2419,7 +2424,7 @@ export function NewTaskDialog() {
                       </div>
                     ) : (
                       <>
-                        <ul data-testid="pr-open-list" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                        <ul data-testid="pr-open-list" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden">
                           {(prOpenLookup?.prs ?? []).map(prRow)}
                         </ul>
                         {/* A full page means there may be more: say so, and where
@@ -2432,7 +2437,10 @@ export function NewTaskDialog() {
                       </>
                     )
                   ) : (
-                    <>
+                    // ONE scroller for both lists. Yours used to flex-grow to the
+                    // bottom with the review list pinned under it, which left a
+                    // gap between them and gave each its own scrollbar.
+                    <div data-testid="pr-lists" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden">
                       {prLoading ? (
                         <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
                           <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
@@ -2446,7 +2454,7 @@ export function NewTaskDialog() {
                           {t("newTask.prNoneOfYours")}
                         </div>
                       ) : (
-                        <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                        <ul className="flex min-w-0 flex-col gap-1">
                           {(prLookup?.prs ?? []).map(prRow)}
                         </ul>
                       )}
@@ -2458,12 +2466,12 @@ export function NewTaskDialog() {
                           <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
                             {t("newTask.prReviewTitle")}
                           </div>
-                          <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+                          <ul className="flex min-w-0 flex-col gap-1">
                             {prReviewLookup.prs.map(prRow)}
                           </ul>
                         </div>
                       )}
-                    </>
+                    </div>
                   )}
                   {prBusy > 0 && (
                     <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">
