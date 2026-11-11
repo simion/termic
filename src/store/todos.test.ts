@@ -8,6 +8,7 @@ import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/li
 vi.mock("@/lib/ipc", () => ({
   projectForgeIssues: vi.fn(),
   projectForgePrs: vi.fn(),
+  projectForgeLists: vi.fn(),
 }));
 
 // node vitest has no localStorage. Installed before the store module runs, so
@@ -40,6 +41,12 @@ const okEntry = (query: ForgeListQuery, ok: IssueLookup | PrPickList): ForgeList
 describe("todos store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The batch answers each list the way its single call would, so the
+    // assertions below can name the list they expect.
+    vi.mocked(ipc.projectForgeLists).mockImplementation(async (qs) => Promise.all(qs.map((q) =>
+      q.kind === "issues"
+        ? ipc.projectForgeIssues(q.projectId, q.limit, q.scope as never)
+        : ipc.projectForgePrs(q.projectId, { scope: q.scope as never, limit: q.limit }))));
     stored.clear();
     clearForgeLists();
     useTodos.setState({
@@ -69,6 +76,32 @@ describe("todos store", () => {
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "mine", limit: 30 });
     expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
     expect(ipc.projectForgePrs).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks for every list the view reads in one batch call", async () => {
+    useApp.setState({ projects: ["p1", "p2", "p3"].map((id) => ({ id, name: id, non_git: false } as Project)) });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
+
+    await useTodos.getState().fetchVisibleTodos();
+
+    expect(ipc.projectForgeLists).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ipc.projectForgeLists).mock.calls[0][0]).toHaveLength(9);
+  });
+
+  it("keeps the last rows of a list whose batch failed", async () => {
+    useApp.setState({ projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project] });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue({ ...okIssues, issues: [issue(1)] });
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
+    await useTodos.getState().fetchVisibleTodos();
+
+    vi.mocked(ipc.projectForgeLists).mockRejectedValueOnce(new Error("ipc down"));
+    await useTodos.getState().fetchVisibleTodos(true);
+
+    const queries = todoQueries(useApp.getState().projects, "all", "for_me");
+    const { items, errors } = todoRows(queries, (await import("./forgeLists")).useForgeLists.getState().entries, useApp.getState().projects);
+    expect(items.map((i) => i.id)).toEqual(["p1:issue:1"]);
+    expect(errors.length).toBeGreaterThan(0);
   });
 
   it("fetches nothing again within the TTL, and everything on Refresh", async () => {

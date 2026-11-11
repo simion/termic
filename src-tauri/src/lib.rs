@@ -16094,6 +16094,130 @@ async fn project_forge_provider(project_id: String) -> Result<ForgeProvider, Str
 
 /// Open issues for a PROJECT (not a task): the New Task dialog runs before
 /// any task exists, so this resolves the repo from the project root.
+/// One list the Todos view (or a dialog) reads: `kind` "issues" | "prs",
+/// `scope` as `project_forge_issues` / `project_forge_prs` take it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForgeListQuery {
+    project_id: String,
+    kind: String,
+    scope: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ForgeListAnswer {
+    Issues(IssueLookup),
+    Prs(PrPickList),
+}
+
+/// Many project lists in one call, answers in `queries` order. Every GitHub
+/// list on one host is ONE GraphQL query (`forge::github_lists`); the rest
+/// (GitLab, Azure, no forge, a limit past one GraphQL page) take the
+/// per-project CLI path, three at a time. A failed GitHub query falls back
+/// to that path too, which is also what turns the failure into the usual
+/// "cli-missing" / "cli-unauthed" statuses.
+fn forge_lists_blocking(queries: &[ForgeListQuery]) -> Vec<ForgeListAnswer> {
+    let projects = load_projects_all();
+    let limit_of = |q: &ForgeListQuery| if q.kind == "issues" {
+        q.limit.unwrap_or(50).clamp(1, 200)
+    } else {
+        q.limit.unwrap_or(30).clamp(1, 100)
+    };
+    let mut out: Vec<Option<ForgeListAnswer>> = queries.iter().map(|_| None).collect();
+    let mut by_host: std::collections::BTreeMap<String, Vec<(usize, forge::RepoList, String)>> = Default::default();
+    let mut single: Vec<usize> = Vec::new();
+    for (i, q) in queries.iter().enumerate() {
+        let limit = limit_of(q);
+        let batched = projects.iter().find(|p| p.id == q.project_id).and_then(|p| {
+            let cwd = PathBuf::from(&p.root_path);
+            let (provider, remote_url) = forge::provider_for_repo(&cwd, &detect_default_remote(&cwd));
+            if provider != Some(forge::GITHUB) || limit > 100 {
+                return None;
+            }
+            let host = forge::host_of_remote(&remote_url)?;
+            let (owner, repo) = forge::github_remote_slug(&remote_url)?;
+            let kind = if q.kind == "issues" {
+                forge::ListKind::Issues(forge::IssueScope::parse(q.scope.as_deref()))
+            } else {
+                forge::ListKind::Prs(forge::PrScope::parse(q.scope.as_deref()))
+            };
+            Some((host, forge::RepoList { owner, repo, kind, limit }, remote_url))
+        });
+        match batched {
+            Some((host, list, remote_url)) => by_host.entry(host).or_default().push((i, list, remote_url)),
+            None => single.push(i),
+        }
+    }
+
+    for (host, items) in by_host {
+        let lists: Vec<forge::RepoList> = items.iter().map(|(_, l, _)| l.clone()).collect();
+        match forge::github_lists(&host, "lists", &lists) {
+            Ok(rows) => {
+                for ((i, _, remote_url), rows) in items.into_iter().zip(rows) {
+                    let provider = Some(forge::GITHUB.to_string());
+                    out[i] = Some(match rows {
+                        forge::ListRows::Issues(issues) => ForgeListAnswer::Issues(IssueLookup {
+                            provider, remote_url, status: "ok".into(), message: String::new(), issues,
+                        }),
+                        forge::ListRows::Prs(prs) => ForgeListAnswer::Prs(PrPickList {
+                            provider, remote_url, status: "ok".into(), message: String::new(), prs,
+                        }),
+                    });
+                }
+            }
+            Err(_) => single.extend(items.iter().map(|(i, _, _)| *i)),
+        }
+    }
+
+    // The per-project path, three workers, like the webview's queue.
+    let one = |i: usize| -> ForgeListAnswer {
+        let q = &queries[i];
+        let limit = limit_of(q);
+        let failed = |message: String| (None, String::new(), "error".to_string(), message);
+        if q.kind == "issues" {
+            ForgeListAnswer::Issues(issue_lookup_blocking(&q.project_id, limit, forge::IssueScope::parse(q.scope.as_deref()))
+                .unwrap_or_else(|e| {
+                    let (provider, remote_url, status, message) = failed(e);
+                    IssueLookup { provider, remote_url, status, message, issues: Vec::new() }
+                }))
+        } else {
+            ForgeListAnswer::Prs(pr_picker_blocking(&q.project_id, limit, None, forge::PrScope::parse(q.scope.as_deref()))
+                .unwrap_or_else(|e| {
+                    let (provider, remote_url, status, message) = failed(e);
+                    PrPickList { provider, remote_url, status, message, prs: Vec::new() }
+                }))
+        }
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done: Mutex<Vec<(usize, ForgeListAnswer)>> = Mutex::new(Vec::new());
+    std::thread::scope(|sc| {
+        for _ in 0..3.min(single.len()) {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&i) = single.get(k) else { break };
+                let a = one(i);
+                done.lock().push((i, a));
+            });
+        }
+    });
+    for (i, a) in done.into_inner() {
+        out[i] = Some(a);
+    }
+    out.into_iter().map(|a| a.unwrap_or_else(|| ForgeListAnswer::Issues(IssueLookup {
+        provider: None, remote_url: String::new(), status: "error".into(), message: "no answer".into(), issues: Vec::new(),
+    }))).collect()
+}
+
+/// Many forge lists at once, for the Todos view. See `forge_lists_blocking`.
+#[tauri::command]
+async fn project_forge_lists(queries: Vec<ForgeListQuery>) -> Result<Vec<ForgeListAnswer>, String> {
+    tauri::async_runtime::spawn_blocking(move || forge_lists_blocking(&queries))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn project_forge_issues(project_id: String, limit: Option<u32>, scope: Option<String>) -> Result<IssueLookup, String> {
     let limit = limit.unwrap_or(50).clamp(1, 200);
@@ -28201,7 +28325,7 @@ pub fn run() {
             desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, project_git_current_branch, task_git_checkout, task_git_update, task_git_update_all, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
-            detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
+            detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, project_forge_lists, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,

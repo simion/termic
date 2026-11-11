@@ -11,7 +11,7 @@
 
 import { create } from "zustand";
 import { useApp } from "@/store/app";
-import { projectForgeIssues, projectForgePrs } from "@/lib/ipc";
+import { projectForgeIssues, projectForgeLists, projectForgePrs } from "@/lib/ipc";
 import { scoped } from "@/lib/profileScope";
 import { BODY_MAX as ISSUE_BODY_MAX, cleanIssueText } from "@/lib/issuePrompt";
 import { BODY_MAX as PR_BODY_MAX, cleanPrText } from "@/lib/prReview";
@@ -283,40 +283,90 @@ export function fetchForgeList(q: ForgeListQuery, opts: FetchOptions = {}): Prom
         : projectForgePrs(q.projectId, { scope: q.scope, limit }),
     !!opts.urgent,
   )
-    .then(
-      (answer) => {
-        if (at !== epoch) return answer;
-        const now = Date.now();
-        if (answer.status === "ok") {
-          dirty = true;
-          setEntry(key, () => ({ query: q, status: "ok", ok: answer, okAt: now, fetchedAt: now }));
-        } else {
-          setEntry(key, (e) => ({
-            query: q,
-            status: isUnsupported(answer) ? "unsupported" : "error",
-            ok: e?.ok ?? null,
-            okAt: e?.okAt ?? 0,
-            fetchedAt: now,
-            errorMessage: answer.message || answer.status,
-          }));
-        }
-        return answer;
-      },
-      (err) => {
-        if (at === epoch) {
-          setEntry(key, (e) => ({
-            query: q, status: "error", ok: e?.ok ?? null, okAt: e?.okAt ?? 0,
-            fetchedAt: Date.now(), errorMessage: String(err),
-          }));
-        }
-        throw err;
-      },
-    )
+    .then((answer) => record(key, q, at, answer), (err) => recordFailure(key, q, at, err))
     .finally(() => {
       if (inFlight.get(key) === p) inFlight.delete(key);
     });
   inFlight.set(key, p);
   return p;
+}
+
+/** Land one answer on its entry (unless `clearForgeLists` ran since). A
+ *  failure keeps the last ok rows. */
+function record(key: string, q: ForgeListQuery, at: number, answer: ForgeListAnswer): ForgeListAnswer {
+  if (at !== epoch) return answer;
+  const now = Date.now();
+  if (answer.status === "ok") {
+    dirty = true;
+    setEntry(key, () => ({ query: q, status: "ok", ok: answer, okAt: now, fetchedAt: now }));
+  } else {
+    setEntry(key, (e) => ({
+      query: q,
+      status: isUnsupported(answer) ? "unsupported" : "error",
+      ok: e?.ok ?? null,
+      okAt: e?.okAt ?? 0,
+      fetchedAt: now,
+      errorMessage: answer.message || answer.status,
+    }));
+  }
+  return answer;
+}
+
+function recordFailure(key: string, q: ForgeListQuery, at: number, err: unknown): never {
+  if (at === epoch) {
+    setEntry(key, (e) => ({
+      query: q, status: "error", ok: e?.ok ?? null, okAt: e?.okAt ?? 0,
+      fetchedAt: Date.now(), errorMessage: String(err),
+    }));
+  }
+  throw err;
+}
+
+/** Fetch every list in `qs` that is missing or past the TTL (all of them
+ *  with `force`) in ONE IPC, which Rust answers with one GraphQL query per
+ *  GitHub host and the per-project CLI path for the rest. Lists already in
+ *  flight are joined, not fetched twice, and each list joins the batch under
+ *  its own key, so a dialog asking for one of them meanwhile waits on it. */
+export async function refreshForgeLists(qs: ForgeListQuery[], force = false): Promise<void> {
+  const { entries } = useForgeLists.getState();
+  const joined: Promise<unknown>[] = [];
+  const due = new Map<string, ForgeListQuery>();
+  for (const q of qs) {
+    const key = forgeListKey(q);
+    const running = inFlight.get(key);
+    if (running) { joined.push(running); continue; }
+    const e = entries[key];
+    if (!force && e && e.status !== "loading" && Date.now() - e.fetchedAt < FORGE_LIST_TTL_MS) continue;
+    due.set(key, q);
+  }
+  if (due.size) {
+    const at = epoch;
+    const list = [...due.values()];
+    for (const [key, q] of due) {
+      setEntry(key, (e) => ({ query: q, status: "loading", ok: e?.ok ?? null, okAt: e?.okAt ?? 0, fetchedAt: e?.fetchedAt ?? 0 }));
+    }
+    const batch = schedule(
+      `batch:${[...due.keys()].join("|")}`,
+      () => projectForgeLists(list.map((q) => ({ projectId: q.projectId, kind: q.kind, scope: q.scope, limit: limitOf(q) }))),
+      false,
+    );
+    list.forEach((q, i) => {
+      const key = forgeListKey(q);
+      const p: Promise<ForgeListAnswer> = batch
+        .then((answers) => {
+          const a = answers[i];
+          if (!a) throw new Error("no answer for this list");
+          return record(key, q, at, a);
+        })
+        .catch((err) => recordFailure(key, q, at, err))
+        .finally(() => {
+          if (inFlight.get(key) === p) inFlight.delete(key);
+        });
+      inFlight.set(key, p);
+      joined.push(p);
+    });
+  }
+  await Promise.allSettled(joined);
 }
 
 const sameRows = (a: ForgeListAnswer, b: ForgeListAnswer) =>

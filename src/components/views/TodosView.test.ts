@@ -12,6 +12,9 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
     openPath: vi.fn().mockResolvedValue(undefined),
     projectForgeIssues: vi.fn(),
     projectForgePrs: vi.fn(),
+    // The view fetches through the batch; it answers each list the way its
+    // single call would, so a test can still hold one list back.
+    projectForgeLists: vi.fn(),
   };
 });
 
@@ -55,6 +58,10 @@ describe("TodosView component", () => {
     // Lists nobody seeded answer empty, so the mount's fetch settles.
     vi.mocked(ipc.projectForgeIssues).mockResolvedValue(issuesOk([]));
     vi.mocked(ipc.projectForgePrs).mockResolvedValue(prsOk([]));
+    vi.mocked(ipc.projectForgeLists).mockImplementation(async (qs) => Promise.all(qs.map((q) =>
+      q.kind === "issues"
+        ? ipc.projectForgeIssues(q.projectId, q.limit, q.scope as never)
+        : ipc.projectForgePrs(q.projectId, { scope: q.scope as never, limit: q.limit }))));
     container = document.createElement("div");
     document.body.appendChild(container);
 

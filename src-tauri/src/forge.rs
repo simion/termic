@@ -334,11 +334,11 @@ pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Buck
 /// account's window are recorded. A `rateLimit` selection adds no points.
 const RATE_LIMIT_SELECTION: &str = "rateLimit { cost limit remaining used resetAt }";
 
-/// A GraphQL query's answer. `errors` can sit beside good `data`: one alias
-/// of a batch pointing at a deleted repo fails alone.
+/// A GraphQL query's answer. Errors can sit beside good `data` (one alias of
+/// a batch pointing at a deleted repo fails alone, as a null), so only a
+/// query with no data at all is an error.
 pub struct GraphqlAnswer {
     pub data: serde_json::Value,
-    pub errors: Vec<serde_json::Value>,
 }
 
 /// Run `query { rateLimit {...} <selection> }` against `host`'s GraphQL API.
@@ -347,13 +347,12 @@ pub fn gh_graphql(host: &str, feature: &'static str, selection: &str) -> Result<
     let resp = gh_api(host, feature, crate::forge_rate::Bucket::Graphql, &["graphql", "-f", &query])?;
     let v: serde_json::Value = serde_json::from_str(&resp.body)
         .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
-    let errors = v["errors"].as_array().cloned().unwrap_or_default();
     let data = v["data"].clone();
     if data.is_null() {
-        let msg = errors.first().and_then(|e| e["message"].as_str()).unwrap_or("GraphQL query failed");
+        let msg = v["errors"][0]["message"].as_str().unwrap_or("GraphQL query failed");
         return Err(ForgeError::Other(msg.to_string()));
     }
-    Ok(GraphqlAnswer { data, errors })
+    Ok(GraphqlAnswer { data })
 }
 
 /// A GraphQL string literal. JSON string escaping is a valid GraphQL
@@ -938,6 +937,204 @@ pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef])
     }
     let ans = gh_graphql(host, feature, &pr_batch_selection(refs))?;
     Ok(parse_pr_batch(&ans.data, refs.len()))
+}
+
+// ───────────────────────── batched lists (GitHub) ─────────────────────────
+//
+// The Todos view used to run one `gh issue list` / `gh pr list` per project
+// per list: 3 to 5 subprocesses a project, three at a time. Here every list
+// for one host is ONE GraphQL query:
+//
+// - repo-wide lists (open issues, open PRs) are one `repository` alias each;
+// - lists about the user (assigned, mentions, mine, review) are `search`
+//   aliases, one per scope per chunk of repos (`repo:` qualifiers, kept under
+//   GitHub's 256-character query limit), split back out by repository.
+
+/// `(owner, repo)` of a GitHub remote, either URL shape git uses.
+pub fn github_remote_slug(url: &str) -> Option<(String, String)> {
+    let u = url.trim();
+    let path = match u.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => u.split_once(':')?.1,
+    };
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let mut it = path.rsplit('/');
+    let repo = it.next()?.to_string();
+    let owner = it.next()?.to_string();
+    (!owner.is_empty() && !repo.is_empty()).then_some((owner, repo))
+}
+
+/// Which list, as the picker and Todos name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    Issues(IssueScope),
+    Prs(PrScope),
+}
+
+/// One list for one repo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoList {
+    pub owner: String,
+    pub repo: String,
+    pub kind: ListKind,
+    /// 1..=100 (a GraphQL page). The caller sends anything larger the
+    /// per-repo CLI way.
+    pub limit: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ListRows {
+    Issues(Vec<ForgeIssue>),
+    Prs(Vec<ForgePr>),
+}
+
+const ISSUE_FIELDS: &str = "number title url body author { login } comments { totalCount } \
+labels(first: 20) { nodes { name } } updatedAt";
+const PR_FIELDS: &str = "number title url body author { login } headRefName isCrossRepository isDraft updatedAt";
+/// GitHub's cap on a search query string.
+const SEARCH_QUERY_MAX: usize = 256;
+/// One search page. A chunk whose personal list runs past this loses the
+/// oldest rows of some repos.
+// ponytail: one page per search alias; paginate on `issueCount > 100` if a
+// real inbox ever outgrows it.
+const SEARCH_PAGE: u32 = 100;
+
+/// The search qualifiers for a personal list, None for a repo-wide one.
+/// Newest first, like `gh issue list` / `gh pr list`.
+fn search_base(kind: ListKind) -> Option<&'static str> {
+    Some(match kind {
+        ListKind::Issues(IssueScope::Assigned) => "is:open is:issue assignee:@me sort:created-desc",
+        ListKind::Issues(IssueScope::Mentions) => "is:open is:issue mentions:@me sort:created-desc",
+        ListKind::Prs(PrScope::Mine) => "is:open is:pr author:@me sort:created-desc",
+        ListKind::Prs(PrScope::Review) => "is:open is:pr review-requested:@me sort:created-desc",
+        ListKind::Issues(IssueScope::All) | ListKind::Prs(PrScope::Open) => return None,
+    })
+}
+
+/// Search strings covering `repos`, each under the length cap.
+fn search_chunks(base: &str, repos: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = base.to_string();
+    for r in repos {
+        let q = format!(" repo:{r}");
+        if cur.len() > base.len() && cur.len() + q.len() > SEARCH_QUERY_MAX {
+            out.push(std::mem::replace(&mut cur, base.to_string()));
+        }
+        cur.push_str(&q);
+    }
+    if cur.len() > base.len() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Where each alias's answer goes.
+enum Alias {
+    /// Repo-wide list: rows for `lists[i]`.
+    Repo(usize),
+    /// Search: rows for every list of `kind` whose repo they belong to.
+    Search(ListKind),
+}
+
+fn lists_selection(lists: &[RepoList]) -> (String, Vec<Alias>) {
+    let mut sel = Vec::new();
+    let mut aliases = Vec::new();
+    for (i, l) in lists.iter().enumerate() {
+        if search_base(l.kind).is_some() {
+            continue;
+        }
+        let (conn, fields) = match l.kind {
+            ListKind::Issues(_) => ("issues", ISSUE_FIELDS),
+            ListKind::Prs(_) => ("pullRequests", PR_FIELDS),
+        };
+        sel.push(format!(
+            "a{}: repository(owner: {}, name: {}) {{ {conn}(states: OPEN, first: {}, orderBy: {{ field: CREATED_AT, direction: DESC }}) {{ nodes {{ {fields} }} }} }}",
+            aliases.len(), gql_str(&l.owner), gql_str(&l.repo), l.limit.clamp(1, 100),
+        ));
+        aliases.push(Alias::Repo(i));
+    }
+    // Personal lists: one alias per (scope, chunk), repos deduplicated.
+    let mut kinds: Vec<ListKind> = Vec::new();
+    for l in lists {
+        if search_base(l.kind).is_some() && !kinds.contains(&l.kind) {
+            kinds.push(l.kind);
+        }
+    }
+    for kind in kinds {
+        let mut repos: Vec<String> = lists.iter().filter(|l| l.kind == kind)
+            .map(|l| format!("{}/{}", l.owner, l.repo)).collect();
+        repos.sort();
+        repos.dedup();
+        for q in search_chunks(search_base(kind).unwrap_or_default(), &repos) {
+            sel.push(format!(
+                "a{}: search(query: {}, type: ISSUE, first: {SEARCH_PAGE}) {{ nodes {{ \
+                 ... on Issue {{ {ISSUE_FIELDS} repository {{ nameWithOwner }} }} \
+                 ... on PullRequest {{ {PR_FIELDS} repository {{ nameWithOwner }} }} }} }}",
+                aliases.len(), gql_str(&q),
+            ));
+            aliases.push(Alias::Search(kind));
+        }
+    }
+    (sel.join(" "), aliases)
+}
+
+/// GraphQL issue nodes in `gh issue list --json` shape for `parse_github_issues`.
+fn issue_nodes_as_gh(nodes: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::Value::Array(nodes.iter().map(|n| {
+        let mut v = n.clone();
+        v["comments"] = n["comments"]["totalCount"].clone();
+        v["labels"] = n["labels"]["nodes"].clone();
+        v
+    }).collect())
+}
+
+fn parse_lists(data: &serde_json::Value, lists: &[RepoList], aliases: &[Alias]) -> Vec<ListRows> {
+    let mut out: Vec<ListRows> = lists.iter().map(|l| match l.kind {
+        ListKind::Issues(_) => ListRows::Issues(Vec::new()),
+        ListKind::Prs(_) => ListRows::Prs(Vec::new()),
+    }).collect();
+    let empty = Vec::new();
+    for (ai, alias) in aliases.iter().enumerate() {
+        let a = &data[format!("a{ai}")];
+        match alias {
+            Alias::Repo(i) => {
+                let nodes = a["issues"]["nodes"].as_array().or(a["pullRequests"]["nodes"].as_array()).unwrap_or(&empty);
+                out[*i] = match lists[*i].kind {
+                    ListKind::Issues(_) => ListRows::Issues(parse_github_issues(&issue_nodes_as_gh(nodes))),
+                    ListKind::Prs(_) => ListRows::Prs(parse_github_prs(&serde_json::Value::Array(nodes.clone()))),
+                };
+            }
+            Alias::Search(kind) => {
+                for node in a["nodes"].as_array().unwrap_or(&empty) {
+                    let Some(name) = node["repository"]["nameWithOwner"].as_str() else { continue };
+                    let Some(i) = lists.iter().position(|l| l.kind == *kind
+                        && format!("{}/{}", l.owner, l.repo).eq_ignore_ascii_case(name)) else { continue };
+                    let cap = lists[i].limit as usize;
+                    match &mut out[i] {
+                        ListRows::Issues(v) if v.len() < cap => {
+                            v.extend(parse_github_issues(&issue_nodes_as_gh(std::slice::from_ref(node))));
+                        }
+                        ListRows::Prs(v) if v.len() < cap => {
+                            v.extend(parse_github_prs(&serde_json::Value::Array(vec![node.clone()])));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every list in `lists` (all on `host`) in one GraphQL query, answers in
+/// `lists` order.
+pub fn github_lists(host: &str, feature: &'static str, lists: &[RepoList]) -> Result<Vec<ListRows>, ForgeError> {
+    if lists.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (sel, aliases) = lists_selection(lists);
+    let ans = gh_graphql(host, feature, &sel)?;
+    Ok(parse_lists(&ans.data, lists, &aliases))
 }
 
 /// Whether a task's local branch is the PR's head. A fork PR's head is
@@ -3706,5 +3903,109 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert!(branch_matches_pr("pr-9-feat", "feat", 9));
         assert!(!branch_matches_pr("other", "feat", 9));
         assert!(!branch_matches_pr("pr-10", "feat", 9));
+    }
+
+    #[test]
+    fn github_remote_slugs_parse_from_both_url_shapes() {
+        assert_eq!(github_remote_slug("git@github.com:acme/app.git"), Some(("acme".into(), "app".into())));
+        assert_eq!(github_remote_slug("https://github.com/acme/app"), Some(("acme".into(), "app".into())));
+        assert_eq!(github_remote_slug("ssh://git@ghe.acme.com:22/team/svc.git/"), Some(("team".into(), "svc".into())));
+        assert_eq!(github_remote_slug("https://github.com/acme"), None);
+    }
+
+    #[test]
+    fn search_chunks_stay_under_githubs_query_cap() {
+        let base = search_base(ListKind::Prs(PrScope::Review)).unwrap();
+        let repos: Vec<String> = (0..40).map(|i| format!("acme/service-number-{i}")).collect();
+        let chunks = search_chunks(base, &repos);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= SEARCH_QUERY_MAX && c.starts_with(base)));
+        let joined = chunks.join(" ");
+        assert!(repos.iter().all(|r| joined.contains(&format!("repo:{r}"))));
+        assert!(search_chunks(base, &[]).is_empty());
+    }
+
+    fn rl(owner: &str, repo: &str, kind: ListKind, limit: u32) -> RepoList {
+        RepoList { owner: owner.into(), repo: repo.into(), kind, limit }
+    }
+
+    #[test]
+    fn lists_selection_uses_repository_for_repo_wide_and_one_search_per_scope() {
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Open), 30),
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "api", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "api", ListKind::Issues(IssueScope::Assigned), 50),
+        ];
+        let (sel, aliases) = lists_selection(&lists);
+        assert_eq!(aliases.len(), 3, "{sel}");
+        assert!(sel.contains("a0: repository(owner: \"acme\", name: \"app\") { pullRequests(states: OPEN, first: 30,"));
+        assert!(sel.contains(r#"query: "is:open is:pr review-requested:@me sort:created-desc repo:acme/api repo:acme/app""#), "{sel}");
+        assert!(sel.contains(r#"query: "is:open is:issue assignee:@me sort:created-desc repo:acme/api""#), "{sel}");
+    }
+
+    #[test]
+    fn search_answers_split_back_out_by_repository_and_cap_at_the_limit() {
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 1),
+            rl("acme", "api", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "app", ListKind::Issues(IssueScope::All), 50),
+        ];
+        let (_, aliases) = lists_selection(&lists);
+        let pr = |n: u64, repo: &str| serde_json::json!({
+            "number": n, "title": format!("PR {n}"), "url": format!("https://github.com/{repo}/pull/{n}"),
+            "body": "", "author": { "login": "alice" }, "headRefName": "feat", "isCrossRepository": false,
+            "isDraft": false, "updatedAt": "2026-01-01T00:00:00Z", "repository": { "nameWithOwner": repo } });
+        // Alias 0 is the repo-wide issues list, alias 1 the review search.
+        let data = serde_json::json!({
+            "a0": { "issues": { "nodes": [{
+                "number": 5, "title": "Bug", "url": "https://github.com/acme/app/issues/5", "body": "b",
+                "author": { "login": "bob" }, "comments": { "totalCount": 3 },
+                "labels": { "nodes": [{ "name": "bug" }] }, "updatedAt": "2026-01-02T00:00:00Z" }] } },
+            "a1": { "nodes": [pr(1, "acme/app"), pr(2, "Acme/App"), pr(3, "acme/api"), pr(4, "other/repo")] },
+        });
+        let out = parse_lists(&data, &lists, &aliases);
+        let ListRows::Prs(app) = &out[0] else { panic!() };
+        assert_eq!(app.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1], "capped at its limit");
+        let ListRows::Prs(api) = &out[1] else { panic!() };
+        assert_eq!(api.iter().map(|p| p.number).collect::<Vec<_>>(), vec![3]);
+        let ListRows::Issues(issues) = &out[2] else { panic!() };
+        assert_eq!((issues[0].number, issues[0].comments, issues[0].labels.clone()), (5, 3, vec!["bug".to_string()]));
+    }
+
+    /// Live check of the GraphQL termic sends, against the signed-in `gh`.
+    /// Not run by default (needs network and auth). To run:
+    ///
+    /// TERMIC_LIVE_GH='owner/repo#123' cargo test --lib live_github -- --ignored --nocapture
+    ///
+    /// with any PR you can see; `TERMIC_LIVE_GH_HOST` for a GHE host.
+    #[test]
+    #[ignore = "live: needs a signed-in gh and TERMIC_LIVE_GH=owner/repo#N"]
+    fn live_github_batch_queries_parse() {
+        let spec = std::env::var("TERMIC_LIVE_GH").expect("set TERMIC_LIVE_GH=owner/repo#N");
+        let host = std::env::var("TERMIC_LIVE_GH_HOST").unwrap_or_else(|_| "github.com".into());
+        let (slug, n) = spec.split_once('#').expect("owner/repo#N");
+        let (owner, repo) = slug.split_once('/').expect("owner/repo#N");
+        let number: u64 = n.parse().expect("a PR number");
+
+        let st = github_pr_status_batch(&host, "live", &[PrRef { owner: owner.into(), repo: repo.into(), number }])
+            .expect("batched PR status query");
+        let pr = st[0].as_ref().expect("the PR came back");
+        assert_eq!(pr.number, number);
+        println!("pr: {pr:?}");
+
+        let kinds = [
+            ListKind::Issues(IssueScope::All), ListKind::Issues(IssueScope::Assigned),
+            ListKind::Issues(IssueScope::Mentions), ListKind::Prs(PrScope::Open),
+            ListKind::Prs(PrScope::Mine), ListKind::Prs(PrScope::Review),
+        ];
+        let lists: Vec<RepoList> = kinds.iter().map(|k| RepoList { owner: owner.into(), repo: repo.into(), kind: *k, limit: 5 }).collect();
+        let rows = github_lists(&host, "live", &lists).expect("batched lists query");
+        for (k, r) in kinds.iter().zip(&rows) {
+            let n = match r { ListRows::Issues(v) => v.len(), ListRows::Prs(v) => v.len() };
+            println!("{k:?}: {n} rows");
+            assert!(n <= 5);
+        }
+        println!("ledger: {:?}", crate::forge_rate::status());
     }
 }

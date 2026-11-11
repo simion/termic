@@ -1031,6 +1031,12 @@ export const projectForgeProvider = (projectId: string) =>
 export const projectForgeIssues = (projectId: string, limit?: number, scope?: IssueScope) =>
   invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null, scope: scope ?? null });
 
+/** Many project lists in one call, answers in order: every GitHub list on
+ *  a host is one GraphQL query, the rest take the per-project CLI path.
+ *  Each answer is the IssueLookup / PrPickList its single call returns. */
+export const projectForgeLists = (queries: { projectId: string; kind: "issues" | "prs"; scope: string; limit: number }[]) =>
+  invoke<(IssueLookup | PrPickList)[]>("project_forge_lists", { queries });
+
 /** YOUR open PRs for a project's repo, or one PR by number. See `ForgePr` for
  *  why that is the default list. `scope: "review"` lists the open PRs waiting
  *  on your review instead (GitHub and GitLab; Azure answers an empty list),

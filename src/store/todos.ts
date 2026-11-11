@@ -5,7 +5,7 @@
 
 import { create } from "zustand";
 import { useApp } from "@/store/app";
-import { forgeListKey, refreshForgeList, type ForgeListEntry, type ForgeListQuery } from "@/store/forgeLists";
+import { forgeListKey, refreshForgeLists, type ForgeListEntry, type ForgeListQuery } from "@/store/forgeLists";
 import { scoped } from "@/lib/profileScope";
 import type { ForgeIssue, ForgePr, Project } from "@/lib/types";
 
@@ -44,7 +44,8 @@ export interface TodosState {
   setScopeFilter: (scope: ScopeFilter) => void;
   setSearchQuery: (query: string) => void;
   /** Fetch the lists the current filters read that are missing or past the
-   *  TTL. `force` (Refresh) fetches them all. */
+   *  TTL, in one batch (one GraphQL query per GitHub host). `force`
+   *  (Refresh) fetches them all. */
   fetchVisibleTodos: (force?: boolean) => Promise<void>;
 }
 
@@ -209,6 +210,6 @@ export const useTodos = create<TodosState>((set, get) => ({
   fetchVisibleTodos: async (force = false) => {
     const { selectedProjectIds, kindFilter, scopeFilter } = get();
     const projects = coveredProjects(useApp.getState().projects, selectedProjectIds);
-    await Promise.all(todoQueries(projects, kindFilter, scopeFilter).map((q) => refreshForgeList(q, force)));
+    await refreshForgeLists(todoQueries(projects, kindFilter, scopeFilter), force);
   },
 }));
