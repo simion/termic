@@ -1937,8 +1937,19 @@ fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Resul
         SEQ.fetch_add(1, Ordering::Relaxed),
     ));
     let write = || -> std::io::Result<()> {
+        // A secret's temp file is BORN owner-only. Creating it with the umask
+        // default and tightening after left a moment where another user could
+        // open it, and an fd opened then keeps reading after the chmod.
+        #[cfg(unix)]
+        let mut f = if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?
+        } else {
+            fs::File::create(&tmp)?
+        };
+        #[cfg(not(unix))]
         let mut f = fs::File::create(&tmp)?;
-        // tightened before any bytes land, so the secret is never readable.
+        // and set explicitly too: `mode` is filtered through the umask.
         #[cfg(unix)]
         if private {
             use std::os::unix::fs::PermissionsExt;
@@ -15867,55 +15878,71 @@ async fn project_fetch_pr_branch(
             .ok_or("no project")?;
         let repo = PathBuf::from(&p.root_path);
         let remote = detect_default_remote(&repo);
-        // A fork's branch name is not ours to claim: two contributors both
-        // opening `fix-login` would collide, and so would a fork branch named
-        // after one of our own. Prefix those; keep the plain name for a PR
-        // whose head is in this repo, which is what a person expects to see.
-        let base = if head_ref.trim().is_empty() {
-            format!("pr-{number}")
-        } else if cross_repository {
-            format!("pr-{number}-{}", head_ref.trim())
-        } else {
-            head_ref.trim().to_string()
-        };
-        // An existing branch of that name is not overwritten: a fetch with `+`
-        // would rewrite whatever the user had there, which for a same-repo PR
-        // is plausibly their own in-progress work.
-        let taken = git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")], &repo).is_ok();
-        let branch = if taken { format!("pr-{number}") } else { base };
-        let taken2 = git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], &repo).is_ok();
-        if taken2 {
-            // Already fetched once: leave it alone and let the caller check it
-            // out. Re-fetching would either fail or move a branch the user may
-            // have committed onto.
-            return Ok(branch);
-        }
-        // refs/pull/<n>/head is GitHub-only magic; GitLab publishes the same
-        // thing at refs/merge-requests/<n>/head. Azure has no PR ref at all:
-        // a same-repo PR's source is an ordinary branch, fetched by name. A
-        // FORK PR's head lives on the fork's remote - fetching the name from
-        // origin would either fail or, worse, silently succeed with OUR
-        // same-named branch's commits, so that case is refused outright.
         let provider = forge::provider_for_repo(&repo, &remote).0;
-        if provider == Some(forge::AZURE) && cross_repository {
-            return Err(format!(
-                "pull request #{number} comes from a fork, which this repo's remote cannot reach"
-            ));
-        }
-        let refspec = match provider {
-            Some(forge::AZURE) => format!("refs/heads/{}:refs/heads/{branch}", head_ref.trim()),
-            Some(forge::GITLAB) => format!("refs/merge-requests/{number}/head:refs/heads/{branch}"),
-            _ => format!("refs/pull/{number}/head:refs/heads/{branch}"),
-        };
-        // guarded_fetch, not git(): a network fetch without the
-        // prompt-disabled/deadline guards can wedge this thread forever on
-        // an SSH passphrase prompt or a hung transfer.
-        guarded_fetch(&repo, &remote, &refspec, &format!("fetch {remote} pull-request-{number}"))
-            .map_err(|e| format!("could not fetch pull request #{number}: {e}"))?;
-        Ok(branch)
+        fetch_pr_branch_in(&repo, &remote, provider, number, &head_ref, cross_repository)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The body of `project_fetch_pr_branch`, on a repo and remote, so it can be
+/// tested against a local "forge".
+///
+/// The branch is the PR's OWN name: a task on a PR works on that branch, so a
+/// push goes back to the PR and a review sees exactly what was pushed. A fork's
+/// name is not ours to claim (two forks' `fix-login` would collide, or shadow
+/// one of ours), so a fork PR gets `pr-<n>-<head>`.
+///
+/// A branch of that name that already exists is REUSED, not swapped for a
+/// fresh `pr-<n>` (which is what this did, and why picking a PR you had
+/// already worked on handed you a second branch). It is moved to the PR head
+/// only by a fast-forward: the fetch has no `+`, so git refuses anything that
+/// would drop local commits, and refuses outright when the branch is checked
+/// out somewhere. Either refusal leaves the branch exactly as it was.
+fn fetch_pr_branch_in(
+    repo: &Path,
+    remote: &str,
+    provider: Option<&str>,
+    number: u64,
+    head_ref: &str,
+    cross_repository: bool,
+) -> Result<String, String> {
+    let head = head_ref.trim();
+    let branch = if head.is_empty() {
+        format!("pr-{number}")
+    } else if cross_repository {
+        format!("pr-{number}-{head}")
+    } else {
+        head.to_string()
+    };
+    // refs/pull/<n>/head is GitHub-only magic; GitLab publishes the same
+    // thing at refs/merge-requests/<n>/head. Azure has no PR ref at all:
+    // a same-repo PR's source is an ordinary branch, fetched by name. A
+    // FORK PR's head lives on the fork's remote - fetching the name from
+    // origin would either fail or, worse, silently succeed with OUR
+    // same-named branch's commits, so that case is refused outright.
+    if provider == Some(forge::AZURE) && cross_repository {
+        return Err(format!(
+            "pull request #{number} comes from a fork, which this repo's remote cannot reach"
+        ));
+    }
+    let refspec = match provider {
+        Some(forge::AZURE) => format!("refs/heads/{head}:refs/heads/{branch}"),
+        Some(forge::GITLAB) => format!("refs/merge-requests/{number}/head:refs/heads/{branch}"),
+        _ => format!("refs/pull/{number}/head:refs/heads/{branch}"),
+    };
+    let exists = git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], repo).is_ok();
+    // guarded_fetch, not git(): a network fetch without the
+    // prompt-disabled/deadline guards can wedge this thread forever on
+    // an SSH passphrase prompt or a hung transfer.
+    let fetched = guarded_fetch(repo, remote, &refspec, &format!("fetch {remote} pull-request-{number}"));
+    match fetched {
+        Ok(()) => Ok(branch),
+        // an existing branch the fetch could not fast-forward (it has local
+        // commits, or it is checked out) is still the PR's branch: use it.
+        Err(_) if exists => Ok(branch),
+        Err(e) => Err(format!("could not fetch pull request #{number}: {e}")),
+    }
 }
 
 /// Which forge (if any) a project's repo is hosted on. Cached and NETWORK
@@ -35564,6 +35591,58 @@ mod tests {
         git_run(dir.path(), &["clone", "-q", &origin.to_string_lossy(), &work.to_string_lossy()]);
         git_set_identity(&work);
         (dir, work, colleague)
+    }
+
+    /// The checkout fixture, with the colleague's branch also published as
+    /// GitHub's `refs/pull/7/head`, so `work` can fetch PR #7 from a local
+    /// "forge". Returns the PR head's sha.
+    fn pr_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+        let (dir, work, colleague) = checkout_fixture();
+        git_run(&colleague, &["push", "origin", "alice/fix:refs/pull/7/head"]);
+        let head = git(&["rev-parse", "alice/fix"], &colleague).unwrap().trim().to_string();
+        (dir, work, colleague, head)
+    }
+
+    fn sha(repo: &Path, r: &str) -> String {
+        git(&["rev-parse", r], repo).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn a_pr_is_fetched_into_its_own_branch_name() {
+        let (_dir, work, _c, head) = pr_fixture();
+        let got = fetch_pr_branch_in(&work, "origin", None, 7, "alice/fix", false).unwrap();
+        assert_eq!(got, "alice/fix", "the PR's own name, not pr-7");
+        assert_eq!(sha(&work, "refs/heads/alice/fix"), head);
+        // a fork's name is not ours to claim.
+        let fork = fetch_pr_branch_in(&work, "origin", None, 7, "alice/fix", true).unwrap();
+        assert_eq!(fork, "pr-7-alice/fix");
+    }
+
+    #[test]
+    fn an_existing_pr_branch_is_reused_and_only_fast_forwarded() {
+        // behind the PR: moved up to it, same name (this used to hand out pr-7).
+        let (_dir, work, colleague, _) = pr_fixture();
+        git_run(&work, &["branch", "alice/fix", "origin/main"]);
+        git_commit_file(&colleague, "more.txt", "more\n", "more");
+        git_run(&colleague, &["push", "-f", "origin", "alice/fix:refs/pull/7/head"]);
+        let head = sha(&colleague, "alice/fix");
+        assert_eq!(fetch_pr_branch_in(&work, "origin", None, 7, "alice/fix", false).unwrap(), "alice/fix");
+        assert_eq!(sha(&work, "refs/heads/alice/fix"), head, "a branch behind the PR is fast-forwarded");
+        assert!(git(&["rev-parse", "--verify", "--quiet", "refs/heads/pr-7"], &work).is_err(), "no second branch");
+
+        // with local commits: left exactly as it was, still the one used.
+        git_run(&work, &["checkout", "-q", "alice/fix"]);
+        git_commit_file(&work, "mine.txt", "mine\n", "mine");
+        git_run(&work, &["checkout", "-q", "main"]);
+        let mine = sha(&work, "refs/heads/alice/fix");
+        assert_eq!(fetch_pr_branch_in(&work, "origin", None, 7, "alice/fix", false).unwrap(), "alice/fix");
+        assert_eq!(sha(&work, "refs/heads/alice/fix"), mine, "local commits are never dropped");
+    }
+
+    #[test]
+    fn a_pr_that_cannot_be_fetched_and_has_no_branch_is_an_error() {
+        let (_dir, work, _c, _) = pr_fixture();
+        assert!(fetch_pr_branch_in(&work, "origin", None, 99, "nobody/branch", false).is_err());
     }
 
     fn local_branches(repo: &Path) -> String {
