@@ -1468,7 +1468,7 @@ mod claude_cred {
     #[cfg(not(target_os = "macos"))]
     pub fn write(dir: &Path, _env: Option<&Path>, v: &serde_json::Value) -> Result<(), String> {
         let bytes = serde_json::to_vec(v).map_err(|e| e.to_string())?;
-        crate::write_atomic(&dir.join(".credentials.json"), &bytes).map_err(|e| e.to_string())
+        crate::write_atomic_private(&dir.join(".credentials.json"), &bytes).map_err(|e| e.to_string())
     }
 
     /// claude's own naming: no suffix for its default dir, else the first 8
@@ -1900,6 +1900,18 @@ fn project_tasks_root(default_path: &str, p: &Project) -> Result<PathBuf, String
 /// partial file. The parent dir is deliberately not fsynced: a hard power cut
 /// can lose the last write, but the file always reads as an intact version.
 pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_mode(dest, bytes, false)
+}
+
+/// `write_atomic` for a secret: owner-only (0600 on unix) whatever the old
+/// file's mode, and a brand-new file never takes the umask's world-readable
+/// default. Fails instead of writing when the mode cannot be set.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn write_atomic_private(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_mode(dest, bytes, true)
+}
+
+fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // Resolve symlinks: rename would replace the link itself with a regular
     // file; we must write through to its target. canonicalize fails on a
@@ -1926,10 +1938,16 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     ));
     let write = || -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
+        // tightened before any bytes land, so the secret is never readable.
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         // A fresh temp inode gets default perms; carry the old mode so a
         // tightened (e.g. chmod 600) file stays tightened. Log, don't fail:
         // some mounts (FUSE/SMB) reject chmod but the write itself is fine.
-        if let Ok(meta) = fs::metadata(dest) {
+        if let Some(meta) = fs::metadata(dest).ok().filter(|_| !private) {
             if let Err(e) = f.set_permissions(meta.permissions()) {
                 eprintln!("[write_atomic] could not carry mode onto {}: {e}", dest.display());
             }
@@ -38302,6 +38320,27 @@ filename f.rs
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
             "the link itself must survive");
         assert_eq!(fs::read_to_string(&target).unwrap(), "new", "target must be created");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_private_is_owner_only_new_or_replacing_a_looser_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let fresh = dir.path().join(".credentials.json");
+        write_atomic_private(&fresh, b"SECRET").unwrap();
+        assert_eq!(mode(&fresh), 0o600, "a new secret file must not take the umask default");
+        let loose = dir.path().join("loose.json");
+        fs::write(&loose, b"old").unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic_private(&loose, b"SECRET").unwrap();
+        assert_eq!(mode(&loose), 0o600, "a looser old mode must not carry over");
+        assert_eq!(fs::read(&loose).unwrap(), b"SECRET");
+        // control: the plain write keeps the looser mode it found.
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic(&loose, b"plain").unwrap();
+        assert_eq!(mode(&loose), 0o644);
     }
 
     #[test]
