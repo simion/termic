@@ -682,6 +682,40 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   .termic-pop[data-state] { animation: none; }
 }
 
+/* New Task's third column (an issue, PR or branch to start from) slides in
+   from the right when a source opens it, so it reads as arriving from the
+   choice rather than popping into an empty half of the dialog. Transform and
+   opacity only: compositor work, no layout per frame. */
+@keyframes termic-slide-in-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.termic-slide-in-right {
+  animation: termic-slide-in-right 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* Wide layout (the column sits BESIDE the form): grow its flex share from
+   0, so the form shrinks as the column grows instead of jumping, and fade
+   the content in once there is room for it. Closing runs the reverse on an
+   empty stand-in (NewTaskDialog's `pickerLeaving`). A flex-grow animation is
+   layout per frame, which is fine for one dialog for a quarter second and
+   would not be anywhere hot. */
+@keyframes termic-column-grow {
+  from { flex-grow: 0; opacity: 0; }
+  45%  { opacity: 0; }
+  to   { flex-grow: 1; opacity: 1; }
+}
+@keyframes termic-column-shrink {
+  from { flex-grow: 1; }
+  to   { flex-grow: 0; }
+}
+@media (min-width: 1100px) {
+  .termic-slide-in-right { overflow: hidden; animation: termic-column-grow 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+  .termic-column-out { animation: termic-column-shrink 220ms cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .termic-slide-in-right, .termic-column-out { animation: none; }
+}
+
 /* The ring a coachmark draws round the control it points at
    (components/guide/GuideLayer.tsx). The pulse runs THREE times and stops: an
    infinite one keeps the compositor awake for as long as the tip is on

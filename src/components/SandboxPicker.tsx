@@ -43,10 +43,12 @@ export function SandboxPicker({
    *  a dead end that names a feature and no way to reach it. */
   onEnableDocker?: () => void;
   compact?: boolean;
-  /** "row": one segmented strip with the picked mode's description under it,
-   *  used by the New Task dialog's Isolation pane. Every other surface keeps
-   *  the cards. `compact` only applies to the cards. */
-  layout?: "cards" | "row";
+  /** "row": one segmented strip with the picked mode's description under it.
+   *  "column": the same options stacked, each with its description, for a
+   *  pane with width to spare beside them (the New Task dialog's Sandbox
+   *  section). Every other surface keeps the cards. `compact` only applies to
+   *  the cards. */
+  layout?: "cards" | "row" | "column";
 }) {
   // Off this OS's map entirely (Windows, Linux): the Seatbelt cards are not
   // shown at all, rather than shown disabled, so the choice reads as what it
@@ -68,7 +70,7 @@ export function SandboxPicker({
       {dockerUnavailableReason ?? t("sandbox.picker.dockerSetup")}
     </button>
   );
-  if (layout === "row") {
+  if (layout === "row" || layout === "column") {
     const opts: { id: SandboxSelection; label: string; desc: string; color: string; disabled: boolean; title: string }[] = [
       // the row reads as a scale, loosest to tightest: off, monitor, fs-only, full.
       ...(hideSeatbelt ? ["off" as const] : ROW_ORDER).map(id => {
@@ -86,6 +88,47 @@ export function SandboxPicker({
       },
     ];
     const picked = opts.find(o => o.id === value);
+    if (layout === "column") return (
+      <div className="flex flex-col gap-1.5">
+        <div role="radiogroup" className="flex flex-col gap-1">
+          {opts.map(o => {
+            const active = value === o.id;
+            return (
+              <button
+                key={o.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                disabled={o.disabled}
+                data-sandbox-option={o.id}
+                aria-pressed={active}
+                onClick={() => onChange(o.id)}
+                title={o.disabled ? o.title : undefined}
+                // No transition-colors: WKWebView does not repaint a themed
+                // colour mid-transition (docs/gotchas.md).
+                className={cn(
+                  "flex w-full min-w-0 items-start gap-2.5 rounded-md border px-2.5 py-2 text-left",
+                  active ? "" : "border-transparent hover:bg-[var(--color-hover)]",
+                  o.disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
+                )}
+                style={active ? { background: `color-mix(in srgb, ${o.color} 14%, transparent)`, borderColor: o.color } : undefined}
+              >
+                <span className="mt-[1px] flex shrink-0" style={{ color: o.color }}>
+                  {o.id === "docker"
+                    ? <DockerSandboxIcon className="h-3.5 w-3.5" />
+                    : <SandboxIcon mode={o.id as SandboxMode} className="h-3.5 w-3.5" />}
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className={cn("text-[12.5px] font-medium", active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{o.label}</span>
+                  <span className="text-[11.5px] leading-snug text-[var(--color-fg-faint)]">{o.disabled ? o.title : o.desc}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {dockerLink}
+      </div>
+    );
     return (
       <div className="flex flex-col gap-1.5">
         {/* No transition-colors: WKWebView does not repaint a themed colour

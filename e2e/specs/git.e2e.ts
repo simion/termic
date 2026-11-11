@@ -2928,6 +2928,11 @@ describe("the forge pickers: work that pulled you in", () => {
     await clickWhenVisible('[data-source-tab="new"]');
     await clickWhenVisible('[data-source-tab="pr"]');
     await waitVisible('[data-testid="pr-review-section"]');
+    // the column slides in from the right (termic-slide-in-right); measure
+    // and snap it where it lands, not mid-slide.
+    const slid = () => browser.execute(() => (document.querySelector('[data-testid="new-task-picker"]') as HTMLElement)
+      .getAnimations().every(a => a.playState === "finished"));
+    await browser.waitUntil(slid, { timeout: 3_000, timeoutMsg: "the picker never finished sliding in" });
     const m = await browser.execute(() => {
       const lists = document.querySelector('[data-testid="pr-lists"]') as HTMLElement;
       const mine = lists.querySelector("ul")!.getBoundingClientRect();
@@ -2942,10 +2947,21 @@ describe("the forge pickers: work that pulled you in", () => {
     await clickWhenVisible('[data-testid="task-type-worktree"]');
     await browser.waitUntil(() => browser.execute(() => document.querySelectorAll('[data-source-tab]').length >= 4),
       { timeout: 5_000, timeoutMsg: "the worktree sources never showed" });
+    // switching the task type keeps the same column: no second slide.
+    expect(await browser.execute(() => (document.querySelector('[data-testid="new-task-picker"]') as HTMLElement)
+      .getAnimations().filter(a => a.playState === "running").length)).toBe(0);
     const tops = await browser.execute(() => [...new Set([...document.querySelectorAll('[data-source-tab]')]
       .map(b => Math.round(b.getBoundingClientRect().top)))].length);
     expect(tops).toBe(1);
     await snap("pr-pane-lists-worktree.png");
+    // leaving the source shrinks a stand-in away while the form grows back.
+    await clickWhenVisible('[data-source-tab="new"]');
+    await waitGone('[data-testid="new-task-picker"]');
+    await browser.waitUntil(() => browser.execute(() => !document.querySelector('[data-testid="new-task-picker-leaving"]')),
+      { timeout: 3_000, timeoutMsg: "the closing stand-in never went away" });
+    // back on the PR source, as the next case expects it.
+    await clickWhenVisible('[data-source-tab="pr"]');
+    await waitVisible('[data-testid="pr-column"]');
   });
 
   // The picker sits in Task, beside the fields a pick fills. How the task

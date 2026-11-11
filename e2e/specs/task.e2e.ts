@@ -403,9 +403,13 @@ describe("new task dialog: side rail", () => {
     await same("sandbox off again");
   });
 
-  it("says what the picked sandbox mode does under the row", async () => {
+  it("lists the sandbox modes in a column, each saying what it does", async () => {
     await clickWhenVisible('[role="dialog"] [data-sandbox-option="off"]');
-    expect(await textOf('[data-testid="sandbox-mode-desc"]')).toBe("Full filesystem + network access.");
+    expect(await textOf('[role="dialog"] [data-sandbox-option="off"]')).toContain("Full filesystem + network access.");
+    // a column beside the settings, not a strip above them.
+    const xs = await browser.execute(() => [...document.querySelectorAll('[role="dialog"] [data-sandbox-option]')]
+      .map((b) => Math.round(b.getBoundingClientRect().left)));
+    expect(new Set(xs).size).toBe(1);
     const pressed = await browser.execute(() =>
       [...document.querySelectorAll('[role="dialog"] [data-sandbox-option]')]
         .filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-sandbox-option")));
@@ -414,6 +418,17 @@ describe("new task dialog: side rail", () => {
     const order = await browser.execute(() =>
       [...document.querySelectorAll('[role="dialog"] [data-sandbox-option]')].map((b) => b.getAttribute("data-sandbox-option")));
     expect(order).toEqual(["off", "monitor", "enforce-fs", "enforce", "docker"].filter((id) => order.includes(id)));
+  });
+
+  it("lists the agents in a column, like Settings > Agents", async () => {
+    await newTaskSection("agent");
+    const xs = await browser.execute(() => [...document.querySelectorAll('[data-testid="new-task-pane-agent"] [data-cli]')]
+      .map((b) => Math.round(b.getBoundingClientRect().left)));
+    expect(xs.length).toBeGreaterThan(1);
+    expect(new Set(xs).size).toBe(1);
+    await snap("new-task-agent-column.png");
+    await newTaskSection("isolation");
+    await snap("new-task-sandbox-column.png");
   });
 
   it("flags uncaged YOLO on the Agent entry from any section, and walks the rail with the arrows", async () => {

@@ -15,13 +15,43 @@ export interface AgentPillChoice {
   color?: string;
 }
 
-export function AgentPills({ choices, value, onChange, testId }: {
+export function AgentPills({ choices, value, onChange, testId, layout = "pills" }: {
   choices: AgentPillChoice[];
   value: string;
   onChange: (id: string) => void;
   testId?: string;
+  /** "list": one agent per row, like Settings > Agents, for a pane with room
+   *  beside it (the New Task dialog's agent section). */
+  layout?: "pills" | "list";
 }) {
   const { t } = useTranslation("dialogs");
+  if (layout === "list") return (
+    <div data-testid={testId} role="radiogroup" className="flex flex-col gap-0.5">
+      {choices.map(a => {
+        const icon = a.icon_id ?? a.id;
+        const on = value === a.id;
+        return (
+          <button
+            key={a.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            data-cli={a.id}
+            onClick={() => onChange(a.id)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px]",
+              on ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            <span className={cn("flex shrink-0", CLI_BRAND_COLOR[icon])} style={CLI_BRAND_COLOR[icon] || !a.color ? undefined : { color: a.color }}>
+              <CliIcon cli={icon} className="h-3.5 w-3.5" />
+            </span>
+            <span className="min-w-0 truncate">{a.id === "shell" ? t("newTask.terminal") : a.display_name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
   return (
     <div data-testid={testId} role="radiogroup" className="inline-flex flex-wrap items-stretch gap-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
       {choices.map(a => {

@@ -1681,6 +1681,20 @@ export function NewTaskDialog() {
   // beside the fields, a pick filling the branch to check out on the left.
   const branchPicker = checkoutMode && !importMode && mode === "worktree";
   const hasPicker = prMode || issueMode || branchPicker;
+  // The column's way OUT: its content is gone the moment the source changes,
+  // so an empty stand-in holds its place while it shrinks and the form grows
+  // back (index.css termic-column-shrink). A timer, not animationend: the
+  // narrow layout and reduced motion run no animation, and would never end.
+  const [pickerLeaving, setPickerLeaving] = useState(false);
+  const hadPicker = useRef(hasPicker);
+  useEffect(() => {
+    const was = hadPicker.current;
+    hadPicker.current = hasPicker;
+    if (!was || hasPicker) { setPickerLeaving(false); return; }
+    setPickerLeaving(true);
+    const id = setTimeout(() => setPickerLeaving(false), 220);
+    return () => clearTimeout(id);
+  }, [hasPicker]);
   const runModeLabel = dockerWanted ? tc("sandbox.picker.dockerShort") : sandboxModeText(sandboxMode, tc).shortLabel;
   // The YOLO warning the Agent rail entry carries while its pane is hidden.
   // Uncaged reads straight off what Create sends. A files-only cage (Docker,
@@ -1738,7 +1752,8 @@ export function NewTaskDialog() {
     },
     {
       id: "agent",
-      icon: <CliIcon cli={cli} className="h-3.5 w-3.5" />,
+      // the agent's own colour: the one entry whose icon IS its value.
+      icon: <CliIcon cli={cli} className={cn("h-3.5 w-3.5", CLI_BRAND_COLOR[cli])} />,
       sub: [
         agentLabel,
         yoloApplies && (yoloCaged ? t("newTask.railYoloAuto") : yolo || argsYolo ? t("newTask.railYoloOn") : t("newTask.railYoloOff")),
@@ -2295,8 +2310,11 @@ export function NewTaskDialog() {
           </Field>
         )}
         </div>
+        {!hasPicker && pickerLeaving && (
+          <div aria-hidden data-testid="new-task-picker-leaving" className="termic-column-out hidden min-w-0 border-[var(--color-border-soft)] min-[1100px]:block min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:pl-6" />
+        )}
         {hasPicker && (
-          <div data-testid="new-task-picker" className="flex min-w-0 flex-col border-t border-[var(--color-border-soft)] pt-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:border-t-0 min-[1100px]:pl-6 min-[1100px]:pt-0">
+          <div data-testid="new-task-picker" className="termic-slide-in-right flex min-w-0 flex-col border-t border-[var(--color-border-soft)] pt-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:border-t-0 min-[1100px]:pl-6 min-[1100px]:pt-0">
             <div className="mb-3 shrink-0 text-[13px] font-medium text-[var(--color-fg)]">
               {branchPicker ? t("newTask.branchColumnTitle") : prMode ? t("newTask.prColumnTitle") : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
             </div>
@@ -2865,7 +2883,10 @@ export function NewTaskDialog() {
         </section>
       )}
 
-      <section {...pane("agent")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto", at !== "agent" && "hidden")}>
+      {/* Agents in a column on the left, like Settings > Agents, and what
+          this task passes it on the right. Stacks below 900px. */}
+      <section {...pane("agent")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto min-[900px]:flex-row min-[900px]:gap-6", at !== "agent" && "hidden")}>
+        <div className="flex min-w-0 shrink-0 flex-col min-[900px]:w-56 min-[900px]:overflow-y-auto">
         <Field label={t("newTask.defaultCli")}>
           {/* Pulled from the editable agent registry (Settings → Agent
               CLIs), not hard-coded, so custom agents show up here. Disabled
@@ -2873,6 +2894,7 @@ export function NewTaskDialog() {
               "Terminal" (cli="shell") is appended as a no-agent fallback. */}
           {/* Picking one yourself answers the warning, so it goes. */}
           <AgentPills
+            layout="list"
             choices={cliChoices}
             value={cli}
             onChange={id => { setCli(id); setAgentUnknown(null); }}
@@ -2887,6 +2909,8 @@ export function NewTaskDialog() {
             </p>
           )}
         </Field>
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-5 min-[900px]:border-l min-[900px]:border-[var(--color-border-soft)] min-[900px]:pl-6">
         {/* YOLO, seeded from the defaults (this project's, then Settings →
             Sandbox) and shown BEFORE Create, so a default is never a silent
             auto-approve on an uncaged task. The same two states as the Race
@@ -2936,14 +2960,19 @@ export function NewTaskDialog() {
           </Field>
         )}
       {canResumeOverride && agentLaunchFields}
+        </div>
       </section>
 
-      <section {...pane("isolation")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto", at !== "isolation" && "hidden")}>
+      {/* Modes in a column on the left, what the picked one needs on the
+          right: the pane is wide, and a strip of five buttons left the
+          descriptions to a tooltip. Stacks below 900px. */}
+      <section {...pane("isolation")} className={cn("flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto min-[900px]:flex-row min-[900px]:gap-6", at !== "isolation" && "hidden")}>
         {/* Pinned at creation: the lists below freeze onto the task and
             can't be edited after (archive + recreate to change). */}
+        <div className="flex min-w-0 shrink-0 flex-col min-[900px]:w-64">
         <Field label={t("newTask.sandboxLabel")} info={t("newTask.sandboxHint")}>
           <SandboxPicker
-            layout="row"
+            layout="column"
             onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
             value={selection}
             onChange={chooseSelection}
@@ -2951,6 +2980,8 @@ export function NewTaskDialog() {
             dockerOffered={dockerOffered}
           />
         </Field>
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-5 min-[900px]:border-l min-[900px]:border-[var(--color-border-soft)] min-[900px]:pl-6">
         {sandbox && (
           <div data-testid="sandbox-config" className="flex min-w-0 flex-col gap-3">
             <div className={EYEBROW}>
@@ -3005,6 +3036,7 @@ export function NewTaskDialog() {
           </div>
         )}
         {kcRow && <KeychainBlockField checked={blockKc} onChange={chooseBlockKc} tip />}
+        </div>
       </section>
 
       {roles.length > 0 && (
