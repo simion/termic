@@ -445,7 +445,8 @@ export const usePr = create<PrStore>((set, get) => ({
 // tab / push, none of which changed.
 //
 // Cost control, since each refresh is a `gh`/`glab`/`az` subprocess:
-//   * only tasks whose snapshot is older than STATUS_STALE_MS,
+//   * only tasks whose snapshot is older than STATUS_STALE_MS (an hour,
+//     SETTLED_STALE_MS, once the live lookup says merged or closed),
 //   * at most MAX_PER_TICK of them per pass, oldest snapshot first, so a
 //     user with thirty open PRs spreads them over several ticks instead of
 //     spawning thirty CLIs at once,
@@ -458,6 +459,19 @@ const STATUS_TICK_MS = 60_000;
 const STATUS_STALE_MS = 3 * 60_000;
 /** Ceiling on subprocesses started by one pass. */
 const MAX_PER_TICK = 8;
+/** A merged or closed PR is settled: it only changes on a reopen, so it is
+ *  re-checked hourly (and on focus, by the focus trigger) instead of every
+ *  few minutes. Without this every finished-but-unarchived task kept taking
+ *  one of the MAX_PER_TICK slots, and open PRs waited behind them. */
+const SETTLED_STALE_MS = 60 * 60_000;
+
+/** Whether the LIVE lookup says the PR is settled. The remembered snapshot
+ *  does not count: after a launch the board reads the live lookup, and a
+ *  task skipped on its snapshot would sit in the review column for an hour. */
+const isSettled = (e: PrEntry | undefined) => {
+  const state = e?.lookup?.pr?.state;
+  return state === "merged" || state === "closed";
+};
 
 let statusTimer: number | null = null;
 /** A pass is sequential and can outlive its tick on a slow forge; without
@@ -480,7 +494,7 @@ export function pollableTasks(): Task[] {
       if (w.archived || !hasPrIdentity(w)) return false;
       const entry = byTask[w.id];
       if (entry?.loading) return false;
-      return staleness(w.id) >= STATUS_STALE_MS;
+      return staleness(w.id) >= (isSettled(entry) ? SETTLED_STALE_MS : STATUS_STALE_MS);
     })
     .sort((a, b) => staleness(b.id) - staleness(a.id))
     .slice(0, MAX_PER_TICK);

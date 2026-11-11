@@ -895,6 +895,32 @@ describe("background status poller (#281)", () => {
     expect(ipc.taskPrStatus).toHaveBeenCalledTimes(8);
   });
 
+  it("re-checks a merged or closed PR hourly, not every few minutes", async () => {
+    seedTasks({ ...KNOWN }, { ...KNOWN }, { ...KNOWN });
+    const at = (state: "merged" | "closed" | "open", ago: number) =>
+      ({ lookup: lookupWith(state), loading: false, fetchedAt: Date.now() - ago });
+    usePr.setState({
+      byTask: { ws1: at("merged", 10 * 60_000), ws2: at("closed", 10 * 60_000), ws3: at("open", 10 * 60_000) },
+    });
+    // Settled PRs no longer take slots from the open one.
+    expect(pollableTasks().map(w => w.id)).toEqual(["ws3"]);
+    usePr.setState({
+      byTask: { ws1: at("merged", 61 * 60_000), ws2: at("closed", 10 * 60_000), ws3: at("open", 0) },
+    });
+    expect(pollableTasks().map(w => w.id)).toEqual(["ws1"]);
+  });
+
+  it("polls a task whose only knowledge of a merge is the remembered snapshot", async () => {
+    // After a launch byTask is empty: the board reads the live lookup, so
+    // the snapshot must not keep the task out of the first pass.
+    seedTasks({ ...KNOWN });
+    usePr.setState({
+      byTask: {},
+      snapshots: { ws1: { provider: "github", number: 7, state: "merged", checks: "passing", review: "none" } },
+    });
+    expect(pollableTasks().map(w => w.id)).toEqual(["ws1"]);
+  });
+
   it("does not re-poll a task whose refresh is still in flight", async () => {
     seedTasks({ ...KNOWN });
     usePr.setState({ byTask: { ws1: { lookup: null, loading: true, fetchedAt: 0 } } });
