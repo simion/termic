@@ -4815,3 +4815,101 @@ describe("agent state section", () => {
     await waitVisible(source(PLAIN));
   });
 });
+
+// The GitHub API budget: a top-bar pill that appears ONLY while background
+// GitHub polling is paused, and the Settings > General block with the
+// numbers. No fixture repo talks to GitHub, so the ledger is seeded through
+// the store's mirror (the Rust side is unit-tested in forge_rate.rs).
+//
+// The mirror is HELD on the seed for the whole describe: the app inherits
+// this machine's `gh` login, so the launch probe, the block's own probe and
+// any real `gh` call feed the real ledger, whose events would replace the
+// seed mid-case (a flake) and put the machine's real hostnames into the
+// screenshot (a leak, see CLAUDE.md "Fixtures"). Cases:
+// no pill with no pause; a pause shows the pill with its kind; the pill
+// opens Settings on the block, which shows GitHub's window, termic's spend
+// by feature and the pause; a pause whose time has passed shows no pill.
+describe("GitHub API budget", () => {
+  const PILL = '[data-testid="forge-rate-pill"]';
+  const BLOCK = '[data-testid="forge-rate-block"]';
+  const host = (paused: null | { until: number; kind: string }) => ({
+    host: "github.com",
+    buckets: [
+      {
+        bucket: "graphql",
+        window: { limit: 5000, remaining: 4512, used: 488, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+        spent: 42, estimated: 12, cap: 1000,
+        by_feature: [
+          { feature: "pr_status", cost: 30, estimated: 0 },
+          { feature: "lists", cost: 12, estimated: 12 },
+        ],
+      },
+      { bucket: "core", window: null, spent: 0, estimated: 0, cap: 300, by_feature: [] },
+    ],
+    paused: paused && { ...paused, reason: "" },
+  });
+  // Real writes (the event listener's, the block's refresh) go nowhere
+  // while held; only `seed` writes, through the store's real setState.
+  const seed = (paused: null | { until: number; kind: string }) =>
+    browser.execute((h) => {
+      const w = window as unknown as { __forgeRateHeld?: { set: (p: unknown) => void; refresh: unknown } };
+      const store = window.__termic!.useForgeRate;
+      if (!w.__forgeRateHeld) {
+        w.__forgeRateHeld = { set: store.setState, refresh: store.getState().refresh };
+        store.setState = () => {};
+      }
+      w.__forgeRateHeld.set({ hosts: [h], refresh: async () => {} });
+    }, host(paused));
+  const release = () =>
+    browser.execute(() => {
+      const w = window as unknown as { __forgeRateHeld?: { set: (p: unknown) => void; refresh: unknown } };
+      const held = w.__forgeRateHeld;
+      if (!held) return;
+      window.__termic!.useForgeRate.setState = held.set;
+      held.set({ hosts: [], refresh: held.refresh });
+      delete w.__forgeRateHeld;
+    });
+  const inTenMinutes = () => Math.floor(Date.now() / 1000) + 600;
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+  });
+  after(async () => {
+    await release();
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await dismissOverlays();
+  });
+
+  it("shows no pill while nothing is paused", async () => {
+    await seed(null);
+    await waitGone(PILL);
+  });
+
+  it("shows the pill, with its kind, while background polling is paused", async () => {
+    await seed({ until: inTenMinutes(), kind: "floor" });
+    await waitVisible(PILL);
+    expect(await browser.execute((s) => document.querySelector(s)?.getAttribute("data-kind"), PILL)).toBe("floor");
+    expect(await textOf(PILL)).toContain("GitHub paused until");
+    await snap("forge-rate-pill");
+  });
+
+  it("opens Settings on the budget block, with GitHub's window, termic's spend and the pause", async () => {
+    await clickWhenVisible(PILL);
+    await waitVisible(BLOCK);
+    const text = await textOf(BLOCK);
+    expect(text).toContain("4,512 of 5,000 left");
+    expect(text).toContain("termic this hour: 42 of 1,000");
+    expect(text).toContain("(12 estimated)");
+    expect(text).toContain("PR status 30");
+    expect(text).toContain("Limit not reported yet");
+    await waitVisible('[data-testid="forge-rate-paused"]');
+    await snap("forge-rate-settings");
+  });
+
+  it("drops the pill once the pause's time has passed", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await seed({ until: Math.floor(Date.now() / 1000) - 5, kind: "limited" });
+    await waitGone(PILL);
+  });
+});
