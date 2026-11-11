@@ -48,9 +48,10 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "two 'the task did not change' negatives after a shortcut",
   },
   "secrets-task.e2e.ts": {
-    count: 1,
-    why: "a negative: after Allow the blocked row must NOT come back, which needs "
-      + "the popover's 1.5s and the footer's 2s polls to run at least once",
+    count: 2,
+    why: "two negatives: after Allow the blocked row must NOT come back, and a "
+      + "project default set after a task must NOT raise its uncaged notice. Both "
+      + "need the footer's 2s poll (and the popover's 1.5s) to run at least once",
   },
   "settings.e2e.ts": {
     count: 1,

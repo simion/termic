@@ -183,6 +183,21 @@ pub fn new_spawn_dir() -> Result<PathBuf> {
     bail!("the credential broker needs macOS")
 }
 
+/// The broker key of a user shell running a role: its own identity, so it
+/// never passes an agent's peer check and its events never count on the
+/// agent's chip. Agents are keyed by their bare task id, which never has
+/// this prefix.
+pub fn shell_key(task_id: &str, tab_id: &str) -> String {
+    format!("{SHELL_KEY_PREFIX}{task_id}:{tab_id}")
+}
+
+/// (task id, tab id) of a shell key; None for an agent's key.
+pub fn parse_shell_key(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix(SHELL_KEY_PREFIX)?.split_once(':')
+}
+
+const SHELL_KEY_PREFIX: &str = "shell:";
+
 fn random_hex() -> String { uuid::Uuid::new_v4().simple().to_string() }
 
 /// `termic_ph_` + 32 hex chars, minted per spawn.
@@ -587,6 +602,13 @@ pub(crate) fn serve<S: Read + Write>(sp: &Spawn, r: &mut BufReader<S>, via: Via)
         return;
     };
 
+    // gh sent its own token instead of this spawn's placeholder: something
+    // (often an rc file) set GH_TOKEN after Termic did. Recorded before the
+    // rules, whatever they decide; the request itself goes on as it always
+    // has (a token that is not ours is never swapped). Never the value.
+    if matches!(via, Via::Socket) && head.one("authorization").is_some_and(|v| !v.contains(&b.placeholder)) {
+        record_suspicious(&sp.task_id, "foreign_token", &host, "gh sent a token that is not this spawn's placeholder");
+    }
     let (role, allows) = (sp.deps.live)(&sp.task_id, &sp.role.id).unwrap_or_else(|| (sp.role.clone(), sp.allows.clone()));
     let sid = b.secret.id.as_str();
     // the binding was fixed at spawn, the role is read live: a secret taken
@@ -1009,7 +1031,8 @@ pub struct NoSecretEntry {
 
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct SuspiciousEntry {
-    /// `placeholder_unbound_host` | `keychain_denied` | `wrong_peer`
+    /// `placeholder_unbound_host` | `keychain_denied` | `wrong_peer` |
+    /// `foreign_token`
     pub kind: String,
     pub host: String,
     pub detail: String,
@@ -1029,6 +1052,9 @@ pub struct BrokerEvents {
 pub struct BrokerCounts {
     pub blocked: u64,
     pub suspicious: u64,
+    /// The part of `suspicious` that is `foreign_token`: gh on this spawn's
+    /// socket sent a token that is not its placeholder.
+    pub foreign_token: u64,
     pub no_secret: u64,
     pub used: u64,
     pub paused: bool,
@@ -1193,8 +1219,11 @@ fn stale(spawns: &[Arc<Spawn>]) -> bool {
     spawns.iter().any(|sp| bindings_changed(sp, &s.roles, &s.secrets))
 }
 
-fn is_paused(task_id: &str) -> bool {
-    PAUSED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).contains(task_id)
+/// A shell's key is also paused while its task is: "pause this task" means
+/// every credential the task's tabs hold, not just its agents'.
+fn is_paused(key: &str) -> bool {
+    let g = PAUSED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    g.contains(key) || parse_shell_key(key).is_some_and(|(task, _)| g.contains(task))
 }
 
 /// Whether any live agent spawn of the task holds a broker.
@@ -1213,6 +1242,7 @@ pub fn counts(task_id: &str) -> BrokerCounts {
         .map(|e| BrokerCounts {
             blocked: e.blocked.values().map(|b| b.count).sum(),
             suspicious: e.suspicious.values().map(|s| s.count).sum(),
+            foreign_token: e.suspicious.values().filter(|s| s.kind == "foreign_token").map(|s| s.count).sum(),
             no_secret: e.no_secret.values().map(|n| n.count).sum(),
             used: e.used.values().flat_map(|u| u.methods.iter().map(|(_, n)| *n)).sum(),
             ..Default::default()
@@ -1245,6 +1275,22 @@ pub fn clear_events(task_id: &str) {
     if let Some(m) = EVENTS.get() {
         m.lock().unwrap_or_else(|e| e.into_inner()).remove(task_id);
     }
+}
+
+/// Forget a shell's events and pause: a shell key belongs to one tab, and a
+/// killed or respawned shell is a new identity. Unlike `clear_events`, no
+/// live check: the caller is replacing or ending the only holder.
+pub fn forget_shell(key: &str) {
+    if parse_shell_key(key).is_none() { return; }
+    if let Some(m) = EVENTS.get() { m.lock().unwrap_or_else(|e| e.into_inner()).remove(key); }
+    if let Some(m) = PAUSED.get() { m.lock().unwrap_or_else(|e| e.into_inner()).remove(key); }
+}
+
+/// Forget every shell key of `task_id` (archive).
+pub fn forget_task_shells(task_id: &str) {
+    let mine = |k: &String| parse_shell_key(k).is_some_and(|(t, _)| t == task_id);
+    if let Some(m) = EVENTS.get() { m.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| !mine(k)); }
+    if let Some(m) = PAUSED.get() { m.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| !mine(k)); }
 }
 
 /// Drop the blocked rows an Allow just covered, from any role, so the row

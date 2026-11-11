@@ -9,6 +9,13 @@ rewriting credential-minting responses. The gh and git sections below are
 the original spikes, kept for their measurements. Resolved open
 questions are marked as such.
 
+**Superseded below, read sandbox.md instead:** "Which role a task gets"
+(a task's role is now its own, seeded once at creation from the project
+or agent default; data-model.md), "No cage, no secrets" (seeding can put
+a role on an uncaged task, where it waits for the Keychain block), and
+"Aux terminals and scripts get the real login" (a shell can now run a
+role through its own broker; sandbox.md "Shells").
+
 Let an agent USE a credential without being able to SEE it. The agent's
 env holds a placeholder; Termic swaps in the real secret on the way out,
 and only for the hosts that credential is bound to. Which agent gets

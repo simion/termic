@@ -98,6 +98,7 @@ export default {
       yoloEnable: "Enable YOLO",
       yoloSuffix: "Dangerously skip permissions",
       sandboxSettings: "Sandbox settings",
+      cageActivity: "Sandbox and secrets activity",
       createPr: "Create pull request",
       viewTodos: "View Todos",
       toggleLeftSidebar: "Toggle left sidebar",
@@ -810,6 +811,7 @@ export default {
     noMatching: "No matching syntax",
   },
   taskSandbox: {
+    dropsRole: "Saving this removes the {{role}} Secrets role from this task. A role needs Enforce and the Keychain block.",
     titleNamed: "Sandbox · {{name}}",
     titleFallback: "Sandbox",
     description: "Restrict what the agent in this task can read, write, and reach.",

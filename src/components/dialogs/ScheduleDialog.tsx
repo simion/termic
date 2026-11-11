@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/Input";
 import { SandboxPicker, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
 import { RolePicker, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { useSecrets, ensureSecretsSync } from "@/store/secrets";
-import { roleDefault, roleToStore } from "@/lib/secretsUi";
+import { roleDefault } from "@/lib/secretsUi";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { isTerminalCli, visibleCliIds, workDoneCapable, defaultCliFirst } from "@/lib/agents";
 import { settingsLoad } from "@/lib/ipc";
@@ -169,7 +169,8 @@ export function ScheduleDialog() {
   const sandboxMode = selection ? selectionToFields(selection).mode : "off";
   // enforcing modes only, and only sent while shown (same rule as New Task).
   const kcRow = sandboxMode === "enforce" || sandboxMode === "enforce-fs";
-  const roleDef = roleDefault(project, agents.find(a => a.id === cli));
+  const roleAgent = agents.find(a => a.id === cli);
+  const roleDef = roleDefault(project, roleAgent);
   const roleDisabled = roleDisabledReason(t, { docker: false, mode: sandboxMode, seatbelt: SEATBELT_AVAILABLE });
   const roleGate = kcRow && blockKc;
   const pickRole = (id: string) => { setRolePick(id); if (id) setBlockKc(true); };
@@ -215,7 +216,7 @@ export function ScheduleDialog() {
           ? { enabled: false, rwPaths: [], allowedHosts: [] }
           : {
               enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts), blockKeychain: kcRow && blockKc,
-              role: roleGate ? roleToStore(rolePick, roleDef) : null,
+              role: roleGate ? rolePick : null,
             };
         await createSchedule({
           projectId,
@@ -420,7 +421,9 @@ export function ScheduleDialog() {
                   secrets={secretDefs}
                   value={roleGate ? rolePick : ""}
                   onChange={withRoleCage(sandboxMode, m => { setSelection(m); setDockerSeeded(false); }, pickRole)}
-                  def={roleDef}
+                  seededFrom={roleGate && roleDef && rolePick && rolePick === roleDef.id
+                    ? (roleDef.source === "project" ? { source: "project" } : { source: "agent", agent: roleAgent?.display_name || cli })
+                    : null}
                   disabledReason={roleDisabled}
                   note={roleCageNote(t, { docker: false, mode: sandboxMode })}
                   compact

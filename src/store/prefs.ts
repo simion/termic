@@ -96,6 +96,7 @@ const LS_DEFAULT_SANDBOX_KIND = "globalDefaultSandboxKind";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_DEFAULT_YOLO    = "defaultYolo";
 const LS_ALLOW_SCOPE     = "sandboxAllowScope";
+const LS_SECRETS_ALLOW_SCOPE = "secretsAllowScope";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
@@ -668,6 +669,9 @@ interface PrefsState {
    *  - "project" → this project's personal defaults (projects.json)
    *  - "repo"    → the committed `.termic.yaml` (team-shared) */
   allowScope: "agent" | "project" | "repo" | null;
+  /** Where a role-rule row's Allow writes: this task's own allows, or the
+   *  role every task on it shares. Defaults to the role. */
+  secretsAllowScope: "task" | "role" | null;
   /** Color scheme: explicit dark/light, auto = follow system, or a
    *  `custom:<slug>` theme file id. */
   themeMode: ThemeMode;
@@ -1087,7 +1091,8 @@ interface PrefsState {
   setGlobalDefaultSandboxKind: (v: SandboxSelection) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setDefaultYolo: (v: boolean) => void;
-  setAllowScope: (s: "agent" | "project" | "repo") => void;
+  setAllowScope: (s: "agent" | "project" | "repo" | null) => void;
+  setSecretsAllowScope: (s: "task" | "role" | null) => void;
   setTaskExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
   setBoardArchiveLimitMode: (m: BoardArchiveLimitMode) => void;
@@ -1380,6 +1385,11 @@ function readStoredPrefs() {
     const raw = lsGet(LS_ALLOW_SCOPE, "");
     return raw === "agent" || raw === "project" || raw === "repo" ? raw : null;
   })();
+  // null until set from Activity's "Allow by default" menu: a first Allow asks.
+  const initialSecretsAllowScope: "task" | "role" | null = (() => {
+    const raw = lsGet(LS_SECRETS_ALLOW_SCOPE, "");
+    return raw === "task" || raw === "role" ? raw : null;
+  })();
   const initialTaskExpandMode: "chevron" | "click" | "always" = (() => {
     const raw = lsGet(LS_TASK_EXPAND_MODE, "chevron");
     return raw === "click" || raw === "always" ? raw : "chevron";
@@ -1470,6 +1480,7 @@ function readStoredPrefs() {
     sandboxBypassPermissions: initialSandboxBypass,
     defaultYolo: initialDefaultYolo,
     allowScope: initialAllowScope,
+    secretsAllowScope: initialSecretsAllowScope,
     editorFontId: initialEditorFont,
     editorThemeIdDark: initialEditorThemeDark,
     editorThemeIdLight: initialEditorThemeLight,
@@ -1890,8 +1901,12 @@ export const usePrefs = create<PrefsState>(set => ({
     set({ defaultYolo: v });
   },
   setAllowScope: (s) => {
-    try { localStorage.setItem(LS_ALLOW_SCOPE, s); } catch {}
+    try { localStorage.setItem(LS_ALLOW_SCOPE, s ?? ""); } catch {}
     set({ allowScope: s });
+  },
+  setSecretsAllowScope: (s) => {
+    try { localStorage.setItem(LS_SECRETS_ALLOW_SCOPE, s ?? ""); } catch {}
+    set({ secretsAllowScope: s });
   },
   setTaskExpandMode: (m) => {
     try { localStorage.setItem(LS_TASK_EXPAND_MODE, m); } catch {}

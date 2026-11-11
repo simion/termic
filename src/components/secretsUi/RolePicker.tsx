@@ -5,26 +5,107 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { KeyRound, ShieldCheck, Check, CircleDashed } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { keychainBlocked, type Agent, type Project, type Role, type SecretDef, type Task } from "@/lib/types";
-import { roleColour, ruleSummary, brokerEnvPreview, roleDefault, roleToStore, configuredRole } from "@/lib/secretsUi";
+import { keychainBlocked, type Role, type SecretDef, type Task } from "@/lib/types";
+import { roleColour, ruleSummary, brokerEnvPreview, configuredRole } from "@/lib/secretsUi";
 import { useSecrets, useTaskRole, ensureSecretsSync } from "@/store/secrets";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/** Role cards: No secrets + one per role. `disabledReason` greys them all
- *  out with that text underneath (the sandbox choice cannot carry a role);
- *  `note` is a line underneath that does not grey them. The caller owns the
- *  sandbox coupling: picking a role must turn on an enforcing mode and the
- *  Keychain block (`withRoleCage`), and clearing the block must clear the
- *  role. */
+/** One option of a role picker. `id` null is the project's "Each agent's
+ *  choice"; "" is No secrets. `colour` null draws a dashed dot, `"none"` no
+ *  dot at all. */
+export interface RoleOption { id: string | null; name: string; desc: string; colour: string | null | "none" }
+
+/** The options every picker starts from: No secrets, then one per role with
+ *  its secrets (and description) as the summary. */
+export function roleOptions(roles: Role[], secrets: SecretDef[], t: (k: string) => string): RoleOption[] {
+  const secretName = (id: string) => secrets.find(s => s.id === id)?.name ?? id;
+  return [
+    { id: "", name: t("secrets:task.noSecrets"), desc: t("secrets:task.noSecretsDesc"), colour: null },
+    ...roles.map(r => ({
+      id: r.id,
+      name: r.name,
+      desc: [r.secrets.map(secretName).join(", "), r.description].filter(Boolean).join(". ") || t("secrets:task.roleHasNoSecrets"),
+      colour: r.colour ?? "blue",
+    })),
+  ];
+}
+
+/** The one role picker (task dialogs, Settings > Agents, Settings >
+ *  Project): a radio list of rows, each a radio, the role's dot, its name
+ *  and its secrets. Rows carry `data-role-option` (`none` for No secrets,
+ *  `inherit` for Each agent's choice). */
+export function RoleOptions({ options, value, onChange, disabled = false, label, compact = false }: {
+  options: RoleOption[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+  disabled?: boolean;
+  label: string;
+  compact?: boolean;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="flex flex-col gap-1.5">
+      {options.map(o => {
+        const active = !disabled && value === o.id;
+        return (
+          <button
+            key={o.id ?? "inherit"}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            data-role-option={o.id === null ? "inherit" : o.id || "none"}
+            onClick={() => onChange(o.id)}
+            // no transition-colors: WKWebView does not repaint a transitioned
+            // themed border (docs/gotchas.md).
+            className={cn(
+              "flex w-full min-w-0 items-start gap-2.5 rounded-md border px-2.5 text-left",
+              compact ? "py-1.5" : "py-2",
+              active ? "border-[var(--color-fg-dim)] bg-[var(--color-bg-2)]" : "border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-hover)]",
+              disabled && "cursor-not-allowed opacity-40 hover:bg-[var(--color-bg)]",
+            )}
+          >
+            <span className={cn(
+              "mt-[2px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border-[1.5px]",
+              active ? "border-[var(--color-fg)]" : "border-[var(--color-fg-faint)]",
+            )}>
+              {active && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-fg)]" />}
+            </span>
+            {o.colour !== "none" && (
+              <span className="mt-[2px] flex h-3.5 w-3 shrink-0 items-center justify-center">
+                {o.colour === null
+                  ? <CircleDashed className="h-3 w-3 text-[var(--color-fg-faint)]" />
+                  : <span className="h-2 w-2 rounded-full" style={{ background: roleColour(o.colour) }} />}
+              </span>
+            )}
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className={cn("truncate text-[var(--color-fg)]", compact ? "text-[12.5px]" : "text-[13px]")}>{o.name}</span>
+              <span className={cn("line-clamp-2 leading-snug text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px]")}>{o.desc}</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The task dialogs' role section: "This task runs as" over the one picker.
+ *  `disabledReason` greys it out with that text underneath (the sandbox
+ *  choice cannot carry a role); `note` is a line underneath that does not
+ *  grey it. `seededFrom` says the pick came from a default, on create only.
+ *  The caller owns the sandbox coupling: picking a role must turn on an
+ *  enforcing mode and the Keychain block (`withRoleCage`), and clearing the
+ *  block must clear the role. */
 export function RolePicker({
-  roles, secrets, value, onChange, def, disabledReason, note = null, compact = false, tip = false,
+  roles, secrets, value, onChange, seededFrom = null, disabledReason, note = null, compact = false, tip = false,
 }: {
   roles: Role[];
   secrets: SecretDef[];
   /** Role id, "" for No secrets. */
   value: string;
   onChange: (id: string) => void;
-  def: { id: string; source: "project" | "agent" } | null;
+  /** Where a create dialog's untouched pick came from: the project's default
+   *  or the named agent's. */
+  seededFrom?: { source: "project" } | { source: "agent"; agent: string } | null;
   disabledReason: string | null;
   note?: string | null;
   compact?: boolean;
@@ -33,16 +114,6 @@ export function RolePicker({
 }) {
   const { t } = useTranslation("secrets");
   const disabled = disabledReason !== null;
-  const secretName = (id: string) => secrets.find(s => s.id === id)?.name ?? id;
-  const cards: { id: string; name: string; desc: string; colour: string | null }[] = [
-    { id: "", name: t("task.noSecrets"), desc: t("task.noSecretsDesc"), colour: null },
-    ...roles.map(r => ({
-      id: r.id,
-      name: r.name,
-      desc: [r.secrets.map(secretName).join(", "), r.description].filter(Boolean).join(". "),
-      colour: roleColour(r.colour),
-    })),
-  ];
   return (
     <div
       data-testid="role-section"
@@ -58,41 +129,19 @@ export function RolePicker({
         </div>
         {!tip && <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[12px]")}>{t("task.roleHint")}</span>}
       </div>
-      <div role="radiogroup" className={cn("grid gap-2", compact ? "grid-cols-2" : "grid-cols-3")}>
-        {cards.map(c => {
-          const active = !disabled && value === c.id;
-          return (
-            <button
-              key={c.id || "none"}
-              type="button"
-              disabled={disabled}
-              data-role-option={c.id || "none"}
-              role="radio"
-              aria-checked={active}
-              onClick={() => onChange(c.id)}
-              className={cn(
-                "flex min-w-0 flex-col items-start gap-1 rounded-md border px-2.5 py-2 text-left",
-                active ? "bg-[var(--color-bg-2)]" : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-accent-soft)]",
-                disabled && "cursor-not-allowed opacity-40 hover:border-[var(--color-border)]",
-              )}
-              style={active ? { borderColor: c.colour ?? "var(--color-fg-faint)" } : undefined}
-            >
-              <span className="flex w-full min-w-0 items-start gap-1.5">
-                {c.colour
-                  ? <span className="mt-[5px] h-2 w-2 shrink-0 rounded-full" style={{ background: c.colour }} />
-                  : <CircleDashed className="mt-[2px] h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />}
-                <span className="min-w-0 truncate text-[12px] font-semibold uppercase tracking-wide" style={{ color: active ? "var(--color-fg)" : "var(--color-fg-dim)" }}>{c.name}</span>
-                {def?.id === c.id && c.id !== "" && (
-                  <span data-testid="role-default-badge" className="ml-auto shrink-0 text-right text-[9.5px] font-semibold uppercase leading-tight tracking-wide" style={{ color: c.colour ?? undefined }}>
-                    {t(def.source === "project" ? "task.projectDefault" : "task.agentDefault")}
-                  </span>
-                )}
-              </span>
-              <span className={cn("line-clamp-2 text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>{c.desc}</span>
-            </button>
-          );
-        })}
-      </div>
+      <RoleOptions
+        options={roleOptions(roles, secrets, t)}
+        value={value}
+        onChange={id => onChange(id ?? "")}
+        disabled={disabled}
+        label={t("task.roleLabel")}
+        compact={compact}
+      />
+      {!disabled && seededFrom && (
+        <span data-testid="role-seeded-from" className={cn("rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] px-2.5 py-1.5 leading-snug text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px]")}>
+          {seededFrom.source === "project" ? t("task.seededFromProject") : t("task.seededFromAgent", { agent: seededFrom.agent })}
+        </span>
+      )}
       {!disabledReason && note && (
         <span data-testid="role-cage-note" className={cn("text-[var(--color-fg-faint)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>
           {note}
@@ -168,22 +217,28 @@ export function SecretsForTask({ role, secrets }: { role: Role; secrets: SecretD
 }
 
 /** Key in the role's colour, red once the broker saw something suspicious,
- *  nothing when the task resolves no role. Its own component so the row or
+ *  amber when a role is set but cannot apply, nothing when the task has no
+ *  role. Its own component so the row or
  *  bar that hosts it never subscribes to the secrets store itself. */
 export function TaskRoleKey({ task, className, wrapClassName }: { task: Task; className?: string; wrapClassName?: string }) {
   const { t } = useTranslation("secrets");
-  const { role } = useTaskRole(task);
+  const { role, configured } = useTaskRole(task);
   const suspicious = useSecrets(s => !!s.suspicious[task.id]);
-  if (!role) return null;
+  // amber: a role is set but nothing it needs is there (no Keychain block,
+  // Monitor, Docker), so it does not apply.
+  const shown = role ?? configured;
+  if (!shown) return null;
+  const colour = !role ? "var(--color-warn)" : suspicious ? "var(--color-err)" : roleColour(role.colour);
   return (
     <span
       data-testid="task-role-key"
-      data-role={role.id}
-      data-suspicious={suspicious || undefined}
-      title={t(suspicious ? "task.keySuspiciousTip" : "task.keyTip", { role: role.name })}
+      data-role={shown.id}
+      data-applied={!!role}
+      data-suspicious={(role && suspicious) || undefined}
+      title={t(!role ? "task.keyUnappliedTip" : suspicious ? "task.keySuspiciousTip" : "task.keyTip", { role: shown.name })}
       className={cn("flex shrink-0 items-center", wrapClassName)}
     >
-      <KeyRound className={className ?? "h-3.5 w-3.5"} style={{ color: suspicious ? "var(--color-err)" : roleColour(role.colour) }} />
+      <KeyRound className={className ?? "h-3.5 w-3.5"} style={{ color: colour }} />
     </span>
   );
 }
@@ -204,7 +259,8 @@ export function roleDisabledReason(
   return null;
 }
 
-const enforcing = (mode: string) => mode === "enforce" || mode === "enforce-fs";
+/** The modes a role can apply in (with the Keychain block). */
+export const enforcing = (mode: string) => mode === "enforce" || mode === "enforce-fs";
 
 /** The line under the picker when picking a role would change the sandbox
  *  draft, so the switch is never a surprise. */
@@ -225,31 +281,30 @@ export function withRoleCage(
 }
 
 /** Role draft for the dialogs that edit an EXISTING task (Sandbox, Edit).
- *  Seeded on `openKey` with the role the task is configured for, so ticking
- *  the block back on shows it again. `roleOk` = the draft sandbox is Enforce
- *  or Enforce FS; `block` = the draft Keychain block. Only a draft that both
- *  allow counts, and `store` is what `taskSetRole` should get. */
+ *  Seeded on `openKey` with the task's own role, so ticking the block back
+ *  on shows it again. `roleOk` = the draft sandbox is Enforce or Enforce FS;
+ *  `block` = the draft Keychain block. Only a draft that both allow counts,
+ *  and `store` is what `taskSetRole` should get. */
 export function useRoleDraft(
-  task: Task | null, project: Project | null, agent: Agent | null,
-  roleOk: boolean, block: boolean, setBlock: (v: boolean) => void, openKey: unknown,
+  task: Task | null, roleOk: boolean, block: boolean, setBlock: (v: boolean) => void, openKey: unknown,
 ) {
   ensureSecretsSync();
   const roles = useSecrets(s => s.roles);
   const secrets = useSecrets(s => s.secrets);
-  const def = roleDefault(project, agent);
-  const seeded = configuredRole(task, project, agent, roles)?.id ?? "";
+  const seeded = configuredRole(task, roles)?.id ?? "";
   const [pick, setPick] = useState(seeded);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => setPick(seeded), [openKey, seeded]);
   const gate = roleOk && block;
   return {
-    roles, secrets, def,
+    roles, secrets,
     /** What the cards show as picked. */
     value: gate ? pick : "",
     /** Changed vs the record: a different pick, or a block / mode change that
      *  drops a role the task actually stores. */
-    dirty: !!task && (gate ? pick !== seeded : keychainBlocked(task) && task.role != null),
-    store: gate ? roleToStore(pick, def) : null,
+    dirty: !!task && (gate ? pick !== seeded : keychainBlocked(task) && !!task.role),
+    /** The pick as the task should own it, "" for No secrets. */
+    store: gate ? pick : null,
     /** Picking a role turns the Keychain block on. */
     onPick: (id: string) => { setPick(id); if (id) setBlock(true); },
     /** Clearing the block clears the role. */

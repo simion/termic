@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 vi.mock("@/lib/ipc", () => ({ settingsLoad: vi.fn().mockResolvedValue({ agents: [] }) }));
-import { allowRuleFor, configuredRole, roleDefault, roleToStore, ruleSummary, brokerEnvPreview } from "@/lib/secretsUi";
+import { allowRuleFor, configuredRole, roleDefault, ruleSummary, brokerEnvPreview } from "@/lib/secretsUi";
 import { tasksByRole } from "@/components/settings/secretsSettings/model";
 import { useSecrets } from "@/store/secrets";
 import type { Role, Task } from "@/lib/types";
@@ -21,20 +21,19 @@ describe("secretsUi", () => {
     expect(roleDefault({ default_role: "" }, { default_role: "x" })).toBeNull();
   });
 
-  it("stores null when the pick is the inherited default", () => {
-    expect(roleToStore("rev", { id: "rev" })).toBeNull();
-    expect(roleToStore("", { id: "rev" })).toBe("");
-    expect(roleToStore("", null)).toBeNull();
-    expect(roleToStore("rev", null)).toBe("rev");
+  it("a task with no role or No secrets resolves to none: defaults only seed", () => {
+    expect(configuredRole({ role: null }, [reviewer])).toBeNull();
+    expect(configuredRole({ role: "" }, [reviewer])).toBeNull();
+    expect(configuredRole({ role: "gone" }, [reviewer])).toBeNull();
   });
 
   it("configured role ignores the sandbox; the real one needs the block", () => {
     const task = { role: "rev", cli: "claude", sandbox_mode: "off" as const };
-    expect(configuredRole(task, null, null, [reviewer])?.id).toBe("rev");
+    expect(configuredRole(task, [reviewer])?.id).toBe("rev");
     expect(tasksByRole([
       { ...task, id: "a", project_id: "p", archived: false } as Task,
       { ...task, id: "b", project_id: "p", archived: false, sandbox_mode: "enforce", sandbox_block_keychain: true } as Task,
-    ], [], [], [reviewer]).get("rev")?.length).toBe(1);
+    ], [reviewer]).get("rev")?.length).toBe(1);
   });
 
   it("summarises rules, notes first", () => {

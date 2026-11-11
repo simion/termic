@@ -1633,13 +1633,19 @@ describe("task sandbox", () => {
     (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.sandbox_block_keychain,
     taskId,
   );
-  // The footer suffix's state, or null when it is absent. A suffix that is
-  // in the DOM but not displayed (the narrow-footer collapse) reads as null,
-  // so a CSS-hidden claim cannot pass for a visible one.
+  // What the cage chip claims about the Keychain, or null when it claims
+  // nothing. Read off the chip that paints, since every visited task keeps
+  // its footer mounted. "blocked" is a claim, so before the first poll there
+  // is none; a pending block must also read "restart to apply" on the chip.
   const footerKeychain = (want: "blocked" | "pending" | null) => browser.waitUntil(
     async () => (await browser.execute(() => {
-      const el = document.querySelector('[data-testid="task-footer"] [data-testid="footer-keychain"]') as HTMLElement | null;
-      return el && el.getClientRects().length > 0 ? el.dataset.keychainState ?? null : null;
+      const el = [...document.querySelectorAll('[data-testid="task-footer"] [data-testid="cage-chip"]')]
+        .find(e => e.getClientRects().length > 0) as HTMLElement | undefined;
+      if (!el) return "no chip";
+      const state = el.dataset.keychain ?? null;
+      const pending = !!el.querySelector('[data-testid="cage-chip-pending"]');
+      if ((state === "pending") !== pending) return "chip disagrees";
+      return state;
     })) === want,
     { timeout: 10_000, timeoutMsg: `footer keychain state never became ${want}` },
   );
@@ -1712,6 +1718,13 @@ describe("task sandbox", () => {
     expect(await stored()).toBe(true);
     // saved, but the running agent still holds the open profile.
     await footerKeychain("pending");
+    // the settings popover says why, with the restart offered.
+    await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="cage-chip"]`);
+    await waitVisible('[data-testid="cage-settings"] [data-testid="secrets-pending-banner"]');
+    await waitVisible('[data-testid="cage-settings"] [data-testid="cage-restart"]');
+    await snap("cage-keychain-pending.png");
+    await browser.keys("Escape");
+    await waitGone('[data-testid="cage-settings"]');
     await restartUnder("enforce");
     await browser.waitUntil(async () => (await keychainOpen()) === 0,
       { timeout: 15_000, timeoutMsg: "the open agent never went away" });

@@ -2,12 +2,12 @@
 // the resize/refit dance and the attention/unread heuristics. Stays mounted
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
+import { ShellRcBanner } from "@/components/secretsUi/ShellRcBanner";
+import { parseRoleShells, roleShellsKey, setShellPty, shellSecretsArg } from "@/lib/shellSecrets";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation, Trans } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { AlertTriangle, TerminalSquare, Copy, Check, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
-import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
-import { AllowScopePicker } from "@/components/ui/AllowScopePicker";
+import { TerminalSquare, X, Loader2 } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { isArchiving } from "@/store/archivingTasks";
 import { EMPTY_TABS, isUserWatching, useApp } from "@/store/app";
@@ -59,11 +59,11 @@ import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptRe
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
-import { effectiveSandboxMode, isTaskCaged, keychainBlocked, type BrokerCounts } from "@/lib/types";
-import { SecretsChip, NoKeychainChip } from "@/components/secretsUi/SecretsChip";
+import { effectiveSandboxMode, isTaskCaged, type BrokerCounts } from "@/lib/types";
+import { CageChip } from "@/components/task/CageChip";
+import { CageActivityPanel } from "@/components/task/CageActivity";
 import { useSecrets, useTaskRole } from "@/store/secrets";
 import { sameCounts } from "@/lib/secretsUi";
-import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
@@ -3046,11 +3046,14 @@ const captureArmedRef = useRef(false);
               : isAgent || isRegistryTerminal ? "agent"
               : "custom",
           },
+          // a shell the user started with a Secrets role; absent otherwise.
+          ...shellSecretsArg(task.id, tab.id, isShell ? (tab as TerminalTab).secretsRole : undefined),
           rows, cols,
         });
         const ptyId = spawn.id;
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
+        if (isShell) setShellPty(tab.id, ptyId);
         spawnAccountRef.current = spawn.account ?? null;
         // firstOutputAt starts null: this PTY has not painted yet.
         firstOutputPatchedRef.current = false;
@@ -3602,6 +3605,7 @@ const captureArmedRef = useRef(false);
       // Cancels the trailer and raw clock before any restart/late data.
       outputActivity?.dispose();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
+      if (isShell) setShellPty(tab.id, null);
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.
       // Cancel any pending settle timer so it can't fire on the next PTY
@@ -3618,7 +3622,8 @@ const captureArmedRef = useRef(false);
     };
   // `gen` in the deps array is what makes the Restart button work: it
   // bumps, the effect tears down, the effect runs again, fresh PTY.
-  }, [task.id, task.path, task.port, task.name, tab.id, tab.cli, patchTab, markAttention, gen]);
+  // a shell's role too: switching it respawns that shell.
+  }, [task.id, task.path, task.port, task.name, tab.id, tab.cli, (tab as TerminalTab).secretsRole, patchTab, markAttention, gen]);
 
   // Refit + focus when the tab becomes active OR when its task
   // becomes the active task (e.g., clicking a task in the
@@ -4084,6 +4089,7 @@ const captureArmedRef = useRef(false);
         if (tab.paneId) useApp.getState().setActivePaneId(task.id, tab.paneId);
       }}
     >
+      {tab.cli === "shell" && tab.secretsRole && <ShellRcBanner taskId={task.id} tabId={tab.id} active={active} />}
       {sudoOffer && offerTouchIdForSudo && !exited && (
         <SudoTouchIdBanner taskId={task.id} onDismiss={() => setSudoOffer(false)} />
       )}
@@ -4182,6 +4188,8 @@ export function FooterBar({ task, sandboxWarning }: {
   // Selected as a BOOLEAN, not as the id: subscribing to activeTaskId itself
   // re-renders every task's footer on every task switch.
   const isActiveTask = useApp(s => s.activeTaskId === task.id);
+  // a boolean too, so only this task's footer re-renders when Activity opens.
+  const activityOpen = useUI(s => s.cageActivity?.taskId === task.id);
 
   // Every agent this task RUNS, not just the one it was created with (GH
   // #277). A task holding a claude tab and a codex tab used to show one chip
@@ -4219,66 +4227,68 @@ export function FooterBar({ task, sandboxWarning }: {
   const [brokerCounts, setBrokerCounts] = useState<BrokerCounts | null>(null);
   const brokerPoll = useRef(false);
   brokerPoll.current = !!secretsRole && isActiveTask;
+  // the task's role shells ride the same tick (active task only), so a
+  // background shell's suspicious or blocked rows reach the chip's tail and
+  // the sidebar key. A string selector, unpacked here (bear trap 8). Shells
+  // are never caged, so they keep the tick alive for an uncaged task too.
+  const shellsKey = useApp(s => (s.activeTaskId === task.id ? roleShellsKey(s, task.id) : ""));
+  const shellKeys = useRef<string[]>([]);
+  shellKeys.current = parseRoleShells(task.id, shellsKey).map(s => s.key);
+  const hasShells = shellsKey !== "";
+  const [shellCounts, setShellCounts] = useState<(BrokerCounts | null)[]>([]);
   useEffect(() => {
     setKcOpen(null);
     setBrokerCounts(null);
-    if (mode === "off") { setTotal(0); return; }
+    if (mode === "off") setTotal(0);
+    if (mode === "off" && !hasShells) { setShellCounts(prev => (prev.length ? [] : prev)); return; }
     let cancelled = false;
+    // the sidebar key is red while the agent OR a shell saw something.
+    const susp = { agent: false, shells: false };
+    const flag = () => useSecrets.getState().setSuspicious(task.id, susp.agent || susp.shells);
     const fetchCounts = mode === "monitor" ? ipc.sandboxAccessCounts : ipc.sandboxDenyCounts;
     const tick = () => {
-      fetchCounts(task.id)
-        .then(c => { if (!cancelled) { setTotal(c.network + c.path); setKcOpen(c.keychain_open); } })
-        .catch(() => { if (!cancelled) setKcOpen(null); });
+      if (mode !== "off") {
+        fetchCounts(task.id)
+          .then(c => { if (!cancelled) { setTotal(c.network + c.path); setKcOpen(c.keychain_open); } })
+          .catch(() => { if (!cancelled) setKcOpen(null); });
+      }
       if (brokerPoll.current) {
         ipc.brokerCounts(task.id)
           .then(c => {
             if (cancelled) return;
             setBrokerCounts(prev => (sameCounts(prev, c) ? prev : c));
-            useSecrets.getState().setSuspicious(task.id, c.suspicious > 0);
+            susp.agent = c.suspicious > 0;
+            flag();
           })
           .catch(() => {});
       }
+      const keys = shellKeys.current;
+      Promise.all(keys.map(k => ipc.brokerCounts(k).catch(() => null))).then(cs => {
+        if (cancelled) return;
+        setShellCounts(prev => (prev.length === cs.length && cs.every((c, i) => c === null ? prev[i] === null : sameCounts(prev[i], c)) ? prev : cs));
+        susp.shells = cs.some(c => (c?.suspicious ?? 0) > 0);
+        if (keys.length) flag();
+      });
     };
     tick();
     const id = window.setInterval(tick, 2000);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [task.id, mode]);
-
-  // Sandbox half — the "degraded" warning state, else the standard
-  // per-mode icon + label (label from the footer.* locale keys, icon from
-  // SandboxIcon).
-  const sandboxNode = sandboxWarning ? (
-    <>
-      <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warn)]" />
-      <span className="font-medium">{t("footer.sandboxDegraded")}</span>
-      <span className="text-[var(--color-fg-faint)]">·</span>
-      <span className="truncate">{sandboxWarning}</span>
-    </>
-  ) : task.docker_sandbox_enabled ? (
-    <>
-      <DockerSandboxIcon className="h-3.5 w-3.5" />
-      <span className="@max-[560px]:hidden">{t("footer.sandboxDocker")}</span>
-    </>
-  ) : (
-    <>
-      <SandboxIcon mode={mode} className="h-3.5 w-3.5" />
-      <span className="@max-[560px]:hidden">
-        {mode === "off" ? t("footer.sandboxOff")
-          : mode === "enforce-fs" ? t("footer.sandboxEnforceFs")
-          : mode === "monitor" ? t("footer.sandboxMonitor")
-          : t("footer.sandboxEnforce")}
-        {keychainBlocked(task) && kcOpen !== null && (
-          <span data-testid="footer-keychain" data-keychain-state={kcOpen > 0 ? "pending" : "blocked"}>
-            {t(kcOpen > 0 ? "footer.keychainPendingSuffix" : "footer.keychainBlockedSuffix")}
-          </span>
-        )}
-      </span>
-    </>
-  );
+  }, [task.id, mode, hasShells]);
 
   return (
     <div
       data-testid="task-footer"
+      // Activity is not a Radix popover, so nothing dismisses it when another
+      // status item opens. Pressing any other item in the bar closes it, the
+      // same as the popovers close each other. `contains` skips portaled
+      // content (the panel's filter menus), whose events bubble here through
+      // React.
+      onPointerDownCapture={activityOpen ? e => {
+        const el = e.target as Element;
+        if (e.currentTarget.contains(el) && !el.closest('[data-testid="cage-activity"],[data-testid="cage-chip-tail"]')) {
+          useUI.getState().closeCageActivity();
+        }
+      } : undefined}
       className={cn(
         // --bottom-bar-h is the shared height for every bottom bar. text-[12.5px]
         // matches the queue/terminal buttons and the right-panel footer tabs.
@@ -4287,7 +4297,9 @@ export function FooterBar({ task, sandboxWarning }: {
         // `@container`: the collapse below is CSS, not a ResizeObserver, so a
         // window drag costs no React render on a bar that sits under a
         // streaming terminal.
-        "@container flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-1.5 px-3 text-[12.5px]",
+        // `relative`: the Activity panel floats from here, inside this task's
+        // column, never over the sidebar or the right panel.
+        "@container relative flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-1.5 px-3 text-[12.5px]",
         !(splitOpen && splitCollapsed) && "border-t",
         sandboxWarning
           ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)] text-[var(--color-fg)]"
@@ -4320,15 +4332,13 @@ export function FooterBar({ task, sandboxWarning }: {
           <span className="@max-[680px]:hidden">{t("footer.terminal")}</span>
         </button>
       )}
-      {/* Right group: the sandbox status is the rightmost item, with its
-          "N blocked" count right after its label. Click the count to see
-          WHICH hosts got blocked; it's a sibling of the edit button so its
-          click doesn't bubble to "open Edit dialog." The count only shows
-          when sandboxed + we've actually seen denies. */}
+      {/* Right group: the cage chip is the rightmost item. Its
+          `<mode> · <role>` part opens the settings popover, its tail
+          (blocked, suspicious, paused) opens Cage activity. */}
       <div className="ml-auto flex items-center gap-1.5">
         {/* Subscription usage (GH #277). Leftmost of the right group, so the
-            things that can APPEAR (usage, the secrets chip) grow leftwards and
-            the sandbox status stays the rightmost item. It self-hides
+            things that can APPEAR (usage) grow leftwards and the cage chip
+            stays the rightmost item. It self-hides
             until an account has actually reported, so an agent with no usage
             feed costs this row no width at all. */}
         {/* GH #278. Immediately left of the usage chip and one unit with it:
@@ -4373,723 +4383,20 @@ export function FooterBar({ task, sandboxWarning }: {
             </span>
           )}
         </div>
-        {secretsRole
-          ? <SecretsChip task={task} role={secretsRole} counts={brokerCounts} />
-          : secretsConfigured && !task.docker_sandbox_enabled && <NoKeychainChip task={task} role={secretsConfigured} />}
-        {/* reads "<icon> Sandbox: mode · N blocked", the same shape as the
-            secrets chip beside it, so each count sits after the thing it
-            belongs to. Two buttons: the label edits, the count explains. */}
-        <div className="flex min-w-0 items-center">
-          <button
-            type="button"
-            onClick={() => useUI.getState().openSandbox(task.id)}
-            title={sandboxWarning ?? (task.sandbox_enabled ? t("footer.editSandboxTip") : t("footer.enableSandboxTip"))}
-            className="flex items-center gap-1.5 truncate hover:text-[var(--color-fg)]"
-          >
-            {sandboxNode}
-          </button>
-          {mode !== "off" && total > 0 && (
-            <DeniedHostsPopover taskId={task.id} cli={task.cli ?? "claude"} count={total} mode={mode} />
-          )}
-        </div>
+        {/* the one cage control: `<mode> · <role>` opens its settings, the
+            tail (blocked, suspicious) opens the wide Activity dialog. */}
+        <CageChip
+          task={task}
+          sandboxWarning={sandboxWarning}
+          total={total}
+          kcOpen={kcOpen}
+          counts={brokerCounts}
+          shellCounts={shellCounts}
+          role={secretsRole}
+          configured={secretsConfigured}
+        />
       </div>
+      {activityOpen && <CageActivityPanel taskId={task.id} />}
     </div>
   );
-}
-
-// Popover showing per-host + per-path deny breakdown. Click the
-// "N blocked" chip in the footer → list of what the cage refused,
-// sorted most-recently-seen first. Each row has an "Allow" button
-// that adds the host to the task's allowed list + respawns the
-// agent under the new profile. Polls every 1.5s while open.
-function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli: string; count: number; mode: SandboxMode }) {
-  const { t } = useTranslation("task");
-  const monitor = mode === "monitor";
-  // ENFORCING (FS): the network sandbox is OFF, so there are no blocked
-  // hosts to ever show. Drop every network surface from this popover —
-  // we never fetch hosts, never render the hosts section, and the copy
-  // talks about paths only (no "+ domains").
-  const fsOnly = mode === "enforce-fs";
-  // Scope for the Allow buttons — persisted app-wide, mandatory on first
-  // use (radio starts unchosen). See prefs.allowScope.
-  const allowScope = usePrefs(s => s.allowScope);
-  const setAllowScope = usePrefs(s => s.setAllowScope);
-  const scopeChosen = allowScope !== null;
-  // Task dirs to optionally hide from the activity log — the agent
-  // touches them constantly and they're always allowed anyway, so they're
-  // pure noise. Default ON. Primitive selectors keep the snapshot stable.
-  // .find() returns a stable reference (no snapshot churn) unless the
-  // task object is replaced; compute the dir list from it directly.
-  const taskObj = useApp(s => s.tasks.find(w => w.id === taskId));
-  // A Keychain deny in a blocked task is the block working: its deny is
-  // rendered after every allow, so the row offers no Allow (Rust refuses
-  // it too, see task_sandbox_add_allowed_path).
-  const kcBlocked = keychainBlocked(taskObj);
-  const taskDirs = taskObj ? [taskObj.path, ...(taskObj.composition ?? []).map(m => m.path)].filter(Boolean) : [];
-  const [excludeTask, setExcludeTask] = useState(true);
-  // "Only would-block" collapses the log to just the actionable rows
-  // (everything the cage WOULD deny) — the set you actually need to
-  // allow-list. Default ON: that's the point of monitoring. Uncheck to
-  // see the full access log.
-  const [wbOnly, setWbOnly] = useState(true);
-  // Push the filters to the backend so they gate RECORDING (not just
-  // display): excluded/non-would-block accesses are never stored, saving
-  // CPU + memory. Fires on mount + whenever a checkbox flips.
-  useEffect(() => {
-    if (!monitor) return;
-    ipc.sandboxSetMonitorFilters(taskId, excludeTask, wbOnly).catch(() => {});
-  }, [monitor, taskId, excludeTask, wbOnly]);
-  const SCOPES: { id: "agent" | "project" | "repo"; label: string; hint: string }[] = [
-    { id: "agent",   label: t("denied.scopeAgent"),   hint: t("denied.scopeAgentHint", { cli }) },
-    { id: "project", label: t("denied.scopeProject"), hint: t("denied.scopeProjectHint") },
-    { id: "repo",    label: t("denied.scopeRepo"),    hint: t("denied.scopeRepoHint") },
-  ];
-  const scopeLabel = (s: "agent" | "project" | "repo") =>
-    s === "agent" ? t("denied.scopeAgentLabel", { cli }) : s === "repo" ? t("denied.scopeRepo") : t("denied.scopeProjectLabel");
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<"aggregate" | "detailed">("aggregate");
-  // ENFORCING data (blocked-only).
-  const [hosts, setHosts] = useState<ipc.DenyHost[]>([]);
-  const [paths, setPaths] = useState<ipc.DenyPath[]>([]);
-  // MONITORING data (every access, with would_block flag).
-  const [accHosts, setAccHosts] = useState<ipc.AccessHost[]>([]);
-  const [accPaths, setAccPaths] = useState<ipc.AccessPath[]>([]);
-  const [allowing, setAllowing] = useState<string | null>(null);
-  // Hosts/paths allowed during this popover session. `sandbox_recent_
-  // denied_*` is a log query, so an already-allowed entry keeps showing
-  // (its past denial is still inside the log window) — filter locally.
-  const [allowed, setAllowed] = useState<Set<string>>(new Set());
-  // Cached $HOME for `/Users/...` → `$HOME/...` display rewrite.
-  // Fetched once per popover lifetime; we don't expect the user's
-  // home dir to change mid-session.
-  const [home, setHome] = useState("");
-  useEffect(() => { ipc.homeDir().then(setHome).catch(() => {}); }, []);
-  const shortenPath = (p: string) => {
-    if (home && (p === home || p.startsWith(home + "/"))) {
-      return "$HOME" + p.slice(home.length);
-    }
-    return p;
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const tick = () => {
-      if (monitor) {
-        Promise.all([
-          ipc.sandboxRecentAccessHosts(taskId).catch(() => [] as ipc.AccessHost[]),
-          ipc.sandboxRecentAccessPaths(taskId).catch(() => [] as ipc.AccessPath[]),
-        ]).then(([h, p]) => {
-          if (cancelled) return;
-          setAccHosts(h); setAccPaths(p);
-        });
-      } else if (fsOnly) {
-        // Filesystem-only enforce: no network sandbox, so only ever
-        // fetch path denies. Hosts stay empty → no network section.
-        ipc.sandboxRecentDeniedPaths(taskId).catch(() => [] as ipc.DenyPath[])
-          .then(p => { if (!cancelled) { setHosts([]); setPaths(p); } });
-      } else {
-        Promise.all([
-          ipc.sandboxRecentDeniedHosts(taskId).catch(() => [] as ipc.DenyHost[]),
-          ipc.sandboxRecentDeniedPaths(taskId).catch(() => [] as ipc.DenyPath[]),
-        ]).then(([h, p]) => {
-          if (cancelled) return;
-          setHosts(h); setPaths(p);
-        });
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 1500);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [open, taskId, monitor, fsOnly]);
-
-  async function allow(host: string) {
-    if (!allowScope) return; // radio is mandatory; buttons disabled until chosen
-    setAllowing(host);
-    try {
-      // Persist only — none of these kill the live PTY. The new entry is
-      // additive, so the running agent's (narrower) profile stays safe;
-      // it takes effect on the next spawn.
-      if (allowScope === "agent")      await ipc.agentSandboxAddAllowedHost(cli, host);
-      else if (allowScope === "repo")  await ipc.repoConfigAddAllowedHost(taskId, host);
-      else                             await ipc.taskSandboxAddAllowedHost(taskId, host);
-      setAllowed(prev => new Set(prev).add(host));
-      useUI.getState().pushToast(
-        t("denied.allowedHostToast", { host, scope: scopeLabel(allowScope) }),
-        "success",
-      );
-    } catch (e) {
-      useUI.getState().pushToast(t("denied.allowHostFailed", { host, error: String(e) }), "error");
-    } finally { setAllowing(null); }
-  }
-  async function allowPath(path: string) {
-    if (!allowScope) return;
-    setAllowing(path);
-    try {
-      if (allowScope === "agent")      await ipc.agentSandboxAddAllowedPath(cli, path);
-      else if (allowScope === "repo")  await ipc.repoConfigAddAllowedPath(taskId, path);
-      else                             await ipc.taskSandboxAddAllowedPath(taskId, path);
-      setAllowed(prev => new Set(prev).add(path));
-      const display = path.startsWith("$HOME") ? path : path.replace(/^.*\/Users\/[^/]+/, "$HOME");
-      // Undo is only wired for the per-project (task) scope — that's
-      // the one with a remove command. Agent/repo edits are removed in
-      // their own surfaces (Settings → Agents / the .termic.yaml file).
-      const undoable = allowScope === "project";
-      useUI.getState().pushToast(
-        t("denied.allowedPathToast", { path: display, scope: scopeLabel(allowScope) }),
-        "success",
-        {
-          ttlMs: 6000,
-          action: undoable ? {
-            label: t("denied.undo"),
-            onClick: async () => {
-              try {
-                await ipc.taskSandboxRemoveAllowedPath(taskId, path);
-                setAllowed(prev => { const n = new Set(prev); n.delete(path); return n; });
-                useUI.getState().pushToast(t("denied.removedToast", { path: display }), "info");
-              } catch (e) {
-                useUI.getState().pushToast(t("denied.undoFailed", { error: String(e) }), "error");
-              }
-            },
-          } : undefined,
-        },
-      );
-    } catch (e) {
-      useUI.getState().pushToast(t("denied.allowPathFailed", { path, error: String(e) }), "error");
-    } finally { setAllowing(null); }
-  }
-
-  // Rows minus anything allowed this popover session (see `allowed`).
-  const visibleHosts = hosts.filter(h => !allowed.has(h.host));
-  const visiblePaths = paths.filter(p => !allowed.has(p.path));
-
-  return (
-    <PopoverRoot open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          onClick={(e) => e.stopPropagation()}
-          data-testid="sandbox-denied-chip"
-          className="ml-1 shrink-0 rounded px-1 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
-          title={monitor
-            ? t(count === 1 ? "denied.accessesLoggedTipOne" : "denied.accessesLoggedTipOther", { count })
-            : t(count === 1 ? "denied.blockedTipOne" : "denied.blockedTipOther", { count })}
-        >
-          · {monitor
-            ? t(count === 1 ? "denied.accessesBadgeOne" : "denied.accessesBadgeOther", { count })
-            : t("denied.blockedBadge", { count })}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        // Auto-grow to the widest path/host row (w-max). Floor so short
-        // content isn't puny; ceiling at viewport-2rem so a deeply-nested
-        // path never escapes the pane edges. Rows are whitespace-nowrap so
-        // their natural width drives the size; truncation kicks in only at
-        // the ceiling. Base chrome (border/bg/shadow/z) comes from the
-        // shared PopoverContent; here we only override shape/size/density.
-        className={cn(
-          "w-max max-w-[calc(100vw-2rem)] overflow-auto rounded-md p-2 text-[12px]",
-          monitor ? "min-w-[580px] max-h-[520px]" : "min-w-[440px] max-h-[400px]",
-        )}
-      >
-          {/* where "Allow" writes. Mandatory on first use (no preselection);
-              the choice becomes the app-wide default and is remembered. */}
-          <div className="mb-2">
-            <AllowScopePicker
-              options={SCOPES}
-              value={allowScope}
-              onChange={setAllowScope}
-              heading={scopeChosen
-                ? t(fsOnly ? "denied.saveTo" : "denied.saveToDomains")
-                : t(fsOnly ? "denied.pickTo" : "denied.pickToDomains")}
-              savingTo={t("denied.savingTo")}
-              change={t("denied.change")}
-              changeTip={t("denied.changeScopeTip")}
-            />
-          </div>
-          {monitor && (
-            <MonitorActivity
-              hosts={accHosts} paths={accPaths}
-              tab={tab} setTab={setTab}
-              scopeChosen={scopeChosen}
-              taskDirs={taskDirs} excludeTask={excludeTask} setExcludeTask={setExcludeTask}
-              wbOnly={wbOnly} setWbOnly={setWbOnly}
-              allowed={allowed} allowing={allowing}
-              onAllowHost={allow} onAllowPath={allowPath}
-              shortenPath={shortenPath}
-            />
-          )}
-          {!monitor && (<>
-          {hosts.length === 0 && paths.length === 0 && (
-            <div className="px-1 py-1 text-[var(--color-fg-faint)]">{t("common:loading")}</div>
-          )}
-
-          {visibleHosts.length > 0 && (
-            <>
-              <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-                <span>{t("denied.blockedHosts")}</span>
-                <span>{visibleHosts.length}</span>
-              </div>
-              <ul className="flex flex-col">
-                {visibleHosts.map(h => (
-                  <li
-                    key={h.host}
-                    className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
-                  >
-                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={h.host}>{h.host}</span>
-                    <CopyButton value={h.host} title={t("denied.copyHostTip")} />
-                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
-                      {h.count}× · {relTime(h.last_seen_unix_ms)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => allow(h.host)}
-                      disabled={allowing === h.host || !scopeChosen}
-                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={t("denied.allowHostTip", { host: h.host })}
-                    >
-                      {allowing === h.host ? "…" : t("denied.allow")}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-
-          {visiblePaths.length > 0 && (
-            <>
-              <div className="mt-3 mb-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-                <span>{t("denied.blockedPaths")}</span>
-                <span>{visiblePaths.length}</span>
-              </div>
-              <div className="mb-1.5 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-                {t("denied.pathsHint")}
-              </div>
-              <ul className="flex flex-col">
-                {visiblePaths.map(p => (
-                  <li
-                    key={p.path}
-                    className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
-                  >
-                    {/* Path is split into clickable segments — clicking
-                        a segment allows the prefix up to and including
-                        that segment. Lets the user pick a parent dir
-                        (e.g. `$HOME/.agents/skills`) instead of being
-                        forced to allow each leaf separately. */}
-                    {kcBlocked && underKeychains(shortenPath(p.path)) ? (
-                      <span className="flex min-w-0 flex-wrap items-center gap-2" data-testid="denied-path-keychain-blocked">
-                        <span className="font-mono text-[12px] text-[var(--color-fg-dim)]">{shortenPath(p.path)}</span>
-                        <span className="text-[11px] text-[var(--color-fg-faint)]">{t("denied.keychainBlockedPath")}</span>
-                      </span>
-                    ) : (
-                      <PathSegments
-                        display={shortenPath(p.path)}
-                        pending={allowing === p.path || !scopeChosen}
-                        onAllow={(prefix) => allowPath(prefix)}
-                      />
-                    )}
-                    <CopyButton value={p.path} title={t("denied.copyFullPathTip")} className="ml-auto" />
-                    <span
-                      className="shrink-0 text-[11px] text-[var(--color-fg-faint)]"
-                      title={p.last_proc ? t("denied.processTip", { proc: p.last_proc, pid: p.last_pid }) : undefined}
-                    >
-                      {p.last_proc && (
-                        <span className="mr-2 font-mono text-[var(--color-fg-dim)]">
-                          {p.last_proc}({p.last_pid})
-                        </span>
-                      )}
-                      {p.count}× · {relTime(p.last_seen_unix_ms)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-
-          <div className="mt-2 max-w-[460px] px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            {t(fsOnly ? "denied.allowEffectPath" : "denied.allowEffectPathHost")}
-            <br />
-            {t("denied.restartNote")}
-          </div>
-          </>)}
-      </PopoverContent>
-    </PopoverRoot>
-  );
-}
-
-// ── MONITORING activity view ─────────────────────────────────────────
-// Two tabs inside the same footer popover:
-//   Aggregate — network hosts + filesystem grouped by FOLDER, each
-//               folder expandable to its files; counts + op breakdown +
-//               would-block rollup. Click any path segment to whitelist.
-//   Detailed  — the raw log: every (path, op) and every host:port with
-//               counts, process, mode, and would-block flag.
-type MonOp = ipc.AccessPath;
-type MonHost = ipc.AccessHost;
-
-function opTone(op: string): string {
-  if (op.includes("write") || op.includes("create") || op.includes("unlink")) return "var(--color-warn)";
-  if (op.includes("ioctl") || op.includes("exec")) return "var(--color-accent)";
-  return "var(--color-fg-faint)";
-}
-function OpBadge({ op }: { op: string }) {
-  return (
-    <span
-      className="shrink-0 rounded px-1 py-[1px] font-mono text-[10px] text-[var(--color-fg-dim)]"
-      style={{ borderLeft: `2px solid ${opTone(op)}`, background: "var(--color-bg-2)" }}
-      title={op}
-    >
-      {op.replace(/^file-/, "")}
-    </span>
-  );
-}
-function WouldBlockTag({ on }: { on: boolean }) {
-  const { t } = useTranslation("task");
-  if (on) return (
-    <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-warn)]"
-      style={{ background: "color-mix(in srgb, var(--color-warn) 15%, transparent)" }}
-      title={t("monitor.wouldBlockTip")}>{t("monitor.wouldBlock")}</span>
-  );
-  return (
-    <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-ok)]"
-      style={{ background: "color-mix(in srgb, var(--color-ok) 12%, transparent)" }}
-      title={t("monitor.okTip")}>{t("monitor.ok")}</span>
-  );
-}
-
-function MonitorActivity({
-  hosts, paths, tab, setTab, scopeChosen, taskDirs, excludeTask, setExcludeTask, wbOnly, setWbOnly, allowed, allowing, onAllowHost, onAllowPath, shortenPath,
-}: {
-  hosts: MonHost[];
-  paths: MonOp[];
-  tab: "aggregate" | "detailed";
-  setTab: (t: "aggregate" | "detailed") => void;
-  scopeChosen: boolean;
-  taskDirs: string[];
-  excludeTask: boolean;
-  setExcludeTask: (v: boolean) => void;
-  wbOnly: boolean;
-  setWbOnly: (v: boolean) => void;
-  allowed: Set<string>;
-  allowing: string | null;
-  onAllowHost: (h: string) => void;
-  onAllowPath: (p: string) => void;
-  shortenPath: (p: string) => string;
-}) {
-  const { t } = useTranslation("task");
-  // Hide accesses inside the task (+ member) dirs when toggled — the
-  // agent hammers them constantly and they're always allowed, so pure noise.
-  const inTask = (p: string) => taskDirs.some(d => p === d || p.startsWith(d + "/"));
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggle = (f: string) => setExpanded(prev => {
-    const n = new Set(prev); n.has(f) ? n.delete(f) : n.add(f); return n;
-  });
-
-  // "would block" rows are the actionable ones (need whitelisting before
-  // Enforcing), so they sort to the TOP — then by most-recent.
-  const byBlockPath = (a: MonOp, b: MonOp) =>
-    Number(b.would_block) - Number(a.would_block) || b.last_seen_unix_ms - a.last_seen_unix_ms;
-  const byBlockHost = (a: MonHost, b: MonHost) =>
-    Number(b.would_block) - Number(a.would_block) || b.last_seen_unix_ms - a.last_seen_unix_ms;
-  // Display filters mirror the backend recording filters (for instant
-  // feedback before the next 1.5s poll catches up).
-  const vHosts = hosts.filter(h => !allowed.has(h.host) && (!wbOnly || h.would_block)).sort(byBlockHost);
-  const vPaths = paths.filter(p => !allowed.has(p.path)
-    && !(excludeTask && inTask(p.path))
-    && (!wbOnly || p.would_block));
-  const hiddenTask = excludeTask ? paths.filter(p => !allowed.has(p.path) && inTask(p.path)).length : 0;
-
-  const fileCount  = vPaths.reduce((s, p) => s + p.count, 0);
-  const netCount   = vHosts.reduce((s, h) => s + h.count, 0);
-  const wbFiles    = vPaths.filter(p => p.would_block).length;
-  const wbHosts    = vHosts.filter(h => h.would_block).length;
-
-  // Group filesystem rows by parent folder for the Aggregate tab.
-  type Folder = { folder: string; entries: MonOp[]; count: number; wouldBlock: number; lastSeen: number; ops: Set<string> };
-  const folders: Folder[] = (() => {
-    const map = new Map<string, Folder>();
-    for (const p of vPaths) {
-      const idx = p.path.lastIndexOf("/");
-      const folder = idx > 0 ? p.path.slice(0, idx) : "/";
-      let g = map.get(folder);
-      if (!g) { g = { folder, entries: [], count: 0, wouldBlock: 0, lastSeen: 0, ops: new Set() }; map.set(folder, g); }
-      g.entries.push(p);
-      g.count += p.count;
-      if (p.would_block) g.wouldBlock += 1;
-      g.lastSeen = Math.max(g.lastSeen, p.last_seen_unix_ms);
-      g.ops.add(p.op.replace(/^file-/, ""));
-    }
-    // Folders with would-block entries float to the top, then by recency.
-    return [...map.values()].sort((a, b) =>
-      Number(b.wouldBlock > 0) - Number(a.wouldBlock > 0) || b.lastSeen - a.lastSeen);
-  })();
-
-  const fileName = (p: string) => { const i = p.lastIndexOf("/"); return i >= 0 ? p.slice(i + 1) : p; };
-
-  return (
-    <div className="flex flex-col">
-      {/* Tab strip (Settings-style button group). */}
-      <div className="mb-2 flex items-center gap-1">
-        {(["aggregate", "detailed"] as const).map(tb => (
-          <button
-            key={tb}
-            type="button"
-            onClick={() => setTab(tb)}
-            className={cn(
-              "rounded px-2 py-0.5 text-[11.5px] font-medium capitalize",
-              tab === tb
-                ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
-                : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
-            )}
-          >
-            {t(`monitor.${tb}`)}
-          </button>
-        ))}
-        <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
-          title={t("monitor.onlyWouldBlockTip")}>
-          <input type="checkbox" checked={wbOnly} onChange={e => setWbOnly(e.target.checked)} className="h-3 w-3 accent-[var(--color-warn)]" />
-          <span>{t("monitor.onlyWouldBlock")}</span>
-        </label>
-        <label className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
-          title={t("monitor.excludeTaskTip")}>
-          <input type="checkbox" checked={excludeTask} onChange={e => setExcludeTask(e.target.checked)} className="h-3 w-3 accent-[var(--color-accent)]" />
-          <span>{hiddenTask > 0 ? t("monitor.excludeTaskCounted", { count: hiddenTask }) : t("monitor.excludeTask")}</span>
-        </label>
-        <span className="text-[11px] text-[var(--color-fg-faint)]">
-          {t(fileCount + netCount === 1 ? "monitor.accessCountOne" : "monitor.accessCountOther", { count: fileCount + netCount })}
-          {(wbFiles + wbHosts) > 0 && (
-            <span className="ml-1 text-[var(--color-warn)]">{t("monitor.wouldBlockCount", { count: wbFiles + wbHosts })}</span>
-          )}
-        </span>
-      </div>
-
-      {vHosts.length === 0 && vPaths.length === 0 && (
-        <div className="px-1 py-2 text-[var(--color-fg-faint)]">{t("monitor.waiting")}</div>
-      )}
-
-      {/* ── NETWORK (same in both tabs) ── */}
-      {vHosts.length > 0 && (
-        <>
-          <div className="mb-1 mt-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-            <span>{t("monitor.network")}</span><span>{t(vHosts.length === 1 ? "monitor.hostCountOne" : "monitor.hostCountOther", { count: vHosts.length })}</span>
-          </div>
-          <ul className="mb-2 flex flex-col">
-            {vHosts.map(h => (
-              <li key={h.host} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]">
-                <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={`${h.host}:${h.port}`}>{h.host}<span className="text-[var(--color-fg-faint)]">:{h.port}</span></span>
-                <WouldBlockTag on={h.would_block} />
-                <CopyButton value={h.host} title={t("denied.copyHostTip")} />
-                <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{h.count}× · {relTime(h.last_seen_unix_ms)}</span>
-                <button
-                  type="button"
-                  onClick={() => onAllowHost(h.host)}
-                  disabled={allowing === h.host || !scopeChosen}
-                  className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                  title={t("monitor.addHostTip", { host: h.host })}
-                >{allowing === h.host ? "…" : t("denied.allow")}</button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {/* ── FILESYSTEM ── */}
-      {vPaths.length > 0 && (
-        <div className="mb-1 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-          <span>{t("monitor.filesystem")}</span>
-          <span>{tab === "aggregate"
-            ? t(folders.length === 1 ? "monitor.folderCountOne" : "monitor.folderCountOther", { count: folders.length })
-            : t(vPaths.length === 1 ? "monitor.entryCountOne" : "monitor.entryCountOther", { count: vPaths.length })}</span>
-        </div>
-      )}
-
-      {/* AGGREGATE: folder rows, expandable. */}
-      {tab === "aggregate" && folders.map(g => {
-        const isOpen = expanded.has(g.folder);
-        return (
-          <div key={g.folder} className="rounded">
-            <div className="flex items-center gap-1.5 rounded px-1 py-1 hover:bg-[var(--color-hover)]">
-              <button type="button" onClick={() => toggle(g.folder)} className="shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]" title={isOpen ? t("monitor.collapseTip") : t("monitor.expandTip")}>
-                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              </button>
-              <span className="min-w-0 flex-1">
-                <PathSegments display={shortenPath(g.folder)} pending={allowing === g.folder || !scopeChosen} onAllow={onAllowPath} />
-              </span>
-              {g.wouldBlock > 0 && <WouldBlockTag on />}
-              <span className="shrink-0 font-mono text-[10px] text-[var(--color-fg-faint)]" title={t("monitor.opsTip")}>{[...g.ops].join(" ")}</span>
-              <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
-                {t(g.entries.length === 1 ? "monitor.folderFilesOne" : "monitor.folderFilesOther", { count: g.entries.length, times: g.count })}
-              </span>
-            </div>
-            {isOpen && (
-              <ul className="ml-5 flex flex-col border-l border-[var(--color-border-soft)] pl-2">
-                {[...g.entries].sort(byBlockPath).map(p => (
-                  <li key={p.path + p.op} className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-[var(--color-hover)]">
-                    <OpBadge op={p.op} />
-                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[12px] text-[var(--color-fg)]" title={p.path}>{fileName(p.path)}</span>
-                    {p.would_block && <WouldBlockTag on />}
-                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{p.count}×</span>
-                    <button
-                      type="button"
-                      onClick={() => onAllowPath(p.path)}
-                      disabled={allowing === p.path || !scopeChosen}
-                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={t("denied.allowPathTip", { path: p.path })}
-                    >{allowing === p.path ? "…" : t("denied.allow")}</button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        );
-      })}
-
-      {/* DETAILED: the raw access log (capped for perf). */}
-      {tab === "detailed" && (() => {
-        const CAP = 400;
-        const rows = [...vPaths].sort(byBlockPath);
-        const shown = rows.slice(0, CAP);
-        return (
-          <>
-            <ul className="flex flex-col">
-              {shown.map(p => (
-                <li key={p.path + p.op} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]">
-                  <OpBadge op={p.op} />
-                  <span className="min-w-0 flex-1">
-                    <PathSegments display={shortenPath(p.path)} pending={allowing === p.path || !scopeChosen} onAllow={onAllowPath} />
-                  </span>
-                  {p.would_block && <WouldBlockTag on />}
-                  <CopyButton value={p.path} title={t("denied.copyFullPathTip")} />
-                  <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]" title={p.last_proc ? t("denied.processTip", { proc: p.last_proc, pid: p.last_pid }) : undefined}>
-                    {p.last_proc && <span className="mr-2 font-mono text-[var(--color-fg-dim)]">{p.last_proc}({p.last_pid})</span>}
-                    {p.count}× · {relTime(p.last_seen_unix_ms)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {rows.length > CAP && (
-              <div className="px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">
-                {t("monitor.shownCap", { cap: CAP, total: rows.length })}
-              </div>
-            )}
-          </>
-        );
-      })()}
-
-      <div className="mt-2 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-        <Trans t={t} i18nKey="monitor.footerNote" components={{ warn: <span className="text-[var(--color-warn)]" /> }} />
-      </div>
-    </div>
-  );
-}
-
-// Coarse "when was this" formatter. Deliberately low-precision so
-// the popover rows aren't flickering every second while it's open
-// (the previous "5s ago / 6s ago / ..." update on every 1.5s poll
-// was visual noise). Buckets:
-//   <  30s   → "just now"
-//   < 5 min  → "<5m ago"
-//   < 1 hr   → "Xm ago"  rounded to the nearest 5min
-//   < 24 hr  → "Xh ago"
-//   else     → "yesterday" / "Xd ago"
-/** Clickable path-segment ribbon. Splits a `$HOME/.foo/bar/baz` (or
- *  absolute) path into individual segments; each segment-click allows
- *  the prefix up to and INCLUDING that segment. The trailing segments
- *  dim to hint at the cut-off. Lets the user pick a parent dir without
- *  having to retype the path into the sandbox dialog. */
-function CopyButton({ value, title, className }: { value: string; title: string; className?: string }) {
-  const { t } = useTranslation("task");
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        writeClipboardText(value).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        }).catch(() => {});
-      }}
-      title={copied ? t("common:copied") : title}
-      className={cn(
-        "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-        className,
-      )}
-    >
-      {copied ? <Check size={12} className="text-[var(--color-ok)]" /> : <Copy size={12} />}
-    </button>
-  );
-}
-
-/** `$HOME/Library/Keychains` or anything under it, in shortenPath's form. */
-function underKeychains(display: string): boolean {
-  return display === "$HOME/Library/Keychains" || display.startsWith("$HOME/Library/Keychains/");
-}
-
-function PathSegments({ display, onAllow, pending }: {
-  display: string;
-  onAllow: (prefix: string) => void;
-  pending: boolean;
-}) {
-  const { t } = useTranslation("task");
-  // Hover state: index up to which the user is "selecting" — segments
-  // 0..=hovered get the green-on-hover treatment, segments after dim.
-  const [hovered, setHovered] = useState<number | null>(null);
-
-  const absolute = display.startsWith("/");
-  const parts = display.split("/").filter(Boolean);
-  // Reconstruct the prefix string for each segment index. For absolute
-  // paths we keep the leading "/"; for $HOME-relative the first segment
-  // *is* $HOME and the rest concatenate with "/".
-  const prefixAt = (i: number) =>
-    (absolute ? "/" : "") + parts.slice(0, i + 1).join("/");
-
-  return (
-    <span
-      className="flex min-w-0 flex-wrap items-center gap-0 font-mono text-[12px] text-[var(--color-fg)]"
-      onMouseLeave={() => setHovered(null)}
-    >
-      {parts.map((seg, i) => {
-        const isPrefix = hovered !== null && i <= hovered;
-        const isSuffix = hovered !== null && i > hovered;
-        return (
-          <span key={i} className="flex items-center">
-            {i > 0 && (
-              <span className={cn(
-                "select-none px-0.5 text-[var(--color-fg-faint)]",
-                isSuffix && "opacity-40",
-              )}>/</span>
-            )}
-            <button
-              type="button"
-              onMouseEnter={() => setHovered(i)}
-              onClick={() => onAllow(prefixAt(i))}
-              disabled={pending}
-              title={t("denied.allowPrefixTip", { prefix: prefixAt(i) })}
-              className={cn(
-                "rounded px-1 transition-colors disabled:opacity-50",
-                isPrefix && "bg-[var(--color-ok)]/15 text-[var(--color-fg)]",
-                isSuffix && "text-[var(--color-fg-faint)] opacity-40",
-                hovered === null && "hover:bg-[var(--color-hover)]",
-              )}
-            >{seg}</button>
-          </span>
-        );
-      })}
-    </span>
-  );
-}
-
-function relTime(unixMs: number): string {
-  const delta = Math.max(0, Date.now() - unixMs);
-  const s = Math.floor(delta / 1000);
-  if (s < 30) return i18n.t("task:monitor.relJustNow");
-  const m = Math.floor(s / 60);
-  if (m < 5)  return i18n.t("task:monitor.relUnder5m");
-  if (m < 60) return i18n.t("task:monitor.relMinutes", { minutes: Math.round(m / 5) * 5 });
-  const h = Math.floor(m / 60);
-  if (h < 24) return i18n.t("task:monitor.relHours", { hours: h });
-  const d = Math.floor(h / 24);
-  return d === 1 ? i18n.t("task:monitor.relYesterday") : i18n.t("task:monitor.relDays", { days: d });
 }

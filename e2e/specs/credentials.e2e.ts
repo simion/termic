@@ -1253,7 +1253,7 @@ describe("agent credentials", () => {
       expect(signedIn(after.docker, "Work")).toBe(false);
 
       // And the footer follows the TASK's realm rather than the host's, which
-      // is what makes "Sandbox: docker container" and the account name agree.
+      // is what makes "Sandbox in Docker" and the account name agree.
       await waitVisible('[data-testid="usage-chip"]');
       expect(await pillAccount()).toBe("Work");
     } finally {

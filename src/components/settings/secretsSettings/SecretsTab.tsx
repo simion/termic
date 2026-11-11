@@ -65,9 +65,7 @@ export function SecretsTab({ model, initialAdd, onShowActivity }: {
   // Task counts per role, for "Used by". Settings is an overlay that only
   // mounts while open, so this subscription costs nothing the rest of the time.
   const tasks = useApp(s => s.tasks);
-  const projects = useApp(s => s.projects);
-  const agents = useApp(s => s.agents);
-  const byRole = useMemo(() => tasksByRole(tasks, projects, agents, roles), [tasks, projects, agents, roles]);
+  const byRole = useMemo(() => tasksByRole(tasks, roles), [tasks, roles]);
 
   /** Rename is a label edit: the Keychain item is keyed by id (or is gh's,
    *  or one the user named), so nothing moves. Returns the problem that

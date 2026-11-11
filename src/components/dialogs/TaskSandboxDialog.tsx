@@ -16,13 +16,13 @@ import { cn } from "@/lib/utils";
 import { formatDockerArgv } from "@/lib/dockerArgv";
 import { taskLabel } from "@/lib/taskLabel";
 import {
-  settingsLoad, taskSetSandbox, taskSetRole, sandboxAvailable, taskSetDocker, dockerImageStatus, dockerCommandPreview,
+  settingsLoad, taskSetSandbox, sandboxAvailable, taskSetDocker, dockerImageStatus, dockerCommandPreview,
   type DockerImageStatus, type DockerCommandPreview,
 } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode, type SandboxSelection, type Settings } from "@/lib/types";
 import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
 import { SandboxPicker, DockerEngineNote, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
-import { RolePicker, roleCageNote, roleDisabledReason, useRoleDraft, withRoleCage } from "@/components/secretsUi/RolePicker";
+import { useSecrets } from "@/store/secrets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
 
 export function TaskSandboxDialog() {
@@ -98,9 +98,11 @@ export function TaskSandboxDialog() {
   // row is hidden and the stored flag is left alone (not dirty, not sent),
   // so a trip through Monitor does not silently rewrite it.
   const keychainRow = enabled && mode !== "monitor";
-  // Secrets role, edited next to the block it needs.
-  const role = useRoleDraft(task, project, agent, keychainRow, blockKeychain, setBlockKeychain, taskId);
-  const roleDisabled = roleDisabledReason(t, { docker: dockerOn, mode, seatbelt: osSandboxOk !== false });
+  // the Secrets role is not edited here (New Task / Edit task own it), but
+  // a role needs Enforce and the Keychain block, and Rust drops it on a save
+  // that takes either away. Say so before the save, not after.
+  const roleName = useSecrets(s => (task?.role ? s.roles.find(r => r.id === task.role)?.name ?? task.role : null));
+  const dropsRole = !!roleName && (dockerOn || !keychainRow || !blockKeychain);
 
   // Command preview: the exact `docker run ...` a launch would build right
   // now (docker_command_preview -> the SAME build_spec/render_argv the real
@@ -235,8 +237,7 @@ export function TaskSandboxDialog() {
     mode !== effectiveSandboxMode(task) ||
     !arrEq(splitLines(rwText),    task.sandbox_rw_paths      ?? []) ||
     !arrEq(splitLines(hostsText), task.sandbox_allowed_hosts ?? []) ||
-    (keychainRow && blockKeychain !== !!task.sandbox_block_keychain) ||
-    role.dirty
+    (keychainRow && blockKeychain !== !!task.sandbox_block_keychain)
   ) : false;
 
   async function save(restart: boolean) {
@@ -259,14 +260,7 @@ export function TaskSandboxDialog() {
       // Mark BEFORE the IPC fires so TerminalPane sees the flag when
       // the pty-exit handler runs (the SIGKILL is fast - sometimes
       // exits land before this function's await even unblocks).
-      // Sandbox, then role, then the kill: Rust refuses a role until the
-      // task blocks the Keychain (so the cage must land first), and the
-      // respawn must read the role (so the kill comes last).
       const block = keychainRow ? blockKeychain : undefined;
-      if (role.dirty) {
-        await taskSetSandbox(task.id, mode, lines(rwText), lines(hostsText), false, block);
-        await taskSetRole(task.id, role.store);
-      }
       if (restart) useUI.getState().markPendingPtyRestart(task.id);
       const killed = await taskSetSandbox(
         task.id, mode,
@@ -294,7 +288,6 @@ export function TaskSandboxDialog() {
   async function chooseMode(next: SandboxMode) {
     const wasOff = mode === "off";
     setMode(next);
-    if (next !== "enforce" && next !== "enforce-fs") role.clear();
     if (next !== "off" && wasOff && !rwText.trim() && !hostsText.trim()) {
       try {
         const s = await settingsLoad();
@@ -529,18 +522,12 @@ export function TaskSandboxDialog() {
         )}
 
         {/* Keychain block. Enforcing modes only: Monitor never blocks. */}
-        {keychainRow && <KeychainBlockField checked={blockKeychain} onChange={role.onBlock} />}
-        {role.roles.length > 0 && (
-          <RolePicker
-            roles={role.roles}
-            secrets={role.secrets}
-            value={role.value}
-            onChange={withRoleCage(mode, m => void chooseMode(m), role.onPick)}
-            def={role.def}
-            disabledReason={roleDisabled}
-            note={roleCageNote(t, { docker: dockerOn, mode })}
-            compact
-          />
+        {keychainRow && <KeychainBlockField checked={blockKeychain} onChange={setBlockKeychain} />}
+        {dropsRole && (
+          <div data-testid="sandbox-drops-role" className="flex items-start gap-1.5 text-[11.5px] text-[var(--color-warn)]">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>{t("taskSandbox.dropsRole", { role: roleName })}</span>
+          </div>
         )}
 
         {/* Built-in defaults moved inline under each field below -

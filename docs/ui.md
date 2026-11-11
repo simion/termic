@@ -1578,6 +1578,30 @@ A plain shell or registry terminal has no prompt box, so the composed prompt has
 nowhere to go: the picker says so at the point the issue was chosen rather than
 letting Create drop it silently.
 
+## One Secrets role picker
+
+Every place a role is chosen draws the same `RoleOptions` radio list
+(`components/secretsUi/RolePicker.tsx`): a row per option with a radio, the
+role's dot (dashed for No secrets), its name in normal case and its secrets
+as the summary. The task dialogs (New Task, Edit, Schedule) head it
+"This task runs as", and the cage chip's settings popover changes it on a
+live task. The Sandbox dialog has no role picker: it only warns, above Save, when
+its own change (leaving Enforce, unblocking the Keychain, Docker) would drop
+the task's role, which `task_set_sandbox` does; Settings > Agents "New <agent> tasks start as"; a
+project's Secrets tab "New tasks here start as", with a first row "Each
+agent's choice" (`null`) that names what each agent would give a new task.
+Rows carry `data-role-option` (`none`, `inherit`, or the role id).
+
+On a live task the role is changed from the status bar's cage chip, in its
+settings popover (see "The cage chip (status bar)").
+
+Defaults seed, tasks own (docs/data-model.md): a create dialog starts on
+the project's default, else the agent's, and only there says so, in a line
+under the list ("Picked for you from this project's default..."). The pick is
+saved on the task as is, `""` for No secrets, so there is no per-row
+"default" badge: once created, nothing is inherited, and the Settings hints
+say a default only reaches new tasks.
+
 ## Checking out an existing branch
 
 For reviewing or continuing someone else's branch in its own folder, beside
@@ -1760,6 +1784,31 @@ While a host terminal (agent tab with the sandbox off, shell tab, footer shell) 
 - Every button also dismisses it for the current prompt. Rust only raises it again on the next sudo run, and withdraws it as soon as sudo is no longer the foreground job.
 
 Rust decides when it shows (see [ipc.md](ipc.md)); the frontend only listens and renders.
+
+## A shell's Secrets role
+
+A shell started with a role (docs/sandbox.md "Shells") carries a badge on its
+own tab: key glyph, the role name in the role's colour, and `· N` once the
+role blocked something. Amber when gh sent its own token (an rc file exported
+`GH_TOKEN` after Termic did, and the shell's pane shows a dismissible banner
+with a Copy a fix), red on anything else suspicious. A plain shell draws none
+of it. The status bar is the agent's and never shows a shell's role.
+
+The badge is a button: it opens the Cage activity panel pre-filtered to
+this shell, where its blocks Allow onto the role only (a shell has no task
+allows) and Pause holds that shell's broker. Its role changes from the tab's
+"Restart with secrets" menu. Counts are polled only for the shell someone can see (the active tab
+of the active task), once per shell however
+many surfaces read them (`lib/shellCounts.ts`, 2s, notify on change only).
+
+Starting one: ⌘T's default list is unchanged (1 is Terminal, then the
+agents), and its Terminal row carries "with secrets →". → there (or a click
+on it) swaps the list for the roles, numbered from 1, each with the bound
+hosts, the secret count, and for a gh login the note that the shell could
+still read it from the Keychain; ←, Backspace or Esc goes back. Typing a role
+name in the main list also finds "Terminal as <role>". Role rows never sit in
+the default list, because people pick agents by number. Switching one: "Restart with secrets ▸"
+on the tab's menu, which lists the other roles and No secrets.
 
 ## Confirms for recoverable actions
 
@@ -2354,7 +2403,7 @@ A project can standing-instruct arming in its own Code navigation sub-tab (Setti
 
 **Status, because a silent server looks like a broken one.** A cold rust-analyzer indexes a crate graph for minutes, and until it finishes hover and go-to-definition return nothing. The chip is the indicator, and it is ONE control: the compass becomes a pulsing dot while the server is starting or reading the repo, and the label holds still at "Code intelligence" throughout. The detail goes in the tooltip ("Loading crate graph 42%: answers are incomplete until this finishes", or why the server stopped), which is where someone wondering why a hover did nothing will look. A label that changed on every percentage would reflow the path bar under the reader, and the dot stops pulsing for BOTH settled states: ready, and failed, since a dot still pulsing on a dead server promises an answer that is not coming. That is why the client advertises `window.workDoneProgress` (the plan said not to until there was somewhere to show it, since a server whose `window/workDoneProgress/create` goes unanswered blocks; the Rust host answers it) and why `$/progress` is handled in `lib/lsp/host.ts`. The Activity window carries the other half: every live server as a row with its CPU, memory and a stop button, filed under no task because it belongs to the checkout.
 
-The gap worth knowing about: the chip lives on the editor path bar, so while you are looking at a terminal tab nothing on screen says a server is running. Activity is where to look for that.
+The gap worth knowing about: the chip lives on the editor path bar, so while you are looking at a terminal tab nothing on screen says a server is running. The Activity monitor window is where to look for that.
 
 **Python environments are named, not inferred.** The host answers `workspace/configuration` per section: `python` gets `pythonPath` (pyright and basedpyright find their interpreter THERE and ignore `VIRTUAL_ENV`), `ty` gets `environment.python`, and every other section gets `null`, which is what the rest expect. Without this, a project whose packages live in `.venv` gets analysed against some other Python and fills with errors about imports that are installed. Termic also warns when a checkout has Django but no `django-stubs`: Django adds `Model.objects` at runtime, so a checker is right to call it missing, and the fix is a package rather than a setting (measured: ty reports that error without the stubs and zero diagnostics with them).
 
@@ -2590,7 +2639,7 @@ ResizeObserver, scope it to the chip strip and set state only when the fitting
 count changes, never per pixel.
 
 The chips also sit in their own `min-w-0 overflow-hidden` box inside the right
-group, so width is shed from the left and the sandbox status stays pinned as
+group, so width is shed from the left and the cage chip stays pinned as
 the rightmost item whatever happens.
 
 **A fill behind text costs that text contrast, and the cost lands where you
@@ -2619,6 +2668,56 @@ through without the component knowing any of them.
 Measurements live next to the constants in `AgentChip.tsx`. Re-derive them
 before moving a number, and do it in both themes: every one of these values is
 the ceiling of something.
+
+## The cage chip (status bar)
+
+One pill at the right end of the task footer says what the agent can reach,
+with two targets: `[shield] <mode> · [key] <role>` opens the settings
+popover, and the tail (`N blocked`, `N suspicious`, `paused`), only when
+something needs you, opens the wide Cage activity panel. The panel is not a
+dialog: it floats from the task's footer and blocks nothing, so blocks can
+be watched arriving while the agent works. It replaced four
+controls (the sandbox status button, its "N blocked" count, the secrets chip
+and the "No secrets" notice) and their two popovers. Settings and lists are
+two interactions on purpose: one popover holding both was too dense, too
+narrow, and mixed sandbox denies with role blocks. Grammar, states and both
+views: [sandbox.md](sandbox.md), "The cage chip". Rules that hold it
+together:
+
+- **One derivation.** `cageChipState` (`lib/cageChip.ts`) turns the task,
+  the broker counts, the cage's own count and the resolved role into the
+  chip's state. Every state on the design board is a row in
+  `cageChip.test.ts`; add a row before adding a state.
+- **No poll of its own.** The chip reads FooterBar's 2s tick, which for
+  the active task also fetches its role shells' counts (so a background
+  shell's suspicious or blocked rows reach the tail; the tick runs for an
+  uncaged task too while it has a role shell). Its one subscription is
+  `useShellRoles` (the roles list, cheap). The settings popover mounts
+  only while open and does not poll; Activity polls once (1.5s) only
+  while open, its task active and the window visible, and keeps the old
+  object when a reply's fingerprint did not change.
+- **One line per row, one row of filters.** Activity's table is
+  `table-fixed` (when, times, kind, what, action); cells truncate instead
+  of wrapping. Anything that would not fit in a column (why, the rule, the
+  process, who) lives in the row's detail, opened by a click, so no column
+  is ever too narrow to read.
+- **Decisions stay on screen.** An allowed row is kept even after Rust
+  drops the deny, green, with its Allow turned into the undo. Colour is
+  status only: the row's stripe and the detail's action box are amber
+  (blocked), green (allowed) or red (suspicious). Filters beyond Show are menus
+  naming their value, so the bar stays one row however many shells or
+  roles there are. `secrets-task.e2e.ts` measures both.
+- **Glyphs are holdovers, never new.** Settings rows lead with the glyph the
+  chip, the sidebar and the task menu already use: the shield (its fill and
+  colour are the mode), the key in the role's colour, the bolt for YOLO,
+  the container for Docker. The lock for the store block is the one
+  addition, since that checkbox never had a glyph.
+- **Under 560px** the mode label, the role name and "restart to apply"
+  drop; the icons and the tail stay, since the tail is what needs you.
+- **One glyph language for a role**, wherever it shows: the key in the
+  role's colour (chip, settings, `TaskRoleKey` in the sidebar row and title
+  bar), the dot in lists and menus. Role colour = applied, amber = set but
+  cannot apply, red = something suspicious, nothing = no role.
 
 ## Scheduled queue messages (GH #300)
 

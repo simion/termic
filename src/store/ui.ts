@@ -213,6 +213,9 @@ interface UIState {
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  task tree on every re-render. */
   sandboxForTaskId: string | null;
+  /** The cage Activity dialog: one task's blocked / suspicious / used rows,
+   *  agent and shells. `who` pre-filters it (a shell's broker key). */
+  cageActivity: { taskId: string; who: string | null } | null;
   /** ⌘P file finder — task id to scope the search to; null = closed.
    *  Lives here so opening doesn't churn the task tree. */
   fileFinderTaskId: string | null;
@@ -384,6 +387,8 @@ interface UIState {
   openRaceCompare: (raceId: string) => void;
   closeRaceCompare: () => void;
   openSandbox: (taskId: string) => void;
+  openCageActivity: (taskId: string, who?: string | null) => void;
+  closeCageActivity: () => void;
   /** "Show this commit in History": the blame popup's second button. Read by
    *  RightPanel (open the Git tab), GitPanel (switch to the History view) and
    *  HistoryPanel (select, expand and scroll to the sha). One request rather
@@ -573,6 +578,7 @@ export const useUI = create<UIState>((set, get) => ({
   reviewPrSeed: null,
   raceCompareId: null,
   sandboxForTaskId: null,
+  cageActivity: null,
   fileFinderTaskId: null,
   searchEverywhereTaskId: null,
   findInFilesTaskId: null,
@@ -663,6 +669,8 @@ export const useUI = create<UIState>((set, get) => ({
   openRaceCompare:   (raceId) => set({ raceCompareId: raceId }),
   closeRaceCompare:  () => set({ raceCompareId: null }),
   openSandbox:       (taskId) => set({ sandboxForTaskId: taskId }),
+  openCageActivity:  (taskId, who = null) => set({ cageActivity: { taskId, who } }),
+  closeCageActivity: () => set({ cageActivity: null }),
   commitReveal: null,
   revealCommitInHistory: (taskId, sha) =>
     // Un-hiding the right panel is RightPanel's job, not this store's: app.ts

@@ -759,39 +759,87 @@ describe("settings: secrets and roles", () => {
     await clickPresent('[data-agent-id="fakeagent"]');
     const sel = '[data-testid="agent-default-role"][data-agent="fakeagent"]';
     // the role list loads per mount; wait for the option before picking it.
-    await browser.waitUntil(() => browser.execute((s, id) =>
-      !!document.querySelector(`${s} option[value="${id}"]`), sel, roleId),
-    { timeout: 10_000, timeoutMsg: "the role never showed in the agent's picker" });
-    await setSelect(sel, roleId);
+    await waitVisible(`${sel} [data-role-option="${roleId}"]`, 10_000);
+    expect(await browser.execute((s) => document.querySelector(s)?.textContent ?? "", sel)).toContain("New FakeAgent tasks start as");
+    expect(await browser.execute((s) => document.querySelector(`${s} [data-role-option="none"]`)?.getAttribute("aria-checked"), sel)).toBe("true");
+    await clickPresent(`${sel} [data-role-option="${roleId}"]`);
     await waitSaved(s => s.agents.find((a: any) => a.id === "fakeagent")?.default_role === roleId, "agent default never saved");
+    await browser.waitUntil(() => browser.execute((s, id) =>
+      document.querySelector(`${s} [data-role-option="${id}"]`)?.getAttribute("aria-checked") === "true", sel, roleId),
+    { timeout: 5_000, timeoutMsg: "the agent's picker never showed the role picked" });
+    await snap("secrets-picker-agent.png");
   });
+
+  const projectOption = (id: string) => `[data-testid="project-secrets"] [data-role-option="${id}"]`;
+  const savedDefault = () => browser.execute((pid) =>
+    window.__termic!.useApp.getState().projects.find((p: any) => p.id === pid)?.default_role, projectId);
 
   it("defaults a project to the role", async () => {
     await browser.execute((id) => window.__termic!.useApp.getState().openSettings("repositories", id), projectId);
     await clickPresent('[data-repo-tab="secrets"]');
-    await waitForText("New tasks default to");
-    await clickPresent(`[data-role-card="${roleId}"]`);
-    await browser.waitUntil(() => browser.execute((pid) =>
-      window.__termic!.useApp.getState().projects.find((p: any) => p.id === pid)?.default_role, projectId)
-      .then(v => v === roleId),
-    { timeout: 10_000, timeoutMsg: "project default never saved" });
-    expect(await browser.execute((id) =>
-      document.querySelector(`[data-role-card="${id}"]`)?.getAttribute("aria-checked"), roleId)).toBe("true");
+    await waitForText("New tasks here start as");
+    // "Each agent's choice" says what each agent would give a new task.
+    const roleName = (await settingsLoad()).roles.find((r: any) => r.id === roleId).name;
+    expect(await browser.execute((s) => document.querySelector(s)?.textContent ?? "", projectOption("inherit")))
+      .toContain(`FakeAgent starts as ${roleName}`);
+    await clickPresent(projectOption(roleId));
+    await browser.waitUntil(() => savedDefault().then(v => v === roleId),
+      { timeout: 10_000, timeoutMsg: "project default never saved" });
+    expect(await browser.execute((s) => document.querySelector(s)?.getAttribute("aria-checked"), projectOption(roleId))).toBe("true");
     await snap("secrets-m3-project-default.png");
 
-    // "No secrets" is an explicit "" that overrides the agent default; the
-    // inherit card is null. The two used to save the same null.
-    const savedDefault = () => browser.execute((pid) =>
-      window.__termic!.useApp.getState().projects.find((p: any) => p.id === pid)?.default_role, projectId);
-    await clickPresent('[data-role-card="none"]');
+    // "No secrets" is an explicit "" that overrides the agent default;
+    // "Each agent's choice" is null. The two used to save the same null.
+    await clickPresent(projectOption("none"));
     await browser.waitUntil(() => savedDefault().then(v => v === ""),
       { timeout: 10_000, timeoutMsg: "No secrets never saved as an explicit \"\"" });
-    expect(await browser.execute(() =>
-      document.querySelector('[data-role-card="inherit"]')?.getAttribute("aria-checked"))).toBe("false");
-    await clickPresent('[data-role-card="inherit"]');
+    expect(await browser.execute((s) => document.querySelector(s)?.getAttribute("aria-checked"), projectOption("inherit"))).toBe("false");
+    await clickPresent(projectOption("inherit"));
     await browser.waitUntil(() => savedDefault().then(v => v == null),
-      { timeout: 10_000, timeoutMsg: "inherit never saved as null" });
-    await clickPresent(`[data-role-card="${roleId}"]`);
+      { timeout: 10_000, timeoutMsg: "Each agent's choice never saved as null" });
+    await clickPresent(projectOption(roleId));
+    await browser.waitUntil(() => savedDefault().then(v => v === roleId),
+      { timeout: 10_000, timeoutMsg: "project default never saved back" });
+  });
+
+  // defaults seed, tasks own: a default is read once, when a task is created
+  // with no role of its own, and never again for that task.
+  const made: string[] = [];
+  const newTaskRole = async (name: string) => {
+    const id = await openTask(name, false);
+    made.push(id);
+    return browser.execute((i) =>
+      window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.role, id) as Promise<string | null | undefined>;
+  };
+  const setProjectDefault = async (v: string | null) => {
+    await clickPresent(projectOption(v === null ? "inherit" : v || "none"));
+    await browser.waitUntil(() => savedDefault().then(d => (d ?? null) === v),
+      { timeout: 10_000, timeoutMsg: `project default never saved as ${JSON.stringify(v)}` });
+  };
+  after(async () => { for (const id of made) await archiveTask(id); });
+
+  it("a project default seeds a new task, and changing it later leaves the task alone", async () => {
+    expect(await savedDefault()).toBe(roleId);
+    const id = made.length;
+    expect(await newTaskRole("e2e-seed-project")).toBe(roleId);
+    await setProjectDefault("");
+    expect(await browser.execute((i) =>
+      window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.role, made[id])).toBe(roleId);
+    // and from disk, not only the store.
+    const onDisk = await browser.execute(async (i) =>
+      (await window.__termic!.ipc.tasksList()).find((t: any) => t.id === i)?.role, made[id]);
+    expect(onDisk).toBe(roleId);
+  });
+
+  it("an explicit No secrets on the project beats the agent's default", async () => {
+    expect(await savedDefault()).toBe("");
+    expect(await newTaskRole("e2e-seed-none")).toBe("");
+  });
+
+  it("Each agent's choice seeds from the task's agent", async () => {
+    await setProjectDefault(null);
+    expect(await newTaskRole("e2e-seed-agent")).toBe(roleId);
+    await setProjectDefault(roleId);
   });
 
   it("lists the defaults on the Roles matrix", async () => {

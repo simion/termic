@@ -269,7 +269,7 @@ export function EditTaskDialog() {
   // whether the block will apply.
   const kcRow = !selDocker && (selMode === "enforce" || selMode === "enforce-fs");
   // Secrets role: needs the block, which needs an enforcing mode.
-  const role = useRoleDraft(task, project, agents.find(a => a.id === cli) ?? null, kcRow, blockKc, setBlockKc, open ? taskId : null);
+  const role = useRoleDraft(task, kcRow, blockKc, setBlockKc, open ? taskId : null);
   const roleDisabled = roleDisabledReason(t, { docker: selDocker, mode: selMode, seatbelt: osSandboxOk !== false });
   const chooseSel = (next: SandboxSelection) => {
     setSel(next);
@@ -835,7 +835,6 @@ export function EditTaskDialog() {
               secrets={role.secrets}
               value={role.value}
               onChange={withRoleCage(selMode, chooseSel, role.onPick)}
-              def={role.def}
               disabledReason={roleDisabled}
               note={roleCageNote(t, { docker: selDocker, mode: selMode })}
               compact

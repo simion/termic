@@ -1,5 +1,7 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
+import { ShellRoleBadge } from "@/components/secretsUi/ShellRoleBadge";
+import { shellRoleTarget } from "@/lib/shellSecrets";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Task, Tab, TerminalTab } from "@/lib/types";
@@ -115,6 +117,7 @@ export function TabBar({ task }: { task: Task }) {
       onSplitDown={() => moveTabToSplit(task.id, t.id, null, 'bottom')}
       canSplitOut={tabs.length > 1}
       onMoveToSplit={paneCount > 1 && tabs.length > 1 ? () => startMenuMove(t.id) : undefined}
+      shell={shellRoleTarget(task.id, t as TerminalTab)}
     >
       <TabPill
         task={task} tab={t} active={t.id === activeId} paneFocused={mainFocused}
@@ -514,6 +517,10 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
           )}
           <span className="truncate">{visibleTitle}</span>
         </span>
+      )}
+      {/* a shell started with a Secrets role; a plain shell draws nothing. */}
+      {tab.type === "terminal" && tab.cli === "shell" && (tab as TerminalTab).secretsRole && !isRenaming && (
+        <ShellRoleBadge taskId={task.id} tabId={tab.id} roleId={(tab as TerminalTab).secretsRole!} active={active} />
       )}
       {/* Run tabs (GH #54): inline run controls, always visible — the pill IS
           the run toolbar. ptyId is cleared on process exit, so its presence ≈

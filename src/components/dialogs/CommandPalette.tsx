@@ -502,6 +502,11 @@ export function CommandPalette() {
         run: act(() => useUI.getState().openSandbox(task.id)),
       });
       cmds.push({
+        id: "cage-activity", section: "Agent", label: t("commandPalette.cmd.cageActivity"),
+        icon: ShieldCheck, keywords: "blocked denied allow secrets broker suspicious used activity",
+        run: act(() => useUI.getState().openCageActivity(task.id)),
+      });
+      cmds.push({
         id: "create-pr", section: "Agent", label: t("commandPalette.cmd.createPr"),
         icon: GitPullRequest, keywords: "pr mr merge request github gitlab azure",
         run: act(() => useUI.getState().openCreatePr(task.id)),

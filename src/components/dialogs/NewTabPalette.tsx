@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Search, NotepadText, History, Settings, CornerDownLeft, Play, Terminal } from "lucide-react";
+import { Search, NotepadText, History, Settings, CornerDownLeft, Play, Terminal, KeyRound, ChevronLeft } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp, type ClosedTabEntry } from "@/store/app";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
@@ -16,6 +16,9 @@ import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { newScratchTab } from "@/lib/scratchTabs";
 import { focusTerminalTab } from "@/lib/tabFocus";
 import { cn } from "@/lib/utils";
+import { isGhLogin, roleSecrets, useShellRoles } from "@/lib/shellSecrets";
+import { useSecrets } from "@/store/secrets";
+import { roleColour } from "@/lib/secretsUi";
 
 const NO_CLOSED_TABS: ClosedTabEntry[] = [];
 
@@ -30,9 +33,15 @@ function relativeTime(iso: string, now: string): string {
 
 export type NewTabPaletteItem = {
   id: string;
-  kind: "shell" | "custom_terminal" | "agent" | "scratchpad" | "resume" | "custom_command";
+  kind: "shell" | "shell_role" | "custom_terminal" | "agent" | "scratchpad" | "resume" | "custom_command";
   title: string;
   subtitle?: string;
+  /** A wrapped plain-text line under the subtitle (a shell role's caveat). */
+  note?: string;
+  /** Icon colour for a shell role row (the role's colour). */
+  colour?: string;
+  /** A shell role row's own name, its title inside the "with secrets" list. */
+  roleName?: string;
   category: "terminals" | "agents" | "scratchpads" | "resume" | "custom_command";
   iconId?: string;
   badge?: string;
@@ -68,9 +77,15 @@ export function NewTabPalette() {
   const addTab = useApp(s => s.addTab);
   const addPaneTab = useApp(s => s.addPaneTab);
   const resumeClosedTab = useApp(s => s.resumeClosedTab);
+  // empty off macOS and when no role exists, which hides the role rows.
+  const shellRoles = useShellRoles();
+  const allSecrets = useSecrets(s => s.secrets);
 
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
+  // → on Terminal swaps the list for the roles; the main list never carries
+  // them, so agents keep their 1-9 (docs/sandbox.md "Shells").
+  const [roleMode, setRoleMode] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
@@ -78,12 +93,16 @@ export function NewTabPalette() {
     if (open) {
       setQuery("");
       setActiveIdx(0);
+      setRoleMode(false);
     }
   }, [open]);
 
   useEffect(() => {
     setActiveIdx(0);
-  }, [query]);
+  }, [query, roleMode]);
+
+  const enterRoles = () => { setQuery(""); setRoleMode(true); };
+  const leaveRoles = () => { setQuery(""); setRoleMode(false); };
 
   // Construct all base launchable items
   const baseItems = useMemo(() => {
@@ -204,17 +223,57 @@ export function NewTabPalette() {
     return items;
   }, [taskId, paneId, registry, detectedClis, closedTabs, task?.project_id, t, addTab, addPaneTab, resumeClosedTab]);
 
+  // a shell running a Secrets role (docs/sandbox.md "Shells"), one row per
+  // role. Reached by → on Terminal, or by typing; never in the default list.
+  const roleItems = useMemo(() => {
+    if (!taskId) return [];
+    return shellRoles.map((role): NewTabPaletteItem => {
+      const bound = roleSecrets(role, allSecrets);
+      const hosts = [...new Set(bound.flatMap(s => s.hosts))];
+      return {
+        id: `shell-role-${role.id}`,
+        kind: "shell_role",
+        title: t("newTab.terminalAs", { role: role.name }),
+        roleName: role.name,
+        subtitle: [hosts.join(", "), t(bound.length === 1 ? "newTab.secretCount_one" : "newTab.secretCount_other", { count: bound.length })].filter(Boolean).join(" · "),
+        note: bound.some(isGhLogin) ? t("newTab.ghLoginNote") : undefined,
+        colour: roleColour(role.colour),
+        category: "terminals",
+        run: () => {
+          const title = t("newTab.terminal");
+          if (paneId) {
+            addPaneTab(taskId, paneId, "shell", { secretsRole: role.id });
+          } else {
+            const id = crypto.randomUUID();
+            addTab(taskId, { id, type: "terminal", title, cli: "shell", secretsRole: role.id });
+            focusTerminalTab(id);
+          }
+        },
+      };
+    });
+  }, [taskId, paneId, shellRoles, allSecrets, t, addTab, addPaneTab]);
+
   // Fuzzy filter + custom command option
   const rows = useMemo(() => {
     type Scored = { item: NewTabPaletteItem; matches: number[]; score: number };
     const trimmed = query.trim();
+
+    if (roleMode) {
+      const named = roleItems.map(item => ({ ...item, title: item.roleName ?? item.title }));
+      if (!trimmed) return named.map(item => ({ item, matches: [], score: 0 }));
+      return named
+        .map(item => ({ item, m: fuzzyMatch(item.title, trimmed) }))
+        .filter(x => x.m)
+        .map(x => ({ item: x.item, matches: x.m!.matches, score: x.m!.score }))
+        .sort((a, b) => b.score - a.score);
+    }
 
     if (!trimmed) {
       return baseItems.map(item => ({ item, matches: [], score: 0 }));
     }
 
     const scored: Scored[] = [];
-    for (const item of baseItems) {
+    for (const item of [...baseItems, ...roleItems]) {
       const mTitle = fuzzyMatch(item.title, trimmed);
       const mSub = item.subtitle ? fuzzyMatch(item.subtitle, trimmed) : null;
       if (mTitle) {
@@ -260,7 +319,7 @@ export function NewTabPalette() {
     }
 
     return scored;
-  }, [baseItems, query, paneId, taskId, addPaneTab, addTab, t]);
+  }, [baseItems, roleItems, roleMode, query, paneId, taskId, addPaneTab, addTab, t]);
 
   useEffect(() => {
     if (activeIdx > rows.length - 1) setActiveIdx(Math.max(0, rows.length - 1));
@@ -270,9 +329,12 @@ export function NewTabPalette() {
     listRef.current?.querySelector<HTMLElement>(`[data-row="${activeIdx}"]`)?.scrollIntoView({ block: "nearest" });
   }, [activeIdx]);
 
+  // a timer, not rAF, for CommandPalette's reason: rAF is frozen while the
+  // window is occluded, so the launch would sit queued and fire whenever the
+  // window next shows.
   function executeItem(item: NewTabPaletteItem) {
     close();
-    requestAnimationFrame(() => item.run());
+    setTimeout(() => item.run(), 0);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -284,7 +346,13 @@ export function NewTabPalette() {
         return;
       }
     }
-    if (e.key === "ArrowDown") {
+    if (e.key === "ArrowRight" && !roleMode && !query && rows[activeIdx]?.item.kind === "shell" && roleItems.length > 0) {
+      e.preventDefault();
+      enterRoles();
+    } else if (roleMode && !query && (e.key === "ArrowLeft" || e.key === "Backspace")) {
+      e.preventDefault();
+      leaveRoles();
+    } else if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIdx(i => Math.min(i + 1, rows.length - 1));
     } else if (e.key === "ArrowUp") {
@@ -296,7 +364,8 @@ export function NewTabPalette() {
       if (row) executeItem(row.item);
     } else if (e.key === "Escape") {
       e.preventDefault();
-      close();
+      if (roleMode) leaveRoles();
+      else close();
     }
   }
 
@@ -322,6 +391,9 @@ export function NewTabPalette() {
               if ((!ae || ae === document.body) && el && document.contains(el)) el.focus();
             });
           }}
+          // Radix dismisses on Esc before onKeyDown runs; in the roles list
+          // Esc means back, which onKeyDown does.
+          onEscapeKeyDown={e => { if (roleMode) e.preventDefault(); }}
           data-testid="new-tab-palette"
           style={{ background: "color-mix(in srgb, var(--color-bg-1) 88%, transparent)" }}
           className="termic-pop fixed left-1/2 top-[14vh] z-50 w-[min(520px,94vw)] -translate-x-1/2 overflow-hidden rounded-xl border border-[var(--color-border)] shadow-2xl outline-none backdrop-blur-lg"
@@ -353,7 +425,19 @@ export function NewTabPalette() {
             )}
           </div>
 
-          <div ref={listRef} className="no-scrollbar max-h-[min(52vh,380px)] overflow-y-auto py-1">
+          {roleMode && (
+            <button
+              type="button"
+              data-testid="new-tab-roles-back"
+              onClick={leaveRoles}
+              className="flex w-full items-center gap-2 border-b border-[var(--color-border)] px-3.5 py-2 text-left text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              <span className="font-medium">{t("newTabPalette.withSecretsHeader")}</span>
+              <span className="ml-auto text-[11.5px] text-[var(--color-fg-faint)]">{t("newTabPalette.withSecretsScope")}</span>
+            </button>
+          )}
+          <div ref={listRef} data-role-mode={roleMode || undefined} className="no-scrollbar max-h-[min(52vh,380px)] overflow-y-auto py-1">
             {rows.length === 0 && (
               <div className="px-3.5 py-4 text-center text-[13px] text-[var(--color-fg-faint)]">
                 {t("newTabPalette.noMatching")}
@@ -380,6 +464,8 @@ export function NewTabPalette() {
                   >
                     {item.kind === "scratchpad" ? (
                       <NotepadText className="h-4 w-4 text-emerald-500" />
+                    ) : item.kind === "shell_role" ? (
+                      <KeyRound className="h-4 w-4" style={{ color: item.colour }} />
                     ) : item.kind === "custom_command" ? (
                       <Play className="h-3.5 w-3.5 text-[var(--color-accent)]" />
                     ) : item.iconId ? (
@@ -405,8 +491,23 @@ export function NewTabPalette() {
                         {item.subtitle}
                       </div>
                     )}
+                    {item.note && (
+                      <div className="text-[11.5px] text-[var(--color-fg-faint)]">{item.note}</div>
+                    )}
                   </div>
 
+                  {item.kind === "shell" && !query && roleItems.length > 0 && (
+                    // a span, not a button: it sits inside the row's button.
+                    // The keyboard path is →.
+                    <span
+                      data-testid="new-tab-with-secrets"
+                      onClick={e => { e.stopPropagation(); enterRoles(); }}
+                      className="flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 text-[11.5px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+                    >
+                      {t("newTab.withSecrets")}
+                      <kbd className="rounded border border-[var(--color-border-soft)] px-1 font-mono text-[10.5px] leading-[16px]">→</kbd>
+                    </span>
+                  )}
                   {!query && i < 9 && (
                     <kbd className="shrink-0 rounded border border-[var(--color-border-soft)] px-1.5 font-mono text-[10.5px] leading-[16px] text-[var(--color-fg-faint)]">
                       {i + 1}
