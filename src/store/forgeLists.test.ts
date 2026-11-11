@@ -8,6 +8,7 @@ import {
   FORGE_LIST_TTL_MS,
   parseSnapshot,
   refreshForgeList,
+  refreshForgeLists,
   serializeSnapshot,
   SNAPSHOT_BUDGET_CHARS,
   useForgeLists,
@@ -22,6 +23,7 @@ import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/li
 vi.mock("@/lib/ipc", () => ({
   projectForgeIssues: vi.fn(),
   projectForgePrs: vi.fn(),
+  projectForgeLists: vi.fn(),
 }));
 
 // node vitest has no localStorage. Installed before the store module runs, so
@@ -70,6 +72,49 @@ describe("forge lists", () => {
     clearForgeLists();
     stored.clear();
     useApp.setState({ projects: [] });
+  });
+
+  describe("a Todos batch", () => {
+    it("lands every list in one store write", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([issue(1)]), prsOk([pr(2)]), issuesOk([issue(3)])]);
+      let writes = 0;
+      const unsub = useForgeLists.subscribe(() => { writes++; });
+      await refreshForgeLists([assigned("p1"), mine("p1"), assigned("p2")]);
+      unsub();
+      // One for the loading marks, one for the answers.
+      expect(writes).toBe(2);
+      expect(cachedForgeList(mine("p1"))?.prs.map((p) => p.number)).toEqual([2]);
+      expect(cachedForgeList(assigned("p2"))?.issues.map((i) => i.number)).toEqual([3]);
+    });
+
+    it("does not make a dialog wait it out: an urgent fetch runs on its own", async () => {
+      const batch = deferred<(IssueLookup | PrPickList)[]>();
+      vi.mocked(ipc.projectForgeLists).mockReturnValueOnce(batch.promise);
+      vi.mocked(ipc.projectForgePrs).mockResolvedValueOnce(prsOk([pr(9)]));
+      const todos = refreshForgeLists([assigned("p1"), mine("p1")]);
+
+      // The dialog does not join the batch, and a second dialog asking
+      // meanwhile joins the first dialog's fetch rather than a third.
+      const first = fetchForgeList(mine("p1"), { urgent: true });
+      const second = fetchForgeList(mine("p1"), { urgent: true });
+      expect(second).toBe(first);
+      // It answers while the batch is still out.
+      expect((await first).prs.map((p) => p.number)).toEqual([9]);
+      expect(ipc.projectForgePrs).toHaveBeenCalledTimes(1);
+      batch.resolve([issuesOk([issue(1)]), prsOk([pr(2)])]);
+      await todos;
+      // The batch does not overwrite the list the dialog re-fetched.
+      expect(cachedForgeList(mine("p1"))?.prs.map((p) => p.number)).toEqual([9]);
+      expect(cachedForgeList(assigned("p1"))?.issues.map((i) => i.number)).toEqual([1]);
+    });
+
+    it("records a thrown batch on every list in it", async () => {
+      vi.mocked(ipc.projectForgeLists).mockRejectedValueOnce(new Error("ipc down"));
+      await refreshForgeLists([assigned("p1"), mine("p1")]);
+      const { entries } = useForgeLists.getState();
+      expect(entries[forgeListKey(assigned("p1"))].status).toBe("error");
+      expect(entries[forgeListKey(mine("p1"))].errorMessage).toContain("ipc down");
+    });
   });
 
   it("treats a missing limit as the IPC's default, so both spellings are one query", () => {

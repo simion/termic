@@ -19,7 +19,7 @@ import {
 import type { MemberPrLookup, PrStatus, Task } from "@/lib/types";
 import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, prRef } from "@/lib/forge";
 import { openPath } from "@/lib/ipc";
-import { usePr, watchTickNow } from "@/store/pr";
+import { batchable, usePr, watchTickNow } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -128,10 +128,15 @@ export function PrCard({ task }: { task: Task }) {
     if (isFocused && !wasFocused.current) refresh(task.id, true);
     wasFocused.current = isFocused;
   }, [isFocused, task.id, refresh]);
+  // A task the batched background pass covers is already polled every
+  // tick, so the card adds nothing but a second call. The tick is a timer,
+  // not a user: background, so a GitHub rate pause holds it (forge_rate.rs).
+  const covered = batchable(task);
   useEffect(() => {
-    const t = window.setInterval(() => refresh(task.id, true), POLL_MS);
+    if (covered) return;
+    const t = window.setInterval(() => refresh(task.id, true, true), POLL_MS);
     return () => window.clearInterval(t);
-  }, [task.id, refresh]);
+  }, [task.id, covered, refresh]);
 
   const lookup = entry?.lookup ?? null;
 
@@ -391,7 +396,7 @@ export function MemberPrRows({ task }: { task: Task }) {
   useEffect(() => {
     if (!task.is_main_checkout || !hasMembers) return;
     void refresh(task.id);
-    const t = window.setInterval(() => refresh(task.id, true), POLL_MS);
+    const t = window.setInterval(() => refresh(task.id, true, true), POLL_MS);
     return () => window.clearInterval(t);
   }, [task.id, task.is_main_checkout, hasMembers, refresh]);
   if (!members?.length) return null;

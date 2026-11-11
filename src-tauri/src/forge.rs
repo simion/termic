@@ -103,21 +103,7 @@ pub fn provider_for_remote(url: &str) -> Option<&'static str> {
         if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
             return Some(AZURE);
         }
-        // Lazily probe on first use: a PR poll can land before the app's
-        // startup detect() has finished, and a self-hosted host would
-        // otherwise be misread as "unsupported" until the next refresh.
-        let known = {
-            let cached = host_map().lock().unwrap().clone();
-            match cached {
-                Some(m) => m,
-                None => {
-                    let m = probe_authed_hosts();
-                    *host_map().lock().unwrap() = Some(m.clone());
-                    m
-                }
-            }
-        };
-        if let Some(p) = known.get(&host) {
+        if let Some(p) = authed_hosts().get(&host) {
             return Some(p);
         }
     }
@@ -129,6 +115,18 @@ pub fn provider_for_remote(url: &str) -> Option<&'static str> {
         return Some(GITLAB);
     }
     None
+}
+
+/// `host_map`, probed on first use: a PR poll can land before the app's
+/// startup detect() has finished, and a self-hosted host would otherwise be
+/// misread as "unsupported" until the next refresh.
+fn authed_hosts() -> HashMap<String, &'static str> {
+    let cached = host_map().lock().unwrap().clone();
+    cached.unwrap_or_else(|| {
+        let m = probe_authed_hosts();
+        *host_map().lock().unwrap() = Some(m.clone());
+        m
+    })
 }
 
 /// Run `auth status` for the CLIs that have one (gh, glab) and collect the
@@ -224,6 +222,53 @@ fn reprobe_bin(name: &str) -> Option<String> {
 }
 
 fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::process::Output> {
+    cli_command(bin, args, cwd).output()
+}
+
+/// `run`, killed at `timeout`. For `gh api`, whose callers include the
+/// background poller: one stalled connection would otherwise hold its pass,
+/// and every later one, for the rest of the session. No sleep-polling (bear
+/// trap 9): a waiter thread blocks on the child, the caller on a channel.
+fn run_bounded(bin: &str, args: &[&str], timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    let mut cmd = cli_command(bin, args, None);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::proc_ctl::new_group(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let pid = child.id() as i32;
+    // Drained on their own threads, so a large answer cannot fill a pipe and
+    // stall the child into a timeout.
+    let drain = |r: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = r {
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let out_h = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let err_h = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let status = match rx.recv_timeout(timeout) {
+        Ok(r) => r?,
+        Err(_) => {
+            crate::proc_ctl::signal_group(pid, crate::proc_ctl::Sig::Kill);
+            let _ = rx.recv();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out after {}s", timeout.as_secs())));
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_h.join().unwrap_or_default(),
+        stderr: err_h.join().unwrap_or_default(),
+    })
+}
+
+fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Command {
     let mut cmd = crate::proc_ctl::command(bin);
     cmd.args(args)
         // Login-shell PATH so the CLI can find its own helpers (git,
@@ -244,7 +289,7 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    cmd.output()
+    cmd
 }
 
 // ───────────────────────── gh api (budgeted) ─────────────────────────
@@ -288,6 +333,15 @@ fn parse_api_output(out: &[u8]) -> Option<ApiResponse> {
     Some(ApiResponse { status, headers, body: rest.to_string() })
 }
 
+/// Past GitHub's own 10s GraphQL timeout with room for a slow network.
+const GH_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// github.com, or a host `gh auth status` reported. Pure, for the tests.
+fn github_host_allowed(host: &str, authed: &HashMap<String, &'static str>) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == "github.com" || authed.get(&host) == Some(&GITHUB)
+}
+
 fn rate_limited_message(host: &str, until: u64) -> String {
     let at = chrono::DateTime::from_timestamp(until as i64, 0)
         .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
@@ -299,10 +353,17 @@ fn rate_limited_message(host: &str, until: u64) -> String {
 /// A 304 is a success with an empty body. A limit refusal pauses the host's
 /// background work (forge_rate) and comes back as an error naming the time.
 pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Bucket, args: &[&str]) -> Result<ApiResponse, ForgeError> {
+    // The host comes from a task's stored PR url or a project's remote, both
+    // of which an agent in a task can write. `gh pr view` in the repo only
+    // ever talked to hosts gh is signed in to; `--hostname` would send to
+    // any, so only those are allowed here.
+    if !github_host_allowed(host, &authed_hosts()) {
+        return Err(ForgeError::Other(format!("{host} is not a GitHub host gh is signed in to.")));
+    }
     let bin = reprobe_bin("gh").ok_or(ForgeError::CliMissing("gh"))?;
     let mut full = vec!["api", "--hostname", host, "--include"];
     full.extend_from_slice(args);
-    let o = run(&bin, &full, None).map_err(|e| ForgeError::Other(e.to_string()))?;
+    let o = run_bounded(&bin, &full, GH_API_TIMEOUT).map_err(|e| ForgeError::Other(format!("gh api: {e}")))?;
     let Some(resp) = parse_api_output(&o.stdout) else {
         return Err(classify_failure(GITHUB, &o));
     };
@@ -315,7 +376,7 @@ pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Buck
         body: &resp.body,
     });
     if let crate::forge_rate::Verdict::Limited { until } = verdict {
-        return Err(ForgeError::Other(rate_limited_message(host, until)));
+        return Err(ForgeError::RateLimited(rate_limited_message(host, until)));
     }
     if resp.status == 401 {
         return Err(ForgeError::Auth(format!(
@@ -746,6 +807,10 @@ pub enum ForgeError {
     Auth(String),
     /// Anything else — network, unexpected output, …
     Other(String),
+    /// GitHub refused on a rate limit (forge_rate has paused the host). The
+    /// message names when termic will try again. Its own arm so a batch can
+    /// stop instead of retrying the same refusal one item at a time.
+    RateLimited(String),
 }
 
 fn stderr_of(o: &std::process::Output) -> String {
@@ -961,7 +1026,11 @@ pub fn github_remote_slug(url: &str) -> Option<(String, String)> {
     let mut it = path.rsplit('/');
     let repo = it.next()?.to_string();
     let owner = it.next()?.to_string();
-    (!owner.is_empty() && !repo.is_empty()).then_some((owner, repo))
+    // GitHub's own charset. Both land in `repo:` search qualifiers, where a
+    // space or a colon would add terms to a query other repos share, so a
+    // remote outside it is no slug (the caller takes the CLI path).
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (ok(&owner) && ok(&repo)).then_some((owner, repo))
 }
 
 /// Which list, as the picker and Todos name them.
@@ -1107,17 +1176,22 @@ fn parse_lists(data: &serde_json::Value, lists: &[RepoList], aliases: &[Alias]) 
             Alias::Search(kind) => {
                 for node in a["nodes"].as_array().unwrap_or(&empty) {
                     let Some(name) = node["repository"]["nameWithOwner"].as_str() else { continue };
-                    let Some(i) = lists.iter().position(|l| l.kind == *kind
-                        && format!("{}/{}", l.owner, l.repo).eq_ignore_ascii_case(name)) else { continue };
-                    let cap = lists[i].limit as usize;
-                    match &mut out[i] {
-                        ListRows::Issues(v) if v.len() < cap => {
-                            v.extend(parse_github_issues(&issue_nodes_as_gh(std::slice::from_ref(node))));
+                    // Every list asking for this repo and scope, not just the
+                    // first: two projects can share a remote (two clones).
+                    for (i, l) in lists.iter().enumerate() {
+                        if l.kind != *kind || !format!("{}/{}", l.owner, l.repo).eq_ignore_ascii_case(name) {
+                            continue;
                         }
-                        ListRows::Prs(v) if v.len() < cap => {
-                            v.extend(parse_github_prs(&serde_json::Value::Array(vec![node.clone()])));
+                        let cap = l.limit as usize;
+                        match &mut out[i] {
+                            ListRows::Issues(v) if v.len() < cap => {
+                                v.extend(parse_github_issues(&issue_nodes_as_gh(std::slice::from_ref(node))));
+                            }
+                            ListRows::Prs(v) if v.len() < cap => {
+                                v.extend(parse_github_prs(&serde_json::Value::Array(vec![node.clone()])));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
@@ -2100,6 +2174,15 @@ fn cached_host_for(cwd: &Path) -> String {
         .find(|(k, _)| k.starts_with(&prefix))
         .and_then(|(_, hit)| host_of_remote(&hit.remote_url))
         .unwrap_or_else(|| "github.com".into())
+}
+
+/// Whether background work for the repo at `cwd` waits out a GitHub rate
+/// pause (forge_rate). `provider` is the task's recorded forge; unset means
+/// a legacy record, gated like GitHub, and a host the ledger has never seen
+/// is never paused. Cheap: the cached provider answer, no subprocess.
+pub fn background_held(provider: Option<&str>, cwd: &Path) -> bool {
+    provider.map_or(true, |p| p == GITHUB)
+        && crate::forge_rate::background_gate(&cached_host_for(cwd), crate::forge_rate::Bucket::Graphql).is_err()
 }
 
 /// Charge one legacy `gh` CLI call (which cannot report its cost) to the
@@ -3911,6 +3994,10 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(github_remote_slug("https://github.com/acme/app"), Some(("acme".into(), "app".into())));
         assert_eq!(github_remote_slug("ssh://git@ghe.acme.com:22/team/svc.git/"), Some(("team".into(), "svc".into())));
         assert_eq!(github_remote_slug("https://github.com/acme"), None);
+        // Outside GitHub's charset: these would add terms to a shared search.
+        assert_eq!(github_remote_slug("https://github.com/acme/app is:closed"), None);
+        assert_eq!(github_remote_slug("https://github.com/ac:me/app"), None);
+        assert_eq!(github_remote_slug("git@github.com:acme/my_app.v2.git"), Some(("acme".into(), "my_app.v2".into())));
     }
 
     #[test]
@@ -3971,6 +4058,46 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(api.iter().map(|p| p.number).collect::<Vec<_>>(), vec![3]);
         let ListRows::Issues(issues) = &out[2] else { panic!() };
         assert_eq!((issues[0].number, issues[0].comments, issues[0].labels.clone()), (5, 3, vec!["bug".to_string()]));
+    }
+
+    #[test]
+    fn two_lists_on_one_repo_and_scope_both_get_the_search_rows() {
+        // Two projects cloned from the same remote ask for the same list.
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+        ];
+        let (_, aliases) = lists_selection(&lists);
+        let data = serde_json::json!({ "a0": { "nodes": [{
+            "number": 9, "title": "PR 9", "url": "https://github.com/acme/app/pull/9", "body": "",
+            "author": { "login": "alice" }, "headRefName": "feat", "isCrossRepository": false,
+            "isDraft": false, "updatedAt": "2026-01-01T00:00:00Z", "repository": { "nameWithOwner": "acme/app" } }] } });
+        for rows in parse_lists(&data, &lists, &aliases) {
+            let ListRows::Prs(prs) = rows else { panic!() };
+            assert_eq!(prs.iter().map(|p| p.number).collect::<Vec<_>>(), vec![9]);
+        }
+    }
+
+    #[test]
+    fn gh_api_only_talks_to_github_com_and_signed_in_github_hosts() {
+        let authed: HashMap<String, &'static str> =
+            [("ghe.acme.com".to_string(), GITHUB), ("gitlab.example.io".to_string(), GITLAB)].into();
+        assert!(github_host_allowed("github.com", &authed));
+        assert!(github_host_allowed("GHE.acme.com", &authed));
+        // A GitLab host, or one an agent wrote into a remote, is refused.
+        assert!(!github_host_allowed("gitlab.example.io", &authed));
+        assert!(!github_host_allowed("github.corp.net", &authed));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_bounded_run_is_killed_at_its_timeout() {
+        let t = std::time::Instant::now();
+        let r = run_bounded("sleep", &["5"], std::time::Duration::from_millis(200));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3));
+        let o = run_bounded("echo", &["hi"], std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "hi");
     }
 
     /// Live check of the GraphQL termic sends, against the signed-in `gh`.

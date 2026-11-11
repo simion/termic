@@ -1423,7 +1423,7 @@ export interface ForgeRateWindow {
   reset_at: number;
 }
 export interface ForgeFeatureSpend {
-  /** "pr_status" | "lists" | "comments" | "notifications" | ... */
+  /** "pr_status" | "lists" | "comments" */
   feature: string;
   cost: number;
   /** The part of `cost` that is a guess (legacy CLI calls report none). */

@@ -87,7 +87,6 @@ export default {
         pr_status: "PR status",
         lists: "issue and PR lists",
         comments: "PR comments",
-        notifications: "notifications",
       },
     },
     desktop: {

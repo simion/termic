@@ -15619,31 +15619,21 @@ fn pr_lookup_at(
             message: String::new(),
             pr,
         },
-        Err(forge::ForgeError::CliMissing(cli)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "cli-missing".into(),
-            message: cli_missing_message(provider, &cli, &format!(
-                "see and create {}",
-                if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
-            )),
-            pr: None,
-        },
-        Err(forge::ForgeError::Auth(msg)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "cli-unauthed".into(),
-            message: msg,
-            pr: None,
-        },
-        Err(forge::ForgeError::Other(msg)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "error".into(),
-            message: msg,
-            pr: None,
-        },
+        Err(e) => pr_lookup_failed(provider, remote_url, e),
     }
+}
+
+/// A lookup that failed, with the status the PR card turns into a hint.
+fn pr_lookup_failed(provider: &str, remote_url: String, e: forge::ForgeError) -> PrLookup {
+    let (status, message) = match e {
+        forge::ForgeError::CliMissing(cli) => ("cli-missing", cli_missing_message(provider, &cli, &format!(
+            "see and create {}",
+            if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
+        ))),
+        forge::ForgeError::Auth(msg) => ("cli-unauthed", msg),
+        forge::ForgeError::Other(msg) | forge::ForgeError::RateLimited(msg) => ("error", msg),
+    };
+    PrLookup { provider: Some(provider.to_string()), remote_url, status: status.into(), message, pr: None }
 }
 
 /// Whether a poll's PR differs from what the task record caches. The
@@ -15705,18 +15695,19 @@ struct TaskPrLookup {
 ///   whose PR the by-branch lookup finds;
 /// - **missing**: deleted repo, wrong number, lost access.
 ///
-/// `background`: a poller, not a user. Hosts whose rate gate is closed are
-/// skipped entirely (no batch, no per-task calls) and their tasks are left
-/// out of the answer, so the caller keeps what it had.
-fn pr_lookup_batch(ids: &[String], background: bool) -> Vec<TaskPrLookup> {
+/// Background work: hosts whose rate gate is closed are skipped entirely (no
+/// batch, no per-task calls) and their tasks are left out of the answer, so
+/// the caller keeps what it had. A batch GitHub refuses on a limit is
+/// skipped the same way. Any other failure answers each of its tasks with
+/// that failure's status (cli-missing, cli-unauthed, error), as the
+/// per-task path would, rather than fanning out into one call per task.
+fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
     let all = load_tasks_all();
     let tasks: Vec<&Task> = ids.iter()
         .filter_map(|id| all.iter().find(|t| &t.id == id))
         .filter(|t| !t.is_main_checkout)
         .collect();
-    let gate_closed = |host: &str| {
-        background && forge_rate::background_gate(host, forge_rate::Bucket::Graphql).is_err()
-    };
+    let gate_closed = |host: &str| forge_rate::background_gate(host, forge_rate::Bucket::Graphql).is_err();
 
     let mut by_host: std::collections::BTreeMap<String, Vec<(&Task, forge::PrRef)>> = Default::default();
     let mut single: Vec<&Task> = Vec::new();
@@ -15739,11 +15730,16 @@ fn pr_lookup_batch(ids: &[String], background: bool) -> Vec<TaskPrLookup> {
             let refs: Vec<forge::PrRef> = chunk.iter().map(|(_, r)| r.clone()).collect();
             let answers = match forge::github_pr_status_batch(&host, "pr_status", &refs) {
                 Ok(a) => a,
-                // A background batch that failed (a limit, the network) does
-                // not fan out into per-task calls that would fail the same way.
-                Err(_) if background => continue,
-                Err(_) => {
-                    single.extend(chunk.iter().map(|(t, _)| *t));
+                // The gate is closed now; the next pass skips the host.
+                Err(forge::ForgeError::RateLimited(_)) => break,
+                Err(e) => {
+                    let failed = pr_lookup_failed(forge::GITHUB, String::new(), e);
+                    eprintln!("[pr] batch status on {host} failed ({}): {}", failed.status, failed.message);
+                    for (t, _) in chunk {
+                        let path = Path::new(&t.path);
+                        let (_, remote_url) = forge::provider_for_repo(path, &detect_default_remote(path));
+                        out.push(TaskPrLookup { id: t.id.clone(), lookup: PrLookup { remote_url, ..failed.clone() } });
+                    }
                     continue;
                 }
             };
@@ -15773,12 +15769,8 @@ fn pr_lookup_batch(ids: &[String], background: bool) -> Vec<TaskPrLookup> {
 
     for t in single {
         let path = Path::new(&t.path);
-        if background {
-            let (provider, remote_url) = forge::provider_for_repo(path, &detect_default_remote(path));
-            let host = forge::host_of_remote(&remote_url).unwrap_or_default();
-            if provider == Some(forge::GITHUB) && gate_closed(&host) {
-                continue;
-            }
+        if forge::background_held(t.pr_provider.as_deref(), path) {
+            continue;
         }
         let lookup = pr_lookup_at(path, t.pr_number, t.pr_provider.as_deref());
         persist_pr_identity(t, &lookup);
@@ -15899,7 +15891,7 @@ fn issue_lookup_blocking(project_id: &str, limit: u32, scope: forge::IssueScope)
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
-        Err(forge::ForgeError::Other(msg)) => Ok(with("error", msg, Vec::new())),
+        Err(forge::ForgeError::Other(msg) | forge::ForgeError::RateLimited(msg)) => Ok(with("error", msg, Vec::new())),
     }
 }
 
@@ -15963,7 +15955,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>, scope: 
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
-        Err(forge::ForgeError::Other(msg)) => Ok(with("error", msg, Vec::new())),
+        Err(forge::ForgeError::Other(msg) | forge::ForgeError::RateLimited(msg)) => Ok(with("error", msg, Vec::new())),
     }
 }
 
@@ -16117,7 +16109,8 @@ enum ForgeListAnswer {
 /// (GitLab, Azure, no forge, a limit past one GraphQL page) take the
 /// per-project CLI path, three at a time. A failed GitHub query falls back
 /// to that path too, which is also what turns the failure into the usual
-/// "cli-missing" / "cli-unauthed" statuses.
+/// "cli-missing" / "cli-unauthed" statuses, except a rate limit, which
+/// answers each of its lists with the limit instead of asking again.
 fn forge_lists_blocking(queries: &[ForgeListQuery]) -> Vec<ForgeListAnswer> {
     let projects = load_projects_all();
     let limit_of = |q: &ForgeListQuery| if q.kind == "issues" {
@@ -16167,6 +16160,23 @@ fn forge_lists_blocking(queries: &[ForgeListQuery]) -> Vec<ForgeListAnswer> {
                     });
                 }
             }
+            // GitHub said stop: the per-project CLI path would only ask
+            // again, list by list. Each list says why instead.
+            Err(forge::ForgeError::RateLimited(message)) => {
+                for (i, list, remote_url) in items {
+                    let (provider, status) = (Some(forge::GITHUB.to_string()), "error".to_string());
+                    out[i] = Some(match list.kind {
+                        forge::ListKind::Issues(_) => ForgeListAnswer::Issues(IssueLookup {
+                            provider, remote_url, status, message: message.clone(), issues: Vec::new(),
+                        }),
+                        forge::ListKind::Prs(_) => ForgeListAnswer::Prs(PrPickList {
+                            provider, remote_url, status, message: message.clone(), prs: Vec::new(),
+                        }),
+                    });
+                }
+            }
+            // Anything else falls back, which is also what turns it into
+            // the usual cli-missing / cli-unauthed statuses.
             Err(_) => single.extend(items.iter().map(|(i, _, _)| *i)),
         }
     }
@@ -16249,20 +16259,31 @@ fn branch_then_number<T, E>(
     }
 }
 
-/// PR status for many tasks in one call: the background poller's path.
-/// See `pr_lookup_batch`; tasks a closed rate gate skipped are absent.
+/// PR status for many tasks in one call: the background poller's path, so
+/// always rate-gated. See `pr_lookup_batch`; tasks a closed gate skipped are
+/// absent.
 #[tauri::command]
-async fn task_pr_status_batch(ids: Vec<String>, background: Option<bool>) -> Result<Vec<TaskPrLookup>, String> {
-    tauri::async_runtime::spawn_blocking(move || pr_lookup_batch(&ids, background.unwrap_or(false)))
+async fn task_pr_status_batch(ids: Vec<String>) -> Result<Vec<TaskPrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || pr_lookup_batch(&ids))
         .await
         .map_err(|e| e.to_string())
 }
 
+/// `background`: a poller, not a user. A GitHub task whose host is paused
+/// (forge_rate) answers None without calling anything.
 #[tauri::command]
-async fn task_pr_status(id: String) -> Result<PrLookup, String> {
-    tauri::async_runtime::spawn_blocking(move || pr_lookup_blocking(&id))
-        .await
-        .map_err(|e| e.to_string())?
+async fn task_pr_status(id: String, background: Option<bool>) -> Result<Option<PrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if background.unwrap_or(false) {
+            let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+            if forge::background_held(w.pr_provider.as_deref(), Path::new(&w.path)) {
+                return Ok(None);
+            }
+        }
+        pr_lookup_blocking(&id).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Live PR/MR status for each non-host member of a multi-repo task. Same
@@ -16338,7 +16359,7 @@ async fn task_pr_create(
                     if provider == forge::GITLAB { "a merge request" } else { "a pull request" }
                 )))
             }
-            Err(forge::ForgeError::Auth(m)) | Err(forge::ForgeError::Other(m)) => return Err(m),
+            Err(forge::ForgeError::Auth(m) | forge::ForgeError::Other(m) | forge::ForgeError::RateLimited(m)) => return Err(m),
         };
         // Persist identity immediately — the follow-up lookup also does
         // this, but creation should never lose the URL even if the status
@@ -16361,19 +16382,23 @@ async fn task_pr_create(
 /// Every comment on the task's PR/MR (discussion + review +
 /// inline), oldest first, normalized timestamps. Requires the PR
 /// identity to be known (a status poll or create already cached it).
+/// `background` (the comment watcher): None while a GitHub host is paused.
 #[tauri::command]
-async fn task_pr_comments(id: String) -> Result<Vec<forge::PrComment>, String> {
+async fn task_pr_comments(id: String, background: Option<bool>) -> Result<Option<Vec<forge::PrComment>>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let provider = w.pr_provider.clone().ok_or("no PR known for this task yet")?;
         let number = w.pr_number.ok_or("no PR known for this task yet")?;
         let cwd = PathBuf::from(&w.path);
-        forge::pr_comments(&provider, &cwd, number).map_err(|e| match e {
+        if background.unwrap_or(false) && forge::background_held(Some(&provider), &cwd) {
+            return Ok(None);
+        }
+        forge::pr_comments(&provider, &cwd, number).map(Some).map_err(|e| match e {
             forge::ForgeError::CliMissing(cli) => cli_missing_message(&provider, &cli, &format!(
                 "read {} comments",
                 if provider == forge::GITLAB { "merge request" } else { "pull request" }
             )),
-            forge::ForgeError::Auth(m) | forge::ForgeError::Other(m) => m,
+            forge::ForgeError::Auth(m) | forge::ForgeError::Other(m) | forge::ForgeError::RateLimited(m) => m,
         })
     })
     .await

@@ -68,11 +68,21 @@ not get the whole limit, so it budgets itself (`src-tauri/src/forge_rate.rs`):
   from the `x-ratelimit-*` headers or the GraphQL `rateLimit` object) is the
   account's, everyone's spend included. Termic's own spend is a one-hour ring
   tagged by feature. Settings > General shows both, per host.
-- **Background work asks first** (`forge_rate::background_gate`). It is held
-  while GitHub has refused on a limit, while the account has under 15% left
-  (`FLOOR`), or while termic has spent 20% of the GraphQL limit (`TERMIC_SHARE`)
-  or 300 REST requests this hour. A user action does not ask. A pause shows as
-  the top-bar pill until it lifts.
+- **Background work asks first** (`forge_rate::background_gate`, per host,
+  GraphQL bucket). It is held while GitHub has refused on a limit, while the
+  account has under 15% left (`FLOOR`), or while termic has spent 20% of the
+  GraphQL limit (`TERMIC_SHARE`) this hour. Background means a timer, not a
+  user: the batched PR pass, the per-task poll, the PR card's minute tick,
+  turn-end PR discovery and the comment watcher. Each passes `background` and
+  **Rust** decides (`forge::background_held`); the webview's mirror of the
+  ledger only draws the pill, which shows until the pause lifts. A user
+  action (focus, push, the refresh button, a dialog) does not ask. The Core
+  cap is shown in Settings but nothing gates on it.
+- **A pause is never throttled away.** The `forge-rate-changed` event is
+  throttled to one per 2s, except when a host's pause starts, ends or moves.
+  A budget or floor pause starts on an ordinary answer, and if the throttle
+  dropped that one, Rust would stop background work with nothing left to
+  announce it.
 - **GitHub's limit replies are followed exactly.** `retry-after` first, then
   `x-ratelimit-reset` when nothing is left, otherwise a minute doubling per
   repeat (secondary limits). A GraphQL primary limit comes back as **HTTP
@@ -81,10 +91,14 @@ not get the whole limit, so it budgets itself (`src-tauri/src/forge_rate.rs`):
 - **Batch, do not fan out.** GraphQL costs per connection, minimum 1 point a
   call, so one aliased query for 50 PRs costs about what one PR costs. A new
   GitHub read that runs once per task or per project is the regression to
-  look for.
-- **A 304 is free.** A conditional request answered `304 Not Modified` does
-  not count against the primary limit, which is what makes a change feed
-  (notifications with `If-Modified-Since`) cheap to poll.
+  look for, and so is a failed batch that retries item by item: a limit
+  refusal skips the host (a typed `ForgeError::RateLimited`), and any other
+  failure answers each item with its status instead of fanning out.
+- **`gh api` is a trust boundary.** Its host comes from a stored PR url or a
+  project remote, both writable by an agent in a task, so `forge::gh_api`
+  only talks to github.com or a host `gh auth status` reports, and kills the
+  call at 45s. Pause and reset times a host sends are capped a day ahead, and
+  a reported cost at 10,000.
 
 ## Worktree creation
 

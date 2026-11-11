@@ -1008,12 +1008,16 @@ export const forgeRateStatus = (probe = false) =>
  *  the forge CLI - poll at a slow cadence (the pr store owns this). */
 export const taskPrStatus = (id: string) =>
   invoke<PrLookup>("task_pr_status", { id });
-/** PR status for many tasks in one call (the background poller). GitHub
- *  tasks with a PR url share one GraphQL query per host; the rest take the
- *  per-task path. `background` skips hosts whose rate gate is closed, and
- *  their tasks are absent from the answer. */
-export const taskPrStatusBatch = (ids: string[], background = false) =>
-  invoke<TaskPrLookup[]>("task_pr_status_batch", { ids, background });
+/** `taskPrStatus` for a poller rather than a user: null, with nothing
+ *  called, while the task's GitHub host is rate-paused (forge_rate.rs). */
+export const taskPrStatusBackground = (id: string) =>
+  invoke<PrLookup | null>("task_pr_status", { id, background: true });
+/** PR status for many tasks in one call (the background poller, so always
+ *  rate-gated). GitHub tasks with a PR url share one GraphQL query per host;
+ *  the rest take the per-task path. Tasks on a paused host are absent from
+ *  the answer. */
+export const taskPrStatusBatch = (ids: string[]) =>
+  invoke<TaskPrLookup[]>("task_pr_status_batch", { ids });
 /** Per-member PR/MR lookups for a multi-repo task - one entry per on-disk
  *  NON-host composition member (the host is `task_pr_status`'s own lookup;
  *  a member whose checkout vanished produces no entry). Same
@@ -1063,6 +1067,10 @@ export const taskPrCreate = (id: string, title: string, body: string, base: stri
  *  identity to be cached (a status poll or create already ran). */
 export const taskPrComments = (id: string) =>
   invoke<PrComment[]>("task_pr_comments", { id });
+/** The comment watcher's read: null while the task's GitHub host is
+ *  rate-paused (forge_rate.rs). */
+export const taskPrCommentsBackground = (id: string) =>
+  invoke<PrComment[] | null>("task_pr_comments", { id, background: true });
 export const taskSetPrWatch = (id: string, watch: boolean) =>
   invoke<void>("task_set_pr_watch", { id, watch });
 export const taskSetPrCommentsSeen = (id: string, iso: string) =>

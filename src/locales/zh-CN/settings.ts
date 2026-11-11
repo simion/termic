@@ -86,7 +86,6 @@ export default {
         pr_status: "PR 状态",
         lists: "issue 和 PR 列表",
         comments: "PR 评论",
-        notifications: "通知",
       },
     },
     desktop: {

@@ -2,12 +2,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mocks must be declared before the modules under test are imported.
-vi.mock("@/lib/ipc", () => ({
+vi.mock("@/lib/ipc", () => {
+  // The background variants answer like the foreground ones unless a test
+  // says otherwise (null = the host is rate-paused, decided in Rust).
+  const taskPrStatus = vi.fn();
+  const taskPrComments = vi.fn().mockResolvedValue([]);
+  return {
   detectForges: vi.fn().mockResolvedValue([]),
-  taskPrStatus: vi.fn(),
+  taskPrStatus,
+  taskPrStatusBackground: vi.fn((id: string) => taskPrStatus(id)),
   taskPrStatusBatch: vi.fn().mockResolvedValue([]),
   taskMemberPrStatus: vi.fn().mockResolvedValue([]),
-  taskPrComments: vi.fn().mockResolvedValue([]),
+  taskPrComments,
+  taskPrCommentsBackground: vi.fn((id: string) => taskPrComments(id)),
   taskSetPrWatch: vi.fn().mockResolvedValue(undefined),
   taskSetPrCommentsSeen: vi.fn().mockResolvedValue(undefined),
   ptyWrite: vi.fn().mockResolvedValue(undefined),
@@ -19,7 +26,8 @@ vi.mock("@/lib/ipc", () => ({
   tasksList: vi.fn().mockResolvedValue([]),
   settingsLoad: vi.fn().mockResolvedValue({ agents: [] }),
   detectClis: vi.fn().mockResolvedValue([]),
-}));
+  };
+});
 vi.mock("@/lib/tabFocus", () => ({ focusTerminalTab: vi.fn() }));
 vi.mock("@/lib/agents", () => ({
   agentDisplayName: vi.fn((cli: string) => cli),
@@ -39,11 +47,10 @@ import {
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { useForgeRate } from "@/store/forgeRate";
 import { usePrefs } from "@/store/prefs";
 import * as ipc from "@/lib/ipc";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
-import type { ForgeProvider, MemberPrLookup, PrLookup, Task, Project } from "@/lib/types";
+import type { ForgeProvider, MemberPrLookup, PrLookup, Task, TaskPrLookup, Project } from "@/lib/types";
 
 const lookupWith = (
   state: "open" | "merged" | "closed" | "draft" | null,
@@ -934,7 +941,6 @@ describe("background status poller (#281)", () => {
       await prStatusPassNow();
       expect(ipc.taskPrStatusBatch).toHaveBeenCalledTimes(1);
       expect(vi.mocked(ipc.taskPrStatusBatch).mock.calls[0][0]).toHaveLength(30);
-      expect(vi.mocked(ipc.taskPrStatusBatch).mock.calls[0][1]).toBe(true);
       expect(ipc.taskPrStatus).not.toHaveBeenCalled();
       expect(usePr.getState().byTask["ws30"].lookup?.pr?.number).toBe(30);
       expect(usePr.getState().byTask["ws30"].loading).toBe(false);
@@ -970,14 +976,48 @@ describe("background status poller (#281)", () => {
       expect(pollableTasks().map(w => w.id)).toEqual(["ws2"]);
     });
 
-    it("holds per-task GitHub polls while a host is paused, but not GitLab ones", async () => {
+    it("asks Rust per task as background work, and a paused answer only records the attempt", async () => {
       seedTasks({ ...KNOWN }, { pr_number: 4, pr_provider: "gitlab" });
-      useForgeRate.setState({ hosts: [{ host: "github.com", buckets: [],
-        paused: { until: Date.now() / 1000 + 600, kind: "floor", reason: "" } }] });
-      vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+      usePr.setState({ byTask: { ws1: { lookup: lookupWith("open"), loading: false, fetchedAt: 0 } } });
+      // Rust answers null for a task whose GitHub host is paused.
+      vi.mocked(ipc.taskPrStatusBackground).mockImplementation(async id => id === "ws1" ? null : lookupWith("open", 4));
       await prStatusPassNow();
-      expect(vi.mocked(ipc.taskPrStatus).mock.calls.map(c => c[0])).toEqual(["ws2"]);
-      useForgeRate.setState({ hosts: [] });
+      expect(vi.mocked(ipc.taskPrStatusBackground).mock.calls.map(c => c[0]).sort()).toEqual(["ws1", "ws2"]);
+      expect(ipc.taskPrStatus).not.toHaveBeenCalled();
+      const ws1 = usePr.getState().byTask["ws1"];
+      expect(ws1.lookup?.pr?.state).toBe("open");
+      // The attempt counts, so a held task waits its cadence instead of
+      // staying stalest and taking a per-tick slot from other forges.
+      expect(ws1.fetchedAt).toBeGreaterThan(0);
+      expect(pollableTasks().map(w => w.id)).not.toContain("ws1");
+      vi.mocked(ipc.taskPrStatusBackground).mockImplementation(id => ipc.taskPrStatus(id));
+    });
+
+    it("does not drop a forced refresh while a batch is in flight", async () => {
+      seedTasks(URLED(1));
+      let answer!: (v: TaskPrLookup[]) => void;
+      vi.mocked(ipc.taskPrStatusBatch).mockReturnValue(new Promise(r => { answer = r; }));
+      vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
+      const pass = prStatusPassNow();
+      expect(usePr.getState().byTask["ws1"]?.loading ?? false).toBe(false);
+      // A push lands mid-batch: the forced refresh runs and its answer wins.
+      await usePr.getState().refresh("ws1", true);
+      expect(ipc.taskPrStatus).toHaveBeenCalledWith("ws1");
+      answer([{ id: "ws1", ...lookupWith("open") }]);
+      await pass;
+      expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
+    });
+
+    it("lands a whole batch in one store write", async () => {
+      seedTasks(URLED(1), URLED(2), URLED(3));
+      vi.mocked(ipc.taskPrStatusBatch).mockImplementation(async (ids: string[]) =>
+        ids.map(id => ({ id, ...lookupWith("open", Number(id.slice(2))) })));
+      let writes = 0;
+      const unsub = usePr.subscribe(() => { writes++; });
+      await prStatusPassNow();
+      unsub();
+      expect(writes).toBe(1);
+      expect(Object.keys(usePr.getState().byTask).sort()).toEqual(["ws1", "ws2", "ws3"]);
     });
 
     it("fires the merge lifecycle from a batch answer", async () => {
