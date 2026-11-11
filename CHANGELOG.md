@@ -4,6 +4,34 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.22.0] - 2026-11-11
+
+Secrets for agents, a sectioned New Task dialog, and accounts that share your MCP servers.
+
+### Features
+- Secrets (experimental): give a task a role, and its agent uses that role's tokens through a local broker without ever seeing them. Settings, Secrets holds the secrets, the roles and their rules, with a simple view, starter roles, a request tester and JSON import and export. Host env vars you name are kept out of agent tabs.
+- A terminal tab can run a Secrets role of its own, picked from the new-tab menu, with its own broker separate from the agent's.
+- The status bar's sandbox and Secrets controls are one cage chip: mode, Keychain block, role and YOLO in one popover, and Cage activity lists what was blocked, used or looked suspicious, with Allow and Undo.
+- New Task: one fixed size, with a rail of sections (Task, Repos, Agent, Isolation, Secrets) that shows each section's value and flags a warning. A disabled Create says what is missing and jumps to it.
+- New Task: extra agent arguments, and a session to resume, set when the task is created.
+- Accounts: a second Claude account gets the same MCP servers as your main one, user and project ones alike, and the MCP sign-ins it is missing, so it does not ask you to log in to each server again.
+- Accounts: rename an account (the pencil on its chip in Settings). The new name is a label only; its login stays where it is.
+- Accounts: make an account the default with the star in the footer's account panel or on its chip in Settings, and a dot marks the account this task uses, with "after restart" while a switch is waiting for one.
+- termic CLI and MCP: `send` types the message at once, even into an agent that is busy mid-turn. `--queue` (MCP `queue`) waits for the turn to end instead.
+
+### Bug fixes
+- Agents started from a Termic that was itself launched from inside Claude Code no longer inherit that session: transcript saving stays on, and they no longer pick up its effort level or session id.
+- macOS: opening many terminals no longer fails with "Too many open files" once about 50 are open across tasks.
+- The sandbox proxy tries every address a host resolves to, so a network with a broken IPv6 route no longer fails every connection with a 502.
+- Save & restart in the sandbox dialog brings back every agent in the task, not just the first.
+- Blocking the Keychain also denies keychain files outside `~/Library/Keychains`, and keeps the system services that need it reachable.
+- A caged agent told it is not logged in to gh is told that the cage is why.
+- A program placed in a worktree under the name of one Termic runs (such as `env` or `docker`) can no longer run in its place outside the sandbox.
+- opencode 2: Termic's plugin loads again, so its working and done states show ([#447](https://github.com/simion/termic/pull/447)).
+- Settings: a project's tasks folder override is no longer saved as the repo itself while its check is still running.
+- Settings: pressing Esc to close a menu or popover no longer counts toward closing Settings.
+- New Task: a branch name containing angle brackets is shown as text.
+
 ## [1.21.0] - 2026-11-05
 
 Turn a plain folder into a git repo, bind mouse buttons, a full-width markdown preview.

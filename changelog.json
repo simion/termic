@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.22.0",
+      "date": "2026-11-11",
+      "summary": "Secrets for agents, a sectioned New Task dialog, and accounts that share your MCP servers."
+    },
+    {
       "version": "1.21.0",
       "date": "2026-11-05",
       "summary": "Turn a plain folder into a git repo, bind mouse buttons, a full-width markdown preview."
