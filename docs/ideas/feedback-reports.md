@@ -125,7 +125,7 @@ repo and its tracker are public and permanent.
 
 ### Crash reports
 
-Since `panic_log.rs` writes every Rust panic to `logs/panic.log`, the app can
+Since `panic_log.rs` writes every Rust panic to `logs/panic.log` (`logs/crash.log` once renamed, see below), the app can
 detect an abnormal exit on the next launch (a panic entry newer than the last
 clean shutdown) and offer, once:
 
@@ -143,7 +143,7 @@ final text before sending.
 
 A manual report (the bug button, no crash on the last launch) has an **Attach
 recent crash log** checkbox, off by default. Ticking it adds the newest entry
-from `logs/panic.log`, and the dialog shows exactly that text.
+from `logs/crash.log`, and the dialog shows exactly that text.
 
 A **Load more** control under the preview pulls the next older entry into the
 payload, one at a time, for the case where the crash the user means is not the
@@ -157,12 +157,12 @@ app knows become placeholders. Scrubbing runs on the entries as read from the
 file, so what the user sees is what leaves the machine.
 
 Entries are separated by a fixed `=== ` header line, so reading "the newest N"
-is a split on that marker, across `panic.log` and the rotated `panic.log.1`
+is a split on that marker, across `crash.log` and the rotated `crash.log.1`
 (rotation happens past 512 KiB, so older entries can be in either file).
 
 ### Other crashes into the same log
 
-`panic.log` covers Rust panics only. The other ways Termic dies leave nothing
+Today the log (`panic.log`) covers Rust panics only. The other ways Termic dies leave nothing
 today, and three of them can be made to leave a line the same way:
 
 1. **Objective-C exceptions.** `NSSetUncaughtExceptionHandler` runs in normal
@@ -183,9 +183,11 @@ today, and three of them can be made to leave a line the same way:
 
 Each entry gets a `kind` field (`panic`, `objc-exception`, `signal`,
 `webcontent-terminated`) so the report dialog can say what it is attaching.
-The file name `panic.log` then understates what is in it. Renaming it to
-`crash.log` is a decision for whoever builds this, and it has to carry the
-existing file over.
+The file name `panic.log` then understates what is in it, so the log becomes
+**`logs/crash.log`** (rotated to `crash.log.1`, same 512 KiB cap). On first
+start the app renames an existing `panic.log` (and `panic.log.1`) to the new
+names, so no entry is lost, and `docs/data-model.md` and the `panic_log.rs`
+module follow the rename in the same change.
 
 What this still does not cover: a `SIGKILL` (the OS killing the app for memory
 or a force quit) cannot be intercepted by any handler. The macOS
@@ -227,7 +229,7 @@ in-app dialog.
 - **Contact** (the mail icon) is unchanged.
 - **After a crash**, the next launch offers a report once (see "Crash
   reports" above). It opens the same dialog, preselected as a crash report and
-  filled with the scrubbed `panic.log` entry. There is no new button for it.
+  filled with the scrubbed `crash.log` entry. There is no new button for it.
 
 No new footer icon, so the footer row does not grow. The cost is that the bug
 button now opens a dialog where it used to leave the app, one more click for
