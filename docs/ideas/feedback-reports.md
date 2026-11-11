@@ -115,7 +115,8 @@ fast abuser can overshoot). IPv6 is counted per `/64`.
 Suggestion or manual bug report:
 - type (`bug` or `suggestion`), a title, and a free-text message the user wrote
 - Termic version, OS and architecture
-- an optional checkbox for each extra, off by default
+- an optional checkbox for each extra, off by default. The one that matters
+  most is **Attach recent crash log** (see "Crash log attachment" below)
 
 Never included: project names, task names, paths, terminal contents, git
 remotes, environment variables. Anything that could carry an employer or a
@@ -138,11 +139,58 @@ scrubbed before display (home directory replaced by `~`, the project and task
 names the app knows replaced by placeholders) and the user still sees the
 final text before sending.
 
-Limits of the signal: `panic.log` covers Rust panics only. A crash from an
-Objective-C exception, a signal in a native library, or a WebContent kill
-leaves no entry, so those would need their own source (the macOS
-`DiagnosticReports` entry for the app is the obvious one, with the same
-scrubbing and consent). That is a second phase.
+### Crash log attachment
+
+A manual report (the bug button, no crash on the last launch) has an **Attach
+recent crash log** checkbox, off by default. Ticking it adds the newest entry
+from `logs/panic.log`, and the dialog shows exactly that text.
+
+A **Load more** control under the preview pulls the next older entry into the
+payload, one at a time, for the case where the crash the user means is not the
+latest one. Each entry is shown before it counts, and the body-size cap (32
+KiB) is the ceiling: when the next entry would exceed it, Load more is
+disabled and says why.
+
+Every entry goes through the same scrubbing as the post-crash flow before it is
+displayed: the home directory becomes `~`, and the project and task names the
+app knows become placeholders. Scrubbing runs on the entries as read from the
+file, so what the user sees is what leaves the machine.
+
+Entries are separated by a fixed `=== ` header line, so reading "the newest N"
+is a split on that marker, across `panic.log` and the rotated `panic.log.1`
+(rotation happens past 512 KiB, so older entries can be in either file).
+
+### Other crashes into the same log
+
+`panic.log` covers Rust panics only. The other ways Termic dies leave nothing
+today, and three of them can be made to leave a line the same way:
+
+1. **Objective-C exceptions.** `NSSetUncaughtExceptionHandler` runs in normal
+   context and receives the exception name, reason and call stack, so it can
+   append an entry like the panic hook does. This is the likeliest cause of an
+   abort in AppKit callbacks that is not a Rust panic, and it is the case the
+   panic hook cannot see.
+2. **Fatal signals** (`SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGABRT`). A signal handler
+   may only use async-signal-safe calls, so it cannot format a backtrace or
+   take a lock. It writes a fixed-size entry (time, version, signal number) to a
+   file descriptor opened at startup, then re-raises. The entry has no message
+   and no stack, but it says that it was a signal rather than a panic, which is
+   already more than a bare crash report gives.
+3. **The WebContent process being terminated.** WebKit tells its delegate when
+   it kills or loses the web process (the interface reloads from scratch, as
+   happened on 2026-11-08). A handler that logs the event with its cause costs
+   one line and explains a restart that looks like a crash.
+
+Each entry gets a `kind` field (`panic`, `objc-exception`, `signal`,
+`webcontent-terminated`) so the report dialog can say what it is attaching.
+The file name `panic.log` then understates what is in it. Renaming it to
+`crash.log` is a decision for whoever builds this, and it has to carry the
+existing file over.
+
+What this still does not cover: a `SIGKILL` (the OS killing the app for memory
+or a force quit) cannot be intercepted by any handler. The macOS
+`DiagnosticReports` entry stays the fallback for what the app cannot log
+itself, with the same scrubbing and consent, as a later phase.
 
 ## Where reports go
 
