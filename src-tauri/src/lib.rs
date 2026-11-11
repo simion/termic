@@ -15661,26 +15661,130 @@ fn pr_cache_differs(w: &Task, p: &forge::PrStatus, provider: &str) -> bool {
 fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let lookup = pr_lookup_at(Path::new(&w.path), w.pr_number, w.pr_provider.as_deref());
-    // Cache the identity on the task record so future polls (and the next
-    // app launch) can resolve by number.
-    if let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) {
-        // The title and state ride along (History searches and shows them),
-        // but a poll that saw nothing new writes nothing: this runs every
-        // few seconds per task with a PR.
-        if pr_cache_differs(&w, p, provider) {
-            let mut list = load_tasks_all();
-            if let Some(wm) = list.iter_mut().find(|x| x.id == id) {
-                wm.pr_url = Some(p.url.clone());
-                wm.pr_number = Some(p.number);
-                wm.pr_provider = Some(provider.to_string());
-                wm.pr_title = Some(p.title.clone());
-                wm.pr_state = Some(p.state.clone());
-                wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
-                let _ = save_task(wm);
+    persist_pr_identity(&w, &lookup);
+    Ok(lookup)
+}
+
+/// Cache the identity on the task record so future polls (and the next app
+/// launch) can resolve by number. The title and state ride along (History
+/// searches and shows them), but a poll that saw nothing new writes nothing:
+/// this runs every minute per task with a PR.
+fn persist_pr_identity(w: &Task, lookup: &PrLookup) {
+    let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) else { return };
+    if !pr_cache_differs(w, p, provider) {
+        return;
+    }
+    let mut list = load_tasks_all();
+    if let Some(wm) = list.iter_mut().find(|x| x.id == w.id) {
+        wm.pr_url = Some(p.url.clone());
+        wm.pr_number = Some(p.number);
+        wm.pr_provider = Some(provider.to_string());
+        wm.pr_title = Some(p.title.clone());
+        wm.pr_state = Some(p.state.clone());
+        wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
+        let _ = save_task(wm);
+    }
+}
+
+#[derive(Serialize)]
+struct TaskPrLookup {
+    id: String,
+    #[serde(flatten)]
+    lookup: PrLookup,
+}
+
+/// PR status for many tasks at once. A GitHub task whose record has a PR url
+/// goes into one GraphQL query per host (up to `PR_BATCH_MAX` PRs each);
+/// anything else takes the per-task `pr_lookup_at` path, and so does a batch
+/// answer that cannot be trusted on its own:
+///
+/// - **closed** (not merged): the by-branch lookup is what finds a
+///   replacement PR opened on the same branch, which a by-number batch never
+///   would;
+/// - **head is not the task's branch**: the task moved to another branch,
+///   whose PR the by-branch lookup finds;
+/// - **missing**: deleted repo, wrong number, lost access.
+///
+/// `background`: a poller, not a user. Hosts whose rate gate is closed are
+/// skipped entirely (no batch, no per-task calls) and their tasks are left
+/// out of the answer, so the caller keeps what it had.
+fn pr_lookup_batch(ids: &[String], background: bool) -> Vec<TaskPrLookup> {
+    let all = load_tasks_all();
+    let tasks: Vec<&Task> = ids.iter()
+        .filter_map(|id| all.iter().find(|t| &t.id == id))
+        .filter(|t| !t.is_main_checkout)
+        .collect();
+    let gate_closed = |host: &str| {
+        background && forge_rate::background_gate(host, forge_rate::Bucket::Graphql).is_err()
+    };
+
+    let mut by_host: std::collections::BTreeMap<String, Vec<(&Task, forge::PrRef)>> = Default::default();
+    let mut single: Vec<&Task> = Vec::new();
+    for t in tasks {
+        let github = t.pr_provider.as_deref().map_or(true, |p| p == forge::GITHUB);
+        match t.pr_url.as_deref().and_then(forge::parse_github_pr_url) {
+            Some((host, owner, repo, number)) if github => {
+                by_host.entry(host).or_default().push((t, forge::PrRef { owner, repo, number }));
+            }
+            _ => single.push(t),
+        }
+    }
+
+    let mut out = Vec::new();
+    for (host, items) in by_host {
+        if gate_closed(&host) {
+            continue;
+        }
+        for chunk in items.chunks(forge::PR_BATCH_MAX) {
+            let refs: Vec<forge::PrRef> = chunk.iter().map(|(_, r)| r.clone()).collect();
+            let answers = match forge::github_pr_status_batch(&host, "pr_status", &refs) {
+                Ok(a) => a,
+                // A background batch that failed (a limit, the network) does
+                // not fan out into per-task calls that would fail the same way.
+                Err(_) if background => continue,
+                Err(_) => {
+                    single.extend(chunk.iter().map(|(t, _)| *t));
+                    continue;
+                }
+            };
+            for ((t, _), answer) in chunk.iter().zip(answers) {
+                let path = Path::new(&t.path);
+                let trusted = answer.filter(|p| {
+                    p.state != "closed"
+                        && current_branch(path).map_or(true, |b| forge::branch_matches_pr(&b, &p.head, p.number))
+                });
+                let Some(pr) = trusted else {
+                    single.push(t);
+                    continue;
+                };
+                let (_, remote_url) = forge::provider_for_repo(path, &detect_default_remote(path));
+                let lookup = PrLookup {
+                    provider: Some(forge::GITHUB.to_string()),
+                    remote_url,
+                    status: "ok".into(),
+                    message: String::new(),
+                    pr: Some(pr),
+                };
+                persist_pr_identity(t, &lookup);
+                out.push(TaskPrLookup { id: t.id.clone(), lookup });
             }
         }
     }
-    Ok(lookup)
+
+    for t in single {
+        let path = Path::new(&t.path);
+        if background {
+            let (provider, remote_url) = forge::provider_for_repo(path, &detect_default_remote(path));
+            let host = forge::host_of_remote(&remote_url).unwrap_or_default();
+            if provider == Some(forge::GITHUB) && gate_closed(&host) {
+                continue;
+            }
+        }
+        let lookup = pr_lookup_at(path, t.pr_number, t.pr_provider.as_deref());
+        persist_pr_identity(t, &lookup);
+        out.push(TaskPrLookup { id: t.id.clone(), lookup });
+    }
+    out
 }
 
 /// A member's PR/MR lookup inside a multi-repo task: the `PrLookup`
@@ -16019,6 +16123,15 @@ fn branch_then_number<T, E>(
         Err(e) if knows_number => by_number().or(Err(e)),
         other => other,
     }
+}
+
+/// PR status for many tasks in one call: the background poller's path.
+/// See `pr_lookup_batch`; tasks a closed rate gate skipped are absent.
+#[tauri::command]
+async fn task_pr_status_batch(ids: Vec<String>, background: Option<bool>) -> Result<Vec<TaskPrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || pr_lookup_batch(&ids, background.unwrap_or(false)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -28088,7 +28201,7 @@ pub fn run() {
             desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, project_git_current_branch, task_git_checkout, task_git_update, task_git_update_all, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
-            detect_forges, forge_rate_status, task_pr_status, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
+            detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,

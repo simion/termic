@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/ipc", () => ({
   detectForges: vi.fn().mockResolvedValue([]),
   taskPrStatus: vi.fn(),
+  taskPrStatusBatch: vi.fn().mockResolvedValue([]),
   taskMemberPrStatus: vi.fn().mockResolvedValue([]),
   taskPrComments: vi.fn().mockResolvedValue([]),
   taskSetPrWatch: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +32,7 @@ vi.mock("@/lib/archiveTask", () => ({
 
 import {
   usePr, newCommentsSince, commentPromptFor, watchTickNow, openPrArchiveWarning,
-  pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus, tasksThatStoppedWorking, parseUnseen,
+  pollableTasks, batchable, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus, tasksThatStoppedWorking, parseUnseen,
   prFocusEligible,
   mergeAlreadyHandled,
   parsePrSnapshots, snapshotsAfter, cachedPrFor,
@@ -919,6 +920,63 @@ describe("background status poller (#281)", () => {
       snapshots: { ws1: { provider: "github", number: 7, state: "merged", checks: "passing", review: "none" } },
     });
     expect(pollableTasks().map(w => w.id)).toEqual(["ws1"]);
+  });
+
+  describe("batched GitHub pass", () => {
+    const URLED = (n: number) => ({ pr_number: n, pr_provider: "github", pr_url: `https://github.com/foo/bar/pull/${n}` }) as Partial<Task>;
+
+    it("answers every due GitHub task with one batch call, past the per-task cap", async () => {
+      const many = Array.from({ length: 30 }, (_, i) => URLED(i + 1));
+      seedTasks(...many);
+      vi.mocked(ipc.taskPrStatusBatch).mockImplementation(async (ids: string[]) =>
+        ids.map(id => ({ id, ...lookupWith("open", Number(id.slice(2))) })));
+      await prStatusPassNow();
+      expect(ipc.taskPrStatusBatch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(ipc.taskPrStatusBatch).mock.calls[0][0]).toHaveLength(30);
+      expect(vi.mocked(ipc.taskPrStatusBatch).mock.calls[0][1]).toBe(true);
+      expect(ipc.taskPrStatus).not.toHaveBeenCalled();
+      expect(usePr.getState().byTask["ws30"].lookup?.pr?.number).toBe(30);
+      expect(usePr.getState().byTask["ws30"].loading).toBe(false);
+    });
+
+    it("keeps the per-task path for tasks the batch cannot cover", () => {
+      seedTasks(URLED(1), { ...KNOWN }, { ...URLED(3), composition: [{ dir_name: "m" }] } as Partial<Task>,
+        { pr_number: 4, pr_provider: "gitlab", pr_url: "https://gitlab.example.io/a/b/-/merge_requests/4" });
+      const due = pollableTasks();
+      expect(due.filter(batchable).map(w => w.id)).toEqual(["ws1"]);
+      expect(due.filter(w => !batchable(w)).map(w => w.id).sort()).toEqual(["ws2", "ws3", "ws4"]);
+    });
+
+    it("re-polls batched tasks every tick, per-task ones every few minutes", () => {
+      seedTasks(URLED(1), { ...KNOWN });
+      const ago = (ms: number) => ({ lookup: lookupWith("open"), loading: false, fetchedAt: Date.now() - ms });
+      usePr.setState({ byTask: { ws1: ago(50_000), ws2: ago(50_000) } });
+      expect(pollableTasks().map(w => w.id)).toEqual(["ws1"]);
+    });
+
+    it("leaves a task the batch skipped (closed rate gate) due for the next tick", async () => {
+      seedTasks(URLED(1), URLED(2));
+      const old = Date.now() - 10 * 60_000;
+      usePr.setState({ byTask: {
+        ws1: { lookup: lookupWith("open", 1), loading: false, fetchedAt: old },
+        ws2: { lookup: lookupWith("open", 2), loading: false, fetchedAt: old },
+      } });
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws1", ...lookupWith("open", 1) }]);
+      await prStatusPassNow();
+      const ws2 = usePr.getState().byTask["ws2"];
+      expect(ws2.loading).toBe(false);
+      expect(ws2.fetchedAt).toBe(old);
+      expect(pollableTasks().map(w => w.id)).toEqual(["ws2"]);
+    });
+
+    it("fires the merge lifecycle from a batch answer", async () => {
+      seedTasks(URLED(7));
+      usePr.setState({ byTask: { ws1: { lookup: lookupWith("open"), loading: false, fetchedAt: 0 } } });
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws1", ...lookupWith("merged") }]);
+      await prStatusPassNow();
+      expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
+      expect(usePr.getState().snapshots["ws1"]?.state).toBe("merged");
+    });
   });
 
   it("does not re-poll a task whose refresh is still in flight", async () => {

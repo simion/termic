@@ -836,24 +836,114 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
     }
     let v: serde_json::Value = serde_json::from_slice(&o.stdout)
         .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    Ok(Some(github_pr_status_from(&v)))
+}
+
+/// A PR in `gh pr view --json` shape to a `PrStatus`. The batched GraphQL
+/// path normalizes into the same shape first, so both read one way.
+fn github_pr_status_from(v: &serde_json::Value) -> PrStatus {
     let state = match v["state"].as_str().unwrap_or("") {
         "MERGED" => "merged",
         "CLOSED" => "closed",
         _ if v["isDraft"].as_bool().unwrap_or(false) => "draft",
         _ => "open",
     };
-    let review = github_review(&v);
-    Ok(Some(PrStatus {
+    PrStatus {
         provider: GITHUB.into(),
         number: v["number"].as_u64().unwrap_or(0),
         url: v["url"].as_str().unwrap_or("").to_string(),
         title: v["title"].as_str().unwrap_or("").to_string(),
         state: state.into(),
         checks: rollup_to_checks(&v["statusCheckRollup"]),
-        review,
+        review: github_review(v),
         base: v["baseRefName"].as_str().unwrap_or("").to_string(),
         head: v["headRefName"].as_str().unwrap_or("").to_string(),
-    }))
+    }
+}
+
+// ───────────────────────── batched PR status (GitHub) ─────────────────────────
+//
+// One GraphQL query with an alias per PR instead of one `gh pr view` per
+// task. GraphQL charges per connection with a 1-point minimum, so 50 PRs
+// cost about 2 points where 50 `gh pr view`s cost 50 and 50 subprocesses.
+
+/// One PR to look up: `repository(owner, name).pullRequest(number)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+/// Aliases per query. Keeps a query well under GitHub's node and timeout
+/// limits (each PR asks for up to 100 check contexts).
+pub const PR_BATCH_MAX: usize = 50;
+
+/// The same fields `github_pr_status` asks `gh pr view` for, in GraphQL.
+/// The rollup is the head commit's, which is what gh reads too.
+const PR_STATUS_SELECTION: &str = "number url title state isDraft reviewDecision baseRefName headRefName \
+latestReviews(first: 20) { nodes { state } } \
+commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { \
+__typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }";
+
+/// `(host, owner, repo, number)` from a GitHub PR web URL,
+/// `https://host/owner/repo/pull/N`. None for anything else.
+pub fn parse_github_pr_url(url: &str) -> Option<(String, String, String, u64)> {
+    let rest = url.trim().strip_prefix("https://").or_else(|| url.trim().strip_prefix("http://"))?;
+    let mut parts = rest.split('/');
+    let host = parts.next()?.to_lowercase();
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number: u64 = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
+    if host.is_empty() || owner.is_empty() || repo.is_empty() || number == 0 {
+        return None;
+    }
+    Some((host, owner.to_string(), repo.to_string(), number))
+}
+
+fn pr_batch_selection(refs: &[PrRef]) -> String {
+    refs.iter().enumerate().map(|(i, r)| format!(
+        "p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {}) {{ {PR_STATUS_SELECTION} }} }}",
+        gql_str(&r.owner), gql_str(&r.repo), r.number,
+    )).collect::<Vec<_>>().join(" ")
+}
+
+/// GraphQL's PR shape to gh's: connections flattened to the arrays
+/// `github_pr_status_from` reads.
+fn normalize_graphql_pr(pr: &serde_json::Value) -> serde_json::Value {
+    let mut v = pr.clone();
+    v["latestReviews"] = pr["latestReviews"]["nodes"].clone();
+    let rollup = &pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"];
+    v["statusCheckRollup"] = if rollup.is_array() { rollup.clone() } else { serde_json::Value::Array(Vec::new()) };
+    v
+}
+
+/// The answer to a batch, in `refs` order. None for a PR the query could
+/// not see (deleted repo, wrong number, no access): one bad alias does not
+/// fail the rest.
+fn parse_pr_batch(data: &serde_json::Value, n: usize) -> Vec<Option<PrStatus>> {
+    (0..n).map(|i| {
+        let pr = &data[format!("p{i}")]["pullRequest"];
+        pr.is_object().then(|| github_pr_status_from(&normalize_graphql_pr(pr)))
+    }).collect()
+}
+
+/// Status for up to `PR_BATCH_MAX` PRs on one host, in one query.
+pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef]) -> Result<Vec<Option<PrStatus>>, ForgeError> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ans = gh_graphql(host, feature, &pr_batch_selection(refs))?;
+    Ok(parse_pr_batch(&ans.data, refs.len()))
+}
+
+/// Whether a task's local branch is the PR's head. A fork PR's head is
+/// checked out under `pr-<n>` or `pr-<n>-<head>` (`project_fetch_pr_branch`).
+pub fn branch_matches_pr(current: &str, head: &str, number: u64) -> bool {
+    current == head || current == format!("pr-{number}") || current == format!("pr-{number}-{head}")
 }
 
 /// Collapse gh's statusCheckRollup array (a mix of CheckRun objects with
@@ -3554,5 +3644,67 @@ code.internal.acme.com configured to use ssh protocol.\n";
     #[test]
     fn gql_str_escapes_quotes_and_backslashes() {
         assert_eq!(gql_str(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn github_pr_urls_parse_into_host_owner_repo_number() {
+        assert_eq!(parse_github_pr_url("https://github.com/acme/app/pull/12"),
+            Some(("github.com".into(), "acme".into(), "app".into(), 12)));
+        assert_eq!(parse_github_pr_url("https://GHE.acme.com/team/svc/pull/7#discussion"),
+            Some(("ghe.acme.com".into(), "team".into(), "svc".into(), 7)));
+        assert_eq!(parse_github_pr_url("https://gitlab.example.io/a/b/-/merge_requests/3"), None);
+        assert_eq!(parse_github_pr_url("https://github.com/acme/app/issues/12"), None);
+        assert_eq!(parse_github_pr_url(""), None);
+    }
+
+    #[test]
+    fn pr_batch_selection_aliases_each_pr_and_escapes_names() {
+        let sel = pr_batch_selection(&[
+            PrRef { owner: "acme".into(), repo: "app".into(), number: 1 },
+            PrRef { owner: "a\"b".into(), repo: "c".into(), number: 2 },
+        ]);
+        assert!(sel.starts_with("p0: repository(owner: \"acme\", name: \"app\") { pullRequest(number: 1) {"));
+        assert!(sel.contains("p1: repository(owner: \"a\\\"b\", name: \"c\") { pullRequest(number: 2) {"));
+    }
+
+    #[test]
+    fn pr_batch_answers_read_like_gh_pr_view_and_missing_aliases_are_none() {
+        // Synthetic GraphQL answer: p0 open with a failing check and an
+        // approval, p1 merged with no checks, p2 a repo the token cannot see.
+        let data = serde_json::json!({
+            "p0": { "pullRequest": {
+                "number": 1, "url": "https://github.com/acme/app/pull/1", "title": "Add thing",
+                "state": "OPEN", "isDraft": false, "reviewDecision": null,
+                "baseRefName": "main", "headRefName": "feat",
+                "latestReviews": { "nodes": [{ "state": "APPROVED" }] },
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": { "nodes": [
+                    { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" },
+                    { "__typename": "StatusContext", "state": "FAILURE" }
+                ] } } } }] }
+            } },
+            "p1": { "pullRequest": {
+                "number": 2, "url": "https://github.com/acme/app/pull/2", "title": "Fix",
+                "state": "MERGED", "isDraft": false, "reviewDecision": "APPROVED",
+                "baseRefName": "main", "headRefName": "fix",
+                "latestReviews": { "nodes": [] },
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
+            } },
+            "p2": null
+        });
+        let out = parse_pr_batch(&data, 3);
+        let p0 = out[0].as_ref().unwrap();
+        assert_eq!((p0.state.as_str(), p0.checks.as_str(), p0.review.as_str(), p0.head.as_str()), ("open", "failing", "approved", "feat"));
+        let p1 = out[1].as_ref().unwrap();
+        assert_eq!((p1.state.as_str(), p1.checks.as_str(), p1.review.as_str()), ("merged", "none", "approved"));
+        assert!(out[2].is_none());
+    }
+
+    #[test]
+    fn a_task_branch_matches_its_pr_head_including_fork_checkouts() {
+        assert!(branch_matches_pr("feat", "feat", 9));
+        assert!(branch_matches_pr("pr-9", "feat", 9));
+        assert!(branch_matches_pr("pr-9-feat", "feat", 9));
+        assert!(!branch_matches_pr("other", "feat", 9));
+        assert!(!branch_matches_pr("pr-10", "feat", 9));
     }
 }

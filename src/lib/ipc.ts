@@ -10,7 +10,7 @@ import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, PrScope, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, ForgeProvider, ForgeRateStatus, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, ForgeRateStatus, TaskPrLookup, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
   SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
 } from "./types";
@@ -1008,6 +1008,12 @@ export const forgeRateStatus = (probe = false) =>
  *  the forge CLI - poll at a slow cadence (the pr store owns this). */
 export const taskPrStatus = (id: string) =>
   invoke<PrLookup>("task_pr_status", { id });
+/** PR status for many tasks in one call (the background poller). GitHub
+ *  tasks with a PR url share one GraphQL query per host; the rest take the
+ *  per-task path. `background` skips hosts whose rate gate is closed, and
+ *  their tasks are absent from the answer. */
+export const taskPrStatusBatch = (ids: string[], background = false) =>
+  invoke<TaskPrLookup[]>("task_pr_status_batch", { ids, background });
 /** Per-member PR/MR lookups for a multi-repo task - one entry per on-disk
  *  NON-host composition member (the host is `task_pr_status`'s own lookup;
  *  a member whose checkout vanished produces no entry). Same

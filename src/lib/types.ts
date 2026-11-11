@@ -1411,6 +1411,9 @@ export interface ForgeCliStatus {
   hosts: string[];
 }
 
+/** One task's answer from `task_pr_status_batch`: its id beside the lookup. */
+export type TaskPrLookup = PrLookup & { id: string };
+
 /** GitHub rate ledger for one host. Mirrors `RateStatus` in forge_rate.rs. */
 export interface ForgeRateWindow {
   limit: number;
