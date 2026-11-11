@@ -388,7 +388,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
         refresh();
         // A push is the moment PR state likely changes (new commits on an
         // open PR, or the user is about to create one) - poll right away.
-        if (push) usePr.getState().refresh(task.id, true);
+        if (push) usePr.getState().refresh(task.id, { force: true });
       })
       .catch(e => pushToast(String(e), "error"))
       .finally(() => setCommitting(false));
@@ -408,7 +408,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           ? (ahead === 1 ? t("gitPanel.pushedOne") : t("gitPanel.pushedMany", { count: ahead }))
           : t("gitPanel.pushed"), "success");
         refresh();
-        usePr.getState().refresh(task.id, true);
+        usePr.getState().refresh(task.id, { force: true });
       })
       .catch(e => pushToast(String(e), "error"))
       .finally(() => setPushing(false));

@@ -68,21 +68,54 @@ not get the whole limit, so it budgets itself (`src-tauri/src/forge_rate.rs`):
   from the `x-ratelimit-*` headers or the GraphQL `rateLimit` object) is the
   account's, everyone's spend included. Termic's own spend is a one-hour ring
   tagged by feature. Settings > General shows both, per host.
-- **Background work asks first** (`forge_rate::background_gate`, per host,
-  GraphQL bucket). It is held while GitHub has refused on a limit, while the
-  account has under 15% left (`FLOOR`), or while termic has spent 20% of the
-  GraphQL limit (`TERMIC_SHARE`) this hour. Background means a timer, not a
-  user: the batched PR pass, the per-task poll, the PR card's minute tick,
-  turn-end PR discovery and the comment watcher. Each passes `background` and
-  **Rust** decides (`forge::background_held`); the webview's mirror of the
-  ledger only draws the pill, which shows until the pause lifts. A user
-  action (focus, push, the refresh button, a dialog) does not ask. The Core
-  cap is shown in Settings but nothing gates on it.
+- **The decision is made where the token is spent.** `forge::gh_api`
+  refuses, without spawning `gh`, while GitHub's own refusal for that bucket
+  stands (`forge_rate::refused_until`), for ANY caller: GitHub's guidance is
+  not to retry while limited, and a refused secondary-limit call doubles the
+  wait. The legacy `gh pr` / `gh issue` calls ask the same before they run
+  (`gh_cli_admit`), and one that comes back refused on a limit (`gh` prints
+  "rate limit" on stderr, no headers) records the refusal itself
+  (`charge_gh_cli`, held until the known window reset, else an hour, or the
+  secondary backoff), so callers left on the CLI path stop too. A GitHub
+  refusal is per bucket (a core 403 does not hold GraphQL); a secondary
+  limit is account-wide and holds both. Reset times are moved into the
+  local clock by the answer's `Date` header, and a window reporting a limit
+  of 0 is ignored rather than read as a cap of 0.
+- **Background work also waits out termic's own policy** (`background_gate`,
+  per host, GraphQL bucket): under 15% left on the account (`FLOOR`), or 20%
+  of the GraphQL limit spent by termic this hour (`TERMIC_SHARE`).
+  Background means a timer, not a user: the batched PR pass (`gh_api`'s
+  `background`, checked per 50-PR chunk), the per-task poll and its
+  multi-repo member lookups, the PR card's minute tick and blocked-state
+  re-probe, the board's multi-repo card refresh, the refresh on agent
+  spawn, turn-end PR discovery and the comment watcher. The per-task ones
+  pass `background` and **Rust** decides (`forge::background_held`, which
+  resolves a task with no recorded forge from its remote, so a GitLab or
+  Azure task never waits on github.com); the webview's mirror of the ledger
+  only draws the pill. A user action (focus, push, the refresh button, a
+  dialog, the Todos view) does not wait for termic's budget. The Core
+  bucket's cap (300 an hour) gates the comment watcher's inline-comments
+  call, termic's one REST read, which goes through `gh api --include` so
+  its headers feed the ledger; held, the watcher skips the whole pass rather
+  than reading half the comments.
+- **One host, however it is spelled.** The gate and the legacy-call charges
+  both use `forge::api_host_for`: the stored PR url's host, else the
+  remote's, and a host `gh` is not signed in to counts as github.com. An SSH
+  alias (`github-work`) is gated like the github.com it resolves to, and a
+  remote an agent pointed at junk never becomes a ledger row of its own.
+  The Todos batch is the exception: it queries the remote's own host, so an
+  SSH-alias project takes the per-project CLI path rather than risk asking
+  github.com about a GHE repo.
+- **The token is shared, so this can hold termic for someone else's
+  spend.** An agent burning the account below the floor pauses termic's
+  background polling too, merge auto-archive included, until the window
+  resets. That is the floor doing its job, not a bug.
 - **A pause is never throttled away.** The `forge-rate-changed` event is
   throttled to one per 2s, except when a host's pause starts, ends or moves.
   A budget or floor pause starts on an ordinary answer, and if the throttle
   dropped that one, Rust would stop background work with nothing left to
-  announce it.
+  announce it. The snapshot and the emit happen under one lock, so two
+  threads cannot emit out of order.
 - **GitHub's limit replies are followed exactly.** `retry-after` first, then
   `x-ratelimit-reset` when nothing is left, otherwise a minute doubling per
   repeat (secondary limits). A GraphQL primary limit comes back as **HTTP
@@ -91,14 +124,41 @@ not get the whole limit, so it budgets itself (`src-tauri/src/forge_rate.rs`):
 - **Batch, do not fan out.** GraphQL costs per connection, minimum 1 point a
   call, so one aliased query for 50 PRs costs about what one PR costs. A new
   GitHub read that runs once per task or per project is the regression to
-  look for, and so is a failed batch that retries item by item: a limit
-  refusal skips the host (a typed `ForgeError::RateLimited`), and any other
-  failure answers each item with its status instead of fanning out.
+  look for, and so is a failed batch that retries item by item:
+  - the PR batch skips the host on a limit; on a missing CLI or a signed-out
+    `gh` it answers each task with that hint; any other failure is left out
+    for a pass, and only a host that keeps failing falls back to
+    `gh pr view`;
+  - every per-task `gh pr view` a batched pass starts (that fallback, a
+    closed or missing PR, a moved branch, a url the query cannot hold)
+    spends from one budget of eight a pass (`BATCH_FALLBACK_MAX`), and each
+    task gets one at most every three minutes (`RECHECK_SECS`). A deleted
+    repo's PR is missing forever, and before this it cost a subprocess every
+    pass. The webview stamps a failure that lands over a good lookup, so the
+    task waits its cadence instead of staying the stalest;
+  - a batch answer whose url is not the PR that was asked is neither trusted
+    nor persisted (a host re-homing a task, a renamed repo), and a stored url
+    whose number does not fit GraphQL's 32-bit `Int` never joins the query,
+    where it would fail every alias beside it;
+  - the Todos lists answer a limit with the limit (and skip the host's later
+    chunks); a chunk past the output cap is split in half and asked again,
+    and a single list still too large answers an error rather than going to
+    the CLI path, which has no cap; any other failure does fall back to the
+    per-project CLI path, which is what turns it into the usual cli-missing /
+    cli-unauthed status;
+  - a Todos query carries at most 30 lists (`LISTS_BATCH_MAX`), which bounds
+    both the answer (each repo list carries up to 100 bodies) and the query
+    string, one argv entry under Windows' 32,767-character command line.
 - **`gh api` is a trust boundary.** Its host comes from a stored PR url or a
   project remote, both writable by an agent in a task, so `forge::gh_api`
   only talks to github.com or a host `gh auth status` reports, and kills the
-  call at 45s. Pause and reset times a host sends are capped a day ahead, and
-  a reported cost at 10,000.
+  call at 45s. An answer past 32 MiB is refused rather than held (issue
+  bodies are attacker-sized on a public repo), and the body is parsed from
+  `gh`'s output without a copy. The signed-in list is parsed from `gh auth
+  status`'s "Logged in to" lines only. Owner and repo must match GitHub's
+  charset and lengths (39 / 100). Pause and reset times a host sends are
+  capped a day ahead, and a reported cost at 10,000. `forge_rate_status
+  { probe }` probes a host at most once a minute.
 
 ## Worktree creation
 

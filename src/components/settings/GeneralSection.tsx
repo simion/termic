@@ -218,7 +218,13 @@ export function GeneralSection() {
       {/* What GitHub says is left on the gh token, and what termic itself
           spent this hour. The token is shared with agents and the user's
           terminal, so the two are shown side by side. */}
-      <Block>
+      <Block
+        id="setting-forge-rate"
+        className={cn(
+          "rounded-md transition-colors duration-700",
+          flashId === "forge-rate" && "bg-[var(--color-accent-deep)]/15",
+        )}
+      >
         <ForgeRateBlock />
       </Block>
 
@@ -552,7 +558,7 @@ function ForgeStatusBlock() {
 const RATE_REFRESH_MS = 15_000;
 
 function ForgeRateBlock() {
-  const { t } = useTranslation("settings");
+  const { t, i18n } = useTranslation("settings");
   const hosts = useForgeRate(s => s.hosts);
   const refresh = useForgeRate(s => s.refresh);
   useEffect(() => {
@@ -560,7 +566,8 @@ function ForgeRateBlock() {
     const id = window.setInterval(() => { void refresh(); }, RATE_REFRESH_MS);
     return () => clearInterval(id);
   }, [refresh]);
-  const fmt = (n: number) => n.toLocaleString();
+  // The UI language, not the system locale.
+  const fmt = (n: number) => n.toLocaleString(i18n.resolvedLanguage);
   const bucketRow = (b: ForgeBucketStatus) => (
     <div key={b.bucket} className="flex flex-wrap items-baseline gap-x-2 text-[12.5px] text-[var(--color-fg-dim)]">
       <span className="w-16 shrink-0 text-[var(--color-fg)]">{t(`general.forgeRate.bucket.${b.bucket}`)}</span>
@@ -596,7 +603,7 @@ function ForgeRateBlock() {
               {h.buckets.map(bucketRow)}
               {pause && (
                 <div data-testid="forge-rate-paused" className="text-[12.5px] text-[var(--color-warn)]">
-                  {t("general.forgeRate.paused", { time: clockAt(pause.until), reason: t(`general.forgeRate.pauseKind.${pause.kind}`) })}
+                  {t("general.forgeRate.paused", { time: clockAt(pause.until), reason: t(`chrome:forgeRatePill.kind.${pause.kind}`) })}
                 </div>
               )}
             </div>

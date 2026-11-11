@@ -20,6 +20,7 @@ import type { MemberPrLookup, PrStatus, Task } from "@/lib/types";
 import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, prRef } from "@/lib/forge";
 import { openPath } from "@/lib/ipc";
 import { batchable, usePr, watchTickNow } from "@/store/pr";
+import { lookupMessage } from "@/store/forgeRate";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -125,7 +126,7 @@ export function PrCard({ task }: { task: Task }) {
   // to it, forced+immediate beats waiting out the rest of the 60s window.
   const wasFocused = useRef(false);
   useEffect(() => {
-    if (isFocused && !wasFocused.current) refresh(task.id, true);
+    if (isFocused && !wasFocused.current) refresh(task.id, { force: true });
     wasFocused.current = isFocused;
   }, [isFocused, task.id, refresh]);
   // A task the batched background pass covers is already polled every
@@ -134,7 +135,7 @@ export function PrCard({ task }: { task: Task }) {
   const covered = batchable(task);
   useEffect(() => {
     if (covered) return;
-    const t = window.setInterval(() => refresh(task.id, true, true), POLL_MS);
+    const t = window.setInterval(() => refresh(task.id, { force: true, background: true }), POLL_MS);
     return () => window.clearInterval(t);
   }, [task.id, covered, refresh]);
 
@@ -150,7 +151,7 @@ export function PrCard({ task }: { task: Task }) {
   const doRefresh = () => {
     setManualSpin(true);
     Promise.resolve(refreshForges())
-      .then(() => refresh(task.id, true))
+      .then(() => refresh(task.id, { force: true }))
       .finally(() => {
         watchTickNow();
         setManualSpin(false);
@@ -171,7 +172,8 @@ export function PrCard({ task }: { task: Task }) {
     if (!blocked) return;
     void refreshForges();
     const t = window.setInterval(() => {
-      void refreshForges().then(() => refresh(task.id, true));
+      // Background: a timer, so a paused GitHub host waits it out.
+      void refreshForges().then(() => refresh(task.id, { force: true, background: true }));
     }, PROBE_MS);
     return () => window.clearInterval(t);
   }, [blocked, refreshForges, refresh, task.id]);
@@ -208,8 +210,9 @@ export function PrCard({ task }: { task: Task }) {
           ? <Trans ns="panels" i18nKey="pr.signInBodyAzure" values={{ command: forgeLoginCmd(lookup.provider), alt: azurePatLoginCmd }} components={{ code: <Code /> }} />
           : <Trans ns="panels" i18nKey="pr.signInBody" values={{ command: forgeLoginCmd(lookup.provider) }} components={{ code: <Code /> }} />,
       } : {
+        // "rate-limited" too: the line is timed from the lookup's own host.
         title: t("pr.unreachable", { provider: providerLabel }),
-        body: <span className="break-words">{lookup.message}</span>,
+        body: <span className="break-words">{lookupMessage(lookup)}</span>,
       };
     return (
       <Card>
@@ -396,7 +399,7 @@ export function MemberPrRows({ task }: { task: Task }) {
   useEffect(() => {
     if (!task.is_main_checkout || !hasMembers) return;
     void refresh(task.id);
-    const t = window.setInterval(() => refresh(task.id, true, true), POLL_MS);
+    const t = window.setInterval(() => refresh(task.id, { force: true, background: true }), POLL_MS);
     return () => window.clearInterval(t);
   }, [task.id, task.is_main_checkout, hasMembers, refresh]);
   if (!members?.length) return null;

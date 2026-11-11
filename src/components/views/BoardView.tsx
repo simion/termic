@@ -1045,10 +1045,11 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
   // Multi-repo cards also ask for member PRs - the task lookup covers the
   // host worktree only, and `composition` holds members only, so without
   // this a board card would wait for someone to open the task's Git tab.
-  // Unforced: the pr store's floor still caps it.
+  // Unforced: the pr store's floor still caps it. Background: a render is
+  // not a person asking, so a paused GitHub host waits it out.
   useEffect(() => {
     request(w.id);
-    if ((w.composition?.length ?? 0) > 0) void usePr.getState().refresh(w.id);
+    if ((w.composition?.length ?? 0) > 0) void usePr.getState().refresh(w.id, { background: true });
   });
 
   const url = pr?.url ?? w.pr_url ?? "";

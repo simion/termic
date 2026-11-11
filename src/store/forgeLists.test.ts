@@ -17,6 +17,7 @@ import {
 import { BODY_MAX, issueContext } from "@/lib/issuePrompt";
 import { prReviewPrompt } from "@/lib/prReview";
 import { useApp } from "@/store/app";
+import { rateLimitedText } from "@/store/forgeRate";
 import * as ipc from "@/lib/ipc";
 import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/lib/types";
 
@@ -106,6 +107,27 @@ describe("forge lists", () => {
       // The batch does not overwrite the list the dialog re-fetched.
       expect(cachedForgeList(mine("p1"))?.prs.map((p) => p.number)).toEqual([9]);
       expect(cachedForgeList(assigned("p1"))?.issues.map((i) => i.number)).toEqual([1]);
+    });
+
+    it("words a rate-limited list in the UI language, keeping the rows it had", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([issue(1)])]);
+      await refreshForgeLists([assigned("p1")]);
+      const refused: IssueLookup = { ...issuesOk([]), status: "rate-limited", message: "GitHub rate limit reached on github.com." };
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([refused]);
+      await refreshForgeLists([assigned("p1")], true);
+      const e = useForgeLists.getState().entries[forgeListKey(assigned("p1"))];
+      expect(e.status).toBe("error");
+      expect(e.errorMessage).toMatch(/Termic asks again/);
+      expect(cachedForgeList(assigned("p1"))?.issues.map((i) => i.number)).toEqual([1]);
+    });
+
+    it("sends each query with its own scope and limit", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([]), prsOk([])]);
+      await refreshForgeLists([assigned("p1"), mine("p1")]);
+      expect(vi.mocked(ipc.projectForgeLists).mock.calls[0][0]).toEqual([
+        { projectId: "p1", kind: "issues", scope: "assigned", limit: 50 },
+        { projectId: "p1", kind: "prs", scope: "mine", limit: 30 },
+      ]);
     });
 
     it("records a thrown batch on every list in it", async () => {
@@ -289,6 +311,16 @@ describe("forge lists", () => {
       expect(afterRevalidate(shown, failed)).toEqual({ lookup: shown, refreshErr: "gh: not logged in" });
       // No message: the status names it.
       expect(afterRevalidate(shown, { ...failed, message: "" }).refreshErr).toBe("cli-unauthed");
+    });
+
+    it("words a rate refusal in the UI's language, timed from the answer's own retry_at", () => {
+      const shown = prsOk([pr(4)]);
+      const refused = {
+        provider: "github", remote_url: "", status: "rate-limited",
+        message: "GitHub rate limit reached on github.com. Termic is waiting until 14:05.",
+        retry_at: 2_000_000_000, prs: [],
+      } as PrPickList;
+      expect(afterRevalidate(shown, refused).refreshErr).toBe(rateLimitedText(2_000_000_000));
     });
 
     it("answers with the failure when nothing was shown, as before the cache", () => {

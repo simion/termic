@@ -1445,7 +1445,6 @@ export interface ForgeRatePause {
   /** Epoch seconds. */
   until: number;
   kind: "limited" | "floor" | "budget";
-  reason: string;
 }
 export interface ForgeRateStatus {
   host: string;
@@ -1512,9 +1511,11 @@ export type IssueScope = "all" | "assigned" | "mentions";
 export interface IssueLookup {
   provider: ForgeProvider | null;
   remote_url: string;
-  status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
+  status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "rate-limited" | "error";
   message: string;
   issues: ForgeIssue[];
+  /** "rate-limited" only: epoch seconds termic asks this host again. */
+  retry_at?: number | null;
 }
 
 /** One pull request offered by the New Task picker. Mirrors `ForgePr` in
@@ -1550,9 +1551,11 @@ export type PrScope = "mine" | "review" | "open";
 export interface PrPickList {
   provider: "github" | "gitlab" | "azure" | null;
   remote_url: string;
-  status: "ok" | "not-found" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
+  status: "ok" | "not-found" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "rate-limited" | "error";
   message: string;
   prs: ForgePr[];
+  /** "rate-limited" only: epoch seconds termic asks this host again. */
+  retry_at?: number | null;
 }
 
 /** One PR poll round-trip: provider resolution + snapshot, or the exact
@@ -1561,9 +1564,11 @@ export interface PrPickList {
 export interface PrLookup {
   provider: ForgeProvider | null;
   remote_url: string;
-  status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
+  status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "rate-limited" | "error";
   message: string;
   pr: PrStatus | null;
+  /** "rate-limited" only: epoch seconds termic asks this host again. */
+  retry_at?: number | null;
 }
 
 /** A multi-repo task member's PR poll: the `PrLookup` payload plus which

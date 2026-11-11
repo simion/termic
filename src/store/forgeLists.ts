@@ -14,6 +14,7 @@
 import { create } from "zustand";
 import { useApp } from "@/store/app";
 import { projectForgeIssues, projectForgeLists, projectForgePrs } from "@/lib/ipc";
+import { lookupMessage } from "@/store/forgeRate";
 import { scoped } from "@/lib/profileScope";
 import { BODY_MAX as ISSUE_BODY_MAX, cleanIssueText } from "@/lib/issuePrompt";
 import { BODY_MAX as PR_BODY_MAX, cleanPrText } from "@/lib/prReview";
@@ -308,7 +309,7 @@ function entryAfter(e: ForgeListEntry | undefined, q: ForgeListQuery, answer: Fo
     ok: e?.ok ?? null,
     okAt: e?.okAt ?? 0,
     fetchedAt: now,
-    errorMessage: answer.message || answer.status,
+    errorMessage: lookupMessage(answer) || answer.status,
   };
 }
 
@@ -333,6 +334,7 @@ function recordFailure(key: string, q: ForgeListQuery, at: number, err: unknown)
 /** `next` applied to every key in one store write: a batch lands dozens of
  *  lists at once, and every write re-runs the Todos view's selectors. */
 function setEntries(keys: string[], next: (key: string, prev: ForgeListEntry | undefined) => ForgeListEntry) {
+  if (!keys.length) return;
   useForgeLists.setState((s) => {
     const entries = { ...s.entries };
     for (const key of keys) entries[key] = next(key, entries[key]);
@@ -368,7 +370,7 @@ export async function refreshForgeLists(qs: ForgeListQuery[], force = false): Pr
     const perKey = new Map<string, Promise<ForgeListAnswer>>();
     const landed = schedule(
       `batch:${keys.join("|")}`,
-      () => projectForgeLists(list.map((q) => ({ projectId: q.projectId, kind: q.kind, scope: q.scope, limit: limitOf(q) }))),
+      () => projectForgeLists(list.map((q) => ({ ...q, limit: limitOf(q) }))),
       false,
     ).then(
       (answers) => {
@@ -422,7 +424,7 @@ export function afterRevalidate<L extends ForgeListAnswer>(
   answer: L,
 ): { lookup: L; refreshErr: string | null } {
   if (answer.status === "ok") return { lookup: shown && sameRows(shown, answer) ? shown : answer, refreshErr: null };
-  if (shown) return { lookup: shown, refreshErr: answer.message || answer.status };
+  if (shown) return { lookup: shown, refreshErr: lookupMessage(answer) || answer.status };
   return { lookup: answer, refreshErr: null };
 }
 

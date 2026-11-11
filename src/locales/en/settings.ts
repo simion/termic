@@ -74,15 +74,10 @@ export default {
       none: "No GitHub calls yet.",
       left: "{{remaining}} of {{limit}} left, resets {{time}}",
       unknown: "Limit not reported yet",
-      spent: "termic this hour: {{spent}} of {{cap}}",
+      spent: "Termic this hour: {{spent}} of {{cap}}",
       estimated: "({{n}} estimated)",
       paused: "Background polling paused until {{time}}: {{reason}}",
       bucket: { graphql: "GraphQL", core: "REST" },
-      pauseKind: {
-        limited: "GitHub refused on a rate limit",
-        floor: "the account is low on requests",
-        budget: "termic used its share for this hour",
-      },
       feature: {
         pr_status: "PR status",
         lists: "issue and PR lists",

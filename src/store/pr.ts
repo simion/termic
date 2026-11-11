@@ -6,10 +6,10 @@
 // side; everything here is the LIVE snapshot - checks, reviews, merged -
 // re-fetched via `task_pr_status` and discarded on app exit.
 //
-// Polling model. Two layers, because the first one only covers tasks the
-// user is actually looking at:
+// Polling model. Three layers, because the first one only covers tasks the
+// user is actually looking at and the second only tasks with a PR:
 //
-//   1. Foreground. `PrCard` calls `refresh(taskId, true)` whenever the
+//   1. Foreground. `PrCard` calls `refresh(taskId, { force: true })` whenever the
 //      task's Git tab GAINS focus (mount counts as gaining it) plus every
 //      60s while that card is MOUNTED (a background call, and none at all
 //      for a task the batched pass covers), GitPanel calls it right after a
@@ -23,8 +23,9 @@
 //   3. Focus and turn end. Activating a task or refocusing the window with
 //      one in front runs an unforced refresh for it (at most one per task
 //      per 30s); one of its agents finishing a turn does too while the task
-//      has no PR yet (at most one per task per minute). That is what
-//      DISCOVERS a PR the agent opened itself. See `initPrRefreshOnFocus`.
+//      has no PR yet, or only a closed one (at most one per task per
+//      minute). That is what DISCOVERS a PR the agent opened itself,
+//      including one replacing a PR it closed. See `initPrRefreshOnFocus`.
 //      A PR found while its task is not in front is highlighted on the
 //      sidebar mark until the task is visited (`unseen`).
 //
@@ -46,8 +47,9 @@ import type { ForgeCliStatus, ForgeProvider, MemberPrLookup, PrComment, PrLookup
 import { scoped } from "@/lib/profileScope";
 import { azurePrThreadsCommand, forgeName, prLabel, prLabelShort, prNoun, prNounShort, prRef } from "@/lib/forge";
 import {
-  detectForges, notify, openPath, ptyWrite, taskMemberPrStatus, taskPrComments, taskPrCommentsBackground, taskPrStatus,
-  taskPrStatusBackground, taskPrStatusBatch, taskSetPrCommentsSeen, taskSetPrWatch, projectForgeProvider,
+  detectForges, notify, openPath, ptyWrite, taskMemberPrStatus, taskMemberPrStatusBackground, taskPrComments,
+  taskPrCommentsBackground, taskPrStatus, taskPrStatusBackground, taskPrStatusBatch, taskSetPrCommentsSeen,
+  taskSetPrWatch, projectForgeProvider,
 } from "@/lib/ipc";
 import { workDoneCapable } from "@/lib/agents";
 import { useApp } from "@/store/app";
@@ -77,9 +79,9 @@ const EMPTY: PrEntry = Object.freeze({ lookup: null, loading: false, fetchedAt: 
 // ───────────────────────── last-known status ─────────────────────────
 //
 // The live lookup dies with the app, and the background pass that rebuilds
-// it is sequential subprocesses, eight per minute. So after a launch every
-// PR mark sat grey and they coloured in one at a time, the last of a dozen
-// a full minute later. This is what each one last read, kept across runs.
+// it takes a tick (and, before the batched GitHub query, coloured the marks
+// in one subprocess at a time, the last of a dozen a minute later). This is
+// what each one last read, kept across runs.
 //
 // It feeds the MARK and nothing else. `byTask` stays empty until a real poll
 // lands, on purpose: the merged-PR lifecycle (toast, auto-archive) reads the
@@ -146,8 +148,6 @@ export function snapshotsAfter(
   return sameSnapshot(snapshots[taskId], next) ? snapshots : { ...snapshots, [taskId]: next };
 }
 
-/** Write the cache, dropping tasks that no longer exist. Only prunes once
- *  the task list has loaded: before that "not in the list" means nothing. */
 const LS_PR_UNSEEN = scoped("prUnseen");
 
 /** Stored JSON back to the unseen map; anything malformed is dropped. */
@@ -163,6 +163,8 @@ function persistUnseen(unseen: Record<string, number>) {
   try { localStorage.setItem(LS_PR_UNSEEN, JSON.stringify(unseen)); } catch { /* private mode */ }
 }
 
+/** Write the cache, dropping tasks that no longer exist. Only prunes once
+ *  the task list has loaded: before that "not in the list" means nothing. */
 function persistSnapshots(snapshots: Record<string, PrSnapshot>) {
   const tasks = useApp.getState().tasks;
   const live = tasks.length ? new Set(tasks.filter(t => !t.archived).map(t => t.id)) : null;
@@ -204,9 +206,10 @@ interface PrStore {
   /** Fetch the live PR snapshot for a task. Rate-limited per
    *  task unless `force`. Fires the merged-PR lifecycle when the
    *  state transitions to merged while the entry is held. `background`:
-   *  a timer, not a user, so a GitHub host's rate pause (forge_rate.rs)
-   *  skips the call and only records the attempt. */
-  refresh: (taskId: string, force?: boolean, background?: boolean) => Promise<void>;
+   *  anything a person did not just ask for (a timer, a render, a spawn),
+   *  so a GitHub host's rate pause (forge_rate.rs) skips the call and only
+   *  records the attempt. */
+  refresh: (taskId: string, opts?: RefreshOpts) => Promise<void>;
   /** Seed an entry directly (the create flow already holds the fresh
    *  lookup - no reason to round-trip again). */
   setLookup: (taskId: string, lookup: PrLookup) => void;
@@ -225,6 +228,11 @@ interface PrStore {
   setWatch: (taskId: string, watch: boolean) => Promise<void>;
 }
 
+export interface RefreshOpts {
+  force?: boolean;
+  background?: boolean;
+}
+
 /** One host lookup that landed: `cur` is the entry as it was when the
  *  lookup was requested. */
 interface Landing {
@@ -232,6 +240,17 @@ interface Landing {
   cur: PrEntry;
   lookup: PrLookup | null;
   members: MemberPrLookup[] | undefined;
+  /** Only stamp `fetchedAt`: the answer was a failure behind a good lookup,
+   *  which keeps the entry as it is but still counts as this pass's poll. */
+  stampOnly?: boolean;
+}
+
+/** `next`, or `prev` when it says the same thing. Selectors key on
+ *  `lookup.pr` / `members` by reference, so a steady poll handing back
+ *  equal data must not hand back a new object (bear trap 8). Rust
+ *  serializes fields in a fixed order, so the strings compare. */
+function sameOr<T>(prev: T, next: T): T {
+  return prev === next || JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
 }
 
 /** Record host lookups that landed, in ONE store write however many (the
@@ -253,10 +272,15 @@ function landLookups(landings: Landing[]) {
   usePr.setState(s => {
     const byTask = { ...s.byTask };
     let snapshots = s.snapshots;
-    landings.forEach(({ taskId, lookup, members }, i) => {
+    landings.forEach(({ taskId, lookup, members, stampOnly }, i) => {
+      const held = s.byTask[taskId];
+      if (stampOnly) {
+        byTask[taskId] = { ...(held ?? EMPTY), loading: false, fetchedAt: now };
+        return;
+      }
       byTask[taskId] = {
-        lookup: raced[i] && s.byTask[taskId] ? s.byTask[taskId].lookup : lookup,
-        members, loading: false, fetchedAt: now,
+        lookup: raced[i] && held ? held.lookup : sameOr(held?.lookup ?? null, lookup),
+        members: sameOr(held?.members, members), loading: false, fetchedAt: now,
       };
       // Same write as the lookup, so the mark never draws a frame of the
       // old colour beside the new state.
@@ -265,8 +289,8 @@ function landLookups(landings: Landing[]) {
     return { byTask, snapshots };
   });
   if (usePr.getState().snapshots !== before) persistSnapshots(usePr.getState().snapshots);
-  landings.forEach(({ taskId, lookup }, i) => {
-    if (lookup && !raced[i]) landTransitions(taskId, prevs[i], lookup);
+  landings.forEach(({ taskId, lookup, stampOnly }, i) => {
+    if (lookup && !raced[i] && !stampOnly) landTransitions(taskId, prevs[i], lookup);
   });
 }
 
@@ -342,7 +366,7 @@ export const usePr = create<PrStore>((set, get) => ({
     }
   },
 
-  refresh: async (taskId, force = false, background = false) => {
+  refresh: async (taskId, { force = false, background = false } = {}) => {
     const cur = get().byTask[taskId] ?? EMPTY;
     if (cur.loading) return;
     if (!force && Date.now() - cur.fetchedAt < MIN_REFRESH_MS) return;
@@ -363,16 +387,18 @@ export const usePr = create<PrStore>((set, get) => ({
       const [hostRes, memberRes] = await Promise.allSettled([
         task?.is_main_checkout ? Promise.resolve(cur.lookup)
           : background ? taskPrStatusBackground(taskId) : taskPrStatus(taskId),
-        hasMembers ? taskMemberPrStatus(taskId) : Promise.resolve(undefined),
+        !hasMembers ? Promise.resolve(undefined)
+          : background ? taskMemberPrStatusBackground(taskId) : taskMemberPrStatus(taskId),
       ]);
       // Each leg keeps what it can: a member failure keeps the previous
       // list rather than blanking the rows for the rest of the cadence
       // window, and good member data survives a failed HOST call (the two
-      // can sit on different forges/CLIs).
-      const members = memberRes.status === "fulfilled"
-        ? memberRes.value
-        : (console.error("task_member_pr_status failed:", memberRes.reason),
-          get().byTask[taskId]?.members);
+      // can sit on different forges/CLIs). null is a held background call
+      // (a member's GitHub host is rate-paused): nothing was asked, so the
+      // rows stay. undefined is a task with no members.
+      const members = memberRes.status === "rejected"
+        ? (console.error("task_member_pr_status failed:", memberRes.reason), get().byTask[taskId]?.members)
+        : memberRes.value === null ? get().byTask[taskId]?.members : memberRes.value;
       // Edit Task mid-poll: the fetched list describes the OLD member set
       // (Rust enumerated the record it found at call time). Better to drop
       // it than show rows for a member the task no longer has - the next
@@ -540,13 +566,9 @@ const isSettled = (e: PrEntry | undefined) => {
 };
 
 let statusTimer: number | null = null;
-/** Tasks in the batch call in flight. Kept off the entries' `loading` on
- *  purpose: `refresh` bails on `loading`, so marking every batched task
- *  would drop a forced refresh (after a push, on focus) for as long as the
- *  whole batch takes. */
-const inBatch = new Set<string>();
-/** A pass is sequential and can outlive its tick on a slow forge; without
- *  this the next tick would start a second one alongside it. */
+/** A pass can outlive its tick on a slow forge (the batch, then the
+ *  per-task calls one after another); without this the next tick would
+ *  start a second one alongside it. */
 let statusPassRunning = false;
 
 /** Tasks due a background poll, oldest snapshot first. Exported for tests. */
@@ -565,7 +587,7 @@ export function pollableTasks(): Task[] {
       // the review column's gate too, so the board and the poller agree.
       if (w.archived || !hasPrIdentity(w)) return false;
       const entry = byTask[w.id];
-      if (entry?.loading || inBatch.has(w.id)) return false;
+      if (entry?.loading) return false;
       const stale = isSettled(entry) ? SETTLED_STALE_MS : batchable(w) ? BATCH_STALE_MS : STATUS_STALE_MS;
       return staleness(w.id) >= stale;
     })
@@ -575,10 +597,12 @@ export function pollableTasks(): Task[] {
 
 /** One `task_pr_status_batch` for `ids`, landed in one store write through
  *  the same path `refresh` uses. Tasks the call leaves out (their host's
- *  rate gate is closed) and a failed call write nothing and keep their
- *  timestamp, so they come up again next tick; the gate check costs
- *  nothing. A refresh that lands for one of them meanwhile wins (see
- *  `landLookups`). */
+ *  rate gate is closed, or the query failed once) and a failed call write
+ *  nothing and keep their timestamp, so they come up again next tick. An
+ *  answer that arrives behind something better is dropped or only stamped,
+ *  see `batchLanding`. The entries are not marked `loading`: `refresh`
+ *  bails on it, so a forced refresh (a push, a focus) would be dropped for
+ *  as long as the batch takes. */
 async function refreshBatch(ids: string[]) {
   const curs = new Map<string, PrEntry>();
   for (const id of ids) {
@@ -586,20 +610,40 @@ async function refreshBatch(ids: string[]) {
     if (!cur.loading) curs.set(id, cur);
   }
   if (!curs.size) return;
-  for (const id of curs.keys()) inBatch.add(id);
   let results: TaskPrLookup[] = [];
   try {
     results = await taskPrStatusBatch([...curs.keys()]);
   } catch (err) {
     console.error("task_pr_status_batch failed:", err);
-  } finally {
-    for (const id of curs.keys()) inBatch.delete(id);
   }
   const byTask = usePr.getState().byTask;
   landLookups(results.flatMap(({ id, ...lookup }) => {
     const cur = curs.get(id);
-    return cur ? [{ taskId: id, cur, lookup, members: byTask[id]?.members }] : [];
+    const landing = cur ? batchLanding(cur, byTask[id], lookup) : "drop";
+    return landing === "drop" ? []
+      : [{ taskId: id, cur: cur!, lookup, members: byTask[id]?.members, stampOnly: landing === "stamp" }];
   }));
+}
+
+/** What a batch answer does to a task's entry, given `cur` (the entry when
+ *  the batch was asked) and `now` (the entry as it lands). The batch was
+ *  asked before anything that happened meanwhile, so it is dropped behind:
+ *
+ *  - a refresh in flight (a push, a focus), which will land a fresher answer;
+ *  - a refresh that already landed since.
+ *
+ *  A failure (a 502, a timeout, a rate refusal) behind a good lookup only
+ *  stamps the poll: the good lookup stays, but the task is not left the
+ *  stalest, which would ask it again every tick for as long as it fails (a
+ *  PR in a deleted repo, forever). A hint the user can act on (signed out,
+ *  CLI missing) still lands.
+ *
+ *  Exported for tests. */
+export function batchLanding(cur: PrEntry, now: PrEntry | undefined, answer: PrLookup): "land" | "stamp" | "drop" {
+  if (now?.loading) return "drop";
+  if ((now?.fetchedAt ?? 0) !== cur.fetchedAt) return "drop";
+  const failure = answer.status === "error" || answer.status === "rate-limited";
+  return failure && now?.lookup?.status === "ok" ? "stamp" : "land";
 }
 
 async function statusPass() {
@@ -607,14 +651,21 @@ async function statusPass() {
   statusPassRunning = true;
   try {
     const due = pollableTasks();
-    await refreshBatch(due.filter(batchable).map(w => w.id));
-    for (const w of due.filter(w => !batchable(w))) {
-      // Unforced: `pollableTasks` is already the stricter gate, and leaving
-      // the store's floor in play means a foreground refresh that landed
-      // between the filter and here is not repeated. Background: Rust
-      // skips it while the task's GitHub host is rate-paused.
-      await usePr.getState().refresh(w.id, false, true);
-    }
+    // Side by side: the batch can run long (per-task fallbacks inside it),
+    // and GitLab, Azure and multi-repo tasks have no reason to wait on it.
+    await Promise.all([
+      refreshBatch(due.filter(batchable).map(w => w.id)),
+      (async () => {
+        for (const w of due.filter(w => !batchable(w))) {
+          // Unforced: `pollableTasks` is already the stricter gate, and
+          // leaving the store's floor in play means a foreground refresh
+          // that landed between the filter and here is not repeated.
+          // Background: Rust skips it while the task's GitHub host is
+          // rate-paused.
+          await usePr.getState().refresh(w.id, { background: true });
+        }
+      })(),
+    ]);
   } finally {
     statusPassRunning = false;
   }
@@ -657,7 +708,10 @@ function refreshFocused() {
 
 /** Turn-end lookups are DISCOVERY only, at most one per task per this long.
  *  A task that already has a PR stays on the background tick, so a busy
- *  agent never turns into a `gh` call per turn. */
+ *  agent never turns into a `gh` call per turn. The exception is a PR whose
+ *  live lookup is closed: settled, so the tick only re-checks it hourly,
+ *  and an agent that closes #5 and opens #6 on the same branch would show
+ *  #5 until then. */
 const TURN_LOOKUP_MS = 60_000;
 const lastTurnLookup = new Map<string, number>();
 
@@ -701,10 +755,11 @@ export function initPrRefreshOnFocus() {
       const now = Date.now();
       for (const id of tasksThatStoppedWorking(s.tabs, prev.tabs)) {
         const task = s.tasks.find(t => t.id === id);
-        if (!task || hasPrIdentity(task) || !prFocusEligible(id)) continue;
+        const closed = usePr.getState().byTask[id]?.lookup?.pr?.state === "closed";
+        if (!task || (hasPrIdentity(task) && !closed) || !prFocusEligible(id)) continue;
         if (now - (lastTurnLookup.get(id) ?? 0) < TURN_LOOKUP_MS) continue;
         lastTurnLookup.set(id, now);
-        void usePr.getState().refresh(id, false, true);
+        void usePr.getState().refresh(id, { background: true });
       }
     }),
   ];

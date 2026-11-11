@@ -11,6 +11,7 @@ import { refreshMainCheckoutBranches } from "@/lib/mainCheckoutBranches";
 import { usePrefs } from "@/store/prefs";
 import { parsePrRef } from "@/lib/prReview";
 import { usePr } from "@/store/pr";
+import { lookupMessage } from "@/store/forgeRate";
 import { AppDialog, dialogTitleAction } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -2434,7 +2435,7 @@ export function NewTaskDialog() {
                       </div>
                     ) : prOpenLookup && prOpenLookup.status !== "ok" ? (
                       <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                        {prOpenLookup.message}
+                        {lookupMessage(prOpenLookup)}
                       </div>
                     ) : (prOpenLookup?.prs.length ?? 0) === 0 ? (
                       <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
@@ -2465,7 +2466,7 @@ export function NewTaskDialog() {
                         </div>
                       ) : prLookup && prLookup.status !== "ok" ? (
                         <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-                          {prLookup.message}
+                          {lookupMessage(prLookup)}
                         </div>
                       ) : (prLookup?.prs.length ?? 0) === 0 ? (
                         <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
@@ -2578,7 +2579,7 @@ export function NewTaskDialog() {
                           </div>
                         </>
                       ) : (
-                        <span className="break-words">{issueLookup.message}</span>
+                        <span className="break-words">{lookupMessage(issueLookup)}</span>
                       )}
                     </div>
                   ) : (issueLookup?.issues.length ?? 0) === 0 ? (

@@ -3131,7 +3131,9 @@ const captureArmedRef = useRef(false);
         // applies, so a crash-looping agent respawning repeatedly doesn't
         // turn this into a hammer.
         if (isAgent && isPrimaryTab && prRelevant(task)) {
-          usePr.getState().refresh(task.id);
+          // Background: a spawn (restored tabs, a respawn) is not a person
+          // asking, so a paused GitHub host waits it out.
+          usePr.getState().refresh(task.id, { background: true });
         }
         // If the spawn survives RESUME_FAILURE_MS without exiting, we
         // take that as proof there's a real session — persist true so

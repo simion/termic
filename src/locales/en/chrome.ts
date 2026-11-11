@@ -52,13 +52,17 @@ export default {
     jump: "Jump to next waiting agent",
   },
   forgeRatePill: {
-    label: "GitHub paused until {{time}}",
+    label: "GitHub polling paused until {{time}}",
     tip: "Background GitHub polling on {{host}} is paused: {{reason}}. Status may be stale until then. Click for details.",
+    // Also the reason in Settings > General's budget block.
     kind: {
       limited: "GitHub refused on a rate limit",
       floor: "the account is low on requests",
-      budget: "termic used its share for this hour",
+      budget: "Termic used its share for this hour",
     },
+    aria: "GitHub polling paused until {{time}}. Open the GitHub API budget in Settings.",
+    refused: "GitHub refused on a rate limit. Termic asks again at {{time}}.",
+    refusedSoon: "GitHub refused on a rate limit. Termic asks again shortly.",
   },
   profileChip: {
     profiles: "Profiles",

@@ -265,7 +265,7 @@ export function RightPanel() {
     refreshGit();
     setFileTreeReload(n => n + 1);
     if (task && prRelevant(task)) {
-      usePr.getState().refresh(task.id, true);
+      usePr.getState().refresh(task.id, { force: true });
       watchTickNow();
     }
     setRefreshClicked(true);

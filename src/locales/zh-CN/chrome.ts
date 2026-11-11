@@ -52,13 +52,16 @@ export default {
     jump: "跳转到下一个等待中的智能体",
   },
   forgeRatePill: {
-    label: "GitHub 已暂停至 {{time}}",
+    label: "GitHub 轮询已暂停至 {{time}}",
     tip: "{{host}} 上的后台 GitHub 轮询已暂停：{{reason}}。在此之前状态可能不是最新的。点击查看详情。",
     kind: {
       limited: "GitHub 因速率限制拒绝了请求",
       floor: "账户剩余请求不足",
       budget: "Termic 本小时的份额已用完",
     },
+    aria: "GitHub 轮询已暂停至 {{time}}。在设置中打开 GitHub API 额度。",
+    refused: "GitHub 因速率限制拒绝了请求。Termic 将在 {{time}} 再次请求。",
+    refusedSoon: "GitHub 因速率限制拒绝了请求。Termic 稍后会再次请求。",
   },
   profileChip: {
     profiles: "配置",

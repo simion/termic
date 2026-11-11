@@ -77,11 +77,6 @@ export default {
       estimated: "（其中 {{n}} 为估算）",
       paused: "后台轮询已暂停，直到 {{time}}：{{reason}}",
       bucket: { graphql: "GraphQL", core: "REST" },
-      pauseKind: {
-        limited: "GitHub 因速率限制拒绝了请求",
-        floor: "账户剩余请求不足",
-        budget: "Termic 本小时的份额已用完",
-      },
       feature: {
         pr_status: "PR 状态",
         lists: "issue 和 PR 列表",

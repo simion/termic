@@ -1,8 +1,8 @@
-// Top-bar "GitHub paused" pill. Renders ONLY while background GitHub
+// Top-bar "GitHub polling paused" pill. Renders ONLY while background GitHub
 // polling is paused (a rate limit, the account under the floor, or termic
 // over its own share), so the normal case costs one selector and nothing
-// on screen. Click opens Settings > General, where the forge budget block
-// has the numbers.
+// on screen. Click opens Settings > General scrolled to the GitHub API
+// budget block, which has the numbers.
 
 import { useTranslation } from "react-i18next";
 import { Gauge } from "lucide-react";
@@ -29,8 +29,11 @@ export function ForgeRatePill() {
         data-no-drag
         data-testid="forge-rate-pill"
         data-kind={kind}
-        onClick={() => openSettings("general")}
-        className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[12px] font-medium text-[var(--color-warn)] hover:bg-[var(--color-warn)]/25"
+        aria-label={t("forgeRatePill.aria", { time })}
+        onClick={() => openSettings("general", undefined, "forge-rate")}
+        // Info, not warn: amber is for something blocked on you
+        // (WaitingAgentsPill), and a paused budget needs nothing from you.
+        className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-info)]/40 bg-[var(--color-info)]/15 px-2 py-0.5 text-[12px] font-medium text-[var(--color-info)] hover:bg-[var(--color-info)]/25"
       >
         <Gauge className="h-3 w-3" />
         <span className="leading-none">{t("forgeRatePill.label", { time })}</span>

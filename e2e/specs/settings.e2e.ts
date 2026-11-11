@@ -4825,10 +4825,12 @@ describe("agent state section", () => {
 // this machine's `gh` login, so the launch probe, the block's own probe and
 // any real `gh` call feed the real ledger, whose events would replace the
 // seed mid-case (a flake) and put the machine's real hostnames into the
-// screenshot (a leak, see CLAUDE.md "Fixtures"). Cases:
-// no pill with no pause; a pause shows the pill with its kind; the pill
-// opens Settings on the block, which shows GitHub's window, termic's spend
-// by feature and the pause; a pause whose time has passed shows no pill.
+// screenshot (a leak, see CLAUDE.md "Fixtures"). The forge CLI status is
+// held too, for the same reason: the block above the budget prints the
+// signed-in `gh` account and its hosts. Cases: no pill with no pause; a
+// pause shows the pill with its kind; the pill opens Settings scrolled to
+// the block, which shows GitHub's window, termic's spend by feature and the
+// pause, and no real account; a pause whose time has passed shows no pill.
 describe("GitHub API budget", () => {
   const PILL = '[data-testid="forge-rate-pill"]';
   const BLOCK = '[data-testid="forge-rate-block"]';
@@ -4846,8 +4848,33 @@ describe("GitHub API budget", () => {
       },
       { bucket: "core", window: null, spent: 0, estimated: 0, cap: 300, by_feature: [] },
     ],
-    paused: paused && { ...paused, reason: "" },
+    paused,
   });
+  // What `gh auth status` would say, in placeholders.
+  const FORGES = [{
+    id: "gh", provider: "github", found: true, path: "/usr/local/bin/gh", version: "2.60.0",
+    authed: true, account: "alice", hosts: ["github.com", "ghe.acme.com"],
+  }];
+  // `refreshForges` is the only writer of `forges`, so swapping it for a
+  // no-op holds them without touching usePr's setState (the PR store keeps
+  // working for everything else).
+  const holdForges = () =>
+    browser.execute((forges) => {
+      const w = window as unknown as { __forgesHeld?: { forges: unknown; refreshForges: unknown } };
+      const pr = window.__termic!.usePr;
+      if (!w.__forgesHeld) {
+        const st = pr.getState();
+        w.__forgesHeld = { forges: st.forges, refreshForges: st.refreshForges };
+      }
+      pr.setState({ forges, refreshForges: async () => {} });
+    }, FORGES);
+  const releaseForges = () =>
+    browser.execute(() => {
+      const w = window as unknown as { __forgesHeld?: { forges: unknown; refreshForges: unknown } };
+      if (!w.__forgesHeld) return;
+      window.__termic!.usePr.setState(w.__forgesHeld);
+      delete w.__forgesHeld;
+    });
   // Real writes (the event listener's, the block's refresh) go nowhere
   // while held; only `seed` writes, through the store's real setState.
   const seed = (paused: null | { until: number; kind: string }) =>
@@ -4874,9 +4901,11 @@ describe("GitHub API budget", () => {
   before(async () => {
     await waitForAppShell();
     await requireTermicApi();
+    await holdForges();
   });
   after(async () => {
     await release();
+    await releaseForges();
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await dismissOverlays();
   });
@@ -4890,24 +4919,36 @@ describe("GitHub API budget", () => {
     await seed({ until: inTenMinutes(), kind: "floor" });
     await waitVisible(PILL);
     expect(await browser.execute((s) => document.querySelector(s)?.getAttribute("data-kind"), PILL)).toBe("floor");
-    expect(await textOf(PILL)).toContain("GitHub paused until");
-    await snap("forge-rate-pill");
+    expect(await textOf(PILL)).toContain("GitHub polling paused until");
+    await snap("forge-rate-pill.png");
   });
 
   it("opens Settings on the budget block, with GitHub's window, termic's spend and the pause", async () => {
     await clickWhenVisible(PILL);
     await waitVisible(BLOCK);
+    // Scrolled to: the block's top is on screen, not wherever General
+    // happened to open.
+    await browser.waitUntil(() => browser.execute((s) => {
+      const r = document.querySelector(s)!.getBoundingClientRect();
+      return r.top >= 0 && r.top < window.innerHeight;
+    }, BLOCK), { timeout: 5000, timeoutMsg: "the budget block was never scrolled into view" });
     const text = await textOf(BLOCK);
     expect(text).toContain("4,512 of 5,000 left");
-    expect(text).toContain("termic this hour: 42 of 1,000");
+    expect(text).toContain("Termic this hour: 42 of 1,000");
     expect(text).toContain("(12 estimated)");
     expect(text).toContain("PR status 30");
     expect(text).toContain("Limit not reported yet");
     await waitVisible('[data-testid="forge-rate-paused"]');
-    await snap("forge-rate-settings");
+    // The account line above the block is the placeholder, never the
+    // machine's real `gh` login.
+    const page = await browser.execute(() => document.body.innerText);
+    expect(page).toContain("alice");
+    await snap("forge-rate-settings.png");
   });
 
-  it("drops the pill once the pause's time has passed", async () => {
+  it("shows no pill for a pause whose time has already passed", async () => {
+    // A seed that is already over, not a visible pill expiring: the lift
+    // timer that drops a live pill is unit-tested in forgeRate.test.ts.
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await seed({ until: Math.floor(Date.now() / 1000) - 5, kind: "limited" });
     await waitGone(PILL);

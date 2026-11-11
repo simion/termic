@@ -157,10 +157,12 @@ fn auth_text(o: &std::process::Output) -> String {
 /// logged-in lines only is deliberate: a host the CLI knows but is signed
 /// OUT of cannot answer us either.
 fn parse_auth_hosts(text: &str) -> Vec<String> {
+    const MARK: &str = "logged in to ";
     let mut out = Vec::new();
     for line in text.lines() {
-        let Some(rest) = line.split(" to ").nth(1) else { continue };
-        let host = rest.split_whitespace().next().unwrap_or("").trim();
+        // ASCII lowercasing keeps byte offsets, so `at` indexes `line` too.
+        let Some(at) = line.to_ascii_lowercase().find(MARK) else { continue };
+        let host = line[at + MARK.len()..].split_whitespace().next().unwrap_or("").trim();
         // Guard against "Logged in to the wrong thing" style prose.
         if host.contains('.') && !host.contains('/') {
             let host = host.to_lowercase();
@@ -229,9 +231,9 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
 /// background poller: one stalled connection would otherwise hold its pass,
 /// and every later one, for the rest of the session. No sleep-polling (bear
 /// trap 9): a waiter thread blocks on the child, the caller on a channel.
-fn run_bounded(bin: &str, args: &[&str], timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+fn run_bounded(bin: &str, args: &[&str], cwd: Option<&Path>, timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
     use std::io::Read;
-    let mut cmd = cli_command(bin, args, None);
+    let mut cmd = cli_command(bin, args, cwd);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -239,13 +241,16 @@ fn run_bounded(bin: &str, args: &[&str], timeout: std::time::Duration) -> std::i
     let mut child = cmd.spawn()?;
     let pid = child.id() as i32;
     // Drained on their own threads, so a large answer cannot fill a pipe and
-    // stall the child into a timeout.
+    // stall the child into a timeout. Past MAX_OUTPUT the rest is read and
+    // dropped: the child still finishes, and memory stays bounded.
     let drain = |r: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
         let mut buf = Vec::new();
+        let mut over = false;
         if let Some(mut r) = r {
-            let _ = r.read_to_end(&mut buf);
+            let _ = r.by_ref().take(MAX_OUTPUT).read_to_end(&mut buf);
+            over = std::io::copy(&mut r, &mut std::io::sink()).is_ok_and(|n| n > 0);
         }
-        buf
+        (buf, over)
     });
     let out_h = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
     let err_h = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
@@ -261,12 +266,21 @@ fn run_bounded(bin: &str, args: &[&str], timeout: std::time::Duration) -> std::i
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out after {}s", timeout.as_secs())));
         }
     };
-    Ok(std::process::Output {
-        status,
-        stdout: out_h.join().unwrap_or_default(),
-        stderr: err_h.join().unwrap_or_default(),
-    })
+    let (stdout, over) = out_h.join().unwrap_or_default();
+    let (stderr, _) = err_h.join().unwrap_or_default();
+    if over {
+        return Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, format!("answer larger than {} MiB", MAX_OUTPUT >> 20)));
+    }
+    Ok(std::process::Output { status, stdout, stderr })
 }
+
+/// The most `run_bounded` keeps of a child's stdout. A GitHub answer is far
+/// smaller; anything past this is refused rather than held and parsed.
+/// Issue bodies are attacker-sized (anyone can file one on a public repo),
+/// so the cap is what bounds a Todos query, not GitHub. A refusal comes back
+/// as `ForgeError::TooLarge`, and the lists batch splits the query rather
+/// than sending its lists to the uncapped CLI path.
+const MAX_OUTPUT: u64 = 32 * 1024 * 1024;
 
 fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Command {
     let mut cmd = crate::proc_ctl::command(bin);
@@ -302,27 +316,34 @@ fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Co
 
 /// One HTTP answer as `gh api --include` printed it.
 #[derive(Debug)]
-pub struct ApiResponse {
-    pub status: u16,
+struct ApiResponse {
+    status: u16,
     /// Lowercased names.
-    pub headers: HashMap<String, String>,
-    pub body: String,
+    headers: HashMap<String, String>,
+    /// The body parsed, when it is JSON. Parsed straight from gh's stdout,
+    /// so a large answer is not copied into a string first.
+    json: Option<serde_json::Value>,
+    /// The body as text on an error status only (its message, a
+    /// secondary-limit phrase); empty otherwise.
+    error_body: String,
 }
 
 /// `gh api --include` stdout: `HTTP/2.0 200 OK`, the headers, a blank line,
 /// the body. gh prints all of it on an error status too (and exits 1),
-/// which is the only way a 304 or a 403 rate limit can be read at all.
-/// None when stdout is not that shape (no HTTP happened: gh not signed in,
-/// no network).
+/// which is the only way a 403 rate limit can be read at all. None when
+/// stdout is not that shape (no HTTP happened: gh not signed in, no
+/// network).
 fn parse_api_output(out: &[u8]) -> Option<ApiResponse> {
-    let text = String::from_utf8_lossy(out);
-    let (status_line, mut rest) = text.split_once('\n')?;
-    let status: u16 = status_line.trim().strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok()?;
+    let mut lines = out.split_inclusive(|&b| b == b'\n');
+    let first = lines.next()?;
+    let mut head_len = first.len();
+    let status: u16 = std::str::from_utf8(first).ok()?.trim().strip_prefix("HTTP/")?
+        .split_whitespace().nth(1)?.parse().ok()?;
     let mut headers = HashMap::new();
-    while !rest.is_empty() {
-        let (line, r) = rest.split_once('\n').unwrap_or((rest, ""));
-        rest = r;
-        let line = line.trim_end_matches('\r');
+    for raw in lines {
+        head_len += raw.len();
+        let line = String::from_utf8_lossy(raw);
+        let line = line.trim_end_matches(['\n', '\r']);
         if line.is_empty() {
             break;
         }
@@ -330,7 +351,13 @@ fn parse_api_output(out: &[u8]) -> Option<ApiResponse> {
             headers.insert(k.trim().to_lowercase(), v.trim().to_string());
         }
     }
-    Some(ApiResponse { status, headers, body: rest.to_string() })
+    let body = &out[head_len..];
+    Some(ApiResponse {
+        status,
+        headers,
+        json: serde_json::from_slice(body).ok(),
+        error_body: if status >= 400 { String::from_utf8_lossy(body).into_owned() } else { String::new() },
+    })
 }
 
 /// Past GitHub's own 10s GraphQL timeout with room for a slow network.
@@ -342,17 +369,39 @@ fn github_host_allowed(host: &str, authed: &HashMap<String, &'static str>) -> bo
     host == "github.com" || authed.get(&host) == Some(&GITHUB)
 }
 
-fn rate_limited_message(host: &str, until: u64) -> String {
+/// A refusal on a limit, worded for the callers that show Rust's text
+/// (PR create, comments). Lookups carry `until` as `retry_at` and the
+/// webview words those itself.
+pub(crate) fn rate_limited(host: &str, until: u64) -> ForgeError {
     let at = chrono::DateTime::from_timestamp(until as i64, 0)
-        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .map(|t| {
+            let t = t.with_timezone(&chrono::Local);
+            // A pause can run up to a day, so a bare "14:05" may be tomorrow.
+            let fmt = if t.date_naive() == chrono::Local::now().date_naive() { "%H:%M" } else { "%b %-d %H:%M" };
+            t.format(fmt).to_string()
+        })
         .unwrap_or_default();
-    format!("GitHub rate limit reached on {host}. Termic is waiting until {at}.")
+    ForgeError::RateLimited {
+        until,
+        message: format!("GitHub rate limit reached on {host}. Termic is waiting until {at}."),
+    }
 }
 
 /// `gh api --hostname <host> --include <args...>`, charged to `feature`.
-/// A 304 is a success with an empty body. A limit refusal pauses the host's
-/// background work (forge_rate) and comes back as an error naming the time.
-pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Bucket, args: &[&str]) -> Result<ApiResponse, ForgeError> {
+/// A limit refusal pauses the host's background work (forge_rate) and comes
+/// back as `RateLimited`.
+///
+/// The rate decision is made here, where the token is spent, not by each
+/// caller: nothing goes out while GitHub's own refusal stands (any caller),
+/// and `background` work also waits out termic's budget and the account
+/// floor. Either comes back as `RateLimited` without spawning gh.
+fn gh_api(
+    host: &str,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    args: &[&str],
+) -> Result<ApiResponse, ForgeError> {
     // The host comes from a task's stored PR url or a project's remote, both
     // of which an agent in a task can write. `gh pr view` in the repo only
     // ever talked to hosts gh is signed in to; `--hostname` would send to
@@ -360,23 +409,63 @@ pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Buck
     if !github_host_allowed(host, &authed_hosts()) {
         return Err(ForgeError::Other(format!("{host} is not a GitHub host gh is signed in to.")));
     }
-    let bin = reprobe_bin("gh").ok_or(ForgeError::CliMissing("gh"))?;
     let mut full = vec!["api", "--hostname", host, "--include"];
     full.extend_from_slice(args);
-    let o = run_bounded(&bin, &full, GH_API_TIMEOUT).map_err(|e| ForgeError::Other(format!("gh api: {e}")))?;
+    gh_api_run(host, None, feature, bucket, background, &full)
+}
+
+/// `gh api --include <args...>` run in the repo at `cwd`, for an endpoint
+/// with `{owner}/{repo}` placeholders, which gh fills (and picks the host
+/// for) from that repo, as the plain `gh pr ...` calls do. Charged to the
+/// repo's API host.
+fn gh_api_in_repo(
+    cwd: &Path,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    args: &[&str],
+) -> Result<ApiResponse, ForgeError> {
+    let mut full = vec!["api", "--include"];
+    full.extend_from_slice(args);
+    gh_api_run(&api_host_for(None, cwd), Some(cwd), feature, bucket, background, &full)
+}
+
+fn gh_api_run(
+    host: &str,
+    cwd: Option<&Path>,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    full: &[&str],
+) -> Result<ApiResponse, ForgeError> {
+    if let Some(until) = crate::forge_rate::refused_until(host, bucket) {
+        return Err(rate_limited(host, until));
+    }
+    if background {
+        // Termic's own policy, not GitHub's. Only a background caller gets
+        // this, and it never shows the message.
+        if let Err(p) = crate::forge_rate::background_gate(host, bucket) {
+            return Err(rate_limited(host, p.until));
+        }
+    }
+    let bin = reprobe_bin("gh").ok_or(ForgeError::CliMissing("gh"))?;
+    let o = run_bounded(&bin, full, cwd, GH_API_TIMEOUT).map_err(|e| match e.kind() {
+        std::io::ErrorKind::FileTooLarge => ForgeError::TooLarge(format!("gh api: {e}")),
+        _ => ForgeError::Other(format!("gh api: {e}")),
+    })?;
     let Some(resp) = parse_api_output(&o.stdout) else {
         return Err(classify_failure(GITHUB, &o));
     };
-    let json: Option<serde_json::Value> = serde_json::from_str(&resp.body).ok();
+    let json = &resp.json;
     let verdict = crate::forge_rate::observe(host, feature, bucket, &crate::forge_rate::Observation {
         status: resp.status,
         headers: Some(&resp.headers),
         graphql_rate: json.as_ref().map(|v| &v["data"]["rateLimit"]).filter(|v| v.is_object()),
         graphql_errors: json.as_ref().map(|v| &v["errors"]).filter(|v| v.is_array()),
-        body: &resp.body,
+        body: &resp.error_body,
     });
     if let crate::forge_rate::Verdict::Limited { until } = verdict {
-        return Err(ForgeError::RateLimited(rate_limited_message(host, until)));
+        return Err(rate_limited(host, until));
     }
     if resp.status == 401 {
         return Err(ForgeError::Auth(format!(
@@ -384,7 +473,7 @@ pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Buck
         )));
     }
     if resp.status >= 400 {
-        let msg = json.as_ref().and_then(|v| v["message"].as_str()).map(str::to_string)
+        let msg = resp.json.as_ref().and_then(|v| v["message"].as_str()).map(str::to_string)
             .unwrap_or_else(|| stderr_of(&o));
         return Err(ForgeError::Other(format!("GitHub answered {}: {msg}", resp.status)));
     }
@@ -398,17 +487,17 @@ const RATE_LIMIT_SELECTION: &str = "rateLimit { cost limit remaining used resetA
 /// A GraphQL query's answer. Errors can sit beside good `data` (one alias of
 /// a batch pointing at a deleted repo fails alone, as a null), so only a
 /// query with no data at all is an error.
-pub struct GraphqlAnswer {
-    pub data: serde_json::Value,
+struct GraphqlAnswer {
+    data: serde_json::Value,
 }
 
 /// Run `query { rateLimit {...} <selection> }` against `host`'s GraphQL API.
-pub fn gh_graphql(host: &str, feature: &'static str, selection: &str) -> Result<GraphqlAnswer, ForgeError> {
+/// `background`: see `gh_api`.
+fn gh_graphql(host: &str, feature: &'static str, background: bool, selection: &str) -> Result<GraphqlAnswer, ForgeError> {
     let query = format!("query={{ {RATE_LIMIT_SELECTION} {selection} }}");
-    let resp = gh_api(host, feature, crate::forge_rate::Bucket::Graphql, &["graphql", "-f", &query])?;
-    let v: serde_json::Value = serde_json::from_str(&resp.body)
-        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
-    let data = v["data"].clone();
+    let resp = gh_api(host, feature, crate::forge_rate::Bucket::Graphql, background, &["graphql", "-f", &query])?;
+    let mut v = resp.json.ok_or_else(|| ForgeError::Other("gh returned unparseable JSON".into()))?;
+    let data = v["data"].take();
     if data.is_null() {
         let msg = v["errors"][0]["message"].as_str().unwrap_or("GraphQL query failed");
         return Err(ForgeError::Other(msg.to_string()));
@@ -418,13 +507,13 @@ pub fn gh_graphql(host: &str, feature: &'static str, selection: &str) -> Result<
 
 /// A GraphQL string literal. JSON string escaping is a valid GraphQL
 /// string, so serde does the work.
-pub fn gql_str(s: &str) -> String {
+fn gql_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
 }
 
 /// The GitHub hosts `gh` is signed in to, github.com when none is known
 /// yet (detect() has not run).
-pub fn github_hosts() -> Vec<String> {
+fn github_hosts() -> Vec<String> {
     let mut hosts: Vec<String> = host_map().lock().unwrap().as_ref()
         .map(|m| m.iter().filter(|(_, p)| **p == GITHUB).map(|(h, _)| h.clone()).collect())
         .unwrap_or_default();
@@ -440,12 +529,24 @@ pub fn github_hosts() -> Vec<String> {
 /// against the primary limit, so this is not charged to anything. Failures
 /// are silent: no window just means the documented defaults.
 pub fn probe_rate_limits() {
+    /// A host is probed at most this often, whatever asks: one that keeps
+    /// failing never gets a window, and a caller looping on `probe` would
+    /// otherwise stack a 45s `gh` per call.
+    const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+    static PROBED: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
     let Some(bin) = reprobe_bin("gh") else { return };
     for host in github_hosts() {
         if crate::forge_rate::has_fresh_window(&host) {
             continue;
         }
-        let Ok(o) = run(&bin, &["api", "--hostname", &host, "rate_limit"], None) else { continue };
+        {
+            let mut probed = PROBED.get_or_init(Default::default).lock().unwrap();
+            if probed.get(&host).is_some_and(|at| at.elapsed() < PROBE_EVERY) {
+                continue;
+            }
+            probed.insert(host.clone(), std::time::Instant::now());
+        }
+        let Ok(o) = run_bounded(&bin, &["api", "--hostname", &host, "rate_limit"], None, GH_API_TIMEOUT) else { continue };
         if !o.status.success() {
             continue;
         }
@@ -799,7 +900,7 @@ pub struct PrStatus {
     pub head: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ForgeError {
     /// The provider's CLI binary isn't installed / resolvable.
     CliMissing(&'static str),
@@ -807,10 +908,24 @@ pub enum ForgeError {
     Auth(String),
     /// Anything else — network, unexpected output, …
     Other(String),
-    /// GitHub refused on a rate limit (forge_rate has paused the host). The
-    /// message names when termic will try again. Its own arm so a batch can
-    /// stop instead of retrying the same refusal one item at a time.
-    RateLimited(String),
+    /// GitHub refused on a rate limit (forge_rate has paused the host), or
+    /// a background call met termic's own gate. `until` is when termic asks
+    /// again (epoch seconds); the message says so in English. Its own arm so
+    /// a batch can stop instead of retrying the same refusal item by item.
+    RateLimited { until: u64, message: String },
+    /// The answer was past `MAX_OUTPUT` and was not read.
+    TooLarge(String),
+}
+
+impl ForgeError {
+    /// The user-facing text of anything but `CliMissing`, whose hint each
+    /// caller words for its own purpose.
+    pub fn into_message(self) -> String {
+        match self {
+            ForgeError::CliMissing(cli) => format!("{cli} is not installed."),
+            ForgeError::Auth(m) | ForgeError::Other(m) | ForgeError::TooLarge(m) | ForgeError::RateLimited { message: m, .. } => m,
+        }
+    }
 }
 
 fn stderr_of(o: &std::process::Output) -> String {
@@ -888,8 +1003,9 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         "--json",
         "number,url,title,state,isDraft,reviewDecision,latestReviews,statusCheckRollup,baseRefName,headRefName",
     ]);
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
-    charge_gh_cli(cwd, "pr_status", crate::forge_rate::Bucket::Graphql);
+    charge_gh_cli(cwd, "pr_status", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found for branch X" — a real, clean "no PR".
@@ -962,10 +1078,21 @@ pub fn parse_github_pr_url(url: &str) -> Option<(String, String, String, u64)> {
         return None;
     }
     let number: u64 = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
-    if host.is_empty() || owner.is_empty() || repo.is_empty() || number == 0 {
+    // The number goes into a GraphQL `Int` (32-bit): one past it fails the
+    // whole aliased query, not just its own alias.
+    if host.is_empty() || !github_slug_ok(owner, repo) || number == 0 || number > i32::MAX as u64 {
         return None;
     }
     Some((host, owner.to_string(), repo.to_string(), number))
+}
+
+/// GitHub's own owner / repo charset and lengths (39 / 100). Both land in
+/// GraphQL arguments and `repo:` search qualifiers, where a space or a colon
+/// would add terms to a query other repos share.
+fn github_slug_ok(owner: &str, repo: &str) -> bool {
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s != "." && s != ".."
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    ok(owner, 39) && ok(repo, 100)
 }
 
 fn pr_batch_selection(refs: &[PrRef]) -> String {
@@ -1000,7 +1127,8 @@ pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef])
     if refs.is_empty() {
         return Ok(Vec::new());
     }
-    let ans = gh_graphql(host, feature, &pr_batch_selection(refs))?;
+    // The background poller's call, always: it waits out termic's budget too.
+    let ans = gh_graphql(host, feature, true, &pr_batch_selection(refs))?;
     Ok(parse_pr_batch(&ans.data, refs.len()))
 }
 
@@ -1026,11 +1154,9 @@ pub fn github_remote_slug(url: &str) -> Option<(String, String)> {
     let mut it = path.rsplit('/');
     let repo = it.next()?.to_string();
     let owner = it.next()?.to_string();
-    // GitHub's own charset. Both land in `repo:` search qualifiers, where a
-    // space or a colon would add terms to a query other repos share, so a
-    // remote outside it is no slug (the caller takes the CLI path).
-    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    (ok(&owner) && ok(&repo)).then_some((owner, repo))
+    // A remote outside GitHub's charset is no slug: the caller takes the
+    // CLI path.
+    github_slug_ok(&owner, &repo).then_some((owner, repo))
 }
 
 /// Which list, as the picker and Todos name them.
@@ -1200,14 +1326,20 @@ fn parse_lists(data: &serde_json::Value, lists: &[RepoList], aliases: &[Alias]) 
     out
 }
 
-/// Every list in `lists` (all on `host`) in one GraphQL query, answers in
-/// `lists` order.
+/// Lists per query. Keeps the answer (each repo list carries up to 100
+/// bodies) and the query string (one argv entry; Windows caps a command line
+/// at 32,767 characters) bounded however many projects the Todos view has.
+pub const LISTS_BATCH_MAX: usize = 30;
+
+/// Every list in `lists` (all on `host`, at most `LISTS_BATCH_MAX`) in one
+/// GraphQL query, answers in `lists` order. A user's view, not a timer, so
+/// it is not held by termic's budget.
 pub fn github_lists(host: &str, feature: &'static str, lists: &[RepoList]) -> Result<Vec<ListRows>, ForgeError> {
     if lists.is_empty() {
         return Ok(Vec::new());
     }
     let (sel, aliases) = lists_selection(lists);
-    let ans = gh_graphql(host, feature, &sel)?;
+    let ans = gh_graphql(host, feature, false, &sel)?;
     Ok(parse_lists(&ans.data, lists, &aliases))
 }
 
@@ -1762,25 +1894,28 @@ fn norm_time(s: &str) -> String {
 
 /// Every comment on the PR/MR, oldest first. `number` is required - the
 /// watcher only runs once the PR identity is known.
-pub fn pr_comments(provider: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
+/// `background`: the comment watcher. A GitHub host's rate gate then holds
+/// the whole answer (`RateLimited`) rather than half of it.
+pub fn pr_comments(provider: &str, cwd: &Path, number: u64, background: bool) -> Result<Vec<PrComment>, ForgeError> {
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     let mut out = match provider {
         GITLAB => gitlab_mr_comments(&bin, cwd, number)?,
         AZURE => azure_pr_comments(&bin, cwd, number)?,
-        _ => github_pr_comments(&bin, cwd, number)?,
+        _ => github_pr_comments(&bin, cwd, number, background)?,
     };
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     out.dedup_by(|a, b| a.id == b.id);
     Ok(out)
 }
 
-fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
+fn github_pr_comments(bin: &str, cwd: &Path, number: u64, background: bool) -> Result<Vec<PrComment>, ForgeError> {
     let n = number.to_string();
     // Discussion comments + review summaries in one call.
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &["pr", "view", &n, "--json", "comments,reviews"], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
-    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Graphql);
+    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -1798,13 +1933,20 @@ fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrCommen
     let path = format!(
         "repos/{{owner}}/{{repo}}/pulls/{n}/comments?per_page=100&sort=created&direction=desc"
     );
-    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Core);
-    if let Ok(o2) = run(bin, &["api", &path], Some(cwd)) {
-        if o2.status.success() {
-            if let Ok(v2) = serde_json::from_slice::<serde_json::Value>(&o2.stdout) {
+    // Through `gh api --include`, so the REST window and a core refusal reach
+    // the ledger, and the watcher's calls count against `CORE_CAP`.
+    match gh_api_in_repo(cwd, "comments", crate::forge_rate::Bucket::Core, background, &[&path]) {
+        Ok(resp) => {
+            if let Some(v2) = resp.json {
                 all.extend(parse_github_inline_comments(&v2));
             }
         }
+        // The watcher only reports comments newer than the newest it has
+        // seen, so the discussion half alone could move that mark past
+        // inline comments it never read. A held leg holds the whole answer.
+        Err(e @ ForgeError::RateLimited { .. }) if background => return Err(e),
+        // Best-effort otherwise, like before.
+        Err(_) => {}
     }
     Ok(all)
 }
@@ -2164,31 +2306,90 @@ pub fn provider_for_repo(cwd: &Path, remote: &str) -> (Option<&'static str>, Str
     (provider, remote_url)
 }
 
-/// The host of the repo at `cwd`, from the provider cache that every caller
-/// has warmed through `provider_for_repo` before reaching a CLI call. Only
-/// used to charge legacy calls to the right ledger, so a miss falls back to
-/// github.com rather than paying a git subprocess.
-fn cached_host_for(cwd: &Path) -> String {
+/// The host of the repo at `cwd`'s remote. The provider cache first; on a
+/// miss (cold start, or `detect()` just cleared it) it is warmed, which is
+/// one `git` subprocess, the same one the lookup that follows would pay.
+fn remote_host_for(cwd: &Path) -> Option<String> {
+    host_of_remote(&repo_forge(cwd).1)
+}
+
+/// `provider_for_repo` for whichever remote `cwd` was last resolved with,
+/// without the `git remote` subprocess that finds the default one. On a
+/// miss (cold start, or `detect()` just cleared it) the cache is warmed,
+/// which is that subprocess once.
+pub fn repo_forge(cwd: &Path) -> (Option<&'static str>, String) {
     let prefix = format!("{}\u{1}", cwd.to_string_lossy());
-    provider_cache().lock().unwrap().iter()
-        .find(|(k, _)| k.starts_with(&prefix))
-        .and_then(|(_, hit)| host_of_remote(&hit.remote_url))
+    let cached = provider_cache().lock().unwrap().iter()
+        .find(|(k, hit)| k.starts_with(&prefix) && hit.at.elapsed() < PROVIDER_TTL)
+        .map(|(_, hit)| (hit.provider, hit.remote_url.clone()));
+    cached.unwrap_or_else(|| provider_for_repo(cwd, &crate::detect_default_remote(cwd)))
+}
+
+/// The GitHub API host a task's or repo's calls go to: the key the rate
+/// ledger uses, so the gate and the charges ask about the same host GitHub
+/// answered from. The stored PR url's host first (no subprocess), else the
+/// remote's.
+///
+/// A host gh is not signed in to maps to github.com: an SSH alias
+/// (`git@github-work:acme/app.git`) is where gh sends it too, and anything
+/// else (junk an agent wrote into `.git/config`) neither escapes the gate
+/// nor becomes a ledger row, and a Settings card, of its own.
+// ponytail: an SSH alias for a GHE host is gated as github.com; resolve it
+// through `ssh -G` if anyone runs one.
+pub fn api_host_for(pr_url: Option<&str>, cwd: &Path) -> String {
+    let authed = authed_hosts();
+    let allowed = |h: String| github_host_allowed(&h, &authed).then_some(h);
+    pr_url.and_then(parse_github_pr_url).and_then(|(h, ..)| allowed(h))
+        .or_else(|| remote_host_for(cwd).and_then(allowed))
         .unwrap_or_else(|| "github.com".into())
 }
 
-/// Whether background work for the repo at `cwd` waits out a GitHub rate
-/// pause (forge_rate). `provider` is the task's recorded forge; unset means
-/// a legacy record, gated like GitHub, and a host the ledger has never seen
-/// is never paused. Cheap: the cached provider answer, no subprocess.
-pub fn background_held(provider: Option<&str>, cwd: &Path) -> bool {
-    provider.map_or(true, |p| p == GITHUB)
-        && crate::forge_rate::background_gate(&cached_host_for(cwd), crate::forge_rate::Bucket::Graphql).is_err()
+/// Whether background work for a task waits out a GitHub rate pause
+/// (forge_rate). `provider` is the task's recorded forge. Unset is mostly a
+/// task with no PR found yet (the field is only written once one is), so
+/// it is resolved from the repo's remote: a GitLab or Azure task must not
+/// wait on github.com. A host the ledger has never seen is never paused.
+pub fn background_held(provider: Option<&str>, pr_url: Option<&str>, cwd: &Path) -> bool {
+    let github = match provider {
+        Some(p) => p == GITHUB,
+        None => repo_forge(cwd).0 == Some(GITHUB),
+    };
+    github && crate::forge_rate::background_gate(&api_host_for(pr_url, cwd), crate::forge_rate::Bucket::Graphql).is_err()
+}
+
+/// Refuse a legacy `gh` call before it runs while GitHub's own refusal for
+/// `bucket` stands. A user action still asks; it just is not sent into a
+/// refusal that would only extend the wait.
+fn gh_cli_admit(cwd: &Path, bucket: crate::forge_rate::Bucket) -> Result<(), ForgeError> {
+    let host = api_host_for(None, cwd);
+    match crate::forge_rate::refused_until(&host, bucket) {
+        Some(until) => Err(rate_limited(&host, until)),
+        None => Ok(()),
+    }
 }
 
 /// Charge one legacy `gh` CLI call (which cannot report its cost) to the
-/// rate ledger as an estimate.
-fn charge_gh_cli(cwd: &Path, feature: &'static str, bucket: crate::forge_rate::Bucket) {
-    crate::forge_rate::record_estimated(&cached_host_for(cwd), feature, bucket);
+/// rate ledger as an estimate. Not when gh failed on auth: nothing was sent.
+///
+/// A call GitHub refused on a limit is not charged: it teaches the ledger
+/// the refusal instead (the CLI prints no headers, so `forge_rate` times
+/// it), and comes back as `RateLimited` for the caller to return before it
+/// reads the output. Without this, every caller still on the CLI path kept
+/// firing into a refusal, which GitHub answers by extending it.
+fn charge_gh_cli(cwd: &Path, feature: &'static str, bucket: crate::forge_rate::Bucket, o: &std::process::Output) -> Result<(), ForgeError> {
+    if !o.status.success() {
+        let err = stderr_of(o).to_lowercase();
+        if err.contains("rate limit") {
+            let host = api_host_for(None, cwd);
+            let until = crate::forge_rate::record_cli_refusal(&host, bucket, err.contains("secondary rate limit"));
+            return Err(rate_limited(&host, until));
+        }
+        if matches!(classify_stderr(GITHUB, &err), ForgeError::Auth(_)) {
+            return Ok(());
+        }
+    }
+    crate::forge_rate::record_estimated(&api_host_for(None, cwd), feature, bucket);
+    Ok(())
 }
 
 /// Drop the cached provider answers. Called after `detect()` re-probes,
@@ -2280,9 +2481,10 @@ fn github_issue_args(limit: &str, scope: IssueScope) -> Vec<&str> {
 
 fn github_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
     let n = limit.to_string();
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &github_issue_args(&n, scope), Some(cwd))
     .map_err(|e| ForgeError::Other(e.to_string()))?;
-    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // A repo with issues disabled is not an error worth a red banner.
@@ -2385,8 +2587,9 @@ pub fn pr_list(provider: &str, cwd: &Path, limit: u32, scope: PrScope) -> Result
 /// Run one `gh pr list` and parse it. Every GitHub list is the same call
 /// with different filters, newest first (gh's default order).
 fn github_pr_list(bin: &str, cwd: &Path, args: &[&str]) -> Result<Vec<ForgePr>, ForgeError> {
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
-    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -2469,9 +2672,10 @@ pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<Fo
         return azure_pr_show(&bin, cwd, number);
     }
     let n = number.to_string();
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(&bin, &["pr", "view", &n, "--json", PR_JSON_FIELDS], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
-    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found" is an answer, not a failure: the number is
@@ -2976,6 +3180,16 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn run_bounded_refuses_an_answer_past_the_cap_and_keeps_a_normal_one() {
+        let big = format!("head -c {} /dev/zero", MAX_OUTPUT + 1);
+        let err = run_bounded("sh", &["-c", &big], None, std::time::Duration::from_secs(30)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge, "{err}");
+        let ok = run_bounded("sh", &["-c", "printf hi"], None, std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(ok.stdout, b"hi");
+    }
+
     #[test]
     fn remote_host_extraction() {
         let h = |u: &str| host_of_remote(u);
@@ -3001,6 +3215,9 @@ mod tests {
         assert_eq!(parse_auth_hosts(glab), vec!["git.internal.acme.com"]);
         // Prose without a hostname must not be mistaken for one.
         assert!(parse_auth_hosts("You are not logged in to any hosts\n").is_empty());
+        // Only logged-in lines: this list decides where gh api sends a token.
+        assert!(parse_auth_hosts("  X Failed to log in to ghe.acme.com account bob (keyring)\n").is_empty());
+        assert!(parse_auth_hosts("  ✓ Git operations for ghe.acme.com configured to use ssh.acme.com\n").is_empty());
         assert!(parse_auth_hosts("").is_empty());
     }
 
@@ -3908,14 +4125,19 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(r.status, 200);
         assert_eq!(r.headers["x-ratelimit-remaining"], "4999");
         assert_eq!(r.headers["x-ratelimit-resource"], "core");
-        assert_eq!(r.body, "{\"a\":1}");
+        assert_eq!(r.json, Some(serde_json::json!({ "a": 1 })));
+        // The body is only kept as text on an error status.
+        assert!(r.error_body.is_empty());
+        let r = parse_api_output(b"HTTP/2.0 403 Forbidden\r\n\r\nsecondary rate limit").unwrap();
+        assert_eq!(r.error_body, "secondary rate limit");
+        assert!(r.json.is_none());
     }
 
     #[test]
-    fn api_output_reads_a_bodiless_304_and_rejects_non_http_text() {
+    fn api_output_reads_a_bodiless_answer_and_rejects_non_http_text() {
         let r = parse_api_output(b"HTTP/2.0 304 Not Modified\nEtag: \"x\"\r\n\r\n").unwrap();
         assert_eq!(r.status, 304);
-        assert!(r.body.is_empty());
+        assert!(r.json.is_none() && r.error_body.is_empty());
         // No HTTP happened (gh not signed in): stdout is empty.
         assert!(parse_api_output(b"").is_none());
         assert!(parse_api_output(b"To get started with GitHub CLI, please run:  gh auth login\n").is_none());
@@ -4093,10 +4315,10 @@ code.internal.acme.com configured to use ssh protocol.\n";
     #[cfg(unix)]
     fn a_bounded_run_is_killed_at_its_timeout() {
         let t = std::time::Instant::now();
-        let r = run_bounded("sleep", &["5"], std::time::Duration::from_millis(200));
+        let r = run_bounded("sleep", &["5"], None, std::time::Duration::from_millis(200));
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
         assert!(t.elapsed() < std::time::Duration::from_secs(3));
-        let o = run_bounded("echo", &["hi"], std::time::Duration::from_secs(5)).unwrap();
+        let o = run_bounded("echo", &["hi"], None, std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "hi");
     }
 

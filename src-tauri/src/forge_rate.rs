@@ -10,11 +10,15 @@
 //!
 //! Background work (pollers, timers) asks `background_gate` first and is
 //! deferred while termic is over its share or the account is under the
-//! floor. A user action still runs. Rules and numbers: spec/github-sync and
-//! docs/performance.md "Forge budget".
+//! floor. A user action still runs. Rules and numbers: docs/performance.md
+//! "Forge budget".
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+// parking_lot: a panic in the listener must not poison the ledger and take
+// every later `gh_api` call down with it.
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -42,8 +46,9 @@ impl Bucket {
 
     /// Termic's own hourly cap. GraphQL: a share of the limit (the token is
     /// shared). Core: a flat number, since termic's only REST use today is
-    /// the comments call. Shown in Settings; the gate only ever asks about
-    /// GraphQL, the bucket every background job spends.
+    /// the comment watcher's inline-comments call, which is the one
+    /// background caller gated on it. The pill and `paused` follow GraphQL,
+    /// the bucket every other background job spends.
     fn cap(self, limit: u64) -> u64 {
         match self {
             Bucket::Graphql => (limit as f64 * TERMIC_SHARE) as u64,
@@ -54,7 +59,7 @@ impl Bucket {
 
 /// Share of the GraphQL hourly limit termic may spend in the background.
 pub const TERMIC_SHARE: f64 = 0.20;
-/// Termic's REST core requests per hour (displayed, not gated).
+/// Termic's REST core requests per hour (gates the background comments leg).
 pub const CORE_CAP: u64 = 300;
 /// Pause background work while the ACCOUNT has less than this share left.
 pub const FLOOR: f64 = 0.15;
@@ -96,9 +101,10 @@ struct Spend {
 struct HostLedger {
     windows: HashMap<Bucket, Window>,
     spend: VecDeque<Spend>,
-    /// Epoch seconds; 0 = not paused by GitHub.
-    limited_until: u64,
-    limited_reason: String,
+    /// Epoch seconds per bucket GitHub refused on; absent = not refused.
+    /// Per bucket because a core 403 says nothing about GraphQL. A
+    /// secondary limit is account-wide and sets both.
+    limited_until: HashMap<Bucket, u64>,
     /// Consecutive secondary limits without a retry-after, for the backoff.
     secondary_strikes: u32,
 }
@@ -118,7 +124,7 @@ fn listener() -> &'static Mutex<Option<Listener>> {
 /// Called with the full status whenever it changes (throttled, see
 /// `notify`). Set once at app setup to emit `termic://forge-rate-changed`.
 pub fn on_changed(f: impl Fn(Vec<RateStatus>) + Send + Sync + 'static) {
-    *listener().lock().unwrap() = Some(Box::new(f));
+    *listener().lock() = Some(Box::new(f));
 }
 
 pub fn now_secs() -> u64 {
@@ -156,10 +162,12 @@ fn header_u64(h: &HashMap<String, String>, k: &str) -> Option<u64> {
     h.get(k).and_then(|v| v.trim().parse().ok())
 }
 
+/// A window GitHub reported. A limit of 0 is treated as no window: it would
+/// put the cap at 0 and hold background work for good.
 fn window_from_headers(h: &HashMap<String, String>) -> Option<(Bucket, Window)> {
     let bucket = Bucket::parse(h.get("x-ratelimit-resource")?.trim())?;
     Some((bucket, Window {
-        limit: header_u64(h, "x-ratelimit-limit")?,
+        limit: header_u64(h, "x-ratelimit-limit").filter(|&n| n > 0)?,
         remaining: header_u64(h, "x-ratelimit-remaining")?,
         used: header_u64(h, "x-ratelimit-used").unwrap_or(0),
         reset_at: header_u64(h, "x-ratelimit-reset")?,
@@ -169,7 +177,7 @@ fn window_from_headers(h: &HashMap<String, String>) -> Option<(Bucket, Window)> 
 fn window_from_graphql(v: &serde_json::Value) -> Option<Window> {
     let reset_at = chrono::DateTime::parse_from_rfc3339(v["resetAt"].as_str()?).ok()?.timestamp();
     Some(Window {
-        limit: v["limit"].as_u64()?,
+        limit: v["limit"].as_u64().filter(|&n| n > 0)?,
         remaining: v["remaining"].as_u64()?,
         used: v["used"].as_u64().unwrap_or(0),
         reset_at: reset_at.max(0) as u64,
@@ -181,7 +189,7 @@ fn window_from_graphql(v: &serde_json::Value) -> Option<Window> {
 /// pauses until then.
 pub fn observe(host: &str, feature: &'static str, bucket: Bucket, o: &Observation) -> Verdict {
     let verdict = {
-        let mut map = ledger().lock().unwrap();
+        let mut map = ledger().lock();
         let l = map.entry(host.to_string()).or_default();
         observe_at(l, feature, bucket, o, now_secs())
     };
@@ -193,28 +201,28 @@ fn observe_at(l: &mut HostLedger, feature: &'static str, bucket: Bucket, o: &Obs
     // The window: GraphQL's own rateLimit object first (it is what this
     // query was charged against), then the headers, which GitHub calls the
     // authoritative source and which every REST answer carries.
+    // GitHub's reset times are its clock; the gate compares them to ours.
+    let skew = o.headers.map_or(0, |h| clock_skew(h, now));
+    let local = |server: u64| server.saturating_add_signed(-skew).min(now + MAX_AHEAD_SECS);
     let from_body = o.graphql_rate.and_then(window_from_graphql).map(|w| (Bucket::Graphql, w));
     let from_headers = o.headers.and_then(window_from_headers);
     if let Some((b, mut w)) = from_body.or(from_headers) {
-        w.reset_at = w.reset_at.min(now + MAX_AHEAD_SECS);
+        w.reset_at = local(w.reset_at);
         l.windows.insert(b, w);
     }
 
-    // A 304 is free (does not count against the primary limit).
-    if o.status != 304 && o.status != 0 {
-        let reported = o.graphql_rate.and_then(|r| r["cost"].as_u64());
-        l.spend.push_back(Spend {
-            at: now,
-            feature,
-            bucket,
-            cost: reported.unwrap_or(1).clamp(1, MAX_COST),
-            estimated: reported.is_none() && bucket == Bucket::Graphql,
-        });
-    }
+    let reported = o.graphql_rate.and_then(|r| r["cost"].as_u64());
+    l.spend.push_back(Spend {
+        at: now,
+        feature,
+        bucket,
+        cost: reported.unwrap_or(1).clamp(1, MAX_COST),
+        estimated: reported.is_none() && bucket == Bucket::Graphql,
+    });
     prune(l, now);
 
     let remaining_zero = o.headers.and_then(|h| header_u64(h, "x-ratelimit-remaining")) == Some(0);
-    let reset = o.headers.and_then(|h| header_u64(h, "x-ratelimit-reset"))
+    let reset = o.headers.and_then(|h| header_u64(h, "x-ratelimit-reset")).map(local)
         .or_else(|| l.windows.get(&bucket).map(|w| w.reset_at))
         .unwrap_or(now + HOUR)
         .min(now + MAX_AHEAD_SECS);
@@ -222,37 +230,93 @@ fn observe_at(l: &mut HostLedger, feature: &'static str, bucket: Bucket, o: &Obs
     let graphql_limited = o.graphql_errors
         .and_then(|e| e.as_array())
         .is_some_and(|errs| errs.iter().any(|e| e["type"].as_str() == Some("RATE_LIMITED")));
-    let body = o.body.to_lowercase();
-    let secondary = matches!(o.status, 403 | 429) && body.contains("secondary rate limit");
+    // Only a 403/429 body is read, so an ordinary (possibly large) answer is
+    // not copied just to look for the phrase.
+    let secondary = matches!(o.status, 403 | 429) && o.body.to_lowercase().contains("secondary rate limit");
     let refused = graphql_limited || (matches!(o.status, 403 | 429) && (remaining_zero || retry_after.is_some() || secondary));
 
     if !refused {
         l.secondary_strikes = 0;
         return Verdict::Ok;
     }
-    // GitHub's order: retry-after, then reset when nothing is left, then a
-    // minute doubling per repeat.
-    let (until, reason) = if let Some(s) = retry_after {
-        (now + s, "GitHub asked termic to slow down (retry-after)")
-    } else if remaining_zero || graphql_limited {
-        (reset.max(now + 1), "hourly rate limit reached")
+    // The bucket refused: the response's own resource header when it names
+    // one, else the bucket the call was made against.
+    let refused_bucket = o.headers.and_then(window_from_headers).map(|(b, _)| b).unwrap_or(bucket);
+    let primary = remaining_zero || graphql_limited;
+    Verdict::Limited { until: refuse_at(l, refused_bucket, secondary, retry_after, primary.then_some(reset), now) }
+}
+
+/// Record a refusal and return when `bucket` may be asked again. GitHub's
+/// order: retry-after, then the window reset when nothing is left
+/// (`primary_reset`), then a minute doubling per repeat. A secondary limit
+/// throttles the account as a whole, so it holds both buckets.
+fn refuse_at(l: &mut HostLedger, bucket: Bucket, secondary: bool, retry_after: Option<u64>, primary_reset: Option<u64>, now: u64) -> u64 {
+    let until = if let Some(s) = retry_after {
+        now + s
+    } else if let Some(reset) = primary_reset {
+        reset.max(now + 1)
     } else {
         let wait = (SECONDARY_BACKOFF_SECS << l.secondary_strikes.min(8)).min(SECONDARY_BACKOFF_MAX_SECS);
-        l.secondary_strikes += 1;
-        (now + wait, "GitHub secondary rate limit")
+        l.secondary_strikes = l.secondary_strikes.saturating_add(1);
+        now + wait
     };
-    if until > l.limited_until {
-        l.limited_until = until;
-        l.limited_reason = reason.to_string();
+    let buckets: &[Bucket] = if secondary {
+        &[Bucket::Graphql, Bucket::Core]
+    } else {
+        std::slice::from_ref(&bucket)
+    };
+    for b in buckets {
+        let cur = l.limited_until.entry(*b).or_insert(0);
+        *cur = (*cur).max(until);
     }
-    Verdict::Limited { until: l.limited_until }
+    l.limited_until[&bucket]
+}
+
+/// Seconds GitHub's clock is ahead of ours, from the `Date` header. Under
+/// a few seconds is latency and the header's own 1s resolution, not skew.
+fn clock_skew(h: &HashMap<String, String>, now: u64) -> i64 {
+    let Some(server) = h.get("date").and_then(|d| chrono::DateTime::parse_from_rfc2822(d.trim()).ok()) else { return 0 };
+    let skew = server.timestamp() - now as i64;
+    if skew.abs() < 5 { 0 } else { skew.clamp(-(MAX_AHEAD_SECS as i64), MAX_AHEAD_SECS as i64) }
+}
+
+/// A legacy `gh` call whose stderr says GitHub refused it on a limit. The
+/// CLI does not print the headers, so the wait is the window's reset when
+/// the ledger knows it (an hour when not), or the secondary backoff.
+/// Returns when termic may ask again.
+pub fn record_cli_refusal(host: &str, bucket: Bucket, secondary: bool) -> u64 {
+    let until = {
+        let mut map = ledger().lock();
+        let l = map.entry(host.to_string()).or_default();
+        cli_refusal_at(l, bucket, secondary, now_secs())
+    };
+    notify();
+    until
+}
+
+fn cli_refusal_at(l: &mut HostLedger, bucket: Bucket, secondary: bool, now: u64) -> u64 {
+    let reset = (!secondary).then(|| {
+        l.windows.get(&bucket).map(|w| w.reset_at).filter(|&r| r > now).unwrap_or(now + HOUR)
+    });
+    refuse_at(l, bucket, secondary, None, reset, now)
+}
+
+/// When GitHub itself refused `bucket` on `host` and that refusal still
+/// stands, the epoch second it lifts. Asked before ANY call, user or not:
+/// GitHub's guidance is not to retry while limited, and a refused
+/// secondary-limit call only doubles the wait.
+pub fn refused_until(host: &str, bucket: Bucket) -> Option<u64> {
+    let now = now_secs();
+    ledger().lock().get(host)
+        .and_then(|l| l.limited_until.get(&bucket).copied())
+        .filter(|&u| u > now)
 }
 
 /// A legacy CLI call (`gh pr view`, `gh issue list`, ...) that cannot report
 /// its cost. Counted as the minimum of 1, marked estimated.
 pub fn record_estimated(host: &str, feature: &'static str, bucket: Bucket) {
     {
-        let mut map = ledger().lock().unwrap();
+        let mut map = ledger().lock();
         let l = map.entry(host.to_string()).or_default();
         let now = now_secs();
         l.spend.push_back(Spend { at: now, feature, bucket, cost: 1, estimated: true });
@@ -265,12 +329,12 @@ pub fn record_estimated(host: &str, feature: &'static str, bucket: Bucket) {
 /// primary limit. Seeds the windows before termic has made any call.
 pub fn record_rate_limit_resources(host: &str, v: &serde_json::Value) {
     {
-        let mut map = ledger().lock().unwrap();
+        let mut map = ledger().lock();
         let l = map.entry(host.to_string()).or_default();
         for (name, b) in [("graphql", Bucket::Graphql), ("core", Bucket::Core)] {
             let r = &v["resources"][name];
             if let (Some(limit), Some(remaining), Some(reset_at)) =
-                (r["limit"].as_u64(), r["remaining"].as_u64(), r["reset"].as_u64())
+                (r["limit"].as_u64().filter(|&n| n > 0), r["remaining"].as_u64(), r["reset"].as_u64())
             {
                 let reset_at = reset_at.min(now_secs() + MAX_AHEAD_SECS);
                 l.windows.insert(b, Window { limit, remaining, used: r["used"].as_u64().unwrap_or(0), reset_at });
@@ -284,7 +348,7 @@ pub fn record_rate_limit_resources(host: &str, v: &serde_json::Value) {
 /// still ahead), so the launch probe can skip hosts it already knows.
 pub fn has_fresh_window(host: &str) -> bool {
     let now = now_secs();
-    ledger().lock().unwrap().get(host)
+    ledger().lock().get(host)
         .is_some_and(|l| l.windows.values().any(|w| w.reset_at > now))
 }
 
@@ -302,15 +366,14 @@ pub struct Pause {
     /// Epoch seconds.
     pub until: u64,
     /// "limited" (GitHub refused), "floor" (the account is low), or
-    /// "budget" (termic spent its share).
+    /// "budget" (termic spent its share). The UI words it (i18n).
     pub kind: &'static str,
-    pub reason: String,
 }
 
 /// May background work spend from `bucket` on `host` right now? A user
 /// action does not ask. Unknown host: yes, with the documented defaults.
 pub fn background_gate(host: &str, bucket: Bucket) -> Result<(), Pause> {
-    let mut map = ledger().lock().unwrap();
+    let mut map = ledger().lock();
     // A host with no row has spent nothing and been refused nothing. Not
     // inserted: asking about a host must not make it a row in Settings.
     match map.get_mut(host).and_then(|l| gate_at(l, bucket, now_secs())) {
@@ -321,18 +384,14 @@ pub fn background_gate(host: &str, bucket: Bucket) -> Result<(), Pause> {
 
 fn gate_at(l: &mut HostLedger, bucket: Bucket, now: u64) -> Option<Pause> {
     prune(l, now);
-    if l.limited_until > now {
-        return Some(Pause { until: l.limited_until, kind: "limited", reason: l.limited_reason.clone() });
+    if let Some(&until) = l.limited_until.get(&bucket).filter(|&&u| u > now) {
+        return Some(Pause { until, kind: "limited" });
     }
     let window = l.windows.get(&bucket).filter(|w| w.reset_at > now).copied();
     let limit = window.map(|w| w.limit).unwrap_or(bucket.default_limit());
     if let Some(w) = window {
         if (w.remaining as f64) < FLOOR * w.limit as f64 {
-            return Some(Pause {
-                until: w.reset_at,
-                kind: "floor",
-                reason: format!("account has {} of {} left", w.remaining, w.limit),
-            });
+            return Some(Pause { until: w.reset_at, kind: "floor" });
         }
     }
     let cap = bucket.cap(limit);
@@ -348,7 +407,7 @@ fn gate_at(l: &mut HostLedger, bucket: Bucket, now: u64) -> Option<Pause> {
             }
             over -= s.cost;
         }
-        return Some(Pause { until, kind: "budget", reason: format!("termic spent {spent} of its {cap} per hour") });
+        return Some(Pause { until, kind: "budget" });
     }
     None
 }
@@ -385,7 +444,7 @@ pub struct RateStatus {
 
 pub fn status() -> Vec<RateStatus> {
     let now = now_secs();
-    let mut map = ledger().lock().unwrap();
+    let mut map = ledger().lock();
     let mut out: Vec<RateStatus> = map.iter_mut().map(|(host, l)| status_of(host, l, now)).collect();
     out.sort_by(|a, b| a.host.cmp(&b.host));
     out
@@ -428,21 +487,30 @@ fn status_of(host: &str, l: &mut HostLedger, now: u64) -> RateStatus {
 /// one, background work would stop on the Rust side and nothing would be
 /// left to announce it. Spend-only changes the throttle drops are picked up
 /// by the next call or by the Settings row, which asks while it is open.
+///
+/// `LAST` is held from the snapshot to the emit, so two threads cannot
+/// emit out of order (an older unpaused snapshot landing after a newer
+/// paused one would hide the pill while Rust holds work). Lock order is
+/// LAST, then the ledger (released inside `status`), then the listener;
+/// nothing takes them the other way round.
 fn notify() {
     static LAST: Mutex<(u64, Vec<(String, Option<u64>)>)> = Mutex::new((0, Vec::new()));
+    let mut last = LAST.lock();
     let now = now_secs();
     let s = status();
     let pauses = pause_key(&s);
-    {
-        let mut last = LAST.lock().unwrap();
-        if now < last.0 + 2 && pauses == last.1 {
-            return;
-        }
-        *last = (now, pauses);
+    if !should_emit(now, &last, &pauses) {
+        return;
     }
-    if let Some(f) = listener().lock().unwrap().as_ref() {
+    *last = (now, pauses);
+    if let Some(f) = listener().lock().as_ref() {
         f(s);
     }
+}
+
+/// The throttle: once per 2s, or at once when a pause starts, ends or moves.
+fn should_emit(now: u64, last: &(u64, Vec<(String, Option<u64>)>), pauses: &[(String, Option<u64>)]) -> bool {
+    now >= last.0 + 2 || pauses != last.1.as_slice()
 }
 
 /// Each host's pause end, the part of a status the throttle must not drop.
@@ -480,14 +548,56 @@ mod tests {
     }
 
     #[test]
-    fn rest_headers_set_the_core_window_and_a_304_is_free() {
+    fn rest_headers_set_the_core_window() {
         let mut l = HostLedger::default();
         let h = headers(&[("x-ratelimit-resource", "core"), ("x-ratelimit-limit", "5000"),
             ("x-ratelimit-remaining", "4999"), ("x-ratelimit-used", "1"), ("x-ratelimit-reset", "1800003600")]);
         observe_at(&mut l, "comments", Bucket::Core, &Observation { status: 200, headers: Some(&h), ..Default::default() }, NOW);
-        observe_at(&mut l, "comments", Bucket::Core, &Observation { status: 304, headers: Some(&h), ..Default::default() }, NOW);
         assert_eq!(l.windows[&Bucket::Core].remaining, 4999);
         assert_eq!(status_of("h", &mut l, NOW).buckets[1].spent, 1);
+    }
+
+    #[test]
+    fn a_zero_limit_is_no_window_not_a_permanent_pause() {
+        let mut l = HostLedger::default();
+        let h = headers(&[("x-ratelimit-resource", "graphql"), ("x-ratelimit-limit", "0"),
+            ("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1800003600")]);
+        observe_at(&mut l, "pr_status", Bucket::Graphql, &Observation { status: 200, headers: Some(&h), ..Default::default() }, NOW);
+        assert!(l.windows.is_empty());
+        let body = serde_json::json!({ "cost": 1, "limit": 0, "remaining": 0, "used": 0, "resetAt": "2027-01-15T08:00:00Z" });
+        observe_at(&mut l, "pr_status", Bucket::Graphql, &Observation { status: 200, graphql_rate: Some(&body), ..Default::default() }, NOW);
+        assert!(l.windows.is_empty());
+        assert_eq!(gate_at(&mut l, Bucket::Graphql, NOW), None);
+    }
+
+    #[test]
+    fn a_reset_is_moved_into_our_clock_by_the_date_header() {
+        let mut l = HostLedger::default();
+        // GitHub's clock is 10 minutes ahead of ours.
+        let server_now = chrono::DateTime::from_timestamp((NOW + 600) as i64, 0).unwrap().to_rfc2822();
+        let h = headers(&[("x-ratelimit-resource", "graphql"), ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-remaining", "10"), ("x-ratelimit-reset", &(NOW + 600 + 1800).to_string()), ("date", &server_now)]);
+        observe_at(&mut l, "pr_status", Bucket::Graphql, &Observation { status: 200, headers: Some(&h), ..Default::default() }, NOW);
+        assert_eq!(l.windows[&Bucket::Graphql].reset_at, NOW + 1800);
+        // A couple of seconds is latency, not skew.
+        let near = chrono::DateTime::from_timestamp((NOW + 2) as i64, 0).unwrap().to_rfc2822();
+        assert_eq!(clock_skew(&headers(&[("date", &near)]), NOW), 0);
+    }
+
+    #[test]
+    fn a_cli_refusal_holds_until_the_known_reset_or_backs_off() {
+        let mut l = HostLedger::default();
+        // No window known: an hour.
+        assert_eq!(cli_refusal_at(&mut l, Bucket::Graphql, false, NOW), NOW + 3600);
+        let mut l = HostLedger::default();
+        l.windows.insert(Bucket::Graphql, Window { limit: 5000, remaining: 0, used: 5000, reset_at: NOW + 900 });
+        assert_eq!(cli_refusal_at(&mut l, Bucket::Graphql, false, NOW), NOW + 900);
+        assert!(l.limited_until.get(&Bucket::Core).is_none());
+        // Secondary: the doubling backoff, on both buckets.
+        let mut l = HostLedger::default();
+        assert_eq!(cli_refusal_at(&mut l, Bucket::Graphql, true, NOW), NOW + 60);
+        assert_eq!(cli_refusal_at(&mut l, Bucket::Graphql, true, NOW), NOW + 120);
+        assert_eq!(l.limited_until[&Bucket::Core], NOW + 120);
     }
 
     #[test]
@@ -533,7 +643,7 @@ mod tests {
             ("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", &u64::MAX.to_string())]);
         observe_at(&mut l, "x", Bucket::Graphql, &Observation { status: 403, headers: Some(&h), ..Default::default() }, NOW);
         assert_eq!(l.windows[&Bucket::Graphql].reset_at, NOW + MAX_AHEAD_SECS);
-        assert_eq!(l.limited_until, NOW + MAX_AHEAD_SECS);
+        assert_eq!(l.limited_until[&Bucket::Graphql], NOW + MAX_AHEAD_SECS);
     }
 
     #[test]
@@ -563,6 +673,52 @@ mod tests {
         let h = headers(&[("retry-after", "30")]);
         observe_at(&mut l, "x", Bucket::Graphql, &Observation { status: 403, headers: Some(&h), ..Default::default() }, NOW);
         assert_ne!(pause_key(&quiet), pause_key(&[status_of("h", &mut l, NOW)]));
+    }
+
+    #[test]
+    fn a_core_limit_does_not_pause_graphql_but_a_secondary_limit_pauses_both() {
+        let mut l = HostLedger::default();
+        let h = headers(&[("x-ratelimit-resource", "core"), ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1800000900")]);
+        let v = observe_at(&mut l, "comments", Bucket::Core, &Observation { status: 403, headers: Some(&h), ..Default::default() }, NOW);
+        assert_eq!(v, Verdict::Limited { until: 1_800_000_900 });
+        assert!(gate_at(&mut l, Bucket::Graphql, NOW).is_none());
+        assert_eq!(gate_at(&mut l, Bucket::Core, NOW).unwrap().kind, "limited");
+
+        let mut l = HostLedger::default();
+        let o = Observation { status: 403, body: "You have exceeded a secondary rate limit", ..Default::default() };
+        observe_at(&mut l, "comments", Bucket::Core, &o, NOW);
+        assert_eq!(gate_at(&mut l, Bucket::Graphql, NOW).unwrap().kind, "limited");
+        assert_eq!(gate_at(&mut l, Bucket::Core, NOW).unwrap().kind, "limited");
+    }
+
+    #[test]
+    fn refused_until_reports_only_a_standing_refusal() {
+        let host = "refused.ghe.acme.com";
+        assert_eq!(refused_until(host, Bucket::Graphql), None);
+        let h = headers(&[("retry-after", "60")]);
+        observe(host, "x", Bucket::Graphql, &Observation { status: 429, headers: Some(&h), ..Default::default() });
+        assert!(refused_until(host, Bucket::Graphql).is_some_and(|u| u > now_secs()));
+        assert_eq!(refused_until(host, Bucket::Core), None);
+        // A budget pause is termic's own policy, not a refusal.
+        let mut l = HostLedger::default();
+        for i in 0..10 {
+            l.spend.push_back(Spend { at: NOW + i, feature: "x", bucket: Bucket::Graphql, cost: 100, estimated: false });
+        }
+        assert_eq!(gate_at(&mut l, Bucket::Graphql, NOW + 10).unwrap().kind, "budget");
+        assert!(l.limited_until.is_empty());
+    }
+
+    #[test]
+    fn the_throttle_drops_spend_but_never_a_pause_change() {
+        let quiet = vec![("h".to_string(), None)];
+        let paused = vec![("h".to_string(), Some(NOW + 60))];
+        let last = (NOW, quiet.clone());
+        assert!(!should_emit(NOW + 1, &last, &quiet));
+        assert!(should_emit(NOW + 2, &last, &quiet));
+        assert!(should_emit(NOW + 1, &last, &paused));
+        // A pause that lifts is a change too.
+        assert!(should_emit(NOW + 1, &(NOW, paused), &quiet));
     }
 
     #[test]

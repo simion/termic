@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must be declared before the modules under test are imported.
 vi.mock("@/lib/ipc", () => {
@@ -7,12 +7,14 @@ vi.mock("@/lib/ipc", () => {
   // says otherwise (null = the host is rate-paused, decided in Rust).
   const taskPrStatus = vi.fn();
   const taskPrComments = vi.fn().mockResolvedValue([]);
+  const taskMemberPrStatus = vi.fn().mockResolvedValue([]);
   return {
   detectForges: vi.fn().mockResolvedValue([]),
   taskPrStatus,
   taskPrStatusBackground: vi.fn((id: string) => taskPrStatus(id)),
   taskPrStatusBatch: vi.fn().mockResolvedValue([]),
-  taskMemberPrStatus: vi.fn().mockResolvedValue([]),
+  taskMemberPrStatus,
+  taskMemberPrStatusBackground: vi.fn((id: string) => taskMemberPrStatus(id)),
   taskPrComments,
   taskPrCommentsBackground: vi.fn((id: string) => taskPrComments(id)),
   taskSetPrWatch: vi.fn().mockResolvedValue(undefined),
@@ -43,7 +45,7 @@ import {
   pollableTasks, batchable, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus, tasksThatStoppedWorking, parseUnseen,
   prFocusEligible,
   mergeAlreadyHandled,
-  parsePrSnapshots, snapshotsAfter, cachedPrFor,
+  parsePrSnapshots, snapshotsAfter, cachedPrFor, batchLanding,
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -101,16 +103,16 @@ describe("usePr.refresh", () => {
     await usePr.getState().refresh("ws1");
     expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1);
     // …but force goes through.
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(ipc.taskPrStatus).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the stale snapshot when a refresh rejects", async () => {
     seedApp();
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     vi.mocked(ipc.taskPrStatus).mockRejectedValue(new Error("network"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("open");
   });
 
@@ -126,7 +128,7 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
     const member: MemberPrLookup = { ...lookupWith("draft", 3), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(ipc.taskMemberPrStatus).toHaveBeenCalledWith("ws1");
     expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
   });
@@ -134,7 +136,7 @@ describe("usePr.refresh", () => {
   it("skips the member call entirely for single-repo tasks", async () => {
     seedApp();
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(ipc.taskMemberPrStatus).not.toHaveBeenCalled();
     expect(usePr.getState().byTask["ws1"].members).toBeUndefined();
   });
@@ -148,9 +150,29 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
     const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     vi.mocked(ipc.taskMemberPrStatus).mockRejectedValue(new Error("gone"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("asks for members as background work, and a held answer keeps the rows", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", { force: true, background: true });
+    expect(ipc.taskMemberPrStatusBackground).toHaveBeenCalledWith("ws1");
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+    // A member's GitHub host is paused: Rust asks nothing and answers null.
+    vi.mocked(ipc.taskMemberPrStatusBackground).mockResolvedValueOnce(null);
+    vi.mocked(ipc.taskMemberPrStatus).mockClear();
+    await usePr.getState().refresh("ws1", { force: true, background: true });
+    expect(ipc.taskMemberPrStatus).not.toHaveBeenCalled();
     expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
   });
 
@@ -163,7 +185,7 @@ describe("usePr.refresh", () => {
     });
     const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     // The host repo is the user's live checkout - resolving its PR would
     // persist a foreign identity and can auto-archive the task on an
     // unrelated merge. Members still poll normally.
@@ -182,7 +204,7 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskPrStatus).mockRejectedValue(new Error("network"));
     const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(usePr.getState().byTask["ws1"].lookup).toBeNull();
     expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
   });
@@ -197,11 +219,11 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([
       { ...lookupWith("open"), dir_name: "api", branch: "feat" },
     ]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     // Edit Task removed the member - the next refresh must not keep
     // showing rows for a repo the task no longer has.
     useApp.setState(s => ({ tasks: s.tasks.map(t => ({ ...t, composition: [] })) }));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(ipc.taskMemberPrStatus).toHaveBeenCalledTimes(1);
     expect(usePr.getState().byTask["ws1"].members).toBeUndefined();
   });
@@ -215,7 +237,7 @@ describe("usePr.refresh", () => {
     const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     usePr.getState().setLookup("ws1", lookupWith("draft", 9));
     expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
   });
@@ -224,7 +246,7 @@ describe("usePr.refresh", () => {
     seedApp();
     let resolveStatus!: (v: PrLookup) => void;
     vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
-    const pending = usePr.getState().refresh("ws1", true);
+    const pending = usePr.getState().refresh("ws1", { force: true });
     usePr.getState().setLookup("ws1", lookupWith("draft", 9));
     resolveStatus(lookupWith("open", 7));
     await pending;
@@ -241,7 +263,7 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
     const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
     vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
-    const pending = usePr.getState().refresh("ws1", true);
+    const pending = usePr.getState().refresh("ws1", { force: true });
     usePr.getState().setLookup("ws1", lookupWith("draft", 9));
     resolveStatus(lookupWith("open", 7));
     await pending;
@@ -252,10 +274,10 @@ describe("usePr.refresh", () => {
   it("a raced refresh fires no merge/open handlers on the stale snapshot", async () => {
     seedApp(); // no on_pr_merge → "ask" mode toasts on open → merged
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     let resolveStatus!: (v: PrLookup) => void;
     vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
-    const pending = usePr.getState().refresh("ws1", true);
+    const pending = usePr.getState().refresh("ws1", { force: true });
     // A write lands mid-flight; the refresh then resolves to "merged".
     // The transition handlers must compare the NEXT poll against this
     // lookup, not fire on a superseded snapshot.
@@ -282,9 +304,9 @@ describe("merged-PR lifecycle (issue #21)", () => {
   it("ask (default): open → merged toasts with an Archive action", async () => {
     seedApp(); // no on_pr_merge → "ask"
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
 
     const toasts = useUI.getState().toasts;
     expect(toasts).toHaveLength(1);
@@ -306,9 +328,9 @@ describe("merged-PR lifecycle (issue #21)", () => {
     usePrefs.setState({ desktopNotifications: true });
     seedApp(undefined, { id: "ws-notify" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-notify", true);
+    await usePr.getState().refresh("ws-notify", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-notify", true);
+    await usePr.getState().refresh("ws-notify", { force: true });
     expect(ipc.notify).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("merged"));
   });
 
@@ -316,19 +338,19 @@ describe("merged-PR lifecycle (issue #21)", () => {
     usePrefs.setState({ desktopNotifications: false });
     seedApp(undefined, { id: "ws-notify-off" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-notify-off", true);
+    await usePr.getState().refresh("ws-notify-off", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-notify-off", true);
+    await usePr.getState().refresh("ws-notify-off", { force: true });
     expect(ipc.notify).not.toHaveBeenCalled();
   });
 
   it("fires only once per session for the same task", async () => {
     seedApp(undefined, { id: "ws-once" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-once", true);
+    await usePr.getState().refresh("ws-once", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-once", true);
-    await usePr.getState().refresh("ws-once", true);
+    await usePr.getState().refresh("ws-once", { force: true });
+    await usePr.getState().refresh("ws-once", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
   });
 
@@ -337,15 +359,15 @@ describe("merged-PR lifecycle (issue #21)", () => {
     // toast, a NEW PR #8 on the same task is a different merge, not a repeat.
     seedApp(undefined, { id: "ws-two-prs" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7));
-    await usePr.getState().refresh("ws-two-prs", true);
+    await usePr.getState().refresh("ws-two-prs", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7));
-    await usePr.getState().refresh("ws-two-prs", true);
+    await usePr.getState().refresh("ws-two-prs", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
 
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 8));
-    await usePr.getState().refresh("ws-two-prs", true);
+    await usePr.getState().refresh("ws-two-prs", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 8));
-    await usePr.getState().refresh("ws-two-prs", true);
+    await usePr.getState().refresh("ws-two-prs", { force: true });
     expect(useUI.getState().toasts).toHaveLength(2);
   });
 
@@ -353,24 +375,24 @@ describe("merged-PR lifecycle (issue #21)", () => {
     // Remote retarget: GitHub #7 merging must not suppress ADO !7's merge.
     seedApp(undefined, { id: "ws-cross" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7));
-    await usePr.getState().refresh("ws-cross", true);
+    await usePr.getState().refresh("ws-cross", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7));
-    await usePr.getState().refresh("ws-cross", true);
+    await usePr.getState().refresh("ws-cross", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
 
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7, "azure"));
-    await usePr.getState().refresh("ws-cross", true);
+    await usePr.getState().refresh("ws-cross", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7, "azure"));
-    await usePr.getState().refresh("ws-cross", true);
+    await usePr.getState().refresh("ws-cross", { force: true });
     expect(useUI.getState().toasts).toHaveLength(2);
   });
 
   it("auto: archives immediately, WITHOUT deleting the branch", async () => {
     seedApp("auto", { id: "ws-auto" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-auto", true);
+    await usePr.getState().refresh("ws-auto", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-auto", true);
+    await usePr.getState().refresh("ws-auto", { force: true });
     // Unattended, no confirmation - the branch-delete decision belongs to
     // the "ask" flow's explicit checkbox, not something done on the user's
     // behalf in the background.
@@ -381,18 +403,18 @@ describe("merged-PR lifecycle (issue #21)", () => {
     usePrefs.setState({ desktopNotifications: true });
     seedApp("auto", { id: "ws-auto-notify" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-auto-notify", true);
+    await usePr.getState().refresh("ws-auto-notify", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-auto-notify", true);
+    await usePr.getState().refresh("ws-auto-notify", { force: true });
     expect(ipc.notify).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("archiving"));
   });
 
   it("off: badge only, no toast, no archive", async () => {
     seedApp("off", { id: "ws-off" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-off", true);
+    await usePr.getState().refresh("ws-off", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-off", true);
+    await usePr.getState().refresh("ws-off", { force: true });
     expect(useUI.getState().toasts).toHaveLength(0);
     expect(archiveAndRefresh).not.toHaveBeenCalled();
   });
@@ -402,14 +424,14 @@ describe("merged-PR lifecycle (issue #21)", () => {
     // its PR number from the previous session.
     seedApp(undefined, { id: "ws-cold", pr_number: 7, pr_provider: "github" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-cold", true);
+    await usePr.getState().refresh("ws-cold", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
   });
 
   it("first poll merged WITHOUT prior identity → silent (ancient branch)", async () => {
     seedApp(undefined, { id: "ws-ancient" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws-ancient", true);
+    await usePr.getState().refresh("ws-ancient", { force: true });
     expect(useUI.getState().toasts).toHaveLength(0);
   });
 });
@@ -419,9 +441,9 @@ describe("new-PR-opened lifecycle", () => {
     seedApp(undefined, { id: "ws-focus" });
     useApp.setState({ activeTaskId: "ws-focus" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith(null));
-    await usePr.getState().refresh("ws-focus", true);
+    await usePr.getState().refresh("ws-focus", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-focus", true);
+    await usePr.getState().refresh("ws-focus", { force: true });
 
     const toasts = useUI.getState().toasts;
     expect(toasts).toHaveLength(1);
@@ -432,9 +454,9 @@ describe("new-PR-opened lifecycle", () => {
     seedApp(undefined, { id: "ws-bg" });
     useApp.setState({ activeTaskId: "some-other-task" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith(null));
-    await usePr.getState().refresh("ws-bg", true);
+    await usePr.getState().refresh("ws-bg", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-bg", true);
+    await usePr.getState().refresh("ws-bg", { force: true });
 
     expect(useUI.getState().toasts).toHaveLength(0);
     expect(usePr.getState().byTask["ws-bg"].lookup?.pr?.state).toBe("open");
@@ -444,7 +466,7 @@ describe("new-PR-opened lifecycle", () => {
     seedApp(undefined, { id: "ws-cold-open" });
     useApp.setState({ activeTaskId: "ws-cold-open" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-cold-open", true);
+    await usePr.getState().refresh("ws-cold-open", { force: true });
     expect(useUI.getState().toasts).toHaveLength(0);
   });
 
@@ -452,10 +474,10 @@ describe("new-PR-opened lifecycle", () => {
     seedApp(undefined, { id: "ws-once-open" });
     useApp.setState({ activeTaskId: "ws-once-open" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith(null));
-    await usePr.getState().refresh("ws-once-open", true);
+    await usePr.getState().refresh("ws-once-open", { force: true });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws-once-open", true);
-    await usePr.getState().refresh("ws-once-open", true);
+    await usePr.getState().refresh("ws-once-open", { force: true });
+    await usePr.getState().refresh("ws-once-open", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
   });
 });
@@ -797,7 +819,7 @@ describe("learning a PR identity mid-session", () => {
     expect(useApp.getState().tasks[0].pr_number).toBeUndefined();
 
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
 
     const task = useApp.getState().tasks.find(t => t.id === "ws1")!;
     expect(task.pr_number).toBe(lookupWith("open").pr!.number);
@@ -813,7 +835,7 @@ describe("learning a PR identity mid-session", () => {
     const before = useApp.getState().tasks[0];
 
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
 
     expect(useApp.getState().tasks[0]).toBe(before);
   });
@@ -933,6 +955,13 @@ describe("background status poller (#281)", () => {
   describe("batched GitHub pass", () => {
     const URLED = (n: number) => ({ pr_number: n, pr_provider: "github", pr_url: `https://github.com/foo/bar/pull/${n}` }) as Partial<Task>;
 
+    // clearAllMocks keeps implementations, so a case that fails midway must
+    // not leave its stand-ins behind for the next one.
+    afterEach(() => {
+      vi.mocked(ipc.taskPrStatusBackground).mockImplementation(id => ipc.taskPrStatus(id));
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([]);
+    });
+
     it("answers every due GitHub task with one batch call, past the per-task cap", async () => {
       const many = Array.from({ length: 30 }, (_, i) => URLED(i + 1));
       seedTasks(...many);
@@ -990,10 +1019,9 @@ describe("background status poller (#281)", () => {
       // staying stalest and taking a per-tick slot from other forges.
       expect(ws1.fetchedAt).toBeGreaterThan(0);
       expect(pollableTasks().map(w => w.id)).not.toContain("ws1");
-      vi.mocked(ipc.taskPrStatusBackground).mockImplementation(id => ipc.taskPrStatus(id));
     });
 
-    it("does not drop a forced refresh while a batch is in flight", async () => {
+    it("keeps a forced refresh's answer when it lands before the batch", async () => {
       seedTasks(URLED(1));
       let answer!: (v: TaskPrLookup[]) => void;
       vi.mocked(ipc.taskPrStatusBatch).mockReturnValue(new Promise(r => { answer = r; }));
@@ -1001,10 +1029,85 @@ describe("background status poller (#281)", () => {
       const pass = prStatusPassNow();
       expect(usePr.getState().byTask["ws1"]?.loading ?? false).toBe(false);
       // A push lands mid-batch: the forced refresh runs and its answer wins.
-      await usePr.getState().refresh("ws1", true);
+      await usePr.getState().refresh("ws1", { force: true });
       expect(ipc.taskPrStatus).toHaveBeenCalledWith("ws1");
       answer([{ id: "ws1", ...lookupWith("open") }]);
       await pass;
+      expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
+    });
+
+    it("keeps a forced refresh's answer when the batch lands first", async () => {
+      seedTasks(URLED(1));
+      let answerBatch!: (v: TaskPrLookup[]) => void;
+      let answerRefresh!: (v: PrLookup) => void;
+      vi.mocked(ipc.taskPrStatusBatch).mockReturnValue(new Promise(r => { answerBatch = r; }));
+      vi.mocked(ipc.taskPrStatus).mockReturnValue(new Promise(r => { answerRefresh = r; }));
+      const pass = prStatusPassNow();
+      // A push mid-batch: its refresh is in flight when the stale batch lands.
+      const forced = usePr.getState().refresh("ws1", { force: true });
+      answerBatch([{ id: "ws1", ...lookupWith("open") }]);
+      await pass;
+      answerRefresh(lookupWith("merged"));
+      await forced;
+      expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
+    });
+
+    it("a failed batch answer does not replace a good lookup but counts as the poll, a sign-in hint lands", async () => {
+      seedTasks(URLED(1), URLED(2));
+      usePr.setState({ byTask: {
+        ws1: { lookup: lookupWith("open", 1), loading: false, fetchedAt: 0 },
+        ws2: { lookup: lookupWith("open", 2), loading: false, fetchedAt: 0 },
+      } });
+      const failed = (status: PrLookup["status"]): PrLookup => ({ ...lookupWith(null), status, message: "x" });
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([
+        { id: "ws1", ...failed("error") }, { id: "ws2", ...failed("cli-unauthed") },
+      ]);
+      const good = usePr.getState().byTask["ws1"].lookup;
+      await prStatusPassNow();
+      expect(usePr.getState().byTask["ws1"].lookup).toBe(good);
+      // Stamped, so a PR that keeps failing (a deleted repo) is not asked
+      // again every tick as the stalest task.
+      expect(usePr.getState().byTask["ws1"].fetchedAt).toBeGreaterThan(0);
+      expect(pollableTasks().map(w => w.id)).not.toContain("ws1");
+      expect(usePr.getState().byTask["ws2"].lookup?.status).toBe("cli-unauthed");
+    });
+
+    it("drops a batch answer behind a refresh in flight or one that landed since", () => {
+      const cur = { lookup: lookupWith("open"), loading: false, fetchedAt: 100 };
+      const answer = lookupWith("merged");
+      expect(batchLanding(cur, cur, answer)).toBe("land");
+      expect(batchLanding(cur, { ...cur, loading: true }, answer)).toBe("drop");
+      expect(batchLanding(cur, { ...cur, fetchedAt: 200 }, answer)).toBe("drop");
+      expect(batchLanding(cur, cur, { ...answer, status: "rate-limited", pr: null })).toBe("stamp");
+      expect(batchLanding({ ...cur, lookup: null }, { ...cur, lookup: null }, { ...answer, status: "error", pr: null })).toBe("land");
+    });
+
+    it("polls a non-batched task without waiting for the batch", async () => {
+      seedTasks(URLED(1), { pr_number: 4, pr_provider: "gitlab" });
+      let answer!: (v: TaskPrLookup[]) => void;
+      vi.mocked(ipc.taskPrStatusBatch).mockReturnValue(new Promise(r => { answer = r; }));
+      vi.mocked(ipc.taskPrStatusBackground).mockResolvedValue(lookupWith("open", 4));
+      const pass = prStatusPassNow();
+      await vi.waitFor(() => expect(ipc.taskPrStatusBackground).toHaveBeenCalledWith("ws2"));
+      answer([{ id: "ws1", ...lookupWith("open", 1) }]);
+      await pass;
+    });
+
+    it("keeps the same lookup object when a poll brings back the same answer", async () => {
+      seedTasks(URLED(1));
+      usePr.setState({ byTask: { ws1: { lookup: lookupWith("open", 1), loading: false, fetchedAt: 0 } } });
+      const held = usePr.getState().byTask["ws1"].lookup;
+      // A fresh object off the IPC, equal in content.
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws1", ...lookupWith("open", 1) }]);
+      await prStatusPassNow();
+      const entry = usePr.getState().byTask["ws1"];
+      expect(entry.lookup).toBe(held);
+      expect(entry.fetchedAt).toBeGreaterThan(0);
+      // A real change still lands as a new object.
+      usePr.setState(s => ({ byTask: { ...s.byTask, ws1: { ...s.byTask.ws1, fetchedAt: 0 } } }));
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws1", ...lookupWith("merged", 1) }]);
+      await prStatusPassNow();
+      expect(usePr.getState().byTask["ws1"].lookup).not.toBe(held);
       expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
     });
 
@@ -1021,12 +1124,15 @@ describe("background status poller (#281)", () => {
     });
 
     it("fires the merge lifecycle from a batch answer", async () => {
-      seedTasks(URLED(7));
-      usePr.setState({ byTask: { ws1: { lookup: lookupWith("open"), loading: false, fetchedAt: 0 } } });
-      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws1", ...lookupWith("merged") }]);
+      // Own id: the "already announced" marker is keyed by task.
+      seedTasks({ ...URLED(7), id: "ws-batch-merge" });
+      useApp.setState(s => ({ projects: [{ ...s.projects[0], on_pr_merge: "auto" } as Project] }));
+      usePr.setState({ byTask: { "ws-batch-merge": { lookup: lookupWith("open"), loading: false, fetchedAt: 0 } } });
+      vi.mocked(ipc.taskPrStatusBatch).mockResolvedValue([{ id: "ws-batch-merge", ...lookupWith("merged") }]);
       await prStatusPassNow();
-      expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("merged");
-      expect(usePr.getState().snapshots["ws1"]?.state).toBe("merged");
+      expect(usePr.getState().byTask["ws-batch-merge"].lookup?.pr?.state).toBe("merged");
+      expect(usePr.getState().snapshots["ws-batch-merge"]?.state).toBe("merged");
+      expect(archiveAndRefresh).toHaveBeenCalledWith("ws-batch-merge", false);
     });
   });
 
@@ -1123,6 +1229,17 @@ describe("refresh on focus", () => {
     useApp.setState({ tabs: agentTab("idle") });
     await Promise.resolve();
     expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1);
+    stopPrRefreshOnFocus();
+  });
+
+  it("a turn end looks again when the task's PR is closed, for a replacement", async () => {
+    seedApp("off", { pr_number: 5, pr_provider: "github" });
+    usePr.setState({ byTask: { ws1: { lookup: lookupWith("closed", 5), loading: false, fetchedAt: 0 } } });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 6));
+    useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });
+    initPrRefreshOnFocus();
+    useApp.setState({ tabs: agentTab("idle") });
+    await vi.waitFor(() => expect(usePr.getState().byTask.ws1.lookup?.pr?.number).toBe(6));
     stopPrRefreshOnFocus();
   });
 
@@ -1255,7 +1372,7 @@ describe("last-known PR status, kept across launches", () => {
     l.pr!.checks = "failing";
     l.pr!.review = "approved";
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(l);
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     const want = { provider: "github", number: 7, state: "open", checks: "failing", review: "approved" };
     expect(usePr.getState().snapshots.ws1).toEqual(want);
     expect(stored().ws1).toEqual(want);
@@ -1265,7 +1382,7 @@ describe("last-known PR status, kept across launches", () => {
     seedApp("off");
     for (const state of ["draft", "open", "merged"] as const) {
       vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith(state));
-      await usePr.getState().refresh("ws1", true);
+      await usePr.getState().refresh("ws1", { force: true });
       expect(stored().ws1.state).toBe(state);
     }
   });
@@ -1273,10 +1390,10 @@ describe("last-known PR status, kept across launches", () => {
   it("writes nothing when a poll reads the same thing again (bear trap 8)", async () => {
     seedApp();
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     const first = usePr.getState().snapshots;
     const setItem = vi.spyOn(Storage.prototype, "setItem");
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(usePr.getState().snapshots).toBe(first);
     expect(setItem.mock.calls.filter(c => c[0] === "prSnapshots")).toEqual([]);
     setItem.mockRestore();
@@ -1296,7 +1413,7 @@ describe("last-known PR status, kept across launches", () => {
     seedApp();
     usePr.setState({ snapshots: { gone: { provider: "github", number: 3, state: "open", checks: "none", review: "none" } } });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(Object.keys(stored())).toEqual(["ws1"]);
   });
 
@@ -1337,13 +1454,13 @@ describe("last-known PR status, kept across launches", () => {
     // And still due a poll at once: a remembered status is not a fresh one.
     expect(pollableTasks().map(t => t.id)).toEqual(["ws1"]);
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     const toastsWithCache = useUI.getState().toasts.length;
 
     localStorage.clear();
     usePr.setState({ byTask: {}, snapshots: {} });
     useUI.setState({ toasts: [] });
-    await usePr.getState().refresh("ws1", true);
+    await usePr.getState().refresh("ws1", { force: true });
     expect(toastsWithCache).toBe(useUI.getState().toasts.length);
   });
 });
