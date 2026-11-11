@@ -1343,9 +1343,6 @@ fn ensure_account_store(agent_id: &str, account: &str, realm: LoginRealm, agents
         return;
     }
     let Some(store) = login_store_dir(agent_id, Some(account), realm) else { return };
-    if store.join(ACCOUNT_FARM_MARKER).exists() {
-        return;
-    }
     let base = docker::base_agent_id(agents, agent_id);
     let entries = agent_dirs::shared_config_entries(base);
     if entries.is_empty() {
@@ -1359,9 +1356,250 @@ fn ensure_account_store(agent_id: &str, account: &str, realm: LoginRealm, agents
     if primary == store {
         return;
     }
+    // Not marker-gated: MCP servers live in a file the account owns, so they
+    // are a copy and have to be refreshed on every spawn to stay the same.
+    if base == "claude" {
+        sync_claude_mcp(&primary, &store);
+        // The primary's own CLAUDE_CONFIG_DIR (a clone), or None for claude's
+        // default, which is what names its Keychain item.
+        let primary_env = agent_dirs::resolve_agent(agents, agent_id)
+            .and_then(|a| a.env.get("CLAUDE_CONFIG_DIR").cloned())
+            .map(|raw| agent_dirs::expand_home(&raw, &home))
+            .filter(|p| !p.as_os_str().is_empty());
+        sync_claude_mcp_oauth(&primary, primary_env.as_deref(), &store);
+    }
+    if store.join(ACCOUNT_FARM_MARKER).exists() {
+        return;
+    }
     if let Err(e) = build_account_farm(&primary, &store, entries) {
         dlog(&format!("[accounts] could not wire {agent_id}/{account}: {e}"));
     }
+}
+
+/// Which MCP server names the last sync copied into an account, per scope
+/// ("" = user scope, else a project path), so a server REMOVED from the
+/// primary is removed from the account too, while one the user added on the
+/// account itself is left alone.
+const CLAUDE_MCP_SYNCED: &str = ".termic-mcp-synced.json";
+
+/// claude's MCP config, the part the symlink farm cannot reach.
+///
+/// User-scope servers (`mcpServers`) and project-local ones
+/// (`projects[path].mcpServers`, plus the `.mcp.json` approvals) live in
+/// `.claude.json`, which an account must NOT share: it also holds the account
+/// identity. So the MCP keys are COPIED from the primary's file into the
+/// account's own, primary winning, on every spawn. Codex needs none of this:
+/// its servers are in `config.toml`, which the farm shares.
+///
+/// Only into a `.claude.json` claude has already created: writing one into a
+/// fresh store would make it read as signed in (`farm_planted`). The first
+/// session on a new account (the sign-in tab) therefore runs without them.
+fn sync_claude_mcp(primary: &Path, store: &Path) {
+    // claude's default dir keeps the file at HOME root (`~/.claude.json`); a
+    // relocated one (CLAUDE_CONFIG_DIR) keeps it inside.
+    let src = [primary.join(".claude.json"), primary.parent().map(|p| p.join(".claude.json")).unwrap_or_default()]
+        .into_iter()
+        .find(|p| p.is_file());
+    let dst = store.join(".claude.json");
+    let (Some(src), true) = (src, dst.is_file()) else { return };
+    let read = |p: &Path| fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+    let (Some(from), Some(mut to)) = (read(&src), read(&dst)) else { return };
+    let mut synced = read(&store.join(CLAUDE_MCP_SYNCED)).unwrap_or_else(|| serde_json::json!({}));
+    if !merge_claude_mcp(&from, &mut to, &mut synced) {
+        return;
+    }
+    let (Ok(doc), Ok(marks)) = (serde_json::to_vec_pretty(&to), serde_json::to_vec(&synced)) else { return };
+    if let Err(e) = write_atomic(&dst, &doc).and_then(|_| write_atomic(&store.join(CLAUDE_MCP_SYNCED), &marks)) {
+        dlog(&format!("[accounts] could not sync MCP servers into {}: {e}", store.display()));
+    }
+}
+
+/// claude's MCP OAuth sign-ins, copied from the primary login into an account.
+///
+/// The ONE place termic handles a credential, and deliberately narrow (see
+/// docs/agent-accounts.md "MCP sign-ins"). claude keeps them in the same blob
+/// as the login (`mcpOAuth` beside `claudeAiOauth`), so syncing the server
+/// list alone left every OAuth server on a second account asking to sign in
+/// again. Only `mcpOAuth` entries move, never `claudeAiOauth`; only entries the
+/// account LACKS, so a sign-in that already works is never replaced; and only
+/// into an account that is signed in, so no credential is ever created.
+///
+/// A copied entry shares its refresh token with the primary's. A server that
+/// rotates refresh tokens can make one copy stale, which puts that account
+/// back to "sign in once": the state it was in without this.
+fn sync_claude_mcp_oauth(primary: &Path, primary_env: Option<&Path>, store: &Path) {
+    let Some(from) = claude_cred::read(primary, primary_env) else { return };
+    let Some(mut to) = claude_cred::read(store, Some(store)) else { return };
+    if merge_mcp_oauth(&from, &mut to) == 0 {
+        return;
+    }
+    if let Err(e) = claude_cred::write(store, Some(store), &to) {
+        dlog(&format!("[accounts] could not copy MCP sign-ins into {}: {e}", store.display()));
+    }
+}
+
+/// Adds the primary's `mcpOAuth` entries the account lacks. Returns how many.
+fn merge_mcp_oauth(from: &serde_json::Value, to: &mut serde_json::Value) -> usize {
+    let Some(src) = from.get("mcpOAuth").and_then(|v| v.as_object()) else { return 0 };
+    let Some(to) = to.as_object_mut() else { return 0 };
+    let dst = to.entry("mcpOAuth").or_insert_with(|| serde_json::json!({}));
+    let Some(dst) = dst.as_object_mut() else { return 0 };
+    let mut added = 0;
+    for (k, v) in src {
+        if !dst.contains_key(k) {
+            dst.insert(k.clone(), v.clone());
+            added += 1;
+        }
+    }
+    added
+}
+
+/// Where claude keeps its credential blob: the Keychain on macOS, under a
+/// service named from the CLAUDE_CONFIG_DIR it ran with, and
+/// `<config dir>/.credentials.json` everywhere else.
+mod claude_cred {
+    use std::path::Path;
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn read(dir: &Path, _env: Option<&Path>) -> Option<serde_json::Value> {
+        serde_json::from_slice(&std::fs::read(dir.join(".credentials.json")).ok()?).ok()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn write(dir: &Path, _env: Option<&Path>, v: &serde_json::Value) -> Result<(), String> {
+        let bytes = serde_json::to_vec(v).map_err(|e| e.to_string())?;
+        crate::write_atomic(&dir.join(".credentials.json"), &bytes).map_err(|e| e.to_string())
+    }
+
+    /// claude's own naming: no suffix for its default dir, else the first 8
+    /// hex of sha256 over the CLAUDE_CONFIG_DIR string it was given.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn service(env: Option<&Path>) -> String {
+        use sha2::{Digest, Sha256};
+        match env {
+            None => "Claude Code-credentials".into(),
+            Some(d) => {
+                let h = Sha256::digest(d.to_string_lossy().as_bytes());
+                let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+                format!("Claude Code-credentials-{}", &hex[..8])
+            }
+        }
+    }
+
+    // Through /usr/bin/security, as claude itself does: the item's ACL trusts
+    // that binary, so there is no Keychain prompt. termic's own binary would
+    // get one on every account.
+    #[cfg(target_os = "macos")]
+    pub fn read(_dir: &Path, env: Option<&Path>) -> Option<serde_json::Value> {
+        let out = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", &service(env), "-w"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8(out.stdout).ok()?;
+        let raw = raw.trim();
+        serde_json::from_str(raw).ok().or_else(|| {
+            // Non-printable data comes back hex-encoded.
+            let bytes: Option<Vec<u8>> = (0..raw.len()).step_by(2)
+                .map(|i| raw.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+                .collect();
+            serde_json::from_slice(&bytes?).ok()
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn write(_dir: &Path, env: Option<&Path>, v: &serde_json::Value) -> Result<(), String> {
+        let svc = service(env);
+        // The item's account attribute, so -U updates it rather than adding a
+        // second item beside it.
+        let attrs = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", &svc])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let attrs = String::from_utf8_lossy(&attrs.stdout);
+        let acct = attrs.lines()
+            .find_map(|l| l.trim().strip_prefix("\"acct\"<blob>=\"")?.strip_suffix('"').map(String::from))
+            .ok_or("no Keychain item to update")?;
+        let hex: String = serde_json::to_vec(v).map_err(|e| e.to_string())?
+            .iter().map(|b| format!("{b:02x}")).collect();
+        // On argv, as claude does once a blob outgrows `security -i`'s line
+        // limit (a real one with three MCP sign-ins is ~5 KB of hex). It adds
+        // no exposure: macOS shows a process's args only to the same user
+        // and root, and the same user can already read this item, unprompted,
+        // with this same binary.
+        let st = std::process::Command::new("/usr/bin/security")
+            .args(["add-generic-password", "-U", "-a", &acct, "-s", &svc, "-X", &hex])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?;
+        if st.success() { Ok(()) } else { Err(format!("security exited {st}")) }
+    }
+}
+
+/// The pure half of `sync_claude_mcp`. Returns whether `to` changed.
+fn merge_claude_mcp(from: &serde_json::Value, to: &mut serde_json::Value, synced: &mut serde_json::Value) -> bool {
+    use serde_json::{Map, Value};
+    // One `mcpServers` map: primary's entries win, ones we copied last time
+    // and the primary has since dropped go, the account's own stay.
+    fn merge_servers(from: Option<&Value>, to: &mut Map<String, Value>, prev: &[String]) -> Vec<String> {
+        let from = from.and_then(Value::as_object);
+        let target = to.entry("mcpServers").or_insert_with(|| Value::Object(Map::new()));
+        let Some(target) = target.as_object_mut() else { return Vec::new() };
+        for name in prev {
+            if from.map_or(true, |f| !f.contains_key(name)) {
+                target.remove(name);
+            }
+        }
+        let Some(from) = from else { return Vec::new() };
+        for (k, v) in from {
+            target.insert(k.clone(), v.clone());
+        }
+        from.keys().cloned().collect()
+    }
+    let before = to.clone();
+    let prev = |scope: &str, synced: &Value| -> Vec<String> {
+        synced.get(scope).and_then(Value::as_array).map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default()
+    };
+    let Some(to_obj) = to.as_object_mut() else { return false };
+    let mut marks = Map::new();
+    let names = merge_servers(from.get("mcpServers"), to_obj, &prev("", synced));
+    marks.insert(String::new(), names.into());
+    let empty = Map::new();
+    let from_projects = from.get("projects").and_then(Value::as_object).unwrap_or(&empty);
+    // Every project either side has servers for, so a project-local server
+    // removed from the primary is removed here too.
+    let mut paths: Vec<String> = from_projects.keys().cloned().collect();
+    if let Some(m) = synced.as_object() {
+        paths.extend(m.keys().filter(|k| !k.is_empty() && !from_projects.contains_key(*k)).cloned());
+    }
+    for path in paths {
+        let fp = from_projects.get(&path);
+        let has_any = fp.and_then(|p| p.get("mcpServers")).and_then(Value::as_object).is_some_and(|m| !m.is_empty());
+        let had = !prev(&path, synced).is_empty();
+        let approvals = ["enabledMcpjsonServers", "disabledMcpjsonServers", "disabledMcpServers", "enableAllProjectMcpServers"];
+        let has_approvals = fp.is_some_and(|p| approvals.iter().any(|k| p.get(k).is_some()));
+        // Do not create a project entry for every repo the primary ever opened.
+        if !has_any && !had && !has_approvals {
+            continue;
+        }
+        let projects = to_obj.entry("projects").or_insert_with(|| Value::Object(Map::new()));
+        let Some(projects) = projects.as_object_mut() else { continue };
+        let tp = projects.entry(path.clone()).or_insert_with(|| Value::Object(Map::new()));
+        let Some(tp) = tp.as_object_mut() else { continue };
+        let names = merge_servers(fp.and_then(|p| p.get("mcpServers")), tp, &prev(&path, synced));
+        for k in approvals {
+            if let Some(v) = fp.and_then(|p| p.get(k)) {
+                tp.insert(k.to_string(), v.clone());
+            }
+        }
+        if !names.is_empty() {
+            marks.insert(path, names.into());
+        }
+    }
+    *synced = Value::Object(marks);
+    *to != before
 }
 
 /// The environment that points an agent at the chosen account's login.
@@ -5384,7 +5622,10 @@ fn slug_of_window(reg: &profiles::Registry, window: &tauri::Window) -> Option<St
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
+    /// The account's identity: its store path and every API take this.
     pub name: String,
+    /// What to SHOW: the user's label, or the name when there is none.
+    pub label: String,
     /// True once the agent has actually written something into this account's
     /// store. "Named but never signed in" is a legitimate state: it is what a
     /// second machine looks like, and what the Docker realm looks like before
@@ -5466,7 +5707,9 @@ fn account_signed_in(agent_id: &str, account: &str, realm: LoginRealm, agents: &
 /// carries more than one link in the file's link count; a file the agent
 /// wrote fresh has exactly one.
 fn farm_planted(entry: &std::fs::DirEntry) -> bool {
-    if entry.file_name() == std::ffi::OsStr::new(ACCOUNT_FARM_MARKER) {
+    if entry.file_name() == std::ffi::OsStr::new(ACCOUNT_FARM_MARKER)
+        || entry.file_name() == std::ffi::OsStr::new(CLAUDE_MCP_SYNCED)
+    {
         return true;
     }
     #[cfg(windows)]
@@ -5534,6 +5777,7 @@ fn accounts_view_for(agent_id: &str, agents: &[Agent], realm: LoginRealm) -> Age
     AgentAccountsView {
         accounts: entry.map(|e| e.accounts.iter().map(|n| AccountView {
             name: n.clone(),
+            label: e.account_labels.get(n).cloned().unwrap_or_else(|| n.clone()),
             signed_in: account_signed_in(agent_id, n, realm, agents),
             is_default: e.default_account.as_deref() == Some(n.as_str()),
         }).collect()).unwrap_or_default(),
@@ -5631,6 +5875,7 @@ fn account_remove(window: tauri::Window, agent_id: String, name: String) -> Resu
         return Err(format!("no such agent: {agent_id}"));
     };
     entry.accounts.retain(|a| a != &name);
+    entry.account_labels.remove(&name);
     if entry.default_account.as_deref() == Some(name.as_str()) {
         entry.default_account = entry.accounts.first().cloned();
     }
@@ -5647,6 +5892,43 @@ fn account_remove(window: tauri::Window, agent_id: String, name: String) -> Resu
     // that profile out of an account it never touched. Removing the login
     // itself is the agent's own `logout`.
     { use tauri::Manager; emit_accounts_changed(window.app_handle()); }
+    Ok(())
+}
+
+/// Give an account a display label (GH #278). The NAME stays: it is the
+/// store's path, and for claude its Keychain item, so moving it would sign the
+/// account out. An empty label, or one equal to the name, clears it.
+#[tauri::command]
+fn account_set_label(window: tauri::Window, agent_id: String, name: String, label: String) -> Result<(), String> {
+    let label = label.trim().to_string();
+    let profile = window_profile(&window);
+    let mut settings = load_settings_in(&profile);
+    let Some(entry) = settings.agents.iter_mut().find(|a| a.id == agent_id) else {
+        return Err(format!("no such agent: {agent_id}"));
+    };
+    set_account_label(entry, &name, &label)?;
+    save_settings_in(&profile, &settings)?;
+    { use tauri::Manager; emit_accounts_changed(window.app_handle()); }
+    Ok(())
+}
+
+fn set_account_label(entry: &mut Agent, name: &str, label: &str) -> Result<(), String> {
+    if !entry.accounts.iter().any(|a| a == name) {
+        return Err(format!("{name:?} is not one of this agent's accounts"));
+    }
+    // Two accounts showing the same text are two rows nobody can tell apart.
+    let clash = entry.accounts.iter().filter(|a| *a != name).any(|a| {
+        let shown = entry.account_labels.get(a).map(String::as_str).unwrap_or(a);
+        shown.eq_ignore_ascii_case(label)
+    });
+    if clash {
+        return Err(format!("another account is already called {label:?}"));
+    }
+    if label.is_empty() || label == name {
+        entry.account_labels.remove(name);
+    } else {
+        entry.account_labels.insert(name.to_string(), label.to_string());
+    }
     Ok(())
 }
 
@@ -23606,6 +23888,12 @@ pub struct Agent {
     /// login, the one it had before any account existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<String>,
+    /// What the UI CALLS an account, by its name (GH #278). The name is
+    /// frozen because it is the store's path and claude hashes that path into
+    /// its Keychain item, so renaming means a label on top rather than a move.
+    /// Absent means the name is the label.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub account_labels: HashMap<String, String>,
     /// Move a task to another account on its own when this one is spent
     /// (GH #278). Opt-in, per agent, and therefore profile-scoped like every
     /// other field here: a work profile can rotate work accounts while a
@@ -23826,6 +24114,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -23891,6 +24180,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -23960,6 +24250,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -24011,6 +24302,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -24068,6 +24360,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -24119,6 +24412,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -24169,6 +24463,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: Some(PostLaunchCapture {
@@ -24283,6 +24578,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             // It IS opencode's shape after all: muse cannot be TOLD an id, but
@@ -24381,6 +24677,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             post_launch_capture: None,
@@ -24473,6 +24770,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             // Backstop for the hook path: `devin list --format csv` prints a
@@ -24577,6 +24875,7 @@ fn default_agents() -> Vec<Agent> {
             default_account: None,
             adopted_account: None,
             auto_switch_account: false,
+            account_labels: Default::default(),
             extends: None,
             kind: "agent".into(),
             // No backstop capture: the plugin reports the id on session_start
@@ -25111,6 +25410,11 @@ fn agent_session_marker(key: &str) -> bool {
             | "CLAUDE_CODE_EXECPATH"
             | "CLAUDE_CODE_MESSAGING_SOCKET"
             | "CLAUDE_CODE_MESSAGING_TOKEN"
+            | "CLAUDE_CODE_SESSION_ATTENDED"
+            | "CLAUDE_CODE_SSE_PORT"
+            // Set by Claude Code for the commands it runs, so a tool can tell
+            // it is driven by an agent. Inherited, it says that of every tab.
+            | "AI_AGENT"
             | "CLAUDE_PID"
             | "CLAUDE_JOB_DIR"
             | "CLAUDE_EFFORT"
@@ -25424,6 +25728,7 @@ fn carry_account_fields(existing: &[Agent], incoming: &mut [Agent]) {
         a.default_account = prev.default_account.clone();
         a.adopted_account = prev.adopted_account.clone();
         a.auto_switch_account = prev.auto_switch_account;
+        a.account_labels = prev.account_labels.clone();
     }
 }
 
@@ -27687,7 +27992,7 @@ pub fn run() {
             agent_usage::agent_context_devin,
             perf_boot_elapsed_ms,
             deep_link_take_pending,
-            agent_accounts, account_add, account_remove, account_set_default, account_set_auto_switch,
+            agent_accounts, account_add, account_remove, account_set_label, account_set_default, account_set_auto_switch,
             task_set_account, task_account,
             window_close_if_not_last,
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
@@ -30212,6 +30517,120 @@ mod tests {
         assert_eq!(made, 0, "nothing exists to share yet");
         assert!(store.join("settings.json").symlink_metadata().is_err());
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn an_account_gets_the_primarys_claude_mcp_servers() {
+        use serde_json::json;
+        let from = json!({
+            "oauthAccount": {"emailAddress": "alice@example.com"},
+            "mcpServers": {"linear": {"type": "http", "url": "https://mcp.example.com"}},
+            "projects": {
+                "/Users/u/repo": {"mcpServers": {"db": {"command": "db-mcp"}}, "enabledMcpjsonServers": ["x"]},
+                "/Users/u/plain": {"hasTrustDialogAccepted": true},
+            },
+        });
+        let mut to = json!({
+            "oauthAccount": {"emailAddress": "bob@example.com"},
+            "mcpServers": {"mine": {"command": "own"}},
+        });
+        let mut synced = json!({});
+        assert!(crate::merge_claude_mcp(&from, &mut to, &mut synced));
+        assert_eq!(to["oauthAccount"]["emailAddress"], "bob@example.com", "identity never crosses");
+        assert_eq!(to["mcpServers"]["linear"]["url"], "https://mcp.example.com");
+        assert_eq!(to["mcpServers"]["mine"]["command"], "own", "the account's own server stays");
+        assert_eq!(to["projects"]["/Users/u/repo"]["mcpServers"]["db"]["command"], "db-mcp");
+        assert_eq!(to["projects"]["/Users/u/repo"]["enabledMcpjsonServers"][0], "x");
+        assert!(to["projects"].get("/Users/u/plain").is_none(), "no entry for a project with no MCP state");
+
+        // Unchanged primary: nothing to write.
+        assert!(!crate::merge_claude_mcp(&from, &mut to, &mut synced));
+
+        // Removed from the primary: removed here, and only what we copied.
+        let from = json!({"mcpServers": {}, "projects": {}});
+        assert!(crate::merge_claude_mcp(&from, &mut to, &mut synced));
+        assert!(to["mcpServers"].get("linear").is_none());
+        assert_eq!(to["mcpServers"]["mine"]["command"], "own");
+        assert!(to["projects"]["/Users/u/repo"]["mcpServers"].get("db").is_none());
+    }
+
+    #[test]
+    fn an_account_label_renames_what_is_shown_and_never_the_store() {
+        let mut a = crate::default_agents().into_iter().find(|a| a.id == "claude").unwrap();
+        a.accounts = vec!["work".into(), "personal".into()];
+        crate::set_account_label(&mut a, "work", "Acme seat").unwrap();
+        assert_eq!(a.accounts, vec!["work", "personal"], "the name is the store; it never moves");
+        assert_eq!(a.account_labels["work"], "Acme seat");
+        // Clashes with another account's shown text, label or bare name.
+        assert!(crate::set_account_label(&mut a, "personal", "acme SEAT").is_err());
+        assert!(crate::set_account_label(&mut a, "personal", "Work").is_ok());
+        assert!(crate::set_account_label(&mut a, "nope", "x").is_err());
+        // Empty, or the name itself, clears it.
+        crate::set_account_label(&mut a, "work", "").unwrap();
+        assert!(!a.account_labels.contains_key("work"));
+        // A form save carries labels across, like the other account fields.
+        crate::set_account_label(&mut a, "work", "Acme seat").unwrap();
+        let mut incoming = vec![crate::Agent { account_labels: Default::default(), ..a.clone() }];
+        crate::carry_account_fields(std::slice::from_ref(&a), &mut incoming);
+        assert_eq!(incoming[0].account_labels["work"], "Acme seat");
+    }
+
+    #[test]
+    fn an_account_gets_only_the_mcp_sign_ins_it_lacks() {
+        use serde_json::json;
+        let from = json!({
+            "claudeAiOauth": {"accessToken": "PRIMARY_LOGIN"},
+            "mcpOAuth": {"linear|aa": {"accessToken": "P1"}, "notion|bb": {"accessToken": "P2"}},
+        });
+        let mut to = json!({
+            "claudeAiOauth": {"accessToken": "ACCOUNT_LOGIN"},
+            "mcpOAuth": {"notion|bb": {"accessToken": "OWN"}},
+        });
+        assert_eq!(crate::merge_mcp_oauth(&from, &mut to), 1);
+        assert_eq!(to["claudeAiOauth"]["accessToken"], "ACCOUNT_LOGIN", "the login never crosses");
+        assert_eq!(to["mcpOAuth"]["linear|aa"]["accessToken"], "P1");
+        assert_eq!(to["mcpOAuth"]["notion|bb"]["accessToken"], "OWN", "a working sign-in is never replaced");
+        assert_eq!(crate::merge_mcp_oauth(&from, &mut to), 0, "nothing new, nothing to write");
+        // An account with no MCP map yet gets one.
+        let mut bare = json!({"claudeAiOauth": {}});
+        assert_eq!(crate::merge_mcp_oauth(&from, &mut bare), 2);
+    }
+
+    /// Real Keychain round trip on a throwaway item. Local only (CI has no
+    /// login keychain): `cargo test -- --ignored keychain_round_trip`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn keychain_round_trip() {
+        use serde_json::json;
+        let env = std::env::temp_dir().join(format!("termic-kc-{}", Uuid::new_v4()));
+        let svc = crate::claude_cred::service(Some(&env));
+        let sec = |args: &[&str]| std::process::Command::new("/usr/bin/security").args(args).output().unwrap();
+        assert!(sec(&["add-generic-password", "-a", "termic-test", "-s", &svc, "-w", r#"{"claudeAiOauth":{}}"#]).status.success());
+        let mut v = crate::claude_cred::read(&env, Some(&env)).expect("reads the item");
+        let big = "x".repeat(6000); // past security -i's line limit
+        v["mcpOAuth"] = json!({"s|h": {"accessToken": big}});
+        let res = crate::claude_cred::write(&env, Some(&env), &v);
+        let back = crate::claude_cred::read(&env, Some(&env));
+        let items = String::from_utf8_lossy(&sec(&["find-generic-password", "-s", &svc]).stdout).matches("\"svce\"").count();
+        let _ = sec(&["delete-generic-password", "-s", &svc]);
+        res.unwrap();
+        assert_eq!(back.unwrap()["mcpOAuth"]["s|h"]["accessToken"].as_str().unwrap().len(), 6000);
+        assert_eq!(items, 1, "updated in place, not a second item");
+    }
+
+    #[test]
+    fn the_keychain_service_name_matches_claudes() {
+        // claude hashes the CLAUDE_CONFIG_DIR string it was given; a wrong
+        // name would read nothing (safe) or write a stray item (not).
+        assert_eq!(crate::claude_cred::service(None), "Claude Code-credentials");
+        // sha256("/Users/u/.claude-work") computed independently.
+        let expect = {
+            use sha2::{Digest, Sha256};
+            let h = Sha256::digest(b"/Users/u/.claude-work");
+            format!("Claude Code-credentials-{:02x}{:02x}{:02x}{:02x}", h[0], h[1], h[2], h[3])
+        };
+        assert_eq!(crate::claude_cred::service(Some(std::path::Path::new("/Users/u/.claude-work"))), expect);
     }
 
     #[test]

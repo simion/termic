@@ -173,7 +173,8 @@ app's sidebar; this CLI drives the app around you. From your task you can: \
 start another agent beside you (`tab`); launch new tasks with their own agents \
 (`new`), which join YOUR task's group in the sidebar (in your project; one in \
 another project is linked to yours instead), a block you name for the \
-batch of work with `group --name`; prompt another task's agent (`send`) and \
+batch of work with `group --name`; prompt another task's agent (`send`, \
+typed at once even mid-turn, or with --queue after its turn ends) and \
 read what it produced (`logs`, `result`); retitle your own task \
 (`rename`); label your own tab with what you are working on, shown on \
 the task's sidebar row (`prop ticket ABC-1`); and keep notes, plans, findings, logs and reports the user \
@@ -617,26 +618,24 @@ running, 5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
         tab: Option<String>,
     },
 
-    /// Prompt the task's running agent; queues if it is mid-turn.
+    /// Prompt the task's running agent; typed at once, --queue waits for its turn to end.
     #[command(
         after_help = "Targets the RUNNING agent (the default agent tab; --tab picks another: a \
 tab id, a 1-based index into status's tab list, or a title, agent tabs \
-only). If it is mid-turn and \
-supports work-done detection, the prompt QUEUES and delivers when the turn \
-finishes, EXCEPT while the agent is stalled on work it delegated (subagents \
-or shells still running, its own loop stopped): then it is typed at once, so \
-a report back reaches an orchestrator that is waiting on it. It also QUEUES \
-while the user has an unsent draft typed into that agent, so it never lands \
-in the middle of their text; it goes once they send or clear it. \
---now SKIPS THE QUEUE: the prompt is typed at once into an agent that is \
-mid-turn or has messages waiting, for the message that cannot wait for the \
-turn to end (stop, a correction, new information that changes the work). \
-What a prompt arriving mid-turn does is the agent's own business (most take \
-it as steering, some hold it for the next turn), and it jumps ahead of \
-anything already queued, so keep it for what is urgent. The user's unsent \
-draft still wins: --now queues behind it like any other send. An agent with \
-detection disabled gets it typed immediately (with a warning: completion \
-cannot be observed, and --wait refuses such agents). \
+only). The prompt is TYPED AT ONCE, even into an agent that is mid-turn or \
+has messages waiting: what a prompt arriving mid-turn does is the agent's \
+own business (most take it as steering, some hold it for the next turn). \
+The one thing that still wins is the user's unsent draft typed into that \
+agent: the prompt queues behind it and goes once they send or clear it, so \
+it never lands in the middle of their text. \
+--queue WAITS INSTEAD: if the agent is mid-turn and supports work-done \
+detection, the prompt queues and delivers when the turn finishes, EXCEPT \
+while the agent is stalled on work it delegated (subagents or shells still \
+running, its own loop stopped): then it is typed at once, so a report back \
+reaches an orchestrator that is waiting on it. Use it for work that should \
+not interrupt the turn in progress. An agent with detection disabled gets \
+it typed immediately either way (with a warning: completion cannot be \
+observed, and --wait refuses such agents). \
 With no agent running, --resume restores the last session and --fresh starts \
 a new agent without context; without either flag that case is an error \
 naming both. If a stored session no longer resolves, --resume falls back to \
@@ -748,13 +747,14 @@ stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
         /// tabs only; --resume/--fresh spawn, a --tab target is open).
         #[arg(long, value_name = "SEL", conflicts_with_all = ["resume", "fresh"])]
         tab: Option<String>,
-        /// Skip the queue: type the prompt into the agent at once, even
-        /// mid-turn or with messages already waiting. For the message
-        /// that cannot wait for the turn to end (stop, a correction). The
-        /// agent decides what a prompt arriving mid-turn does; most take
-        /// it as steering. A draft the user is typing in that prompt
-        /// still wins, and the message queues behind it.
-        #[arg(long, conflicts_with_all = ["resume", "fresh"])]
+        /// Wait for the agent's turn to end instead of typing the prompt in
+        /// at once. Sends are immediate by default; queue the ones that
+        /// should not interrupt the work in progress.
+        #[arg(long, conflicts_with_all = ["resume", "fresh", "now"])]
+        queue: bool,
+        /// Accepted for scripts written before sends became immediate by
+        /// default; it is the default now and changes nothing.
+        #[arg(long, hide = true, conflicts_with_all = ["resume", "fresh"])]
         now: bool,
         /// Project name, to disambiguate. Requires a task name.
         #[arg(long, requires = "task")]
@@ -2778,7 +2778,7 @@ fn execute_send(
     format: OutputFormat,
     prompt: Option<String>,
 ) -> Result<Output, CliError> {
-    let Cmd::Send { task, here, prompt: _, library, resume, fresh, wait, timeout, tab, now, project } =
+    let Cmd::Send { task, here, prompt: _, library, resume, fresh, wait, timeout, tab, queue, now: _, project } =
         &cli.cmd
     else {
         unreachable!()
@@ -2814,7 +2814,8 @@ fn execute_send(
         wait: *wait,
         timeout_ms,
         tab: tab.clone(),
-        now: *now,
+        // resume/fresh spawn an agent, so there is no turn to skip.
+        now: !*queue && !*resume && !*fresh,
         cwd,
     };
     if *wait && format == OutputFormat::Text {
@@ -4239,9 +4240,12 @@ mod tests {
         // The full forms parse.
         assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "send", "--here", "-p", "-"]).is_ok());
-        // --now skips a RUNNING agent's queue, so it excludes the two flags
-        // that are about an agent that is not running; it composes with the
-        // rest (a tab target, --wait).
+        // --queue (and the legacy --now) are about a RUNNING agent's turn,
+        // so they exclude the two flags about an agent that is not running;
+        // they compose with the rest (a tab target, --wait).
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--queue", "--tab", "2", "--wait"]).is_ok());
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--queue", "--resume"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--queue", "--now"]).is_err());
         assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now", "--tab", "2", "--wait"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now", "--resume"]).is_err());

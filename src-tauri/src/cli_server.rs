@@ -561,6 +561,18 @@ pub(crate) struct AgentMeta {
     pub id_resume: bool,
     /// Named accounts (GH #278), the `--account` gate.
     pub accounts: Vec<String>,
+    /// Display labels by account name; `--account` takes either.
+    pub account_labels: std::collections::HashMap<String, String>,
+}
+
+impl AgentMeta {
+    /// The account `--account <n>` means: by name, else by label, either
+    /// case-insensitively. Always returns the NAME, which is the store.
+    fn account_named(&self, n: &str) -> Option<&String> {
+        self.accounts.iter().find(|a| a.eq_ignore_ascii_case(n)).or_else(|| {
+            self.accounts.iter().find(|a| self.account_labels.get(*a).is_some_and(|l| l.eq_ignore_ascii_case(n)))
+        })
+    }
 }
 
 /// Everything the request handler needs from the app, behind a trait so
@@ -1493,7 +1505,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         }
         // --account names a login store by its Settings name; an unknown
         // one would make the first spawn sign in from scratch.
-        Some(meta) if account.as_deref().is_some_and(|n| !meta.accounts.iter().any(|a| a.eq_ignore_ascii_case(n))) => {
+        Some(meta) if account.as_deref().is_some_and(|n| meta.account_named(n).is_none()) => {
             return fail(
                 ErrorCode::NotFound,
                 format!(
@@ -1576,7 +1588,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "yolo": yolo,
         // Names may hold spaces and mixed case ("Client A"); the store is
         // keyed by the Settings spelling, so send that one.
-        "account": account.as_deref().and_then(|n| known.and_then(|m| m.accounts.iter().find(|a| a.eq_ignore_ascii_case(n)))),
+        "account": account.as_deref().and_then(|n| known.and_then(|m| m.account_named(n))),
         "projectId": proj.id,
         "open": open,
         "prompt": prompt,
@@ -4403,6 +4415,7 @@ impl CliHost for TauriHost {
                 disabled: a.disabled,
                 id_resume: !a.capabilities.resume_id_args.is_empty(),
                 accounts: a.accounts.clone(),
+                account_labels: a.account_labels.clone(),
             })
             .collect()
     }
@@ -6198,7 +6211,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
-        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude", accounts: Vec::new() }
+        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude", accounts: Vec::new(), account_labels: Default::default() }
     }
 
     pub(crate) struct StubHost {
@@ -8492,6 +8505,7 @@ mod tests {
             disabled: true,
             id_resume: false,
             accounts: Vec::new(),
+            account_labels: Default::default(),
         });
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { agent, .. } = &mut cmd {
@@ -8513,6 +8527,7 @@ mod tests {
             disabled: false,
             id_resume: false,
             accounts: vec!["Work".into(), "Client A".into()],
+            account_labels: [("Client A".to_string(), "Acme seat".to_string())].into(),
         });
         // Unknown: refused before the webview, with the known names.
         let mut cmd = new_cmd("shiny", Some("web"));
@@ -8533,6 +8548,18 @@ mod tests {
         }
         assert!(handle(&req(cmd, Some("tok")), &host).ok);
         assert_eq!(rpc_params(&host, "new_task")["account"], "Client A");
+        // By its label: the NAME goes out, because the name is the store.
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw2" })));
+        let mut cmd = new_cmd("shiny-2", Some("web"));
+        if let Command::New { agent, account, .. } = &mut cmd {
+            *agent = Some("acct".into());
+            *account = Some("acme SEAT".into());
+        }
+        let r = handle(&req(cmd, Some("tok")), &host);
+        assert!(r.ok, "{:?}", r.error);
+        let sent: Vec<_> = host.rpc_calls.lock().unwrap().iter()
+            .filter(|(m, _)| m == "new_task").map(|(_, p)| p["account"].clone()).collect();
+        assert_eq!(sent.last().unwrap(), "Client A");
     }
 
     #[test]

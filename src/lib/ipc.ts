@@ -35,6 +35,9 @@ export const accountAdd = (agentId: string, name: string) =>
   invoke<void>("account_add", { agentId, name });
 export const accountRemove = (agentId: string, name: string) =>
   invoke<void>("account_remove", { agentId, name });
+/** Relabel an account. The name (its store) never changes; "" clears. */
+export const accountSetLabel = (agentId: string, name: string, label: string) =>
+  invoke<void>("account_set_label", { agentId, name, label });
 /** Close this window unless it is the last one open (GH #280).
  *
  *  The last-window check is Rust's, deliberately: the difference between

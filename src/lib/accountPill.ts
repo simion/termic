@@ -30,7 +30,13 @@ export function pillLabel(view: AgentAccountsView | null, current: string | null
   return view?.accounts.find(a => a.isDefault)?.name ?? null;
 }
 
-/** What the pill SHOWS: the account in use NOW, and the one it is moving to.
+/** What to show for an account NAME: its label, else the name itself. Names
+ *  stay the identity everywhere (compare names, never labels). */
+export function accountLabel(view: AgentAccountsView | null, name: string): string {
+  return view?.accounts.find(a => a.name === name)?.label ?? name;
+}
+
+/** What the pill SHOWS (as labels): the account in use NOW, and the one it is moving to.
  *
  *  `now` is what the pill prints, and it is the RUNNING account rather than
  *  the configured one, because the usage numbers beside the pill are that
@@ -58,8 +64,8 @@ export function pillText(
   // the agent had never run as.
   const now = running ?? view?.adoptedAccount ?? configured;
   return {
-    now: now ?? "default",
-    next: now && configured && configured !== now ? configured : null,
+    now: now ? accountLabel(view, now) : "default",
+    next: now && configured && configured !== now ? accountLabel(view, configured) : null,
   };
 }
 

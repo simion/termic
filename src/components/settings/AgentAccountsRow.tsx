@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
-import { Plus, Check, X, AlertTriangle } from "lucide-react";
+import { Plus, Star, X, AlertTriangle, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import * as ipc from "@/lib/ipc";
@@ -50,6 +50,10 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
   const submitting = useRef(false);
   /** The SECOND name, asked for only the first time (see `submit`). */
   const [second, setSecond] = useState("");
+  /** The account being relabelled, by name, and its draft label. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const [labelDraft, setLabelDraft] = useState("");
+  const savingLabel = useRef(false);
 
   const refresh = useCallback(() => {
     void ipc.agentAccounts(agentId, false).then(setView).catch(() => setView(null));
@@ -64,6 +68,22 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
   // ...unless the header just asked for one, which is when this row becomes
   // the place that form appears.
   if (!view || (view.accounts.length === 0 && !adding)) return null;
+
+  // Enter and blur both fire here too (committing unmounts the input).
+  const saveLabel = async (name: string) => {
+    if (savingLabel.current) return;
+    savingLabel.current = true;
+    try {
+      await ipc.accountSetLabel(agentId, name, labelDraft);
+      setErr(null);
+      setEditing(null);
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      savingLabel.current = false;
+    }
+  };
 
   /** Is this the first time? Then the form asks for TWO names. */
   const first = view.accounts.length === 0;
@@ -118,24 +138,60 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
                 : "border-[var(--color-border-soft)] text-[var(--color-fg-dim)]",
             )}
           >
+            {editing === a.name ? (
+              <Input
+                autoFocus
+                value={labelDraft}
+                placeholder={a.name}
+                aria-label={t("agents.accounts.renameAria", { name: a.label ?? a.name })}
+                data-testid={`account-label-input-${agentId}-${a.name}`}
+                onChange={e => setLabelDraft(e.target.value)}
+                onBlur={() => void saveLabel(a.name)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") void saveLabel(a.name);
+                  if (e.key === "Escape") { setEditing(null); setErr(null); }
+                }}
+                className="h-5 w-32 text-[12px]"
+              />
+            ) : (
             <button
               type="button"
-              title={a.isDefault ? t("agents.accounts.defaultTip") : t("agents.accounts.useTip")}
+              // The stored name stays the identity (the login's folder), so
+              // say what it is when the label hides it.
+              title={(a.isDefault ? t("agents.accounts.defaultTip") : t("agents.accounts.useTip"))
+                + (a.label && a.label !== a.name ? ` (${t("agents.accounts.storedAs", { name: a.name })})` : "")}
               onClick={() => void ipc.accountSetDefault(agentId, a.name).then(refresh)}
               className="inline-flex items-center gap-1.5"
             >
-              {a.isDefault && <Check className="h-3 w-3 text-[var(--color-accent)]" />}
-              {a.name}
-              {a.isDefault && (
-                <span className="text-[9px] uppercase tracking-wider opacity-50">{t("agents.accounts.defaultBadge")}</span>
-              )}
+              {/* The footer panel's star: on every chip, filled on the default,
+                  so moving the default never changes a chip's width. */}
+              <Star
+                data-default={a.isDefault ? "1" : "0"}
+                className={cn("h-3 w-3 shrink-0", a.isDefault ? "text-[var(--color-fg)]" : "opacity-30")}
+                fill={a.isDefault ? "currentColor" : "none"}
+              />
+              {a.label ?? a.name}
               {/* "Named but never signed in" is a real state, not an error: it
                   is what this account looks like on a second machine. */}
               {!a.signedIn && <span className="text-[10.5px] opacity-55">{t("agents.accounts.notSignedIn")}</span>}
             </button>
+            )}
+            {editing !== a.name && (
+              <button
+                type="button"
+                aria-label={t("agents.accounts.renameAria", { name: a.label ?? a.name })}
+                title={t("agents.accounts.renameTip")}
+                data-testid={`account-rename-${agentId}-${a.name}`}
+                onClick={() => { setLabelDraft(a.label ?? a.name); setEditing(a.name); setErr(null); }}
+                // Dimmed, not hidden, for the same reason as remove below.
+                className="opacity-45 transition-opacity hover:opacity-100"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
             <button
               type="button"
-              aria-label={t("agents.accounts.removeAria", { name: a.name })}
+              aria-label={t("agents.accounts.removeAria", { name: a.label ?? a.name })}
               data-testid={`account-remove-${agentId}-${a.name}`}
               onClick={() => void ipc.accountRemove(agentId, a.name).then(async () => {
                 // Fire onEmptied only on the TRANSITION to empty, from the
@@ -222,7 +278,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
           <Trans
             t={t}
             i18nKey="agents.accounts.defaultNote"
-            values={{ name: view.accounts.find(a => a.isDefault)?.name ?? t("agents.accounts.ordinaryLogin") }}
+            values={{ name: (() => { const d = view.accounts.find(a => a.isDefault); return d ? (d.label ?? d.name) : t("agents.accounts.ordinaryLogin"); })() }}
             components={{ 1: <span className="text-[var(--color-fg-dim)]" /> }}
           />
         </p>

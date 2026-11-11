@@ -140,7 +140,7 @@ pub(crate) const AGENT_SYNC: &[&str] = &[
     "post_launch_capture",
     // Account NAMES only. The login each one names lives in `logins/`, which
     // never syncs; on another machine the account shows as not signed in.
-    "accounts", "default_account", "auto_switch_account",
+    "accounts", "default_account", "auto_switch_account", "account_labels",
 ];
 
 // Read only by the classification test: export and apply need just SYNC.
@@ -3688,6 +3688,7 @@ mod tests {
             accounts: vec!["Work".into()],
             default_account: Some("Work".into()),
             auto_switch_account: true,
+            account_labels: [("Work".to_string(), "Acme seat".to_string())].into(),
             adopted_account: Some("Work".into()),
             extends: Some("claude".into()),
             kind: "agent".into(),

@@ -14,7 +14,7 @@ import { useUI } from "@/store/ui";
 import { i18n } from "@/lib/i18n";
 import { usePrefs } from "@/store/prefs";
 import { useAgentUsage, usageKey, type UsageEntry } from "@/store/agentUsage";
-import { pillLabel, pillText } from "@/lib/accountPill";
+import { accountLabel, pillLabel, pillText } from "@/lib/accountPill";
 import { switchCandidate, switchedNotice, switchedAndResumedNotice } from "@/lib/autoSwitch";
 import { restartAgentForAccount, primaryAgentTab, openSignInTab } from "@/lib/accountRestart";
 import type { AgentAccounts } from "@/hooks/useAgentAccounts";
@@ -33,9 +33,14 @@ export interface AccountSwitching {
   clearNotice: () => void;
   /** The configured account's name, which is what the tick marks. */
   label: string | null;
+  /** The account NAME the live process runs on (the adopted one for the
+   *  ordinary login), or null when nothing names it. */
+  running: string | null;
   /** What to print: the RUNNING account, and the staged one for the tooltip. */
   shown: { now: string; next: string | null };
   pick: (name: string) => Promise<void>;
+  /** Make `name` the agent's default for every task that has not picked its own. */
+  makeDefault: (name: string) => Promise<void>;
   toggleAuto: (on: boolean) => Promise<void>;
 }
 
@@ -96,11 +101,12 @@ export function useAccountSwitching(
       // account, so every `/login` available to them signed the OLD account in
       // again. The tab this opens is on the new account (the write above is
       // what decides that), so its login lands in the new store.
+      const shown = accountLabel(view, name);
       if (!view?.accounts.find(a => a.name === name)?.signedIn) {
-        const opened = openSignInTab(taskId, agentId, name);
+        const opened = openSignInTab(taskId, agentId, shown);
         setNotice(opened
-          ? `${name} has no login yet. Opened a tab on it: run this agent's own login there, then pick ${name} again to move this task over. The conversation beside it is untouched.`
-          : `${name} has no login yet. Start this agent on it and run its login, then the switch takes hold.`);
+          ? `${shown} has no login yet. Opened a tab on it: run this agent's own login there, then pick ${shown} again to move this task over. The conversation beside it is untouched.`
+          : `${shown} has no login yet. Start this agent on it and run its login, then the switch takes hold.`);
         return;
       }
       // Asked once per user, not once per switch. Someone who switches often
@@ -114,8 +120,8 @@ export function useAccountSwitching(
       }
       const res = await useUI.getState().askConfirm({
         key: `account-restart-${taskId}`,
-        title: i18n.t("backend:accountSwitching.restartTitle", { agent: agentId, name }),
-        message: i18n.t("backend:accountSwitching.restartMessage", { name }),
+        title: i18n.t("backend:accountSwitching.restartTitle", { agent: agentId, name: shown }),
+        message: i18n.t("backend:accountSwitching.restartMessage", { name: shown }),
         confirmLabel: i18n.t("backend:accountSwitching.restartNow"),
         cancelLabel: i18n.t("backend:accountSwitching.later"),
         dontAskAgain: true,
@@ -156,10 +162,11 @@ export function useAccountSwitching(
         // the agent idle at a prompt, and the turn that hit the limit still
         // has to be asked for again. Nobody is at the keyboard to type it.
         const restarted = restartAgentForAccount(taskId, agentId, { message: "continue" });
-        setNotice(restarted ? switchedAndResumedNotice(candidate) : switchedNotice(candidate));
+        const to = accountLabel(view, candidate);
+        setNotice(restarted ? switchedAndResumedNotice(to) : switchedNotice(to));
       } catch { /* archived, or the account went away under us */ }
     })();
-  }, [account, agentId, auto, candidate, refresh, taskId, visible]);
+  }, [account, agentId, auto, candidate, refresh, taskId, view, visible]);
 
   const toggleAuto = useCallback(async (on: boolean) => {
     try {
@@ -167,6 +174,12 @@ export function useAccountSwitching(
       refresh();
     } catch { /* an agent with no usage feed refuses, and says why */ }
   }, [agentId, refresh]);
+
+  // No local refresh: the command broadcasts accounts-changed, which every
+  // footer (this one included) already listens for.
+  const makeDefault = useCallback(async (name: string) => {
+    try { await ipc.accountSetDefault(agentId, name); } catch { /* removed under us */ }
+  }, [agentId]);
 
   // Something to say only when the user could act on it: an offer while the
   // automatic switch is off, or a report that it already acted.
@@ -179,8 +192,10 @@ export function useAccountSwitching(
     notice,
     clearNotice: useCallback(() => setNotice(null), []),
     label,
+    running: account ?? view?.adoptedAccount ?? null,
     shown: pillText(view, current, account),
     pick,
+    makeDefault,
     toggleAuto,
   };
 }

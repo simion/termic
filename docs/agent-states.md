@@ -170,10 +170,10 @@ set on the tab, and another agent's message (`termic send`, MCP
 back. That is the report-back path: a worker finishing is exactly what an
 orchestrator in this state is waiting to hear. Any working signal clears
 the mark (a subagent's report making the agent resume, for one), so a
-message never lands mid-generation, unless the sender asked for exactly
-that: `termic send --now` (MCP `task_send` with `now`) skips the queue and
-types the prompt into a turn that is running, for a message that cannot
-wait for it to end. It leaves the tab's work state alone (the agent is
+queued message never lands mid-generation. Since sends became immediate
+by default, that only applies to `termic send --queue` (MCP `task_send`
+with `queue`): a plain send types the prompt into a turn that is running
+(wire field `now`, which the CLI and MCP set unless asked to queue). It leaves the tab's work state alone (the agent is
 still working) and it does not outrank a draft the user is typing. The USER's message queue ignores the
 mark and still waits for the turn to end.
 

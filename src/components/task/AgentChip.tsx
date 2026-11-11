@@ -43,7 +43,7 @@ import { useAccountSwitching } from "@/hooks/useAccountSwitching";
 import { AccountSwitcher } from "@/components/task/AccountSwitcher";
 import { CopyStatusLinePrompt } from "@/components/task/StatusLinePrompt";
 import { useTip } from "@/lib/guide/useTip";
-import { pillVisible } from "@/lib/accountPill";
+import { pillVisible, accountLabel } from "@/lib/accountPill";
 import { KeyRound, ArrowRightLeft } from "lucide-react";
 import { useUsageUnknownDismissed } from "@/store/usageUnknownDismissed";
 import type { AgentAccountsView, TerminalTab } from "@/lib/types";
@@ -363,7 +363,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
           data-auto={sw.auto ? "on" : "off"}
           title={
             sw.offering
-              ? t("agentChip.offeringTitle", { now: sw.shown.now, candidate: sw.candidate })
+              ? t("agentChip.offeringTitle", { now: sw.shown.now, candidate: sw.candidate && accountLabel(accountsView, sw.candidate) })
               : sw.shown.next
                 ? t("agentChip.nextTitle", { agent: agentId, now: sw.shown.now, next: sw.shown.next })
                 : hasAccounts

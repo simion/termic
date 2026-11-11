@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import {
+import { setInputValue,
   clickWhenVisible, dismissOverlays, requireTermicApi, snap, waitForText,
   waitForAppShell, waitVisible, waitGone, submitToAgent, waitForAgentReady,
   waitTaskUnmounted,
@@ -337,12 +337,67 @@ describe("agent credentials", () => {
   it("keeps the first one as the default until told otherwise", async () => {
     let v = await accounts();
     expect(v.accounts.find((a: any) => a.isDefault).name).toBe("Personal");
+    const width = (n: string) => browser.execute((a, name) => Math.round(document
+      .querySelector(`[data-testid="account-chip-${a}-${name}"]`)!.getBoundingClientRect().width), AGENT, n);
+    const workBefore = await width("Work");
     await clickWhenVisible(`[data-testid="account-chip-${AGENT}-Work"] button`);
     await browser.waitUntil(async () => (await accounts()).accounts
       .find((a: any) => a.isDefault)?.name === "Work",
       { timeoutMsg: "clicking a chip did not make it the default" });
     v = await accounts();
     expect(v.accounts.find((a: any) => a.isDefault).name).toBe("Work");
+    // A star on every chip, filled on the default: becoming the default no
+    // longer widens a chip (a DEFAULT badge used to).
+    await browser.waitUntil(async () => (await browser.execute(a => document.querySelector(
+      `[data-testid="account-chip-${a}-Work"] [data-default]`)?.getAttribute("data-default"), AGENT)) === "1",
+      { timeoutMsg: "the chip's star did not fill" });
+    expect(await width("Work")).toBe(workBefore);
+    await snap("credentials-02a-default-star.png");
+  });
+
+  it("relabels a set without moving its login, and shows the label everywhere", async () => {
+    // The NAME is the login's folder (and, for claude, its Keychain item), so a
+    // rename is a label on top. Driven through the pencil, as a user would.
+    await clickWhenVisible(`[data-testid="account-rename-${AGENT}-Work"]`);
+    await setInputValue(`[data-testid="account-label-input-${AGENT}-Work"]`, "Acme seat");
+    await browser.keys(["Enter"]);
+    await browser.waitUntil(async () => (await accounts()).accounts
+      .find((a: any) => a.name === "Work")?.label === "Acme seat",
+      { timeoutMsg: "the label was not saved" });
+    const chip = await browser.execute((a) =>
+      document.querySelector(`[data-testid="account-chip-${a}-Work"]`)?.textContent ?? "", AGENT);
+    expect(chip).toContain("Acme seat");
+    expect(chip).not.toContain("Work");
+    await snap("credentials-02b-relabelled.png");
+    // Identity untouched: same names, same order, still the default.
+    const v = await accounts();
+    expect(v.accounts.map((a: any) => a.name)).toEqual(["Personal", "Work", "Client"]);
+    expect(v.accounts.find((a: any) => a.isDefault).name).toBe("Work");
+
+    // A label another row already SHOWS is refused, so two rows never read alike.
+    const err = await browser.execute(async (agent) => {
+      try { await window.__termic!.invoke("account_set_label", { agentId: agent, name: "Client", label: "acme SEAT" }); return null; }
+      catch (e) { return String(e); }
+    }, AGENT);
+    expect(err).toContain("already called");
+
+    // Survives an unrelated Settings save from a stale snapshot, like the
+    // other account fields (`carry_account_fields`).
+    await browser.execute(async (agent) => {
+      const t = window.__termic!;
+      const s = await t.invoke("settings_load");
+      const agents = (s.agents ?? []).map((a: any) => a.id === agent ? { ...a, account_labels: {} } : a);
+      await t.invoke("agents_save", { agents });
+    }, AGENT);
+    expect((await accounts()).accounts.find((a: any) => a.name === "Work").label).toBe("Acme seat");
+
+    // Clearing it goes back to the name.
+    await clickWhenVisible(`[data-testid="account-rename-${AGENT}-Work"]`);
+    await setInputValue(`[data-testid="account-label-input-${AGENT}-Work"]`, "");
+    await browser.keys(["Enter"]);
+    await browser.waitUntil(async () => (await accounts()).accounts
+      .find((a: any) => a.name === "Work")?.label === "Work",
+      { timeoutMsg: "clearing the label did not fall back to the name" });
   });
 
   // The footer pill is NOT driven here. Every task in the fixture runs
@@ -373,6 +428,17 @@ describe("agent credentials", () => {
         { timeoutMsg: "the switch did not take" });
       await snap("credentials-07-footer-switched.png");
 
+      // A label is what the pill PRINTS; its data-account stays the name.
+      // The pill prints the RUNNING account (a switch applies on restart), so
+      // that is the one relabelled.
+      const running = (await pillUsageAccount()) || "Work";
+      await browser.execute(async (agent, name) =>
+        window.__termic!.invoke("account_set_label", { agentId: agent, name, label: "Home seat" }), FAKE_CLAUDE, running);
+      await browser.waitUntil(async () => (await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "")).includes("Home seat"),
+        { timeoutMsg: "the pill did not show the label" });
+      expect(await pillAccount()).toBe("Personal");
+
       // The TASK changed, not the agent's default: every other task is
       // untouched, which is what makes this a per-task switch.
       const v = await accountsFor(FAKE_CLAUDE);
@@ -380,6 +446,49 @@ describe("agent credentials", () => {
     } finally {
       await removeTask(taskId);
       await clearAccounts(FAKE_CLAUDE);
+    }
+  });
+
+  it("moves the agent's default from the footer panel, and keeps the panel open", async () => {
+    await addAccounts(FAKE_CLAUDE);
+    // The case above leaves its restart confirm open; it is not ours.
+    await dismissOverlays();
+    const taskId = await openTaskWith(FAKE_CLAUDE, "acct-default");
+    try {
+      expect(await browser.execute(() => !!document.querySelector('[role="alertdialog"], [role="dialog"]'))).toBe(false);
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="account-pick-Personal"]');
+      const star = (n: string) => browser.execute(name =>
+        document.querySelector(`[data-testid="account-default-${name}"]`)?.getAttribute("data-default"), n);
+      expect(await star("Work")).toBe("1");
+      expect(await star("Personal")).toBe("0");
+      // The radio marks the account THIS task uses, before its name.
+      const radio = (n: string) => browser.execute(name =>
+        document.querySelector(`[data-testid="account-in-use-${name}"]`)?.getAttribute("data-on"), n);
+      expect(await radio("Work")).toBe("1");
+      expect(await radio("Personal")).toBe("0");
+
+      await clickWhenVisible('[data-testid="account-default-Personal"]');
+      // The panel stays open, and the filled star moves.
+      await browser.waitUntil(async () => (await star("Personal")) === "1",
+        { timeoutMsg: "the star never moved" });
+      expect(await star("Work")).toBe("0");
+      await snap("credentials-07b-footer-default.png");
+      expect((await accountsFor(FAKE_CLAUDE)).accounts.find((a: any) => a.isDefault).name).toBe("Personal");
+      // The default's star is inert (aria-disabled, so its tooltip still opens).
+      expect(await browser.execute(() => document.querySelector('[data-testid="account-default-Personal"]')
+        ?.getAttribute("aria-disabled"))).toBe("true");
+      // The hidden e2e window gets no real hover; Radix opens on pointermove.
+      await browser.execute(() => document.querySelector('[data-testid="account-default-Work"]')!
+        .dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" })));
+      await browser.waitUntil(async () => (await browser.execute(() =>
+        document.querySelector('[role="tooltip"]')?.textContent ?? "")).includes("Make Work the default"),
+        { timeoutMsg: "the star has no tooltip" });
+      await snap("credentials-07c-footer-default-tip.png");
+    } finally {
+      await removeTask(taskId);
+      await clearAccounts(FAKE_CLAUDE);
+      await dismissOverlays();
     }
   });
 

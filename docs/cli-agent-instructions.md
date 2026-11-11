@@ -272,8 +272,9 @@ another. Over MCP: `task_group` with `join` or `leave`.
 ### Driving an existing task
 
 - `"$TERMIC_CLI" send <task> -p "<text>"` - prompt the RUNNING
-  agent (queues if it is mid-turn or the user is typing into it, but is
-  typed at once while it only waits on subagents or shells it started).
+  agent, typed at once even mid-turn (it still queues behind a draft the
+  user is typing). `--queue` waits for the turn to end instead, except
+  while the agent only waits on subagents or shells it started.
   With no agent running, add
   `--resume` (restore the last session) or `--fresh` (new agent, no
   context). `-p -` reads stdin. This is the notification channel above:

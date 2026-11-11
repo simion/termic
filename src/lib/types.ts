@@ -734,6 +734,8 @@ export interface Agent {
   adopted_account?: string | null;
   /** Move a task to another account on its own when this one is spent. */
   auto_switch_account?: boolean;
+  /** Display labels by account name. Written only by `account_set_label`. */
+  account_labels?: Record<string, string>;
   /** Optional capabilities the app consumes when present. Missing = "not
    *  supported by this CLI" → the corresponding UI gracefully omits the
    *  feature rather than failing. */
@@ -2155,7 +2157,11 @@ export interface ProfileDeletePreview {
 // ─────────────────── agent accounts (GH #278) ───────────────────
 
 export interface AccountView {
+  /** The identity: the store path, and what every account IPC takes. */
   name: string;
+  /** What to SHOW: the user's label, or the name when there is none. Optional
+   *  only so test fixtures can omit it; the backend always sends it. */
+  label?: string;
   /** True once the agent has actually written into this account's store.
    *  "Named but never signed in" is legitimate: it is what a second machine
    *  looks like, and what Docker looks like before its first login there. */

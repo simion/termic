@@ -12,9 +12,11 @@ the agent's own login command writes its credential there, wherever it likes,
 file or keychain. Removing an account drops the name; the agent's own `logout`
 removes the login.
 
-Nothing here reads, copies, seeds or writes a credential. That is what makes
-the per-agent difference collapse to two facts (where to point it, what its
-login command is called), and it is why there is no import, export or backup.
+Nothing here reads, copies, seeds or writes the agent's LOGIN. That is what
+makes the per-agent difference collapse to two facts (where to point it, what
+its login command is called), and it is why there is no import, export or
+backup. The one exception is narrower than a login: claude's MCP sign-ins,
+which live in the same blob (see "MCP sign-ins" below).
 
 ## An account switcher, not a config switcher
 
@@ -45,6 +47,16 @@ move the directory, change the hash, and silently log that account out of a
 credential that is still perfectly valid. Remove and add instead, which is
 honest about costing one sign-in. Same rule as a profile's slug, reached from a
 different direction.
+
+**So a rename is a LABEL.** `Agent.account_labels` maps a name to what the UI
+shows (`account_set_label`, the pencil on the Settings chip). The name stays
+the identity everywhere: the store path, `task.accounts`, usage keys,
+`data-account` in the DOM. Only rendering goes through the label
+(`accountLabel` in `lib/accountPill.ts`). `termic new --account` takes either
+and always sends the name. A label another row already shows is refused, so
+two rows never read alike, and a label equal to the name, or empty, clears it.
+It is written only by that command and carried across form saves like the
+other account fields.
 
 **Two realms means two sign-ins, and that is not a gap.** Docker never reads
 the host's config dir (`docker-agents/` is termic-owned), so a login performed
@@ -154,6 +166,13 @@ store.
 `termic new --account <name>` / MCP `task_new {account}` write the same
 per-task override before the first spawn, so an agent launching tasks can pick
 the account too (the server refuses a name the agent does not have).
+
+The default is set from two places: the account chip in Settings > Agents, and
+the star on each row of the footer panel (`account_set_default`, the same
+command). The star does NOT write `task.accounts`, so it switches no task by
+itself, but a task that never picked an account resolves through the default
+and follows it on its next spawn. The panel stays open after a star click,
+because moving the default is not a navigation.
 
 **A switch takes effect on the NEXT spawn.** A running process cannot have its
 environment changed underneath it, so the pill says so rather than letting
@@ -408,6 +427,48 @@ of what IS shared rather than what is not: an entry nobody has thought about
 stays the account's own, which is the safe direction. Getting it backwards
 shares a credential. `the_shared_list_never_names_a_credential` pins that
 `.credentials.json`, `.claude.json` and `auth.json` can never appear in it.
+
+**MCP servers are the part a symlink cannot share.** claude keeps user-scope
+servers (`mcpServers`) and project-local ones (`projects[path].mcpServers`,
+plus the `.mcp.json` approvals) in `.claude.json`, which is the account's own
+because it also holds the identity. So `sync_claude_mcp` COPIES those keys
+from the primary's file on every spawn, primary winning; a sidecar
+(`.termic-mcp-synced.json`) remembers what it copied, so a server removed from
+the primary leaves the account too while one added on the account itself
+stays. It only writes into a `.claude.json` claude already created, because
+creating one would make a fresh store read as signed in. codex needs none of
+this: its servers are in the shared `config.toml`, and its MCP OAuth tokens
+are in the Keychain keyed by server, not by `CODEX_HOME`.
+
+### MCP sign-ins
+
+claude keeps MCP OAuth tokens in the SAME credential blob as the login
+(`mcpOAuth` beside `claudeAiOauth`, Keychain item `Claude Code-credentials`
+or `...-<sha256(CLAUDE_CONFIG_DIR)[..8]>`, `.credentials.json` off macOS).
+Copying the server list alone therefore left every OAuth server on a second
+account asking to sign in again, so `sync_claude_mcp_oauth` copies those
+entries too, on every spawn. It is the one place termic touches a credential,
+and it is kept narrow:
+
+- only `mcpOAuth` entries, never `claudeAiOauth`;
+- only entries the account LACKS, so a sign-in that works is never replaced;
+- only into an account already signed in: no item or file is ever created;
+- through `/usr/bin/security`, as claude does, because the item's ACL trusts
+  that binary and termic's own would get a Keychain prompt.
+
+The data goes on `security`'s argv, which is claude's own fallback: a real
+blob with three sign-ins is ~5 KB of hex, past `security -i`'s line limit.
+macOS shows a process's args only to the same user and root, who can already
+read the item unprompted.
+
+A copied entry shares its refresh token with the primary. A server that
+rotates refresh tokens can make one copy stale, which puts that account back
+to signing in once through `/mcp`: the state it was in before this existed.
+There is also a millisecond window where a claude refreshing its login on
+that account at the same moment could have its write overtaken; the copy runs
+only when there is something to add, so it happens once per new server.
+`keychain_round_trip` (ignored, local only) exercises the real Keychain on a
+throwaway item.
 
 `termic-hooks` is in the list and is not optional: the shared `settings.json`
 names those scripts by ABSOLUTE path, so an account without them gets an agent

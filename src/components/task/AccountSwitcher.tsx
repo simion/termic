@@ -12,10 +12,12 @@
 // There is one copy now.
 
 import { useTranslation, Trans } from "react-i18next";
-import { Check, ArrowRightLeft, Plus } from "lucide-react";
+import { ArrowRightLeft, Plus, Star } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/Tooltip";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useApp } from "@/store/app";
-import { pillOrder } from "@/lib/accountPill";
+import { accountLabel, pillOrder } from "@/lib/accountPill";
 import { SWITCH_AT_PERCENT } from "@/lib/autoSwitch";
 import type { AgentAccountsView } from "@/lib/types";
 import type { AccountSwitching } from "@/hooks/useAccountSwitching";
@@ -29,7 +31,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
   onNavigate: () => void;
 }) {
   const { t } = useTranslation("task");
-  const { candidate, offering, auto, notice, label, pick, toggleAuto } = sw;
+  const { candidate, offering, auto, notice, label, running, pick, makeDefault, toggleAuto } = sw;
   return (
     <div className="border-t border-[var(--color-border-soft)] p-1.5">
       {/* What just happened, when it happened without being asked. Shown
@@ -58,7 +60,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
             <Trans
               t={t}
               i18nKey="accounts.switchOffer"
-              values={{ percent: SWITCH_AT_PERCENT, candidate }}
+              values={{ percent: SWITCH_AT_PERCENT, candidate: candidate && accountLabel(view, candidate) }}
               components={{ b: <span className="font-medium" /> }}
             />
           </span>
@@ -68,23 +70,77 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
         {t("accounts.credentials")}
       </div>
       {pillOrder(view!).map(a => (
-        <button
+        // A row, not a button: it holds two actions, and a button cannot
+        // contain another. The name switches THIS task; the star moves the
+        // agent's default, so a pick that turns out to be the one you want
+        // everywhere is one more click, without a trip to Settings.
+        <div
           key={a.name}
-          type="button"
-          data-testid={`account-pick-${a.name}`}
-          onClick={() => { onNavigate(); void pick(a.name); }}
-          title={a.signedIn ? undefined
-            : t("accounts.noLoginTitle", { name: a.name })}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-[var(--color-bg-2)]"
+          data-selected={a.name === label ? "1" : "0"}
+          className={cn("flex items-center rounded-md hover:bg-[var(--color-bg-2)]",
+            a.name === label && "bg-[var(--color-bg-2)]")}
         >
-          <span className="min-w-0 flex-1 truncate">{a.name}</span>
-          {/* The ACTION, not the state. "not signed in" described a condition
-              and left the row looking inert, which is exactly how someone
-              concludes the account is broken. Clicking it now opens the tab
-              where the login can actually happen, so the label says so. */}
-          {!a.signedIn && <span className="shrink-0 text-[10.5px] opacity-55">{t("accounts.signIn")}</span>}
-          {a.name === label && <Check className="h-3.5 w-3.5 shrink-0 opacity-70" />}
-        </button>
+          <button
+            type="button"
+            data-testid={`account-pick-${a.name}`}
+            onClick={() => { onNavigate(); void pick(a.name); }}
+            title={a.signedIn ? undefined
+              : t("accounts.noLoginTitle", { name: a.label ?? a.name })}
+            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[13px]"
+          >
+            {/* A radio, on the left where the eye starts: which account THIS
+                task uses. A trailing tick beside the default's star read as
+                one more decoration. */}
+            <Tip side="left" content={a.name === label
+              ? t("accounts.inUseTip", { name: a.label ?? a.name }) : undefined}>
+              <span
+                data-testid={`account-in-use-${a.name}`}
+                data-on={a.name === label ? "1" : "0"}
+                className={cn("grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full border",
+                  a.name === label ? "border-[var(--color-accent)]" : "border-[var(--color-border)]")}
+              >
+                {a.name === label && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />}
+              </span>
+            </Tip>
+            <span className={cn("min-w-0 flex-1 truncate", a.name === label && "font-medium")}>{a.label ?? a.name}</span>
+            {/* Picked but not yet live: the pill still names the running
+                account, so say why the two disagree. */}
+            {a.name === label && running && running !== label && (
+              <span data-testid="account-after-restart" className="shrink-0 text-[10.5px] opacity-55">{t("accounts.afterRestart")}</span>
+            )}
+            {/* The ACTION, not the state. "not signed in" described a condition
+                and left the row looking inert, which is exactly how someone
+                concludes the account is broken. Clicking it now opens the tab
+                where the login can actually happen, so the label says so. */}
+            {!a.signedIn && <span className="shrink-0 text-[10.5px] opacity-55">{t("accounts.signIn")}</span>}
+          </button>
+          {/* Always drawn: filled on the default, faint elsewhere. Hover-only
+              hid the one control this row exists to make quick to find.
+              aria-disabled rather than disabled on the default: a disabled
+              button gets no pointer events, so its tooltip would never open. */}
+          <Tip side="left" content={a.isDefault
+            ? t("accounts.isDefault", { name: a.label ?? a.name })
+            : t("accounts.makeDefault", { name: a.label ?? a.name })}>
+            <button
+              type="button"
+              data-testid={`account-default-${a.name}`}
+              data-default={a.isDefault ? "1" : "0"}
+              aria-disabled={a.isDefault}
+              onClick={() => { if (!a.isDefault) void makeDefault(a.name); }}
+              aria-label={a.isDefault
+                ? t("accounts.isDefault", { name: a.label ?? a.name })
+                : t("accounts.makeDefault", { name: a.label ?? a.name })}
+              className={cn(
+                "mr-1 shrink-0 rounded p-1",
+                a.isDefault
+                  ? "cursor-default text-[var(--color-fg)]"
+                  : "opacity-30 hover:bg-[var(--color-bg-3)] hover:opacity-100",
+              )}
+            >
+              <Star className="h-3.5 w-3.5" fill={a.isDefault ? "currentColor" : "none"} />
+            </button>
+          </Tip>
+        </div>
       ))}
       {/* One account is not yet a choice, so the menu's job there is to get
           you to the second one. Same destination as the usage popover's

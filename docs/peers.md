@@ -134,7 +134,8 @@ either, since a selector finds a pair by both.
 here that sent that pair work (its `contacts`) is the answer the task is
 waiting for, so it gets `now` on arrival and skips the agent's queue
 (`report_back_now`). New work going the other way, into a task that never
-contacted the sender, still queues behind the agent's turn. Set by the
+contacted the sender, follows the sender's choice (immediate unless it
+passed `--queue`). Set by the
 receiving Termic, not asked of the sending agent, which cannot tell the two
 apart. Either machine can be B; both
 can be in pairing mode at once. Leaving the Settings page closes it.
