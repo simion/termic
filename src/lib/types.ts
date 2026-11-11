@@ -136,7 +136,8 @@ export interface Project {
    *  Additive over `default_sandbox`; when undefined the dialog derives
    *  the default from `default_sandbox` (true → enforce). */
   default_sandbox_mode?: SandboxMode;
-  /** Secrets role new tasks start with (overrides the agent's default). */
+  /** Secrets role new tasks start with (beats the agent's default). Read only
+   *  at creation. null = each agent's default; "" = No secrets. */
   default_role?: string | null;
   /** Extra writable subpaths added to the seatbelt profile, on top of
    *  the task path + agent config dirs + TMPDIR baked into the
@@ -379,8 +380,10 @@ export interface Task {
   sandbox_mode?: SandboxMode;
   /** Seatbelt cage cannot reach the macOS Keychain (Enforce / Enforce FS). */
   sandbox_block_keychain?: boolean;
-  /** Secrets role id. null/undefined = inherit project then agent default;
-   *  "" = explicit No secrets. Only applies while keychainBlocked(task). */
+  /** Secrets role id, owned by the task: set at creation (seeded from the
+   *  project / agent default when the creator picks none). "" = No secrets;
+   *  null = never seeded (see `Task::role` in lib.rs), read as No secrets.
+   *  Only applies while keychainBlocked(task). */
   role?: string | null;
   /** Allows saved from the Secrets popover with the "this task" scope. */
   secret_allows?: TaskAllow[];
@@ -607,7 +610,8 @@ export interface CreateMultiArgs {
   sandbox_allowed_hosts?: string[];
   /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
   sandbox_block_keychain?: boolean;
-  /** Secrets role (`Task.role`). Only kept when the Keychain block applies. */
+  /** Secrets role (`Task.role`). Unset takes the defaults at creation; a role
+   *  id is only kept when the Keychain block applies. */
   role?: string | null;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
@@ -655,7 +659,8 @@ export interface CreateTaskArgs {
   sandbox_allowed_hosts?: string[];
   /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
   sandbox_block_keychain?: boolean;
-  /** Secrets role (`Task.role`). Only kept when the Keychain block applies. */
+  /** Secrets role (`Task.role`). Unset takes the defaults at creation; a role
+   *  id is only kept when the Keychain block applies. */
   role?: string | null;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
@@ -689,7 +694,8 @@ export interface CreateTaskArgs {
 export interface Agent {
   /** Stable key referenced by Task.cli. */
   id: string;
-  /** Secrets role this agent's tasks default to. */
+  /** Secrets role a new task with this primary agent starts with, unless its
+   *  project sets one. Read only at creation. */
   default_role?: string | null;
   display_name: string;
   /** Binary or shell command to spawn. Independent of `id` so renames don't
@@ -1623,6 +1629,10 @@ export interface TerminalTab extends BaseTab {
    *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
    *  task launched with a user-supplied command (see `command`). */
   cli: string;
+  /** A `cli: "shell"` tab's Secrets role, set by the user when starting or
+   *  restarting that shell (docs/sandbox.md "Shells"). Session-only: never
+   *  persisted, never seeded from a project or agent default. */
+  secretsRole?: string;
   /** Explicit launch arguments for this tab only, after registry defaults. */
   agentArgs?: string[];
   /** Key/value properties an agent set on this tab via `termic prop`
@@ -2339,17 +2349,14 @@ export interface SimpleCfg {
 }
 export interface TaskAllow { secret: string; host: string; rule: Rule }
 
-/** The role a task's agent runs with. Mirrors secrets.rs `resolve_role`. */
+/** The role a task's agent runs with: its own pick, never a default (those
+ *  only seed a new task). Mirrors secrets.rs `resolve_role`. */
 export function resolveRole(
-  task: (Parameters<typeof keychainBlocked>[0] & { role?: string | null; cli?: string }) | null | undefined,
-  project: { default_role?: string | null } | null | undefined,
-  agent: { default_role?: string | null } | null | undefined,
+  task: (Parameters<typeof keychainBlocked>[0] & { role?: string | null }) | null | undefined,
   roles: Role[] | undefined,
 ): Role | null {
-  if (!keychainBlocked(task)) return null;
-  const id = task?.role ?? project?.default_role ?? agent?.default_role;
-  if (!id) return null;
-  return roles?.find((r) => r.id === id) ?? null;
+  if (!keychainBlocked(task) || !task?.role) return null;
+  return roles?.find((r) => r.id === task.role) ?? null;
 }
 
 export type SecretStatus =
@@ -2360,7 +2367,7 @@ export type SecretStatus =
   | { status: "error"; detail: string };
 
 /** `role`: the role id of the spawn that saw it, which can differ from the
- *  task's saved role after a switch, or between two agents of one task. */
+ *  task's saved role after a switch, until the agent restarts. */
 export interface BrokerUsed { secret: string; host: string; role: string; methods: [string, number][]; last_seen_unix_ms: number }
 export interface BrokerBlocked { secret: string; host: string; role: string; method: string; path: string; rule: string; count: number; last_seen_unix_ms: number }
 export interface BrokerNoSecret { host: string; count: number; last_seen_unix_ms: number }
@@ -2371,7 +2378,7 @@ export interface BrokerSuspicious {
 export interface BrokerEvents { used: BrokerUsed[]; blocked: BrokerBlocked[]; no_secret: BrokerNoSecret[]; suspicious: BrokerSuspicious[] }
 /** `roles`: distinct role ids the task's live brokered spawns run with,
  *  empty when none is live. */
-export interface BrokerCounts { blocked: number; suspicious: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[]; stale: boolean }
+export interface BrokerCounts { blocked: number; suspicious: number; /** the part of `suspicious` that is `foreign_token` */ foreign_token: number; no_secret: number; used: number; paused: boolean; live: number; roles: string[]; stale: boolean }
 /** A real-looking token typed into an agent's configured env. */
 export interface SecretExposure { agent_id: string; var_name: string; prefix: string }
 /** `all`: kept from uncaged agents too, not just caged ones. */

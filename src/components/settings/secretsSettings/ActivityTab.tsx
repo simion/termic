@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { brokerAllEvents } from "@/lib/ipc";
+import { brokerAllEvents, parseShellBrokerKey } from "@/lib/ipc";
 import type { BrokerEvents, SecretDef } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { suspiciousKey } from "@/lib/secretsUi";
@@ -36,7 +36,12 @@ export function ActivityTab({ secrets, filter, onClearFilter }: {
   }, []);
 
   const tasks = useApp(s => s.tasks);
-  const taskName = (id: string) => tasks.find(x => x.id === id)?.name ?? t("manage.activity.unknownTask");
+  // a key is a task id (its agents) or a shell's key (a shell running a role).
+  const taskName = (key: string) => {
+    const shell = parseShellBrokerKey(key);
+    const name = tasks.find(x => x.id === (shell?.taskId ?? key))?.name ?? t("manage.activity.unknownTask");
+    return shell ? t("manage.activity.shellOf", { task: name }) : name;
+  };
   // the broker records the secret's id (broker/mod.rs record_*).
   const secretName = (id: string) => secrets.find(s => s.id === id)?.name ?? id;
   const matches = (id: string) => !filter || id === filter;

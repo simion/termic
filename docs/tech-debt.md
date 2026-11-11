@@ -17,6 +17,7 @@ layer above Project shipped as [docs/profiles.md](profiles.md).
 | 2 | `migrate_legacy_members()` (multi-repo) | pre-v0.19 | independent (likely already) | active |
 | 3 | `LEGACY_IDS` (pre-registry language ids) | v0.28.x | a few minor releases | active |
 | 4 | `atlasPageVersionGuard` (GH #314) | v1.6.x | `@xterm/addon-webgl` 0.20.0 stable | active |
+| 5 | `migrate_task_roles_seeded` (role seeding) | v1.22.x | a few minor releases | active |
 
 ---
 
@@ -247,3 +248,34 @@ needs nothing from us.
       symptom is the thing a future reader will search for.
 - [ ] Re-verify before deleting: the bug needs ~16 atlas pages to appear, so a
       quick check is not enough. See "Verifying a clean removal" above.
+
+---
+
+## 5. `migrate_task_roles_seeded` (defaults seed, tasks own)
+
+**What it is.** `migrate_task_roles_seeded` / `seed_unset_roles` in
+`src-tauri/src/lib.rs`, run once at launch and stamped with
+`Settings.task_roles_seeded_migrated` on the root profile. A task with no
+Secrets role used to follow its project's default, then its agent's, at
+every spawn. Once defaults only seed a task at creation, such a task would
+have dropped to No secrets, so the migration writes down what it resolved
+to (project default, else the default of `task.cli`, else `""`), ignoring
+the Keychain gate, which still applies at spawn.
+
+**Why it is safe to keep running.** One pass, then a marker check per
+launch. A failed task write leaves the marker off and the next launch
+retries; a task already holding a role is never touched.
+
+**Safe to remove when** every realistically-active install has launched a
+build with it once. A few minor releases after it ships.
+
+### Purge checklist
+
+- [ ] `migrate_task_roles_seeded`, `seed_unset_roles` and their call in the
+      setup hook (`lib.rs`), and the `role_seed_migration_writes_todays_resolution`
+      test. Keep `seeded_role`: the create paths use it.
+- [ ] `Settings.task_roles_seeded_migrated`, its entry in
+      `config_sync.rs` `SETTINGS_LOCAL` and in the config_sync test's
+      `Settings` literal. `#[serde(default)]` lets an old file with the field
+      still load.
+- [ ] Its row in the table above.

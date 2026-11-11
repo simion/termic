@@ -1199,7 +1199,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
       )}
 
       <div className="grid grid-cols-1 gap-4">
-        {!isTerminal && <AgentRoleField agentId={agent.id} value={agent.default_role} onChange={default_role => onPatch({ default_role })} />}
+        {!isTerminal && <AgentRoleField agentId={agent.id} agentName={agent.display_name || agent.id} value={agent.default_role} onChange={default_role => onPatch({ default_role })} />}
         <Field label={t("agents.card.commandLabel")} hint={isTerminal
           ? t("agents.card.commandHintTerminal")
           : t("agents.card.commandHintAgent")}>

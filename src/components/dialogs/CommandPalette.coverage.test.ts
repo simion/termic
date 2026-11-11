@@ -33,6 +33,7 @@ const EXCLUDED: Record<string, string> = {
   openNewTask: "needs a projectId + seed; the palette routes via openProjectPicker",
   openWelcome: "first-run onboarding, not a thing you go looking for",
   openSandbox: "surfaced (task-scoped row)",
+  openCageActivity: "surfaced (task-scoped row)",
   openFileFinder: "surfaced",
   openFindInFiles: "surfaced",
   openProjectPicker: "surfaced as New task",

@@ -16,7 +16,8 @@ export interface RunSpec {
   yolo: boolean;
   sandbox: {
     enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; blockKeychain?: boolean;
-    /** Secrets role, stored as the parent stores it (null = inherit). */
+    /** Secrets role: the parent's id, or "" for No secrets. Never null,
+     *  which create would read as "seed the defaults". */
     role?: string | null;
   };
   /** Agent id -> account name, applied with `taskSetAccount` before mount. */
@@ -59,9 +60,10 @@ export function runSpecFromParent(parent: Task, project?: Pick<Project, "type"> 
           rwPaths: [...(parent.sandbox_rw_paths ?? [])],
           allowedHosts: [...(parent.sandbox_allowed_hosts ?? [])],
           blockKeychain: !!parent.sandbox_block_keychain,
-          // the parent's own value, not the resolved role: a run that
-          // inherits keeps following the project / agent default.
-          role: parent.role ?? null,
+          // the parent's own role. A parent with none runs No secrets, so
+          // the run does too: null here would be seeded at create and could
+          // hand the run a role its parent does not have.
+          role: parent.role ?? "",
         },
     accounts: { ...(parent.accounts ?? {}) },
     memberPaths: project?.type === "multi"

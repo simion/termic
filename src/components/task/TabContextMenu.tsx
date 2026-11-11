@@ -5,18 +5,24 @@
 
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Pin, PinOff, X, SquareSplitHorizontal, SquareSplitVertical, Move } from "lucide-react";
+import { Pin, PinOff, X, SquareSplitHorizontal, SquareSplitVertical, Move, KeyRound } from "lucide-react";
 import {
   ContextMenuRoot, ContextMenuTrigger, ContextMenuContent,
   ContextMenuItem, ContextMenuSeparator,
+  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent,
 } from "@/components/ui/ContextMenu";
+import { restartShellWithRole, useShellRoles } from "@/lib/shellSecrets";
+import { roleColour } from "@/lib/secretsUi";
 import { closableSiblings, type StripTab } from "@/lib/tabActions";
 
 export function TabContextMenu({
   tabs, tabId, pinned, onPin, onUnpin, onClose, onCloseMany,
-  onSplitRight, onSplitDown, canSplitOut = true, onMoveToSplit,
+  onSplitRight, onSplitDown, canSplitOut = true, onMoveToSplit, shell,
   children,
 }: {
+  /** A shell tab (main, pane or bottom): offers "Restart with secrets".
+   *  `role` is the role it runs now, if any. */
+  shell?: { taskId: string; role?: string };
   /** This strip's tabs, in display order. */
   tabs: StripTab[];
   tabId: string;
@@ -44,6 +50,9 @@ export function TabContextMenu({
   const { t } = useTranslation("task");
   const others = closableSiblings(tabs, tabId, "others");
   const right = closableSiblings(tabs, tabId, "right");
+  // empty off macOS or with no roles, which hides the submenu.
+  const shellRoles = useShellRoles();
+  const roleChoices = shell ? shellRoles.filter(r => r.id !== shell.role) : [];
   return (
     <ContextMenuRoot>
       {/* `contents` rather than asChild: TabPill neither forwards a ref nor
@@ -65,6 +74,31 @@ export function TabContextMenu({
         <ContextMenuItem disabled={!right.length} onSelect={() => onCloseMany(right)}>
           {t("tabMenu.closeRight")}
         </ContextMenuItem>
+        {shell && shellRoles.length > 0 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>
+                <span data-testid="shell-restart-secrets" className="flex items-center gap-2"><KeyRound className="h-3.5 w-3.5 shrink-0" /> {t("secrets:shell.restartWith")}</span>
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                {roleChoices.map(r => (
+                  <ContextMenuItem key={r.id} onSelect={() => void restartShellWithRole(shell.taskId, tabId, r)}>
+                    <span data-testid={`shell-role-${r.id}`} className="flex items-center gap-2">
+                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: roleColour(r.colour) }} />
+                      {r.name}
+                    </span>
+                  </ContextMenuItem>
+                ))}
+                {shell.role && (
+                  <ContextMenuItem onSelect={() => void restartShellWithRole(shell.taskId, tabId, null)}>
+                    <span data-testid="shell-role-none" className="contents">{t("secrets:shell.noSecrets")}</span>
+                  </ContextMenuItem>
+                )}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          </>
+        )}
         {(onSplitRight || onSplitDown || onMoveToSplit) && <ContextMenuSeparator />}
         {onSplitRight && (
           <ContextMenuItem disabled={!canSplitOut} onSelect={onSplitRight}>

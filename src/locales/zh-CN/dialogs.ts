@@ -97,6 +97,7 @@ export default {
       yoloEnable: "启用 YOLO",
       yoloSuffix: "危险地跳过权限确认",
       sandboxSettings: "沙箱设置",
+      cageActivity: "沙箱和密钥活动",
       createPr: "创建拉取请求",
       viewTodos: "查看待办",
       toggleLeftSidebar: "切换左侧边栏",
@@ -759,6 +760,7 @@ export default {
     noMatching: "没有匹配的语法",
   },
   taskSandbox: {
+    dropsRole: "保存后将从此任务移除 {{role}} 密钥角色。角色需要强制模式和钥匙串阻止。",
     titleNamed: "沙箱 · {{name}}",
     titleFallback: "沙箱",
     description: "限制此任务中智能体可读取、写入和访问的内容。",

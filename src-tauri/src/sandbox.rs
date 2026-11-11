@@ -2323,27 +2323,91 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode, b
 /// costs the agent its secrets, never the spawn: it gets no placeholder, so
 /// nothing is exposed.
 fn start_broker(task: &Task, mode: SandboxMode, b: &BrokerSetup, host_patterns: Vec<String>, proxy: Option<&proxy::ProxyHandle>) -> Option<crate::broker::BrokerHandle> {
-    let started = crate::broker::new_spawn_dir().and_then(|dir| crate::broker::start(crate::broker::StartArgs {
-        task_id: &task.id,
+    let enforce_fs = mode == SandboxMode::EnforceFs;
+    let hosts = if enforce_fs { Vec::new() } else { host_patterns };
+    start_broker_for(&task.id, task, b, &task.secret_allows, hosts, enforce_fs, proxy)
+        .map_err(|e| dlog(&format!("[sandbox/{}] broker failed to start, no secrets for this spawn: {e}", task.id)))
+        .ok()
+}
+
+/// Start a broker keyed `key` (a task id, or a shell's `broker::shell_key`)
+/// and hook it into `proxy`. Shared by agents (`start_broker`, which turns a
+/// failure into no secrets) and shells (`provision_shell`, which fails the
+/// spawn), so anything a start needs reaches both.
+fn start_broker_for(
+    key: &str, task: &Task, b: &BrokerSetup, task_allows: &[crate::secrets::TaskAllow],
+    host_patterns: Vec<String>, allow_all_hosts: bool, proxy: Option<&proxy::ProxyHandle>,
+) -> Result<crate::broker::BrokerHandle> {
+    let dir = crate::broker::new_spawn_dir()?;
+    let h = crate::broker::start(crate::broker::StartArgs {
+        task_id: key,
         role: &b.role,
         secrets: &b.secrets,
-        task_allows: &task.secret_allows,
-        host_patterns: if mode == SandboxMode::EnforceFs { Vec::new() } else { host_patterns },
-        allow_all_hosts: mode == SandboxMode::EnforceFs,
+        task_allows,
+        host_patterns,
+        allow_all_hosts,
         proxy_port: proxy.map(|p| p.port),
         dir,
-    }, task.profile.clone()));
-    match started {
-        Ok(h) => {
-            if let Some(p) = proxy { p.attach_broker(h.mitm_ctx()); }
-            dlog(&format!("[sandbox/{}] broker up: role {} socket={:?} base_url_port={:?}", task.id, b.role.name, h.socket_path, h.base_url_port));
-            Some(h)
-        }
-        Err(e) => {
-            dlog(&format!("[sandbox/{}] broker failed to start, no secrets for this spawn: {e}", task.id));
-            None
-        }
+    }, task.profile.clone())?;
+    if let Some(p) = proxy { p.attach_broker(h.mitm_ctx()); }
+    dlog(&format!("[sandbox/{key}] broker up: role {} socket={:?} base_url_port={:?}", b.role.name, h.socket_path, h.base_url_port));
+    Ok(h)
+}
+
+/// A user shell's role: its broker and, when the role has a MITM delivery
+/// (git, an API key's env proxy), the allow-all proxy those tools are
+/// pointed at. No Seatbelt profile, path watcher or Keychain hold: shells
+/// are never caged. Parked on the PTY slot; fields drop in order, so the
+/// broker goes before the proxy that points at it.
+pub struct ShellBundle {
+    pub broker: crate::broker::BrokerHandle,
+    #[allow(dead_code)]
+    pub proxy: Option<proxy::ProxyHandle>,
+    /// The role's display name, advertised as `TERMIC_SECRETS_ROLE`.
+    pub role_name: String,
+}
+
+impl ShellBundle {
+    /// The broker key (`broker::shell_key`) this shell's root pid and
+    /// events live under.
+    pub fn key(&self) -> &str { &self.broker.task_id }
+}
+
+/// Start the broker for a user shell running `b.role`, keyed `key`. Unlike an
+/// agent's, a failure here fails the spawn: the user asked for the role, and
+/// a plain shell in its place would leave their real login in play while the
+/// tab claims a role.
+pub fn provision_shell(key: &str, task: &Task, b: &BrokerSetup) -> Result<ShellBundle> {
+    if !available() { return Err(anyhow!("Secrets roles need macOS")); }
+    // a new shell in the tab starts its evidence and pause over (pty_kill
+    // already did for a Restart; this covers a shell that exited itself).
+    crate::broker::forget_shell(key);
+    let proxy = if crate::broker::role_wants_mitm(&b.role, &b.secrets) {
+        Some(proxy::start(vec!["^.*$".into()], key.to_string(), false).context("start the proxy for git and HTTPS_PROXY")?)
+    } else {
+        None
+    };
+    let broker = start_broker_for(key, task, b, &[], Vec::new(), true, proxy.as_ref())?;
+    Ok(ShellBundle { broker, proxy, role_name: b.role.name.clone() })
+}
+
+/// `env -u <real tokens> TERMIC_SECRETS_ROLE=<name> <broker env> cmd args`.
+/// None of the cage's vars: no `TERMIC_SANDBOX*`, and no generic
+/// `http_proxy`, since the shell is not behind an allow-list. The broker's
+/// own env carries what its deliveries need (`HTTPS_PROXY` + CA vars for an
+/// API key's env proxy, git's URL-scoped proxy).
+pub fn wrap_shell_command(bundle: &ShellBundle, cmd: &str, args: &[String]) -> (String, Vec<String>) {
+    let b = &bundle.broker;
+    let mut out: Vec<String> = Vec::new();
+    for k in &b.strip_env {
+        out.push("-u".into());
+        out.push(k.clone());
     }
+    out.push(format!("TERMIC_SECRETS_ROLE={}", bundle.role_name));
+    out.extend(b.env.iter().map(|(k, v)| format!("{k}={v}")));
+    out.push(cmd.into());
+    out.extend(args.iter().cloned());
+    ("env".into(), out)
 }
 
 /// Seatbelt rules for a brokered spawn, appended after the rest of the
@@ -4466,4 +4530,27 @@ mod tcp_peer_tests {
         let _ = caged.kill();
         let _ = caged.wait();
     }
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_is_env_with_the_broker_only() {
+        let bundle = ShellBundle {
+            broker: crate::broker::test_handle("shell:t-wrap:tab-1", None),
+            proxy: None,
+            role_name: "Deploy".into(),
+        };
+        assert_eq!(bundle.key(), "shell:t-wrap:tab-1");
+        let (cmd, argv) = wrap_shell_command(&bundle, "/bin/zsh", &["-l".into()]);
+        assert_eq!(cmd, "env");
+        // the real tokens are unset first, then the role and the broker env.
+        let first_assign = argv.iter().position(|a| a.contains('=')).unwrap();
+        assert!(argv[..first_assign].chunks(2).all(|p| p[0] == "-u"));
+        assert!(argv[..first_assign].contains(&"GH_TOKEN".to_string()));
+        assert_eq!(argv[first_assign], "TERMIC_SECRETS_ROLE=Deploy");
+        assert!(argv.iter().any(|a| a.starts_with("GH_TOKEN=termic_ph_")));
+        assert!(argv.iter().any(|a| a.starts_with("GH_CONFIG_DIR=")));
+        assert_eq!(&argv[argv.len() - 2..], &["/bin/zsh".to_string(), "-l".to_string()]);
+        // none of the cage's vars.
+        assert!(!argv.iter().any(|a| a.starts_with("TERMIC_SANDBOX") || a.to_ascii_lowercase().starts_with("http_proxy=")));
+    }
+
 }

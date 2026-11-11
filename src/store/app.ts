@@ -135,7 +135,10 @@ export interface AppState {
   terminalSplitCollapsed: Record<string, boolean>;
   /** Per-task: bottom-terminal tab IDs (each = its own scratch shell).
    *  Lives in memory only — like the main terminal tabs, PTYs die with the app. */
-  bottomTabs: Record<string, { id: string; title: string; liveTitle?: string; autoFocus?: boolean; pinned?: boolean }[]>;
+  bottomTabs: Record<string, { id: string; title: string; liveTitle?: string; autoFocus?: boolean; pinned?: boolean;
+    /** The Secrets role this shell was started with (docs/sandbox.md
+     *  "Shells"). Session-only, like the tab, and never seeded from a default. */
+    secretsRole?: string }[]>;
   /** Per-task: id of the active bottom-terminal tab. */
   activeBottomTab: Record<string, string>;
   /** Per-task: the iTerm-like split-pane tree for the main content area.
@@ -309,6 +312,10 @@ export interface AppState {
    *  e.g. the running command or cwd). Falls back to the base "shell N" when
    *  empty. Idempotent. */
   setBottomTabLiveTitle: (taskId: string, tabId: string, liveTitle: string) => void;
+  /** Set (or clear, with undefined) the Secrets role of a shell tab, main /
+   *  pane or bottom. The shell respawns with it, since a broker binding is
+   *  fixed at spawn. No-op when unchanged (bear trap 8). */
+  setShellSecretsRole: (taskId: string, tabId: string, role: string | undefined) => void;
   /** Split the currently focused pane (or `paneId`) in the given direction.
    *  dir 'v' = add new pane to the right; 'h' = add new pane below.
    *  Returns the new leaf pane's id. */
@@ -321,7 +328,7 @@ export interface AppState {
   setSplitRatio: (taskId: string, splitId: string, ratio: number) => void;
   /** Once the SplitLauncher in an empty leaf has chosen a cli, create the tab
    *  and wire it into the leaf. Returns the new tab id. */
-  addPaneTab: (taskId: string, paneId: string, cli: string, opts?: { title?: string; command?: string; initialInput?: string }) => string;
+  addPaneTab: (taskId: string, paneId: string, cli: string, opts?: { title?: string; command?: string; initialInput?: string; secretsRole?: string }) => string;
   /** Switch which tab is visible in a split pane's mini tab strip. */
   setPaneActiveTab: (taskId: string, paneId: string, tabId: string) => void;
   /** Close a specific tab within a split pane (kills PTY if terminal). */
@@ -1514,6 +1521,19 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return changed ? { bottomTabs: { ...s.bottomTabs, [taskId]: next } } : s;
   }),
+  setShellSecretsRole: (taskId, tabId, role) => set(s => {
+    const role_ = role || undefined;
+    const tabs = s.tabs[taskId];
+    const main = tabs?.find(t => t.id === tabId);
+    if (main) {
+      if (main.type !== "terminal" || main.cli !== "shell" || main.secretsRole === role_) return s;
+      return { tabs: { ...s.tabs, [taskId]: tabs!.map(t => t.id === tabId ? { ...t, secretsRole: role_ } as Tab : t) } };
+    }
+    const bottom = s.bottomTabs[taskId];
+    const b = bottom?.find(t => t.id === tabId);
+    if (!b || b.secretsRole === role_) return s;
+    return { bottomTabs: { ...s.bottomTabs, [taskId]: bottom!.map(t => t.id === tabId ? { ...t, secretsRole: role_ } : t) } };
+  }),
 
   splitPane: (taskId, dir, paneIdArg) => {
     const s = get();
@@ -1673,6 +1693,7 @@ export const useApp = create<AppState>((set, get) => ({
       paneId,
       ...(opts?.command ? { command: opts.command } : {}),
       ...(opts?.initialInput ? { initialInput: opts.initialInput } : {}),
+      ...(cli === 'shell' && opts?.secretsRole ? { secretsRole: opts.secretsRole } : {}),
     };
     set(s2 => {
       const tree = s2.splitTree[taskId];

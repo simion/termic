@@ -246,9 +246,40 @@ pub fn add_allowed(repo_root: &Path, kind: AllowKind, value: &str) -> Result<()>
     save(repo_root, &cfg)
 }
 
+/// Drop `value` from the repo's `.termic.yaml` sandbox allow-list: the undo
+/// of [`add_allowed`]. No-op when the file or the entry is absent, so an
+/// undo never creates the file.
+pub fn remove_allowed(repo_root: &Path, kind: AllowKind, value: &str) -> Result<()> {
+    let value = value.trim();
+    let Some(mut cfg) = load(repo_root)? else { return Ok(()) };
+    let list = match kind {
+        AllowKind::Host => &mut cfg.sandbox.allowed_hosts,
+        AllowKind::Path => &mut cfg.sandbox.allowed_paths,
+    };
+    let before = list.len();
+    list.retain(|v| v != value);
+    if list.len() == before {
+        return Ok(());
+    }
+    save(repo_root, &cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_allowed_undoes_add_and_never_creates_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        remove_allowed(dir.path(), AllowKind::Host, "api.acme.com").unwrap();
+        assert!(!dir.path().join(FILE_NAME).exists());
+        add_allowed(dir.path(), AllowKind::Host, "api.acme.com").unwrap();
+        add_allowed(dir.path(), AllowKind::Path, "$HOME/.cache").unwrap();
+        remove_allowed(dir.path(), AllowKind::Host, "api.acme.com").unwrap();
+        let cfg = load(dir.path()).unwrap().unwrap();
+        assert!(cfg.sandbox.allowed_hosts.is_empty());
+        assert_eq!(cfg.sandbox.allowed_paths, vec!["$HOME/.cache"]);
+    }
 
     #[test]
     fn every_write_starts_with_the_header_comment() {

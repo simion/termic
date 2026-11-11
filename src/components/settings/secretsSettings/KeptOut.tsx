@@ -137,9 +137,10 @@ export function KeptOutCard({ onAddSecret }: { onAddSecret: (name: string, prese
                       {t("manage.keptOut.passThrough")}<ChevronDown className="h-3 w-3" />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent side="bottom" align="end" className="flex w-[290px] flex-col gap-2">
+                  {/* capped to the room Radix finds, so on a short window the agent list scrolls instead of running off the bottom */}
+                  <PopoverContent side="bottom" align="end" className="flex max-h-[var(--radix-popover-content-available-height)] w-[290px] flex-col gap-2">
                     <div className="text-[13px] font-medium">{t("manage.keptOut.passTitle", { name: r.name })}</div>
-                    <div className="-mr-2 flex max-h-64 flex-col overflow-y-auto pr-2" data-testid={`kept-out-pass-list-${r.name}`}>
+                    <div className="-mr-2 flex max-h-64 min-h-0 flex-col overflow-y-auto pr-2" data-testid={`kept-out-pass-list-${r.name}`}>
                       {passable.map(a => {
                         const on = !!a.pass_env?.includes(r.name);
                         return (

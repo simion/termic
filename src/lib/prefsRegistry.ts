@@ -130,6 +130,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "globalDefaultSandbox", scoped: false, class: "local", reason: "old name, read only as a fallback; globalDefaultSandboxKind is what syncs", legacy: true },
   { key: "sandboxBypassPermissions", scoped: false, class: "sync" },
   { key: "sandboxAllowScope", scoped: false, class: "sync" },
+  { key: "secretsAllowScope", scoped: false, class: "sync" },
   { key: "defaultYolo", scoped: false, class: "sync" },
   { key: "loadRemoteImages", scoped: false, class: "sync" },
 
