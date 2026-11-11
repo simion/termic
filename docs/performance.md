@@ -58,6 +58,34 @@ Windows reports the private working set for the same reason (`PrivateWorkingSetS
 
 CPU% divides a mach-absolute-time delta by a mach-absolute-time wall delta, so the units cancel and no `mach_timebase_info` conversion is involved — which is the trap it avoids, since that conversion is 1/1 on Intel and 125/3 on Apple silicon (a raw-ticks-as-nanoseconds bug reads 24× low on every current Mac). The timebase is still needed for the cumulative "CPU time" column, and `timebase_is_sane` pins it.
 
+## Forge budget (GitHub API)
+
+Every GitHub read spends from the user's `gh` token, and that token is shared
+with their terminal and with every agent running `gh` in a task. Termic does
+not get the whole limit, so it budgets itself (`src-tauri/src/forge_rate.rs`):
+
+- **Two numbers, kept apart.** GitHub's window (limit / remaining / reset,
+  from the `x-ratelimit-*` headers or the GraphQL `rateLimit` object) is the
+  account's, everyone's spend included. Termic's own spend is a one-hour ring
+  tagged by feature. Settings > General shows both, per host.
+- **Background work asks first** (`forge_rate::background_gate`). It is held
+  while GitHub has refused on a limit, while the account has under 15% left
+  (`FLOOR`), or while termic has spent 20% of the GraphQL limit (`TERMIC_SHARE`)
+  or 300 REST requests this hour. A user action does not ask. A pause shows as
+  the top-bar pill until it lifts.
+- **GitHub's limit replies are followed exactly.** `retry-after` first, then
+  `x-ratelimit-reset` when nothing is left, otherwise a minute doubling per
+  repeat (secondary limits). A GraphQL primary limit comes back as **HTTP
+  200** with `errors[].type == "RATE_LIMITED"`, so the body is read, not just
+  the status.
+- **Batch, do not fan out.** GraphQL costs per connection, minimum 1 point a
+  call, so one aliased query for 50 PRs costs about what one PR costs. A new
+  GitHub read that runs once per task or per project is the regression to
+  look for.
+- **A 304 is free.** A conditional request answered `304 Not Modified` does
+  not count against the primary limit, which is what makes a change feed
+  (notifications with `If-Modified-Since`) cheap to poll.
+
 ## Worktree creation
 
 The wait after picking an agent is `git fetch` + `git worktree add` + `files_to_copy`. On APFS the copy is `clonefile(2)` (copy-on-write; writes still diverge). Linux and Windows still walk + `fs::copy`. `libc::clonefile` does not link off Darwin, so the fast path is `#[cfg(target_os = "macos")]`.

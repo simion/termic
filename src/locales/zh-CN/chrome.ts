@@ -51,6 +51,15 @@ export default {
   waitingPill: {
     jump: "跳转到下一个等待中的智能体",
   },
+  forgeRatePill: {
+    label: "GitHub 已暂停至 {{time}}",
+    tip: "{{host}} 上的后台 GitHub 轮询已暂停：{{reason}}。在此之前状态可能不是最新的。点击查看详情。",
+    kind: {
+      limited: "GitHub 因速率限制拒绝了请求",
+      floor: "账户剩余请求不足",
+      budget: "Termic 本小时的份额已用完",
+    },
+  },
   profileChip: {
     profiles: "配置",
     manageProfiles: "管理配置",

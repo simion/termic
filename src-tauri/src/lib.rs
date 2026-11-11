@@ -49,6 +49,7 @@ mod shell_env;
 mod automation;
 mod cli_server;
 mod forge;
+mod forge_rate;
 mod theme_import;
 mod mcp_server;
 mod mdns;
@@ -15517,6 +15518,23 @@ async fn detect_forges() -> Vec<forge::ForgeCliStatus> {
         .unwrap_or_default()
 }
 
+/// The GitHub rate ledger: each host's limits, what is left, termic's own
+/// spend in the last hour by feature, and whether background work is
+/// paused. `probe` first seeds unknown hosts from `GET /rate_limit` (free
+/// against the primary limit). Changes also arrive as
+/// `termic://forge-rate-changed` with the same payload.
+#[tauri::command]
+async fn forge_rate_status(probe: Option<bool>) -> Vec<forge_rate::RateStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if probe.unwrap_or(false) {
+            forge::probe_rate_limits();
+        }
+        forge_rate::status()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Everything the PR card needs in one round-trip: provider resolution
 /// from the task's remote + the live PR/MR snapshot (or a precise
 /// reason there isn't one). `status` tells the frontend exactly which
@@ -27763,6 +27781,10 @@ pub fn run() {
         .manage(PtyManager::default())
         .setup(|app| {
             caffeinate::start(app.handle().clone());
+            {
+                let h = app.handle().clone();
+                forge_rate::on_changed(move |s| { let _ = h.emit("termic://forge-rate-changed", s); });
+            }
             // CLI detection that ran on the fallback PATH re-runs (GH #441).
             {
                 let h = app.handle().clone();
@@ -28066,7 +28088,7 @@ pub fn run() {
             desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, project_git_current_branch, task_git_checkout, task_git_update, task_git_update_all, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
-            detect_forges, task_pr_status, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
+            detect_forges, forge_rate_status, task_pr_status, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,

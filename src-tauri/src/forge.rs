@@ -247,6 +247,154 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
     cmd.output()
 }
 
+// ───────────────────────── gh api (budgeted) ─────────────────────────
+//
+// Every new GitHub read goes through `gh_api` / `gh_graphql`: `gh` keeps the
+// auth (keychain, GHE hosts), and the response's rate-limit headers and
+// GraphQL `rateLimit` object feed the ledger in forge_rate.rs. The legacy
+// `gh pr ...` / `gh issue ...` calls cannot report a cost; their callers
+// charge `forge_rate::record_estimated` instead.
+
+/// One HTTP answer as `gh api --include` printed it.
+#[derive(Debug)]
+pub struct ApiResponse {
+    pub status: u16,
+    /// Lowercased names.
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+/// `gh api --include` stdout: `HTTP/2.0 200 OK`, the headers, a blank line,
+/// the body. gh prints all of it on an error status too (and exits 1),
+/// which is the only way a 304 or a 403 rate limit can be read at all.
+/// None when stdout is not that shape (no HTTP happened: gh not signed in,
+/// no network).
+fn parse_api_output(out: &[u8]) -> Option<ApiResponse> {
+    let text = String::from_utf8_lossy(out);
+    let (status_line, mut rest) = text.split_once('\n')?;
+    let status: u16 = status_line.trim().strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok()?;
+    let mut headers = HashMap::new();
+    while !rest.is_empty() {
+        let (line, r) = rest.split_once('\n').unwrap_or((rest, ""));
+        rest = r;
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+    Some(ApiResponse { status, headers, body: rest.to_string() })
+}
+
+fn rate_limited_message(host: &str, until: u64) -> String {
+    let at = chrono::DateTime::from_timestamp(until as i64, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default();
+    format!("GitHub rate limit reached on {host}. Termic is waiting until {at}.")
+}
+
+/// `gh api --hostname <host> --include <args...>`, charged to `feature`.
+/// A 304 is a success with an empty body. A limit refusal pauses the host's
+/// background work (forge_rate) and comes back as an error naming the time.
+pub fn gh_api(host: &str, feature: &'static str, bucket: crate::forge_rate::Bucket, args: &[&str]) -> Result<ApiResponse, ForgeError> {
+    let bin = reprobe_bin("gh").ok_or(ForgeError::CliMissing("gh"))?;
+    let mut full = vec!["api", "--hostname", host, "--include"];
+    full.extend_from_slice(args);
+    let o = run(&bin, &full, None).map_err(|e| ForgeError::Other(e.to_string()))?;
+    let Some(resp) = parse_api_output(&o.stdout) else {
+        return Err(classify_failure(GITHUB, &o));
+    };
+    let json: Option<serde_json::Value> = serde_json::from_str(&resp.body).ok();
+    let verdict = crate::forge_rate::observe(host, feature, bucket, &crate::forge_rate::Observation {
+        status: resp.status,
+        headers: Some(&resp.headers),
+        graphql_rate: json.as_ref().map(|v| &v["data"]["rateLimit"]).filter(|v| v.is_object()),
+        graphql_errors: json.as_ref().map(|v| &v["errors"]).filter(|v| v.is_array()),
+        body: &resp.body,
+    });
+    if let crate::forge_rate::Verdict::Limited { until } = verdict {
+        return Err(ForgeError::Other(rate_limited_message(host, until)));
+    }
+    if resp.status == 401 {
+        return Err(ForgeError::Auth(format!(
+            "gh is not authenticated for {host}. Run `gh auth login --hostname {host}` in a terminal."
+        )));
+    }
+    if resp.status >= 400 {
+        let msg = json.as_ref().and_then(|v| v["message"].as_str()).map(str::to_string)
+            .unwrap_or_else(|| stderr_of(&o));
+        return Err(ForgeError::Other(format!("GitHub answered {}: {msg}", resp.status)));
+    }
+    Ok(resp)
+}
+
+/// The fields every termic GraphQL query asks for, so its cost and the
+/// account's window are recorded. A `rateLimit` selection adds no points.
+const RATE_LIMIT_SELECTION: &str = "rateLimit { cost limit remaining used resetAt }";
+
+/// A GraphQL query's answer. `errors` can sit beside good `data`: one alias
+/// of a batch pointing at a deleted repo fails alone.
+pub struct GraphqlAnswer {
+    pub data: serde_json::Value,
+    pub errors: Vec<serde_json::Value>,
+}
+
+/// Run `query { rateLimit {...} <selection> }` against `host`'s GraphQL API.
+pub fn gh_graphql(host: &str, feature: &'static str, selection: &str) -> Result<GraphqlAnswer, ForgeError> {
+    let query = format!("query={{ {RATE_LIMIT_SELECTION} {selection} }}");
+    let resp = gh_api(host, feature, crate::forge_rate::Bucket::Graphql, &["graphql", "-f", &query])?;
+    let v: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    let errors = v["errors"].as_array().cloned().unwrap_or_default();
+    let data = v["data"].clone();
+    if data.is_null() {
+        let msg = errors.first().and_then(|e| e["message"].as_str()).unwrap_or("GraphQL query failed");
+        return Err(ForgeError::Other(msg.to_string()));
+    }
+    Ok(GraphqlAnswer { data, errors })
+}
+
+/// A GraphQL string literal. JSON string escaping is a valid GraphQL
+/// string, so serde does the work.
+pub fn gql_str(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
+}
+
+/// The GitHub hosts `gh` is signed in to, github.com when none is known
+/// yet (detect() has not run).
+pub fn github_hosts() -> Vec<String> {
+    let mut hosts: Vec<String> = host_map().lock().unwrap().as_ref()
+        .map(|m| m.iter().filter(|(_, p)| **p == GITHUB).map(|(h, _)| h.clone()).collect())
+        .unwrap_or_default();
+    if hosts.is_empty() {
+        hosts.push("github.com".into());
+    }
+    hosts.sort();
+    hosts
+}
+
+/// Seed the rate ledger from `GET /rate_limit` for each signed-in GitHub
+/// host it knows nothing current about. That endpoint does not count
+/// against the primary limit, so this is not charged to anything. Failures
+/// are silent: no window just means the documented defaults.
+pub fn probe_rate_limits() {
+    let Some(bin) = reprobe_bin("gh") else { return };
+    for host in github_hosts() {
+        if crate::forge_rate::has_fresh_window(&host) {
+            continue;
+        }
+        let Ok(o) = run(&bin, &["api", "--hostname", &host, "rate_limit"], None) else { continue };
+        if !o.status.success() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+            crate::forge_rate::record_rate_limit_resources(&host, &v);
+        }
+    }
+}
+
 // ───────────────────────── detection (Settings / hints) ─────────────────────────
 
 /// Install + auth status for one forge CLI. Drives the PR card's
@@ -677,6 +825,7 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         "number,url,title,state,isDraft,reviewDecision,latestReviews,statusCheckRollup,baseRefName,headRefName",
     ]);
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "pr_status", crate::forge_rate::Bucket::Graphql);
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found for branch X" — a real, clean "no PR".
@@ -1270,6 +1419,7 @@ fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrCommen
     // Discussion comments + review summaries in one call.
     let o = run(bin, &["pr", "view", &n, "--json", "comments,reviews"], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Graphql);
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -1287,6 +1437,7 @@ fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrCommen
     let path = format!(
         "repos/{{owner}}/{{repo}}/pulls/{n}/comments?per_page=100&sort=created&direction=desc"
     );
+    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Core);
     if let Ok(o2) = run(bin, &["api", &path], Some(cwd)) {
         if o2.status.success() {
             if let Ok(v2) = serde_json::from_slice::<serde_json::Value>(&o2.stdout) {
@@ -1652,6 +1803,24 @@ pub fn provider_for_repo(cwd: &Path, remote: &str) -> (Option<&'static str>, Str
     (provider, remote_url)
 }
 
+/// The host of the repo at `cwd`, from the provider cache that every caller
+/// has warmed through `provider_for_repo` before reaching a CLI call. Only
+/// used to charge legacy calls to the right ledger, so a miss falls back to
+/// github.com rather than paying a git subprocess.
+fn cached_host_for(cwd: &Path) -> String {
+    let prefix = format!("{}\u{1}", cwd.to_string_lossy());
+    provider_cache().lock().unwrap().iter()
+        .find(|(k, _)| k.starts_with(&prefix))
+        .and_then(|(_, hit)| host_of_remote(&hit.remote_url))
+        .unwrap_or_else(|| "github.com".into())
+}
+
+/// Charge one legacy `gh` CLI call (which cannot report its cost) to the
+/// rate ledger as an estimate.
+fn charge_gh_cli(cwd: &Path, feature: &'static str, bucket: crate::forge_rate::Bucket) {
+    crate::forge_rate::record_estimated(&cached_host_for(cwd), feature, bucket);
+}
+
 /// Drop the cached provider answers. Called after `detect()` re-probes,
 /// because signing in to a new self-hosted instance can turn a previously
 /// unresolvable remote into a real one.
@@ -1743,6 +1912,7 @@ fn github_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Re
     let n = limit.to_string();
     let o = run(bin, &github_issue_args(&n, scope), Some(cwd))
     .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // A repo with issues disabled is not an error worth a red banner.
@@ -1846,6 +2016,7 @@ pub fn pr_list(provider: &str, cwd: &Path, limit: u32, scope: PrScope) -> Result
 /// with different filters, newest first (gh's default order).
 fn github_pr_list(bin: &str, cwd: &Path, args: &[&str]) -> Result<Vec<ForgePr>, ForgeError> {
     let o = run(bin, args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -1930,6 +2101,7 @@ pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<Fo
     let n = number.to_string();
     let o = run(&bin, &["pr", "view", &n, "--json", PR_JSON_FIELDS], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql);
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found" is an answer, not a failure: the number is
@@ -3355,5 +3527,32 @@ code.internal.acme.com configured to use ssh protocol.\n";
         ]}"#).unwrap();
         let out = parse_azure_threads(&v, &HashSet::new());
         assert_eq!(out[0].created_at, "2026-06-12T09:00:00Z");
+    }
+
+    #[test]
+    fn api_output_parses_status_headers_and_body() {
+        // Shape of `gh api --include`: an LF status line, CRLF headers
+        // with Go-canonical names, a blank line, the body.
+        let out = b"HTTP/2.0 200 OK\nContent-Type: application/json\r\nX-Ratelimit-Remaining: 4999\r\nX-Ratelimit-Resource: core\r\n\r\n{\"a\":1}";
+        let r = parse_api_output(out).unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.headers["x-ratelimit-remaining"], "4999");
+        assert_eq!(r.headers["x-ratelimit-resource"], "core");
+        assert_eq!(r.body, "{\"a\":1}");
+    }
+
+    #[test]
+    fn api_output_reads_a_bodiless_304_and_rejects_non_http_text() {
+        let r = parse_api_output(b"HTTP/2.0 304 Not Modified\nEtag: \"x\"\r\n\r\n").unwrap();
+        assert_eq!(r.status, 304);
+        assert!(r.body.is_empty());
+        // No HTTP happened (gh not signed in): stdout is empty.
+        assert!(parse_api_output(b"").is_none());
+        assert!(parse_api_output(b"To get started with GitHub CLI, please run:  gh auth login\n").is_none());
+    }
+
+    #[test]
+    fn gql_str_escapes_quotes_and_backslashes() {
+        assert_eq!(gql_str(r#"a"b\c"#), r#""a\"b\\c""#);
     }
 }

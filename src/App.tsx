@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
+import { initForgeRate } from "@/store/forgeRate";
 import { initScheduledTicker } from "@/lib/scheduledTicker";
 import { initSchedules } from "@/lib/schedules/watcher";
 import { sudoTouchIdSetOffer, taskSpotlightStatus } from "@/lib/ipc";
@@ -137,7 +138,9 @@ export function App() {
     void useApp.getState().syncAgentHooks();
     // Forge CLI (gh / glab / az) detection for the PR integrations - same
     // policy as agent CLI detection: startup + Settings visits only.
-    void usePr.getState().refreshForges();
+    // The rate ledger's first probe needs the signed-in GitHub hosts, which
+    // detection learns.
+    void usePr.getState().refreshForges().then(() => initForgeRate());
     // PR comment watcher: one global slow tick; only workspaces with a
     // LIVE agent and the watch opt-in (bell or project setting) poll.
     initCommentWatcher();

@@ -10,7 +10,7 @@ import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, PrScope, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, ForgeProvider, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, ForgeRateStatus, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
   SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
 } from "./types";
@@ -998,6 +998,12 @@ export const taskDiscard = (id: string, dirName: string, paths: string[]) =>
  *  probes only, no network (except az's PAT-only profile lookup). */
 export const detectForges = () =>
   invoke<ForgeCliStatus[]>("detect_forges");
+/** The GitHub rate ledger per host: limits, what is left, termic's own
+ *  spend this hour, and whether background polling is paused. `probe`
+ *  first seeds unknown hosts from GET /rate_limit (free). Changes also
+ *  arrive as `termic://forge-rate-changed`. */
+export const forgeRateStatus = (probe = false) =>
+  invoke<ForgeRateStatus[]>("forge_rate_status", { probe });
 /** Live PR/MR lookup for the task's branch. Hits the network via
  *  the forge CLI - poll at a slow cadence (the pr store owns this). */
 export const taskPrStatus = (id: string) =>

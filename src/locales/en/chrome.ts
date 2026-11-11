@@ -51,6 +51,15 @@ export default {
   waitingPill: {
     jump: "Jump to next waiting agent",
   },
+  forgeRatePill: {
+    label: "GitHub paused until {{time}}",
+    tip: "Background GitHub polling on {{host}} is paused: {{reason}}. Status may be stale until then. Click for details.",
+    kind: {
+      limited: "GitHub refused on a rate limit",
+      floor: "the account is low on requests",
+      budget: "termic used its share for this hour",
+    },
+  },
   profileChip: {
     profiles: "Profiles",
     manageProfiles: "Manage profiles",

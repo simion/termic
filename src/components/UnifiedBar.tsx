@@ -28,6 +28,7 @@ import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskRoleKey } from "@/components/secretsUi/RolePicker";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
+import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
@@ -196,6 +197,9 @@ export function UnifiedBar() {
             you, jumps to the next on click. Sits with the other status pills
             so a live "N waiting" is glanceable from anywhere. */}
         <WaitingAgentsPill />
+        {/* GitHub polling paused on a rate limit or budget: appears only
+            then, opens the Settings block with the numbers. */}
+        <ForgeRatePill />
         {/* YOLO is per-task only — controlled from the task's
             sidebar dropdown ("YOLO: on/off"), with a red ⚡ status badge
             on the sidebar row. No top-bar toggle (it had no global
