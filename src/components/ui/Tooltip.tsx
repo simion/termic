@@ -12,10 +12,14 @@ interface Props {
    *  The default arrow is filled with the tooltip's own background, which is
    *  right for a one-line label and invisible beside a tall panel. */
   pointer?: boolean;
+  /** Keep the trigger in the same tree while `content` is empty, for one
+   *  whose tooltip comes and goes. Otherwise every flip swaps the wrapper and
+   *  remounts the trigger. */
+  stable?: boolean;
 }
 
-export function Tip({ content, children, side = "top", delay = 0, align = "center", pointer = false }: Props) {
-  if (!content) return <>{children}</>;
+export function Tip({ content, children, side = "top", delay = 0, align = "center", pointer = false, stable = false }: Props) {
+  if (!content && !stable) return <>{children}</>;
   return (
     // delayDuration: 0 makes the tooltip open the instant the cursor lands
     // on the trigger — no 200ms wait that Radix defaults to. skipDelayDuration
@@ -26,7 +30,7 @@ export function Tip({ content, children, side = "top", delay = 0, align = "cente
     <RT.Provider delayDuration={delay} skipDelayDuration={0} disableHoverableContent>
       <RT.Root>
         <RT.Trigger asChild>{children}</RT.Trigger>
-        <RT.Portal>
+        {content && <RT.Portal>
           <RT.Content
             side={side}
             align={align}
@@ -50,7 +54,7 @@ export function Tip({ content, children, side = "top", delay = 0, align = "cente
               ? <RT.Arrow width={12} height={7} className="fill-[var(--color-border)]" />
               : <RT.Arrow className="fill-[var(--color-bg-2)]" />}
           </RT.Content>
-        </RT.Portal>
+        </RT.Portal>}
       </RT.Root>
     </RT.Provider>
   );

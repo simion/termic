@@ -8,7 +8,7 @@
 //
 // Fixtures use the mocks' placeholder names only (alice, acme/widget).
 import path from "node:path";
-import { archiveTask, clickWhenVisible, openTask, requireTermicApi, snap, textOf, waitForAgentPty, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickWhenVisible, newTaskSection, openTask, requireTermicApi, snap, textOf, waitForAgentPty, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // a Radix menu opens on pointerdown, which a plain click() never sends.
 const openMenu = (sel: string) => browser.execute((s) => {
@@ -109,6 +109,11 @@ const openMenu = (sel: string) => browser.execute((s) => {
   const note = `${section} [data-testid="role-cage-note"]`;
   const modePressed = (m: string) => attr(`${dialog} [data-sandbox-option="${m}"]`, "aria-pressed");
 
+  // The sandbox modes and the Keychain box live in the rail's Isolation pane,
+  // the role picker in Secrets: a role pick changes the cage in the other.
+  const iso = () => newTaskSection("isolation");
+  const sec = () => newTaskSection("secrets");
+
   it("says when picking a role would turn the cage on", async () => {
     await browser.execute(() => {
       const proj = window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
@@ -117,13 +122,18 @@ const openMenu = (sel: string) => browser.execute((s) => {
     await waitVisible(dialog);
     await clickButton("Main checkout");
     await clickButton("Terminal");
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="off"]`);
+    await sec();
     await waitVisible(section);
     // clickable, not greyed: the note says what a pick does instead.
     expect(await sectionDisabled()).toBeNull();
     await waitVisible(note);
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="monitor"]`);
+    await sec();
     await waitVisible(note);
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="enforce-fs"]`);
     await waitGone(note);
     expect(await blockChecked()).toBe("false");
@@ -131,15 +141,21 @@ const openMenu = (sel: string) => browser.execute((s) => {
   });
 
   it("picking a role on an uncaged draft switches it to Enforcing (FS)", async () => {
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="off"]`);
+    await sec();
     await clickWhenVisible(card("reviewer"));
     await browser.waitUntil(async () => (await modePressed("enforce-fs")) === "true",
       { timeout: 5_000, timeoutMsg: "picking a role did not switch the draft to Enforce FS" });
+    // seen from the Secrets pane, the rail says what the cage became.
+    expect(await textOf(`${dialog} [data-testid="rail-isolation-sub"]`)).toBe("Enforcing (FS), Keychain blocked");
     expect(await pressed("reviewer")).toBe("true");
     expect(await blockChecked()).toBe("true");
     // Monitor cannot block the Keychain either, so it switches the same way.
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="monitor"]`);
     expect(await pressed("reviewer")).toBe("false");
+    await sec();
     await clickWhenVisible(card("reviewer"));
     await browser.waitUntil(async () => (await modePressed("enforce-fs")) === "true",
       { timeout: 5_000, timeoutMsg: "picking a role under Monitor did not switch to Enforce FS" });
@@ -150,6 +166,7 @@ const openMenu = (sel: string) => browser.execute((s) => {
     await clickWhenVisible(card("reviewer"));
     expect(await pressed("reviewer")).toBe("true");
     expect(await blockChecked()).toBe("true");
+    expect(await textOf(`${dialog} [data-testid="rail-secrets-sub"]`)).toBe("Reviewer");
     await waitVisible(`${dialog} [data-testid="secrets-for-task"]`);
     const env = await browser.execute((s) => document.querySelector(`${s} [data-testid="secrets-env-preview"]`)?.textContent ?? "", dialog);
     expect(env).toContain("GH_TOKEN=termic_ph_");
@@ -161,17 +178,21 @@ const openMenu = (sel: string) => browser.execute((s) => {
 
   it("leaving the cage or clearing the block clears the role", async () => {
     await clickWhenVisible(card("reviewer"));
+    await iso();
     await clickWhenVisible(`${dialog} [data-sandbox-option="off"]`);
     expect(await pressed("reviewer")).toBe("false");
     await waitGone(`${dialog} [data-testid="secrets-for-task"]`);
     await clickWhenVisible(`${dialog} [data-sandbox-option="enforce-fs"]`);
     // cleared, not merely hidden: coming back does not bring it back.
     expect(await pressed("reviewer")).toBe("false");
+    await sec();
     await clickWhenVisible(card("reviewer"));
     expect(await blockChecked()).toBe("true");
+    await iso();
     await clickWhenVisible(box);
     expect(await blockChecked()).toBe("false");
     expect(await pressed("reviewer")).toBe("false");
+    await sec();
     await snap("secrets-m4-role-cleared.png");
   });
 
@@ -277,6 +298,7 @@ const openMenu = (sel: string) => browser.execute((s) => {
     await browser.waitUntil(async () => (await pressed("reviewer")) === "true",
       { timeout: 5_000, timeoutMsg: "the project default never started picked" });
     expect(await blockChecked()).toBe("true");
+    await sec();
     const seededLine = `${section} [data-testid="role-seeded-from"]`;
     await waitVisible(seededLine);
     expect(await browser.execute((s) => document.querySelector(s)?.textContent ?? "", seededLine))

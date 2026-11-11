@@ -52,3 +52,19 @@ describe("locale parity (en vs zh-CN)", () => {
     });
   }
 });
+
+// a `<Trans>` component named after an HTML void element (`<link>`, `<br>`,
+// `<img>`, ...) is closed by the parser on sight, so its content renders as
+// plain text and the component never mounts (docs/i18n.md). Name it anything
+// else, `<action>` say.
+const VOID_TAG = /<(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)>/;
+
+describe("Trans tag names", () => {
+  for (const [lang, tree] of [["en", en], ["zh-CN", zhCN]] as const) {
+    it(`${lang} uses no void element as a component tag`, () => {
+      const bad = NAMESPACES.flatMap(ns =>
+        Object.entries(flatten(tree[ns] as Tree)).filter(([, v]) => VOID_TAG.test(v)).map(([k]) => `${ns}:${k}`));
+      expect(bad).toEqual([]);
+    });
+  }
+});

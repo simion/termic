@@ -158,6 +158,11 @@ const ptyBytes = () => browser.execute(() => {
     await requireTermicApi();
     taskId = await openTask("e2e-keys");
     await waitForAgentReady(taskId);
+    // README must open in the editor. The markdown view is a persisted pref
+    // that any view toggle rewrites, and the editor and markdown specs run
+    // first, so one of them can leave it on preview, where there is no
+    // .cm-content to type into.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setMarkdownDefaultView("source"));
     bindings = await browser.execute(
       () => window.__termic!.usePrefs.getState().shortcuts,
     ) as unknown as Record<string, Binding>;

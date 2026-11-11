@@ -98,6 +98,7 @@ export default {
     picker: {
       macOnly: "沙箱仅支持 macOS（需要 sandbox-exec）。",
       dockerTitle: "DOCKER 容器",
+      dockerShort: "Docker",
       dockerDesc: "容器内的文件系统隔离。网络目前不受限制。",
       dockerSetup: "设置 Docker 沙箱…",
       dockerEnableHint: "请先在 设置 → Docker 沙箱 中启用 Docker 沙箱并构建镜像。",

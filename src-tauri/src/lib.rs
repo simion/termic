@@ -6795,9 +6795,10 @@ fn tasks_list() -> Vec<Task> { load_tasks_all() }
 
 /// GH #169: normalize an externally-started session id and seed it as the
 /// per-cli session, so the default tab's first spawn composes the agent's
-/// `resume_id_args` instead of minting a fresh session. The id is
-/// unvalidated by design; the agent owns "session not found" (the
+/// `resume_id_args` instead of minting a fresh session. Whether the session
+/// EXISTS is not checked; the agent owns "session not found" (the
 /// resume_override stance), and a rapid exit falls back to a fresh spawn.
+/// Its shape is, by `check_session_id`.
 fn seeded_session_ids(
     cli: &str,
     resume_session_id: Option<&str>,
@@ -6807,6 +6808,18 @@ fn seeded_session_ids(
         ids.insert(cli.to_string(), sid.to_string());
     }
     ids
+}
+
+/// Refuse a session id that would be something other than an id once it is
+/// substituted into `resume_id_args` (`--resume {UUID}`) and joined into the
+/// transcripts dir (`{id}.jsonl`): a leading `-` reads as a flag, and a path
+/// separator or `..` walks out of the dir. Whitespace is never in an id.
+fn check_session_id(sid: Option<&str>) -> Result<(), String> {
+    let Some(s) = sid.map(str::trim).filter(|s| !s.is_empty()) else { return Ok(()) };
+    if s.starts_with('-') || s.contains(['/', '\\']) || s.contains("..") || s.chars().any(char::is_whitespace) {
+        return Err(format!("Not a session id: {s}"));
+    }
+    Ok(())
 }
 
 /// Normalize a create-time resume-args override the same way
@@ -6924,6 +6937,7 @@ fn task_open_repo(
     // Unknown paths are ignored — the list is a filter, not a spec.
     members: Option<Vec<String>>,
 ) -> Result<Task, String> {
+    check_session_id(resume_session_id.as_deref())?;
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -7414,6 +7428,7 @@ fn task_import_worktree(
     yolo: Option<bool>,
     agent_args: Option<Vec<String>>,
 ) -> Result<Task, String> {
+    check_session_id(resume_session_id.as_deref())?;
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     if proj.non_git { return Err("project is not a git repo".into()); }
@@ -7627,6 +7642,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // can subscribe before the race window); the fallback only matters for
     // non-UI callers (CLI `new_task`), which don't listen anyway.
     let task_id = args.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    check_session_id(args.resume_session_id.as_deref())?;
     let projects = load_projects_all();
     let proj = projects.iter().find(|p| p.id == args.project_id)
         .ok_or("project not found")?.clone();
@@ -31725,6 +31741,19 @@ mod tests {
             normalized_resume_override(Some("resume --last".into())),
             Some("resume --last".to_string()),
         );
+    }
+
+    #[test]
+    fn session_id_must_stay_an_id() {
+        // blank is no seed, and real ids of every agent that takes one pass
+        for ok in [None, Some(""), Some("  "), Some("0b6e5a1c-7f2d-4c1e-9a8b-3d2f1e0c9b7a"), Some("ses_01JABCDEF")] {
+            assert!(check_session_id(ok).is_ok(), "{ok:?}");
+        }
+        // a flag once substituted into resume_id_args, or a path out of the
+        // transcripts dir once joined as `{id}.jsonl`
+        for bad in ["--dangerously-skip-permissions", "-x", "../../etc/passwd", "a/b", "a\\b", "..", "a b"] {
+            assert!(check_session_id(Some(bad)).is_err(), "{bad}");
+        }
     }
 
     // ── the editor's binary-file contract ──

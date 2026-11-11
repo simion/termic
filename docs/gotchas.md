@@ -1456,3 +1456,20 @@ Drop a var with `env_remove`, which `inherit_env` (lib.rs) does for every var
 its predicate names; `inherit_env_removes_what_it_drops` pins it, with the
 control that the builder really does start with the var. A unit test of the
 predicate alone cannot catch this: the predicate was right the whole time.
+
+## An (i) that takes focus when a dialog opens eats the first Escape
+
+Radix's dialog focuses the first tabbable element on open unless something
+inside already holds focus, and a Radix tooltip opens on FOCUS, not only on
+hover. So a dialog whose first tabbable is an `InfoTip` (the New Task
+dialog's task-type (i)) opens with that tooltip up, and Escape closes the
+tooltip, not the dialog: the dialog then needs a second Escape. The e2e
+suite found it as a dialog left open behind the next spec's Edit task
+dialog, whose unscoped `[data-testid="sandbox-rw-paths"]` read New Task's
+textarea instead. Controlled: removing the fix brings the failure back.
+
+Point `onOpenAutoFocus` at the field the user types into first
+(`e.preventDefault()` and focus it), as `NewTaskDialog` does for Name.
+`autoFocus` on the input alone did not win that race. A tooltip open from
+HOVER does the same: with the pointer resting on an (i) or a blocked Create,
+the first Escape closes the tooltip.

@@ -98,6 +98,7 @@ export default {
     picker: {
       macOnly: "Sandbox is macOS-only (requires sandbox-exec).",
       dockerTitle: "DOCKER CONTAINER",
+      dockerShort: "Docker",
       dockerDesc: "Filesystem cage inside a container. Network is unrestricted for now.",
       dockerSetup: "Set up Docker sandboxing…",
       dockerEnableHint: "Enable Docker sandbox and build the image in Settings → Docker Sandbox first.",

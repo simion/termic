@@ -7,7 +7,7 @@
 // removing them would orphan existing tasks that reference them.
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { settingsLoad, agentsSave, agentsDefaults, projectUpdate } from "@/lib/ipc";
 import { AgentRoleField } from "./secretsSettings/RolePickers";
@@ -22,7 +22,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Tip } from "@/components/ui/Tooltip";
-import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy, ChevronRight, ChevronDown, Info } from "lucide-react";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy, ChevronRight, ChevronDown } from "lucide-react";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { AgentAccountsRow, AgentAccountsAction } from "@/components/settings/AgentAccountsRow";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId, TOOL_ICONS } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
@@ -1705,20 +1706,19 @@ function parseEnv(text: string): string {
 
 /** A labelled field. The hint is an info tooltip beside the label rather
  *  than a paragraph above the input: the card has ~15 fields and their
- *  hints, some three lines long, made it a wall of text. */
+ *  hints, some three lines long, made it a wall of text. Not a wrapping
+ *  `<label>`: a label with no `for` binds its first labelable child, which
+ *  is not always the input. The group carries the name instead. */
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  const id = useId();
   return (
-    <label className="block">
+    <div role="group" aria-labelledby={id}>
       <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium">
-        {label}
-        {hint && (
-          <Tip content={<span className="block max-w-[340px] whitespace-normal">{hint}</span>} side="top">
-            <Info className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]" />
-          </Tip>
-        )}
+        <span id={id}>{label}</span>
+        {hint && <InfoTip text={hint} />}
       </div>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -1766,9 +1766,7 @@ function FooterReadouts({ agentId }: { agentId: string }) {
     <div className="border-t border-[var(--color-border-soft)] pt-4">
       <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium">
         {t("agents.card.footerLabel")}
-        <Tip content={t("agents.card.footerHint")} side="top">
-          <Info className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]" />
-        </Tip>
+        <InfoTip text={t("agents.card.footerHint")} />
       </div>
       <div data-testid={`agent-footer-${agentId}`} className="flex flex-wrap gap-x-5 gap-y-1.5">
         {rows.map(([key, label, tip]) => {

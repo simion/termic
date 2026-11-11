@@ -38,7 +38,7 @@ function expandArg(arg: string, vars: Record<string, string>): string {
  *  (`{WORKSPACE_NAME}`) are single unquoted tokens here and get expanded
  *  AFTER the split, so a placeholder whose value contains spaces is still a
  *  single argv element. Used for the per-task resume override. */
-function tokenizeArgs(s: string): string[] {
+export function tokenizeArgs(s: string): string[] {
   const out: string[] = [];
   const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
   let m: RegExpExecArray | null;

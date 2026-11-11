@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setInputValue, setWindowPresence, snap, submitToAgent, typeIntoAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible  } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setInputValue, setWindowPresence, snap, submitToAgent, typeIntoAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, newTaskSection } from "../helpers";
 
 // Seatbelt is macOS only: elsewhere a Seatbelt default reads as Off and the
 // picker's cages aren't offered, so tests that need the fields skip.
@@ -1809,6 +1809,8 @@ describe("multi member modes (New Task dialog)", () => {
       timeout: 10_000,
       timeoutMsg: "the member rows never rendered",
     });
+    // the member rows live in the rail's Repos section.
+    await newTaskSection("repos");
   };
 
   const closeDialog = async () => {
@@ -2016,20 +2018,19 @@ describe("multi member modes (New Task dialog)", () => {
       await openDialog();
       await browser.execute(() => {
         const dlg = document.querySelector('[data-testid="member-include"]')!.closest('[role="dialog"]')!;
-        const btn = [...dlg.querySelectorAll("button")].find(
-          (b) => b.querySelector("span")?.textContent?.trim() === "ENFORCING (filesystem + network)",
-        ) as HTMLButtonElement;
-        btn.click();
+        (dlg.querySelector('[data-sandbox-option="enforce"]') as HTMLButtonElement).click();
       });
       const rw = '[data-testid="sandbox-rw-paths"]';
       const hosts = '[data-testid="sandbox-allowed-hosts"]';
       const field = (sel: string) => browser.execute(
         (s) => (document.querySelector(s) as HTMLTextAreaElement).value, sel);
+      await newTaskSection("isolation");
       await waitVisible(rw);
       // Poll: the settings probe fills the unions a tick after the textareas mount.
       await browser.waitUntil(async () => (await field(rw)) === "/alpha-rw\n/beta-rw"
         && (await field(hosts)) === "alpha.local\nbeta.local",
         { timeout: 5_000, timeoutMsg: "the seatbelt lists never seeded the member union" });
+      await newTaskSection("repos");
 
       // Untouched union → unchecking beta drops its lines. (Worktree rows
       // resync through the row updater.)
@@ -2040,7 +2041,9 @@ describe("multi member modes (New Task dialog)", () => {
 
       // The main-checkout checklist is the OTHER toggle path — its boxes
       // funnel through setIncluded, not the worktree row updater.
+      await newTaskSection("task");
       await clickWhenVisible('[data-testid="task-type-main"]');
+      await newTaskSection("repos");
       await waitForText("1 of 2 members run live");
       await clickRowInclude("beta"); // check → grows
       await waitForText("2 of 2 members run live");
@@ -2064,6 +2067,7 @@ describe("multi member modes (New Task dialog)", () => {
       expect(await field(rw)).toBe("/alpha-rw\n/keep-me");
       expect(await field(hosts)).toBe("");
       // The task-type choice persists on click — put it back on Worktree.
+      await newTaskSection("task");
       await clickWhenVisible('[data-testid="task-type-worktree"]');
       await closeDialog();
     },
@@ -2204,13 +2208,32 @@ describe("multi main checkout (New Task dialog)", () => {
     projectId = created.id;
     savedMode = created.saved;
 
+    // the Repos dot follows the pane: amber only while it shows members
+    // running live.
+    const reposWarn = () => browser.execute(() =>
+      document.querySelector('[data-testid="rail-repos"] [data-testid="rail-warn"]')?.getAttribute("data-warn") ?? null);
+
     // Worktree shape: one row per member, host toggle present.
     await waitVisible('[data-testid="task-type-main"]');
+    await newTaskSection("repos");
     await waitForText("Members (2 of 2)");
+    expect(await reposWarn()).toBe(null);
 
+    await newTaskSection("task");
     await clickWhenVisible('[data-testid="task-type-main"]');
+    await newTaskSection("repos");
     await waitVisible('[data-testid="members-live-note"]');
     await waitForText("2 of 2 members run live");
+    expect(await reposWarn()).toBe("warn");
+    // None included is a valid host-only task: a neutral note, and no dot.
+    const toggleAll = () => browser.execute(() =>
+      document.querySelectorAll<HTMLElement>('[data-testid="member-include"]').forEach((b) => b.click()));
+    await toggleAll();
+    await browser.waitUntil(async () => (await reposWarn()) === null,
+      { timeoutMsg: "no members included still dotted Repos" });
+    await toggleAll();
+    await browser.waitUntil(async () => (await reposWarn()) === "warn",
+      { timeoutMsg: "re-including the members did not dot Repos" });
     // Main checkout still shows the member list — as a plain checklist now,
     // since unchecking a member keeps it out of the task entirely.
     const rows = await browser.execute(() =>
@@ -2243,6 +2266,8 @@ describe("multi main checkout (New Task dialog)", () => {
     // Reopen — the previous create closed the dialog. Main-checkout mode is
     // remembered app-wide, so the checklist is already up.
     await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
+    await waitVisible('[data-testid="task-type-main"]');
+    await newTaskSection("repos");
     await waitVisible('[data-testid="member-mode-row"]');
     await uncheckMember("beta");
     await waitForText("1 of 2 members run live");
@@ -2272,6 +2297,7 @@ describe("multi main checkout (New Task dialog)", () => {
     await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
     await waitVisible('[data-testid="task-type-worktree"]');
     await clickWhenVisible('[data-testid="task-type-worktree"]');
+    await newTaskSection("repos");
     await waitVisible('[data-testid="member-include"]');
     await uncheckMember("alpha");
     await waitForText("Members (1 of 2)");
@@ -2336,6 +2362,8 @@ describe("multi main checkout (New Task dialog)", () => {
         w.requestAnimationFrame = w.__origRAF;
       });
     }
+    await waitVisible('[data-testid="task-type-main"]');
+    await newTaskSection("repos");
     await waitForText("Members (1 of 2)");
     const included = await browser.execute(() =>
       [...document.querySelectorAll('[data-testid="member-mode-row"]')].map(
@@ -2349,12 +2377,10 @@ describe("multi main checkout (New Task dialog)", () => {
     if (process.platform === "darwin") {
       await browser.execute(() => {
         const dlg = document.querySelector('[data-testid="member-include"]')!.closest('[role="dialog"]')!;
-        const btn = [...dlg.querySelectorAll("button")].find(
-          (b) => b.querySelector("span")?.textContent?.trim() === "ENFORCING (filesystem + network)",
-        ) as HTMLButtonElement;
-        btn.click();
+        (dlg.querySelector('[data-sandbox-option="enforce"]') as HTMLButtonElement).click();
       });
       const rw = '[data-testid="sandbox-rw-paths"]';
+      await newTaskSection("isolation");
       await waitVisible(rw);
       await browser.waitUntil(async () => (await browser.execute(
         (s) => (document.querySelector(s) as HTMLTextAreaElement).value, rw)) === "/beta-rw",

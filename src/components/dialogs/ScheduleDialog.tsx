@@ -9,8 +9,8 @@
 // The sandbox is seeded from the project the way New Task seeds it, except
 // Docker: scheduled runs do not support it, so a Docker default seeds NOTHING
 // and Create waits for a choice, rather than quietly running on the host.
-// A Seatbelt choice opens the cage's allow-lists in a second column, the
-// layout New Task uses, and the dialog takes New Task's two widths for it.
+// A Seatbelt choice opens the cage's allow-lists in a second column and the
+// dialog widens for it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -23,7 +23,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
-import { SandboxPicker, KeychainBlockField } from "@/components/SandboxPicker";
+import { SandboxPicker, KeychainBlockField, SandboxPresetRow } from "@/components/SandboxPicker";
 import { RolePicker, roleCageNote, roleDisabledReason, withRoleCage } from "@/components/secretsUi/RolePicker";
 import { useSecrets, ensureSecretsSync } from "@/store/secrets";
 import { roleDefault } from "@/lib/secretsUi";
@@ -33,7 +33,6 @@ import { settingsLoad } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { IS_MAC, SEATBELT_AVAILABLE } from "@/lib/platform";
 import { mergeLists, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
-import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, type CadenceKind, type SandboxSelection } from "@/lib/types";
 import { createSchedule, updateSchedule } from "@/lib/schedules/runner";
 import {
@@ -248,8 +247,8 @@ export function ScheduleDialog() {
       open={open}
       onOpenChange={v => { if (!v) close(); }}
       title={title}
-      // New Task's two widths, on the one thing they depend on: whether
-      // there is a right column. A `w-*` here does nothing, because
+      // two widths, on the one thing they depend on: whether there is a
+      // right column. A `w-*` here does nothing, because
       // AppDialog's own `max-w-md` still caps it.
       className={cage ? "max-w-[72rem]" : "max-w-xl"}
       stickyFooter={
@@ -498,20 +497,12 @@ export function ScheduleDialog() {
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
             {t("schedule.sandboxConfigTitle")}
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
-            {SANDBOX_PRESETS.map(p => (
-              <button
-                key={p.id}
-                type="button"
-                title={presetHint(p)}
-                onClick={() => { setSbRw(p.rwPaths.join("\n")); setSbHosts(p.allowedHosts.join("\n")); }}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-              >
-                {presetLabel(p)}
-              </button>
-            ))}
-          </div>
+          <SandboxPresetRow
+            mode={sandboxMode}
+            rw={sbRw}
+            hosts={sbHosts}
+            onPick={p => { setSbRw(p.rwPaths.join("\n")); setSbHosts(p.allowedHosts.join("\n")); }}
+          />
           <Field label={t("newTask.allowedPathsLabel")} hint={t("newTask.allowedPathsHint")}>
             <textarea
               data-testid="schedule-rw-paths"

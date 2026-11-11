@@ -280,6 +280,19 @@ export async function clickWhenVisible(selector: string, timeout = 15_000): Prom
   }, selector);
 }
 
+/** Open a section of the New Task dialog's rail (task, repos, agent,
+ *  isolation, secrets) and wait for its pane to show. Fields in
+ *  other sections stay mounted but hidden, so anything that waits for
+ *  visibility has to go there first. */
+export async function newTaskSection(name: string): Promise<void> {
+  const sel = `[role="dialog"] [data-testid="rail-${name}"]`;
+  await clickWhenVisible(sel);
+  // a real click also moves focus to the entry; without it, focus stays on a
+  // field in the pane that just hid.
+  await browser.execute((s) => (document.querySelector(s) as HTMLElement).focus(), sel);
+  await waitVisible(`[data-testid="new-task-pane-${name}"]`);
+}
+
 /** Wait until the selector is gone from the DOM. */
 export async function waitGone(selector: string, timeout = 15_000): Promise<void> {
   await browser.waitUntil(

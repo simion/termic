@@ -4,6 +4,7 @@ import {
   snap,
   waitForAppShell,
   waitVisible,
+  newTaskSection,
 } from "../helpers";
 
 // `termic://` deep links (GH #192). An external system opens Termic on a New
@@ -194,6 +195,11 @@ describe("termic:// deep links", () => {
     await closeDialog();
     await openLink(`termic://new?project=${projectName}&agent=doesnotexist&name=missing-agent`);
     await waitVisible(NAME_INPUT);
+    // the warning sits in the Agent section; the rail flags it from Task.
+    await browser.waitUntil(() => browser.execute(() =>
+      document.querySelector('[data-testid="rail-agent"] [data-testid="rail-warn"]')?.getAttribute("data-warn") === "warn"),
+    { timeout: 5_000, timeoutMsg: "the Agent rail entry did not flag the unknown agent" });
+    await newTaskSection("agent");
     await waitVisible('[data-testid="agent-unknown"]');
     const warning = await browser.execute(() =>
       (document.querySelector('[data-testid="agent-unknown"]') as HTMLElement).innerText);
