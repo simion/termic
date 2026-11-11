@@ -3,8 +3,6 @@
 Not decided, not planned. This is the case for it and a design that fits
 Termic's constraints, so the decision can be made on something concrete.
 
-## The problem
-
 ## What exists today
 
 The sidebar footer has two support buttons (`Sidebar.tsx`, `openIssue` and
@@ -162,6 +160,31 @@ Options, in order of preference:
 
 A reasonable v1 is 2 or 3 for crashes (private, may contain more) and 1 for
 suggestions (public discussion is the point). Not decided.
+
+## Where it is triggered
+
+The existing **Report a bug** button in the sidebar footer (the bug icon,
+`data-testid="sidebar-report-bug"`) stays the entry point. What changes is what
+it does: instead of opening the browser on a prefilled GitHub issue, it opens an
+in-app dialog.
+
+- **The dialog** has the type (bug or suggestion), a title, a message, the
+  optional extras (each off by default) and a preview of the exact payload.
+  **Send** posts it from Rust.
+- **"Open on GitHub instead"** is a link inside the dialog. It does what the
+  button does today (the prefilled "New issue" in the browser), so anyone who
+  wants a public, discussable issue loses nothing.
+- **The command palette** entry "open issue" opens the same dialog, so the two
+  entry points cannot drift.
+- **Contact** (the mail icon) is unchanged.
+- **After a crash**, the next launch offers a report once (see "Crash
+  reports" above). It opens the same dialog, preselected as a crash report and
+  filled with the scrubbed `panic.log` entry. There is no new button for it.
+
+No new footer icon, so the footer row does not grow. The cost is that the bug
+button now opens a dialog where it used to leave the app, one more click for
+someone who only wanted GitHub, which the link in the dialog keeps to a single
+extra click.
 
 ## Open questions
 
