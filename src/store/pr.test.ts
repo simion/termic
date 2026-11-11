@@ -39,6 +39,7 @@ import {
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { useForgeRate } from "@/store/forgeRate";
 import { usePrefs } from "@/store/prefs";
 import * as ipc from "@/lib/ipc";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
@@ -967,6 +968,16 @@ describe("background status poller (#281)", () => {
       expect(ws2.loading).toBe(false);
       expect(ws2.fetchedAt).toBe(old);
       expect(pollableTasks().map(w => w.id)).toEqual(["ws2"]);
+    });
+
+    it("holds per-task GitHub polls while a host is paused, but not GitLab ones", async () => {
+      seedTasks({ ...KNOWN }, { pr_number: 4, pr_provider: "gitlab" });
+      useForgeRate.setState({ hosts: [{ host: "github.com", buckets: [],
+        paused: { until: Date.now() / 1000 + 600, kind: "floor", reason: "" } }] });
+      vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+      await prStatusPassNow();
+      expect(vi.mocked(ipc.taskPrStatus).mock.calls.map(c => c[0])).toEqual(["ws2"]);
+      useForgeRate.setState({ hosts: [] });
     });
 
     it("fires the merge lifecycle from a batch answer", async () => {

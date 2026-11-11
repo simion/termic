@@ -56,6 +56,7 @@ import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
 import { i18n } from "@/lib/i18n";
 import { taskLabel } from "@/lib/taskLabel";
 import { hasPrIdentity } from "@/lib/taskBoardState";
+import { activePause, useForgeRate } from "@/store/forgeRate";
 
 export interface PrEntry {
   lookup: PrLookup | null;
@@ -568,7 +569,11 @@ async function statusPass() {
   try {
     const due = pollableTasks();
     await refreshBatch(due.filter(batchable).map(w => w.id));
+    // The batch asks Rust's rate gate itself; the per-task path does not,
+    // so GitHub tasks on it wait out a pause here.
+    const paused = !!activePause(useForgeRate.getState().hosts);
     for (const w of due.filter(w => !batchable(w))) {
+      if (paused && (w.pr_provider == null || w.pr_provider === "github")) continue;
       // Unforced: `pollableTasks` is already the stricter gate, and leaving
       // the store's floor in play means a foreground refresh that landed
       // between the filter and here is not repeated.
@@ -752,7 +757,15 @@ function watchedTasks(): Task[] {
 }
 
 function watchTick() {
-  for (const w of watchedTasks()) void checkComments(w.id);
+  // Background GitHub reads wait out a rate pause (forge_rate.rs). Any host
+  // paused holds every GitHub watch: the watcher does not know hosts, and a
+  // missed minute of comment polling costs nothing that the next tick after
+  // the pause does not recover.
+  const paused = !!activePause(useForgeRate.getState().hosts);
+  for (const w of watchedTasks()) {
+    if (paused && w.pr_provider === "github") continue;
+    void checkComments(w.id);
+  }
 }
 
 /** Comments strictly newer than `seenIso`, excluding the signed-in
