@@ -1123,6 +1123,16 @@ script exits), and the in-process plugins open the tty `O_NONBLOCK`, since a
 blocking write there would freeze the agent itself.
 `a_hook_never_blocks_on_a_terminal_that_will_not_read` drives each script at a
 FIFO with no reader; with the bound removed it hangs (the control was run).
+It now carries its own 5s deadline, so a broken bound fails it instead.
+
+The bound is a SIBLING kill: a background `( sleep 2; kill $w )` signals the
+writer, which is not its child. The cage profile allowed `signal` only to
+`self` and `children`, so inside a Termic cage that kill got EPERM, the
+watchdog was a no-op, and a caged agent's hook on a dead pty blocked forever,
+which is the bug above with the fix silently off. It also hung `cargo test`
+for any agent running it from a task. The profile now allows
+`(target same-sandbox)`; `a_caged_process_can_signal_its_sibling_but_not_another_cage`
+pins both the sibling kill and that one cage cannot signal another.
 
 ## Reporting nothing is reporting something, and the state machine believes it
 
