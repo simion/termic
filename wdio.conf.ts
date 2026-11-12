@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 
 // End-to-end config for the termic app. WebdriverIO drives the REAL macOS
 // WKWebView window via @wdio/tauri-service's embedded WebDriver provider
@@ -13,6 +14,16 @@ import { execFileSync } from "node:child_process";
 // differing only by WebDriver port — so per-worker TERMIC_DATA_DIR (isolated
 // profiles for the fixture-mutating specs) can't be injected without an
 // invasive, flake-prone app-side port→datadir mapping. Stability wins.
+
+// an enforcing Termic cage denies what the app under test needs (its WebKit
+// storage, the spawn base, ~/.config/termic), so a caged run takes ~40 min and
+// fails about 19 spec files for reasons that are not regressions. Refuse it up
+// front. Same test as termic-cli's cage_refused: monitor mode denies nothing.
+// Workers never see this: onPrepare scrubs TERMIC_* before they spawn.
+if (process.env.TERMIC_SANDBOX === "1" && process.env.TERMIC_SANDBOX_MODE !== "monitor") {
+  throw new Error("e2e cannot run inside a sandboxed Termic task: the cage denies the app's "
+    + "WebKit storage, spawn dir and config. Run `make e2e` from an unsandboxed shell.");
+}
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 // TERMIC_E2E_BINARY points the suite at a binary built somewhere else, which is
@@ -75,8 +86,27 @@ export const config: WebdriverIO.Config = {
   waitforTimeout: 15_000,
   waitforInterval: 100,
 
-  onPrepare() {
+  async onPrepare() {
     mkdirSync(artifactsDir, { recursive: true });
+    // a run launched from an agent tab inherits that tab's TERMIC_* (task,
+    // tab, pty, sandbox mode). They describe the outer app, not the one under
+    // test, and the app and every termic-cli a spec runs would act on them.
+    // First, so the sets below survive it; TERMIC_E2E_* are this suite's own
+    // knobs and stay.
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith("TERMIC_") && !k.startsWith("TERMIC_E2E_")) delete process.env[k];
+    }
+    // the embedded WebDriver defaults to 4445 for every run, so two agents
+    // running e2e at once drive each other's app. A free port per run; the
+    // tauri-service's own onPrepare reads it, and runs after this one.
+    if (!process.env.TAURI_WEBDRIVER_PORT) {
+      process.env.TAURI_WEBDRIVER_PORT = String(await new Promise<number>((resolve, reject) => {
+        const s = createServer().once("error", reject).listen(0, "127.0.0.1", () => {
+          const { port } = s.address() as { port: number };
+          s.close(() => resolve(port));
+        });
+      }));
+    }
     // The app is launched as a child of this process and inherits env, so
     // point it at the throwaway profile (seeded by scripts/e2e-seed.mjs).
     process.env.TERMIC_DATA_DIR = dataDir;
