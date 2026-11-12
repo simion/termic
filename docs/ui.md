@@ -1405,8 +1405,9 @@ open issues" and mean something else entirely.
 
 ### The issue picker is a COLUMN, not a field
 
-It sits beside the fields in the Task pane, the same treatment the PR
-picker gets (see "The new-task dialog is a rail of sections at ONE size").
+It sits beside the fields in the Task pane, the same treatment the PR,
+existing-branch and import-worktree pickers get (see "The new-task dialog
+is a rail of sections at ONE size").
 
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.

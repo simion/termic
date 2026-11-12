@@ -326,11 +326,15 @@ describe("new task dialog: side rail", () => {
    *  after a click otherwise catches the task-type tabs' 150ms colour change
    *  half done, showing the old tab filled while the form is already on the
    *  new one. Waiting does not work: the e2e window is hidden, and a hidden
-   *  page never advances a transition (measured: currentTime stays 0). */
+   *  page never advances a transition (measured: currentTime stays 0). The
+   *  same goes for the picker column's grow-in animation, which otherwise
+   *  snaps as an invisible zero-width column. */
   const settledSnap = async (name: string) => {
     await browser.execute((sel) => {
       const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
-      dlg?.getAnimations({ subtree: true }).forEach((a) => { if (a instanceof CSSTransition) a.finish(); });
+      dlg?.getAnimations({ subtree: true }).forEach((a) => {
+        if (a instanceof CSSTransition || (a instanceof CSSAnimation && a.effect?.getComputedTiming().iterations !== Infinity)) a.finish();
+      });
     }, NAME);
     await snap(name);
   };
@@ -546,6 +550,17 @@ describe("new task dialog: side rail", () => {
     });
     expect(await form()).toEqual({ mode: "worktree", source: "import" });
     expect(await sub("task")).toBe("Worktree, import");
+    // the worktree list is a column beside the fields, like a branch or a PR.
+    await waitVisible('[data-testid="new-task-picker"] [data-testid="import-column"]');
+    await settledSnap("new-task-c-import-worktree.png");
+    const side = await browser.execute(() => {
+      const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const fields = r('[data-testid="new-task-fields"]');
+      const picker = r('[data-testid="new-task-picker"]');
+      return { right: picker.x >= fields.x + fields.width, top: Math.abs(picker.y - fields.y) <= 1, wide: picker.width > 200 };
+    });
+    expect(side).toEqual({ right: true, top: true, wide: true });
+    expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Existing worktree/);
     await close();
     await open();
     expect((await form()).mode).toBe("repo_root");

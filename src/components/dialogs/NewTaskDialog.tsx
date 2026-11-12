@@ -1677,10 +1677,10 @@ export function NewTaskDialog() {
   // az is two installs (CLI + extension) - the suffix carries the
   // second requirement so mono styling stays on the binary name.
   const cliSuffix = paneProvider === "azure" ? t("common:azureCliSuffix") : "";
-  // Existing branch gets the same split as an issue or a PR: the branch list
-  // beside the fields, a pick filling the branch to check out on the left.
+  // Existing branch and import get the same split as an issue or a PR: the
+  // list beside the fields, a pick filling the fields on the left.
   const branchPicker = checkoutMode && !importMode && mode === "worktree";
-  const hasPicker = prMode || issueMode || branchPicker;
+  const hasPicker = prMode || issueMode || branchPicker || importMode;
   // The column's way OUT: its content is gone the moment the source changes,
   // so an empty stand-in holds its place while it shrinks and the form grows
   // back (index.css termic-column-shrink). A timer, not animationend: the
@@ -2078,47 +2078,6 @@ export function NewTaskDialog() {
 
         </div>
 
-        {/* The worktree being adopted, UNDER the tabs. It rendered above them,
-            which put the answer before the question: you saw a worktree
-            selector and only then the row saying what kind of task this is. */}
-        {importMode && (
-          <Field label={t("newTask.existingWorktreeLabel")} info={t("newTask.existingWorktreeHint")}>
-            {importLoading ? (
-              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
-              </div>
-            ) : importList.length === 0 ? (
-              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
-              </div>
-            ) : (
-              <div data-testid="import-list" className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
-                {importList.map(wt => (
-                  <button
-                    key={wt.path}
-                    type="button"
-                    onClick={() => pickImport(wt)}
-                    title={wt.path}
-                    className={cn(
-                      "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
-                      importSelected === wt.path && "bg-[var(--color-accent-deep)]/10",
-                    )}
-                  >
-                    <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] text-[var(--color-fg)]">
-                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">{t("newTask.detached", { head: wt.head })}</span>}
-                      </div>
-                      <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
-                    </div>
-                    {importSelected === wt.path && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </Field>
-        )}
-
         {/* Name + branch fields grouped tightly (gap-2, vs. gap-4 between
             fields elsewhere): the branch is DERIVED from the name (see
             `derived` above), so they read as one cluster rather than three
@@ -2316,9 +2275,47 @@ export function NewTaskDialog() {
         {hasPicker && (
           <div data-testid="new-task-picker" className="termic-slide-in-right flex min-w-0 flex-col border-t border-[var(--color-border-soft)] pt-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:border-t-0 min-[1100px]:pl-6 min-[1100px]:pt-0">
             <div className="mb-3 shrink-0 text-[13px] font-medium text-[var(--color-fg)]">
-              {branchPicker ? t("newTask.branchColumnTitle") : prMode ? t("newTask.prColumnTitle") : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
+              {importMode ? t("newTask.existingWorktreeLabel") : branchPicker ? t("newTask.branchColumnTitle") : prMode ? t("newTask.prColumnTitle") : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
             </div>
             <div className="flex min-w-0 flex-col min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:overflow-y-auto">
+              {importMode && (
+                <div data-testid="import-column" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">{t("newTask.existingWorktreeHint")}</p>
+                  {importLoading ? (
+                    <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                      <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
+                    </div>
+                  ) : importList.length === 0 ? (
+                    <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                      <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
+                    </div>
+                  ) : (
+                    <div data-testid="import-list" className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                      {importList.map(wt => (
+                        <button
+                          key={wt.path}
+                          type="button"
+                          onClick={() => pickImport(wt)}
+                          title={wt.path}
+                          className={cn(
+                            "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                            importSelected === wt.path && "bg-[var(--color-accent-deep)]/10",
+                          )}
+                        >
+                          <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[13px] text-[var(--color-fg)]">
+                              {wt.branch || <span className="italic text-[var(--color-fg-dim)]">{t("newTask.detached", { head: wt.head })}</span>}
+                            </div>
+                            <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
+                          </div>
+                          {importSelected === wt.path && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {branchPicker && (
                 <div data-testid="branch-column" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
                   <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">{t("newTask.branchColumnIntro")}</p>
