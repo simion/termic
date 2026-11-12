@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, waitForAttr, rmTree, textOf, newTaskSection } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, waitForAttr, rmTree, textOf, newTaskSection, settledSnap } from "../helpers";
 
 /** `execSync` for git against the shared fixture, retrying a moment on
  *  `index.lock`. The app runs its own git on this repo (the Git panel's status
@@ -2968,15 +2968,6 @@ describe("the forge pickers: work that pulled you in", () => {
   // runs moved to other sections of the rail, whose entries say what they hold,
   // and a YOLO warning in one of them is flagged from wherever you are.
   it("keeps the picker in Task and flags the Agent section from it", async () => {
-    // Run every transition in the dialog to its end before a snap: the e2e
-    // window is hidden, so a pill's colour change otherwise stays half done.
-    const settledSnap = async (name: string) => {
-      await browser.execute(() => {
-        const dlg = document.querySelector("#new-task-form")?.closest('[role="dialog"]');
-        dlg?.getAnimations({ subtree: true }).forEach((a) => { if (a instanceof CSSTransition) a.finish(); });
-      });
-      await snap(name);
-    };
     const state = () => browser.execute(() => {
       const shown = (sel: string) => {
         const el = document.querySelector(sel) as HTMLElement | null;

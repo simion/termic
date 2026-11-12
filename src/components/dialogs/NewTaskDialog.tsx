@@ -51,6 +51,9 @@ const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 // One page of the repo's open PRs for "All open", the same size as the issue
 // list. A repo with more says so under the list and points at the number box.
 const PR_OPEN_LIMIT = 50;
+// The first worktree row in the import column: where entering import puts
+// focus, and where a Create blocked on "pick a worktree" sends it.
+const IMPORT_ROW = '[data-testid="import-list"] button';
 
 // Remember the user's last-used task type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so
@@ -805,12 +808,11 @@ export function NewTaskDialog() {
       setPrompt(seed?.prompt ?? "");
       setIssuePicks([]);
     }
-    setImportMode(wantImport);
+    // (The source flags themselves reset in the layout effect below.)
     // Issue mode is per-OPEN, like import mode beside it. It was left out of
     // this reset, so picking issue #42 in project A and cancelling meant the
     // next open - for a DIFFERENT project - still showed project A's issue
     // list, and creating from it seeded the agent with project A's issue.
-    setIssueMode(false);
     setIssueLookup(null);
     setIssueScope("all");
     // The filter text is per-open too: a query typed against one project's
@@ -821,7 +823,6 @@ export function NewTaskDialog() {
     // PR mode is per-open for exactly the issue-mode reason above: leaving
     // it set reopened a different project straight into the PR pane with
     // the PREVIOUS project's cached list.
-    setPrMode(false);
     setPrLookup(null);
     setPrReviewLookup(null);
     setPrView("you");
@@ -832,7 +833,6 @@ export function NewTaskDialog() {
     setPrBusy(0);
     // Existing-branch mode is per-open too, like issue mode beside it: a
     // branch picked for one project must not survive into the next open.
-    setCheckoutMode(false);
     setCheckoutBranch("");
     setCheckoutRefs(null);
     setCheckoutLoading(false);
@@ -906,6 +906,18 @@ export function NewTaskDialog() {
     // Per-open, and here rather than in the passive reset above so a reopen
     // never paints one frame of the section it was closed on.
     setSection("task");
+    // The source flags too, for the picker column. Reset in the passive
+    // effect, a reopen first committed the column it was closed on and then
+    // played its shrink-out on a fresh dialog. `hadPicker` is set to what
+    // this open shows, so the flip from the closed state is not read as a
+    // leave.
+    const wantImport = !!seed?.importMode && (p?.type ?? "single") !== "multi" && !p?.non_git;
+    setImportMode(wantImport);
+    setIssueMode(false);
+    setPrMode(false);
+    setCheckoutMode(false);
+    hadPicker.current = wantImport;
+    setPickerLeaving(false);
   }, [projectId, seedNonce]);
 
   // Tauri event unlisten handles. Owned by submit() (which registers them
@@ -968,14 +980,20 @@ export function NewTaskDialog() {
   }
 
   // Flip into import mode from the in-form affordance, lazy-loading the
-  // worktree list the first time.
+  // worktree list the first time. The list is the next step, and it sits at
+  // the end of the tab order (the column comes after Name and the prompt),
+  // so focus moves to it the way Branch focuses its input. Flushed first: the
+  // rows do not exist until import mode renders.
   function enterImport() {
     if (!projectId) return;
-    setImportMode(true);
-    setCheckoutMode(false);
-    if (issueMode) exitIssues();
-    if (prMode) exitPrs();
-    setErr(null);
+    flushSync(() => {
+      setImportMode(true);
+      setCheckoutMode(false);
+      if (issueMode) exitIssues();
+      if (prMode) exitPrs();
+      setErr(null);
+    });
+    formRef.current?.querySelector<HTMLElement>(IMPORT_ROW)?.focus();
     if (importList.length === 0 && !importLoading) loadImportable(projectId);
   }
 
@@ -1844,7 +1862,8 @@ export function NewTaskDialog() {
   const worktreeish = mode !== "repo_root";
   const createBlocked: { why: string; reason: string; go: () => void } | null =
     importMode && !importSelected
-      ? { why: "import", reason: t("newTask.createBlockedImport"), go: goTo('[data-testid="import-list"] button') }
+      // no rows to pick: go to New branch, the way out the empty list names.
+      ? { why: "import", reason: t("newTask.createBlockedImport"), go: goTo(importList.length > 0 ? IMPORT_ROW : '[data-source-tab="new"]') }
     : worktreeish && !importMode && checkoutMode && !checkoutBranch.trim()
       ? { why: "checkout", reason: t("newTask.createBlockedCheckout"), go: goTo('[data-testid="checkout-branch-input"]') }
     : !effectiveName
@@ -1961,9 +1980,9 @@ export function NewTaskDialog() {
           a fetched list survives switching sections. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col pl-6">
       <section {...pane("task")} className={cn("flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto min-[1100px]:flex-row min-[1100px]:overflow-hidden", at !== "task" && "hidden")}>
-        {/* Fields on the left. An issue or PR picker sits beside them,
-            because a pick writes into them (name, branch, prompt) and the two
-            want to be side by side. Each scrolls on its own; below 1100px
+        {/* Fields on the left. A source with a picker (branch, import, issue,
+            PR) puts it beside them, because a pick writes into them and the
+            two want to be side by side. Each scrolls on its own; below 1100px
             they stack and the pane scrolls instead. */}
         <div data-testid="new-task-fields" className="flex min-w-0 flex-col gap-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:overflow-y-auto min-[1100px]:pr-1">
         <div className="flex flex-col gap-2">
@@ -2038,7 +2057,11 @@ export function NewTaskDialog() {
                 mode === "worktree" ? t("newTask.sourceNew") : t("newTask.blankInstead"), true],
               ["branch", "checkout-branch-toggle", t("newTask.sourceBranch"), mode === "worktree" && canImport],
               ["import", "source-import", t("newTask.sourceImport", { count: importList.length }),
-                mode === "worktree" && canImport && importList.length > 0],
+                // shown while it is the source even with nothing to list: a
+                // seeded import whose worktrees are gone would otherwise sit on
+                // a source with no tab, under a Create blocked on a list that
+                // is not there.
+                mode === "worktree" && canImport && (importList.length > 0 || importMode)],
               ["issue", "source-issue",
                 forgeProvider === "azure"
                   ? t("newTask.fromWorkItem", { forge: forgeName(forgeProvider) })
@@ -2275,26 +2298,30 @@ export function NewTaskDialog() {
         {hasPicker && (
           <div data-testid="new-task-picker" className="termic-slide-in-right flex min-w-0 flex-col border-t border-[var(--color-border-soft)] pt-4 min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:basis-0 min-[1100px]:border-l min-[1100px]:border-t-0 min-[1100px]:pl-6 min-[1100px]:pt-0">
             <div className="mb-3 shrink-0 text-[13px] font-medium text-[var(--color-fg)]">
-              {importMode ? t("newTask.existingWorktreeLabel") : branchPicker ? t("newTask.branchColumnTitle") : prMode ? t("newTask.prColumnTitle") : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
+              {source === "import" ? t("newTask.importColumnTitle")
+                : source === "branch" ? t("newTask.branchColumnTitle")
+                : source === "pr" ? t("newTask.prColumnTitle")
+                : t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
             </div>
             <div className="flex min-w-0 flex-col min-[1100px]:min-h-0 min-[1100px]:flex-1 min-[1100px]:overflow-y-auto">
               {importMode && (
                 <div data-testid="import-column" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">{t("newTask.existingWorktreeHint")}</p>
+                  <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">{t("newTask.importColumnIntro")}</p>
                   {importLoading ? (
-                    <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                    <div className="flex items-center gap-2 px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
                       <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
                     </div>
                   ) : importList.length === 0 ? (
-                    <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                    <p data-testid="import-empty" className="px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
                       <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
-                    </div>
+                    </p>
                   ) : (
                     <div data-testid="import-list" className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
                       {importList.map(wt => (
                         <button
                           key={wt.path}
                           type="button"
+                          data-worktree-path={wt.path}
                           onClick={() => pickImport(wt)}
                           title={wt.path}
                           className={cn(

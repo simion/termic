@@ -52,6 +52,22 @@ export async function snap(name: string): Promise<void> {
 }
 
 /**
+ * Snap a dialog with its transitions and finite animations run to the end. A
+ * snap right after a click otherwise catches a 150ms colour change half done,
+ * or the New Task picker column mid grow-in. Infinite animations (spinners)
+ * are left alone: finishing one throws.
+ */
+export async function settledSnap(name: string, anchor = "#new-task-form"): Promise<void> {
+  await browser.execute((sel) => {
+    const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
+    dlg?.getAnimations({ subtree: true }).forEach((a) => {
+      if (a instanceof CSSTransition || (a instanceof CSSAnimation && a.effect?.getComputedTiming().iterations !== Infinity)) a.finish();
+    });
+  }, anchor);
+  await snap(name);
+}
+
+/**
  * The stores + ipc handle exposed on `window.__termic` in the e2e binary
  * (main.tsx, gated on VITE_E2E). Lets specs read real app state and drive
  * real IPC instead of scraping the DOM. Typed loosely on purpose — mirror

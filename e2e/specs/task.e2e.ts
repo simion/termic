@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree, textOf, newTaskSection } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree, textOf, newTaskSection, settledSnap } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -322,22 +322,6 @@ describe("new task dialog: side rail", () => {
       (document.activeElement as HTMLElement | null)?.blur();
       (document.querySelector('[data-testid="new-task-create-wrap"]') as HTMLElement).click();
     });
-  /** Snap with every transition in the dialog run to its end. A snap right
-   *  after a click otherwise catches the task-type tabs' 150ms colour change
-   *  half done, showing the old tab filled while the form is already on the
-   *  new one. Waiting does not work: the e2e window is hidden, and a hidden
-   *  page never advances a transition (measured: currentTime stays 0). The
-   *  same goes for the picker column's grow-in animation, which otherwise
-   *  snaps as an invisible zero-width column. */
-  const settledSnap = async (name: string) => {
-    await browser.execute((sel) => {
-      const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
-      dlg?.getAnimations({ subtree: true }).forEach((a) => {
-        if (a instanceof CSSTransition || (a instanceof CSSAnimation && a.effect?.getComputedTiming().iterations !== Infinity)) a.finish();
-      });
-    }, NAME);
-    await snap(name);
-  };
   const optionEnabled = (m: string) =>
     browser.execute((mode) => {
       const b = document.querySelector(`[role="dialog"] [data-sandbox-option="${mode}"]`) as HTMLButtonElement | null;
@@ -381,6 +365,10 @@ describe("new task dialog: side rail", () => {
     await clickWhenVisible('[data-source-tab="branch"]');
     await same("existing branch source");
     expect(await sub("task")).toBe("Worktree, existing branch");
+    await clickWhenVisible('[data-source-tab="import"]');
+    await waitVisible('[data-testid="import-list"]');
+    await same("import source");
+    expect(await sub("task")).toBe("Worktree, import");
     await clickWhenVisible('[data-source-tab="new"]');
     for (const s of ["agent", "isolation", "task"]) {
       await newTaskSection(s);
@@ -551,7 +539,8 @@ describe("new task dialog: side rail", () => {
     expect(await form()).toEqual({ mode: "worktree", source: "import" });
     expect(await sub("task")).toBe("Worktree, import");
     // the worktree list is a column beside the fields, like a branch or a PR.
-    await waitVisible('[data-testid="new-task-picker"] [data-testid="import-column"]');
+    const LIST = '[data-testid="new-task-picker"] [data-testid="import-column"] [data-testid="import-list"]';
+    await waitVisible(LIST);
     await settledSnap("new-task-c-import-worktree.png");
     const side = await browser.execute(() => {
       const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
@@ -561,9 +550,72 @@ describe("new task dialog: side rail", () => {
     });
     expect(side).toEqual({ right: true, top: true, wide: true });
     expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Existing worktree/);
+
+    // a pick fills Name and unblocks Create. The seeded `sbcheck` worktree
+    // is only picked, never imported: other specs need it unopened.
+    expect(await blocked()).toBe("import");
+    const picked = await browser.execute((sel) => {
+      const row = [...document.querySelectorAll(`${sel} [data-worktree-path]`)]
+        .find((b) => b.getAttribute("data-worktree-path")!.endsWith("sbcheck")) as HTMLElement | undefined;
+      row?.click();
+      return !!row;
+    }, LIST);
+    expect(picked).toBe(true);
+    await browser.waitUntil(async () => (await blocked()) === null, { timeout: 5_000, timeoutMsg: "a pick did not unblock Create" });
+    expect(await browser.execute((sel) => (document.querySelector(sel) as HTMLInputElement).value, NAME)).toBe("sbcheck");
+
+    // entering import by its tab puts focus on the list, which otherwise
+    // sits after Name and the prompt in the tab order.
+    await clickWhenVisible('[data-source-tab="new"]');
+    await clickWhenVisible('[data-source-tab="import"]');
+    expect(await browser.execute(() => !!document.activeElement?.closest('[data-testid="import-list"]'))).toBe(true);
+
+    // a reopen paints the new open's layout: the column it was closed on
+    // does not play its way out on a fresh dialog.
     await close();
+    await browser.execute(() => {
+      const w = window as any;
+      w.__sawLeaving = false;
+      w.__obs?.disconnect();
+      w.__obs = new MutationObserver(() => {
+        if (document.querySelector('[data-testid="new-task-picker-leaving"]')) w.__sawLeaving = true;
+      });
+      w.__obs.observe(document.body, { subtree: true, childList: true });
+    });
     await open();
+    expect(await browser.execute(() => { const w = window as any; w.__obs.disconnect(); return w.__sawLeaving; })).toBe(false);
     expect((await form()).mode).toBe("repo_root");
+  });
+
+  it("keeps a seeded import with nothing to import on its tab, and a blocked Create offers New branch", async () => {
+    // a repo with no worktrees but its own, so the import list is empty.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "e2e-noimport-"));
+    execSync(`git -C "${dir}" init -q && git -C "${dir}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`);
+    const pid = (await browser.execute(async (d) => {
+      const t = window.__termic!;
+      const p = await t.ipc.projectAdd(d);
+      await t.useApp.getState().loadAll();
+      return p.id as string;
+    }, dir)) as string;
+    try {
+      await close();
+      await browser.execute((p) => window.__termic!.useUI.getState().openNewTask(p, { importMode: true }), pid);
+      await waitVisible('[data-testid="import-empty"]', 8_000);
+      expect(await browser.execute(() => document.querySelector("#new-task-form")?.getAttribute("data-task-source"))).toBe("import");
+      expect(await browser.execute(() => document.querySelector('[data-source-tab="import"]')?.getAttribute("aria-pressed"))).toBe("true");
+      expect(await blocked()).toBe("import");
+      await clickCreateWrap();
+      expect(await focusedTestId()).toBe("checkout-branch-exit");
+      await close();
+    } finally {
+      await browser.execute(async (p) => {
+        const t = window.__termic!;
+        try { await t.ipc.projectRemove(p); } catch { /* already gone */ }
+        await t.useApp.getState().loadAll();
+      }, pid);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    await open();
     await clickDialogButton("Worktree");
   });
 
