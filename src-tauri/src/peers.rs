@@ -1752,7 +1752,22 @@ pub(crate) fn handle_verb(node: &Arc<Node>, req: &Request, _sink: &mut dyn Event
             Ok(_) => Reply::ok(id, ReplyData::Peers(node.list_data())),
             Err(e) => Reply::err(id, ErrorCode::NotFound, e),
         },
-        Command::PeerPair { target, code } => match node.pair(target, code) {
+        Command::PeerPair { target, code: None } => match node.request_pair(target) {
+            Ok(name) => Reply::ok(
+                id,
+                ReplyData::PeerCodeShown(proto::PeerCodeShownData {
+                    next: format!(
+                        "{name} now shows a 4-digit code for {} min. Ask the user to read it off that screen, \
+                         then pair again with target \"{}\" and that code.",
+                        PAIR_MODE_TTL.as_secs() / 60,
+                        target.trim()
+                    ),
+                    name,
+                }),
+            ),
+            Err(e) => Reply::err(id, ErrorCode::Auth, e),
+        },
+        Command::PeerPair { target, code: Some(code) } => match node.pair(target, code) {
             Ok(done) => match node.find(&done.peer_id) {
                 Ok(r) => Reply::ok(
                     id,
@@ -2856,6 +2871,36 @@ mod tests {
         assert!(b.node.find(&me.id).is_err(), "B stored no pair");
         assert!(b.node.pair_mode_view().is_none(), "B closed pairing mode");
         assert!(b.ui.pairings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_agent_pairs_end_to_end_asking_the_user_only_for_the_code() {
+        let (a, b) = (machine("A"), machine("B"));
+        let verb = |code: Option<String>| {
+            let req = Request {
+                id: "r".into(),
+                token: None,
+                profile: None,
+                peer: None,
+                from_task: None,
+                cmd: Command::PeerPair { target: addr(&b), code },
+            };
+            handle_verb(&a.node, &req, &mut crate::mcp_server::NoopSink)
+        };
+        // No code: B shows one, and the reply tells the agent to ask for it.
+        match verb(None).data {
+            Some(ReplyData::PeerCodeShown(c)) => {
+                assert_eq!(c.name, "B");
+                assert!(c.next.contains("Ask the user"), "{}", c.next);
+            }
+            other => panic!("expected the code to be shown, got {other:?}"),
+        }
+        assert!(a.node.find(&b.node.self_id()).is_err(), "asking pairs nothing");
+        // The user reads the code off B's screen; the agent sends it.
+        let code = b.node.pair_mode_view().expect("B shows a code").code;
+        assert!(matches!(verb(Some(code)).data, Some(ReplyData::PeerPair(_))));
+        assert!(a.node.find(&b.node.self_id()).is_ok());
+        assert!(b.node.find(&a.node.self_id()).is_ok());
     }
 
     #[test]

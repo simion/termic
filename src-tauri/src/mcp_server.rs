@@ -1855,14 +1855,14 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "peer_pair",
         cli_verb: "peer pair",
-        description: "Pair with a machine in pairing mode, using the 4-digit code its screen shows (ask the person for it).",
+        description: "Pair with a machine. Without code it shows a 4-digit code on its screen: ask the user for it, then call again with it.",
         params: &[
             ParamDef { name: "target", json_type: "string", required: true, description: "Name or id from peer_list, or ip[:port].", cli_flag: Some("target") },
-            ParamDef { name: "code", json_type: "string", required: true, description: "The 4 digits the other machine shows.", cli_flag: Some("code") },
+            ParamDef { name: "code", json_type: "string", required: false, description: "The 4 digits the other machine shows.", cli_flag: Some("code") },
         ],
         destructive: false,
         read_only: false,
-        build: |a| Ok(Command::PeerPair { target: need_str(a, "target")?, code: need_str(a, "code")? }),
+        build: |a| Ok(Command::PeerPair { target: need_str(a, "target")?, code: arg_str(a, "code")? }),
     },
     ToolDef {
         name: "peer_unpair",
@@ -4014,7 +4014,9 @@ mod tests {
         // refusals live in the server's errors.
         // 28396: task_send's `now` became `queue` (sends are immediate by
         // default), with a description that says what it waits for.
-        const RECORDED: usize = 28396;
+        // 28406: peer_pair's code is optional; without it the machine shows
+        // one, so an agent pairs end to end by asking the user for it.
+        const RECORDED: usize = 28406;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

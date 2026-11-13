@@ -844,8 +844,15 @@ pub enum Command {
     /// Pair with a machine in sight (its name or id) or at an address (`ip`
     /// or `ip:port`) that is in pairing mode, using the four-digit code its
     /// screen shows. Returns once both machines hold the pair, or fails on a
-    /// wrong code or a machine not in pairing mode.
-    PeerPair { target: String, code: String },
+    /// wrong code or a machine not in pairing mode. Without `code`, asks the
+    /// machine to show one and answers `PeerCodeShown`: the person there
+    /// reads it out, and the caller sends this again with it. No bump: a
+    /// v24 server refuses a missing code outright instead of misreading it.
+    PeerPair {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
     /// Forget a paired machine and tell it to forget this one. Its key is
     /// deleted here at once, so it can no longer call in even when it is
     /// offline and never hears about it.
@@ -1145,6 +1152,7 @@ pub enum ReplyData {
     Peers(PeersData),
     /// `peer pair` (v22).
     PeerPair(PeerPairData),
+    PeerCodeShown(PeerCodeShownData),
 }
 
 /// One property as a tab carries it (GH #358).
@@ -1618,6 +1626,15 @@ pub struct PeersData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeerPairData {
     pub peer: PeerInfo,
+}
+
+/// `peer pair` without a code: the machine now shows one on its screen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PeerCodeShownData {
+    /// The name it gives itself, as the person there sees it.
+    pub name: String,
+    /// What the caller does next, for an agent reading the reply.
+    pub next: String,
 }
 
 /// One schedule cadence.
@@ -2586,7 +2603,8 @@ mod tests {
             Command::ProjectList,
             Command::ProjectRemove { name: "web".into() },
             Command::PeerList,
-            Command::PeerPair { target: "192.168.1.20:23620".into(), code: "4821".into() },
+            Command::PeerPair { target: "192.168.1.20:23620".into(), code: Some("4821".into()) },
+            Command::PeerPair { target: "laptop".into(), code: None },
             Command::PeerUnpair { target: "laptop".into() },
             Command::PeerRename { target: "laptop".into(), name: "".into() },
             Command::Send {

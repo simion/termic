@@ -1671,21 +1671,23 @@ Exit codes: 0 success, 1 error, 4 app not running, 5 CLI disabled, 6 refused, \
     List,
     /// Start pairing with a machine in sight (its name or id) or at an address.
     #[command(
-        after_help = "The other machine must be in pairing mode: a person there clicks Pair a \
-computer (Settings > Agent access), and its screen shows four digits. This pairs with that \
-code, so an agent needs the person to read it out. The target is a name or id from `peer \
+        after_help = "Run it without a code first: the other machine then shows four digits on \
+its screen (or a person there clicks Pair a computer in Settings > Agent access). Run it again \
+with those digits to pair. An agent asks the user to read the code out; it never sees it \
+otherwise. The target is a name or id from `peer \
 list` (in pairing mode it is marked ready), or an address (192.168.1.20, or \
 192.168.1.20:23620) for a network that hides machines from each other. Sharing must be on on \
 both. Both machines may then drive each other's agents; narrow it in Settings.
 
-Exit codes: 0 paired, 1 error (not in sight, unreachable), 4 app not running, 5 CLI \
-disabled, 6 wrong code or not in pairing mode, 8 connection lost."
+Exit codes: 0 paired (without a code: the code is on its screen), 1 error (not in sight, \
+unreachable), 4 app not running, 5 CLI disabled, 6 wrong code or not in pairing mode, 8 \
+connection lost."
     )]
     Pair {
         /// Name or id from `peer list`, or ip / ip:port.
         target: String,
-        /// The four digits the other machine shows in pairing mode.
-        code: String,
+        /// The four digits the other machine shows. Leave it out to make it show them.
+        code: Option<String>,
     },
     /// Forget a paired machine here and tell it to forget this one.
     #[command(
@@ -3160,10 +3162,14 @@ fn execute_peer(
         }
         PeerCmd::Pair { target, code } => {
             let data = run_streamed(conn, proto::Command::PeerPair { target: target.clone(), code: code.clone() }, token, format)?;
-            let proto::ReplyData::PeerPair(p) = data else {
-                return Err(CliError::new(exit_code::ERROR, "unexpected reply to peer pair"));
-            };
-            Ok(Output::ok(final_stdout(format, &output::peer_paired_text(&p), &p)))
+            match data {
+                proto::ReplyData::PeerPair(p) => Ok(Output::ok(final_stdout(format, &output::peer_paired_text(&p), &p))),
+                proto::ReplyData::PeerCodeShown(c) => {
+                    let text = format!("{} is showing a pairing code. Run `termic peer pair \"{}\" <code>` with it.", c.name, target.trim());
+                    Ok(Output::ok(final_stdout(format, &text, &c)))
+                }
+                _ => Err(CliError::new(exit_code::ERROR, "unexpected reply to peer pair")),
+            }
         }
     }
 }
@@ -4863,8 +4869,9 @@ mod tests {
     #[test]
     fn peer_subcommands_parse() {
         let cli = Cli::try_parse_from(["termic", "peer", "pair", "192.168.1.20:23620", "4821"]).unwrap();
-        assert!(matches!(&cli.cmd, Cmd::Peer(PeerCmd::Pair { target, code }) if target == "192.168.1.20:23620" && code == "4821"));
-        assert!(Cli::try_parse_from(["termic", "peer", "pair", "laptop"]).is_err(), "pair needs the code");
+        assert!(matches!(&cli.cmd, Cmd::Peer(PeerCmd::Pair { target, code }) if target == "192.168.1.20:23620" && code.as_deref() == Some("4821")));
+        let cli = Cli::try_parse_from(["termic", "peer", "pair", "laptop"]).unwrap();
+        assert!(matches!(&cli.cmd, Cmd::Peer(PeerCmd::Pair { code: None, .. })), "no code: ask it to show one");
         assert!(Cli::try_parse_from(["termic", "peer", "list"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "peer", "unpair", "laptop", "--yes"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "peer", "rename", "laptop", ""]).is_ok(), "empty clears");

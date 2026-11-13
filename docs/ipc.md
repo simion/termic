@@ -233,8 +233,9 @@ The gate is a MARKER (`cli_user_link_installed`), not "install whenever it is mi
 other machine may reply into it). Not `caller_task`: the command is
 flattened into the request and `group` already owns that key; the
 `peer_*` verbs name their machine `target` for the same reason. New
-verbs `peer_list`, `peer_pair { target, code }` (the code the other
-machine shows in pairing mode), `peer_unpair { target
+verbs `peer_list`, `peer_pair { target, code? }` (the code the other
+machine shows in pairing mode; without it, that machine is asked to show
+one and the reply is `peer_code_shown { name, next }`), `peer_unpair { target
 }`, `peer_rename { target, name }`, all answered by `peers::handle_verb`
 and refused with `peer` set. `ErrorCode::PeerUnreachable` maps to exit
 12. `handle_request` skips local `--profile` resolution when `peer` is

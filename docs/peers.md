@@ -185,9 +185,15 @@ Re-pairing a machine that is already paired replaces its key (the dialog
 says so, `replaces_existing`), keeping the local name, the note and the
 reply contacts.
 
-**From an agent.** `termic peer pair <target> <code>` / MCP `peer_pair
-{target, code}`. An agent can never open pairing mode or see a code: a
-person reads it off the other screen and hands it over.
+**From an agent.** `termic peer pair <target>` / MCP `peer_pair
+{target}` with no code asks the machine to show one (the same
+`/pair/request` as clicking Pair under Nearby) and answers
+`peer_code_shown` with a `next` line telling the agent to ask the user
+for it. `peer pair <target> <code>` / `peer_pair {target, code}` then
+pairs. So an agent pairs end to end, but the code only ever reaches it
+from a person who read it off the other screen; it can never see one on
+its own. A v24 app refuses the code-less form outright (`code` was
+required), so this needed no protocol bump.
 
 ## The credential
 
@@ -297,9 +303,8 @@ computer is followed.
   call.
 - **`termic peer list | pair <target> | unpair <peer> [--yes] | rename
   <peer> <name>`**, MCP `peer_list`, `peer_pair`, `peer_unpair`
-  (destructiveHint), `peer_rename`. `peer pair` streams a `pairing_code`
-  event (the CLI prints the code) and heartbeats while it waits; an
-  agent can START a pairing, never finish one. These act on this machine
+  (destructiveHint), `peer_rename`. `peer pair` without a code makes
+  the other machine show one; with it, it pairs (see "From an agent"). These act on this machine
   and refuse `--peer`.
 - Wire (CLI protocol v22): `Request.peer` and `Request.from_task` (not
   `caller_task`, which `group` already owns in the flattened command;
