@@ -1405,8 +1405,8 @@ open issues" and mean something else entirely.
 
 ### The issue picker is a COLUMN, not a field
 
-It sits beside the fields in the Task pane, the same treatment the PR
-picker gets (see "The new-task dialog is a rail of sections at ONE size").
+It sits beside the fields in the Task pane, like every source with a
+picker (see "The new-task dialog is a rail of sections at ONE size").
 
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.
@@ -1473,11 +1473,12 @@ is entered.
 
 A rail on the left, one pane per section on the right:
 
-- **Task**: task type, source, the import list, name, branch (or the
-  branch to check out), base, initial prompt. An existing-branch, issue or
-  PR picker sits beside these fields inside the Task pane, because a pick
-  writes the branch to check out, or Name, Branch and the prompt, and the
-  list belongs next to what it fills.
+- **Task**: task type, source, name, branch (or the branch to check out),
+  base, initial prompt. A source with a picker (existing branch, import,
+  issue, PR) puts its list in a column beside these fields inside the Task
+  pane, because a pick fills them, and the list belongs next to what it
+  fills. Entering a source moves focus to the step it needs: Branch to its
+  input, import to the first worktree.
 - **Repos** (multi-repo only): members, set all, member sets, live warnings.
 - **Agent**: default CLI, YOLO, then the launch options (agents only, never
   a terminal): extra args (`Task.agent_args`, split like the resume
