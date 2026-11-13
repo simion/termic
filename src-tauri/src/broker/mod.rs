@@ -151,7 +151,11 @@ pub fn spawn_base_dir() -> Option<PathBuf> {
     // SAFETY: getuid cannot fail.
     let uid = unsafe { libc::getuid() };
     let root = if cfg!(target_os = "macos") { "/private/tmp" } else { "/tmp" };
-    Some(PathBuf::from(format!("{root}/termic-{uid}")))
+    // tests get their own base: an agent running them from a Termic task is
+    // caged, and every cage denies the real one. It also keeps test spawns
+    // out of a running dev app's dir.
+    let name = if cfg!(test) { "termic-test" } else { "termic" };
+    Some(PathBuf::from(format!("{root}/{name}-{uid}")))
 }
 
 #[cfg(not(unix))]

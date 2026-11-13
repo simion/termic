@@ -4569,7 +4569,21 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
                 .write_all(br#"{"session_id":"x","context_window":{"total_input_tokens":5,"context_window_size":9}}"#)
                 .unwrap();
             drop(child.stdin.take());
-            let status = child.wait().unwrap();
+            // a deadline, so a broken bound fails this test instead of
+            // hanging the suite. Opening the read end releases the writer.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || { let _ = tx.send(child.wait()); });
+            let status = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(s) => s.unwrap(),
+                Err(_) => {
+                    use std::os::unix::fs::OpenOptionsExt as _;
+                    let _reader = std::fs::OpenOptions::new().read(true)
+                        .custom_flags(libc::O_NONBLOCK).open(&fifo).unwrap();
+                    let _ = rx.recv();
+                    panic!("{name}: blocked past 5s, the watchdog's kill did not land \
+                            (in a Termic cage the profile must allow signalling a sibling)");
+                }
+            };
             let took = started.elapsed();
             assert!(status.success(), "{name}: a hook must exit 0");
             assert!(took < std::time::Duration::from_secs(5), "{name}: blocked for {took:?}");

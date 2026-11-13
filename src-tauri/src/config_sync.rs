@@ -4046,7 +4046,17 @@ mod tests {
         // protocol, so git waits on it until the deadline kills the group.
         let dir = tempfile::tempdir().unwrap();
         let t = std::time::Instant::now();
-        let err = git_bounded(&["-c", "protocol.ext.allow=always", "ls-remote", "ext::sleep 30"], dir.path(), Duration::from_millis(800))
+        // a deadline of its own: the kill hits git's whole group, and where it
+        // only reaches git (a cage allowing signals to `children` alone) the
+        // surviving `sleep` holds stderr open and git_bounded waits it out.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(git_bounded(&["-c", "protocol.ext.allow=always", "ls-remote", "ext::sleep 30"], &path, Duration::from_millis(800)));
+        });
+        let err = rx.recv_timeout(Duration::from_secs(10))
+            .expect("still waiting past 10s: the group kill missed the transport's child \
+                     (in a Termic cage the profile must allow signalling a sibling)")
             .unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert!(t.elapsed() < Duration::from_secs(10), "took {:?}", t.elapsed());

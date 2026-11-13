@@ -2560,8 +2560,11 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 ;; but TUI / hot-paths fall over.
 (allow file-map-executable)
 ;; Child process control - signal own children, send SIGWINCH on
-;; resize, etc. Required for shells that exec sub-tools.
-(allow signal (target children))
+;; resize, etc. Required for shells that exec sub-tools. same-sandbox,
+;; not children: a hook's 2s watchdog kills its SIBLING writer
+;; (agent_hooks::bound_emits), and with only children that kill got
+;; EPERM and a hook on a dead pty blocked forever.
+(allow signal (target same-sandbox))
 ;; Mach task-port access for IPC with our own children + for libuv
 ;; thread-pool management. Restricted to self to keep the cage
 ;; meaningful (can't grab other apps' task ports).
@@ -3601,9 +3604,21 @@ mod tests {
     /// the FS cage blocks (the whole point). `/bin/cat` reads a file,
     /// `/usr/bin/nc -U` connects a unix socket; both are plain Mach-O.
     fn cage_available() -> bool {
-        available()
-            && Path::new("/bin/cat").exists()
-            && Path::new("/usr/bin/nc").exists()
+        if !(available() && Path::new("/bin/cat").exists() && Path::new("/usr/bin/nc").exists()) {
+            return false;
+        }
+        // a sandbox cannot apply another inside itself, so in a Termic cage
+        // every test here fails on EPERM. Fail with the reason instead, not
+        // a skip: an `ok` would read as the cage having been checked.
+        static NESTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let nests = *NESTS.get_or_init(|| {
+            Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+                .status().is_ok_and(|s| s.success())
+        });
+        assert!(nests, "sandbox-exec cannot apply a profile here (already inside a sandbox, \
+                        e.g. a Termic task's cage?): run these tests outside one");
+        true
     }
 
     /// A hostile fixture: a canonical temp tree standing in for `~/Library`,
@@ -3735,6 +3750,37 @@ mod tests {
             .stdin(Stdio::null())
             .output()
             .expect("spawn sandbox-exec nc")
+    }
+
+    #[test]
+    fn a_caged_process_can_signal_its_sibling_but_not_another_cage() {
+        if !cage_available() {
+            return;
+        }
+        let fx = fixture();
+        let profile = hostile_profile(&fx, SandboxMode::Enforce);
+        let caged = |script: &str| {
+            Command::new("/usr/bin/sandbox-exec")
+                .arg("-f").arg(&profile).args(["/bin/sh", "-c", script])
+                .output().expect("spawn sandbox-exec sh")
+        };
+        // the hook watchdog's shape (agent_hooks::bound_emits): a sibling
+        // subshell kills the writer. 143 = the writer died of TERM.
+        let out = caged("sleep 30 & w=$!; ( kill \"$w\" ); wait \"$w\"; echo $?");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "143",
+            "a sibling kill must land in the cage; stderr={}", String::from_utf8_lossy(&out.stderr));
+        // and same-sandbox must not reach another task's cage, even one
+        // built from the same profile.
+        let mut other = Command::new("/usr/bin/sandbox-exec")
+            .arg("-f").arg(&profile).args(["/bin/sleep", "30"])
+            .spawn().expect("spawn the other cage");
+        std::thread::sleep(std::time::Duration::from_millis(300)); // let it apply its profile
+        let out = caged(&format!("/bin/kill {}", other.id()));
+        let still_alive = other.try_wait().unwrap().is_none();
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(!out.status.success() && still_alive,
+            "a cage signalled another cage's process; stderr={}", String::from_utf8_lossy(&out.stderr));
     }
 
     #[test]

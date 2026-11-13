@@ -2357,7 +2357,6 @@ mod tests {
     /// Delegates to the ONE process-wide lock in `crate::test_support`.
     /// This module used to hold its own, which serialized it against itself
     /// and raced every other module touching the same env var.
-    use crate::test_support::DATA_DIR_LOCK;
 
     fn with_scratch_data_dir<T>(f: impl FnOnce() -> T) -> T {
         crate::test_support::with_scratch_data_dir(|_| f())
@@ -2480,8 +2479,9 @@ mod tests {
         // entries as bind MOUNTS instead.
         // `agent_config_host_dir` and `build_spec` both resolve through
         // `TERMIC_DATA_DIR`, so the path resolved here and the one resolved
-        // inside `build_spec` must not be repointed mid-test.
-        let _g = DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // inside `build_spec` must not be repointed mid-test. A scratch data
+        // dir, or the seeding below lands in the developer's real one.
+        with_scratch_data_dir(|| {
         let dir = std::env::temp_dir().join(format!("termic-docker-share-{}", uuid::Uuid::new_v4()));
         let primary = crate::docker::agent_config_host_dir("claude");
         // Only entries that EXIST are mounted, so seed one and check both
@@ -2532,6 +2532,7 @@ mod tests {
                                "aaaaaaaa-1111-2222-3333-444444444444", "claude", &[], None);
         assert!(!plain.mounts.iter().any(|m| m.container == "/root/.claude/projects"));
         let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 
     #[test]
@@ -2635,11 +2636,12 @@ mod tests {
     /// The argv `build_command` produced, as plain strings.
     fn build_argv(dockerfile: &str, no_cache: bool) -> Vec<String> {
         // `build_command` writes the Dockerfile under `docker_dir()`, i.e.
-        // under whatever `TERMIC_DATA_DIR` currently says - so it has to hold
-        // the same lock as the tests that redirect it.
-        let _g = DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (cmd, _) = build_command(dockerfile, no_cache).unwrap();
-        cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        // under whatever `TERMIC_DATA_DIR` currently says, so it runs against
+        // a scratch one (which also takes the lock the redirecting tests hold).
+        with_scratch_data_dir(|| {
+            let (cmd, _) = build_command(dockerfile, no_cache).unwrap();
+            cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        })
     }
 
     #[test]

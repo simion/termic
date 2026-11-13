@@ -175,6 +175,22 @@ lives at …` (or, once the directory was gone but the registration was not,
 `branch … is already checked out elsewhere`). `seed()` now wipes that directory
 and prunes the fixture repo's worktrees on every run.
 
+A run launched from an agent tab is isolated from that tab too. `onPrepare`
+drops every inherited `TERMIC_*` except `TERMIC_E2E_*` (they name the outer
+app's task, tab and sandbox, and a spec's `termic-cli` would act on them), and
+picks a free WebDriver port unless `TAURI_WEBDRIVER_PORT` is set. The plugin's
+default is a fixed 4445, so two agents running the suite at once drove each
+other's app and both runs died on `ECONNREFUSED`.
+
+**It refuses to run inside an enforcing Termic cage.** The cage denies the
+app's WebKit storage (`~/Library/WebKit/termic`), the real spawn base
+(`/private/tmp/termic-<uid>`) and `~/.config/termic`. A caged run measured on
+2026-11-12 took 38 minutes and failed 19 of 48 spec files, none of them a
+regression, so `wdio.conf.ts` now throws at load with the reason. Run it from
+an unsandboxed shell. Making it pass caged needs a per-run WebKit store, an e2e
+spawn base and a themes dir override; until then the refusal is the honest
+answer.
+
 ### The language: an e2e build defaults to English, and writes no pref
 
 The suites assert on English catalog text ("Dashboard", the open-with toast),
