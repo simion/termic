@@ -165,7 +165,8 @@ is a split on that marker, across `crash.log` and the rotated `crash.log.1`
 Today the log (`panic.log`) covers Rust panics only. The other ways Termic dies leave nothing
 today, and three of them can be made to leave a line the same way:
 
-1. **Objective-C exceptions.** `NSSetUncaughtExceptionHandler` runs in normal
+1. **Objective-C exceptions.** Shipped: `panic_log.rs` installs the handler.
+   `NSSetUncaughtExceptionHandler` runs in normal
    context and receives the exception name, reason and call stack, so it can
    append an entry like the panic hook does. This is the likeliest cause of an
    abort in AppKit callbacks that is not a Rust panic, and it is the case the

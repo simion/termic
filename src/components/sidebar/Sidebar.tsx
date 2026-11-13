@@ -27,6 +27,7 @@ import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
+import { reportBug } from "@/lib/reportBug";
 import { taskRename, taskReorder, taskGroupJoin, taskGroupLeave, taskGroupNew, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup, procmonOpenWindow, ptyKill } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
 import { copyAgentBriefing } from "@/lib/agentBriefing";
@@ -273,13 +274,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const url = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     openPath(url).catch(() => {});
     copyToClipboard(to, to);
-  };
-  /** Open a prefilled "New issue" on the public GitHub tracker. Same
-   *  query-string shape as openMailto so both support buttons route through
-   *  one builder. */
-  const openIssue = (title: string, body: string) => {
-    const url = `https://github.com/simion/termic/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
-    openPath(url).catch(() => {});
   };
   /** True if ANY tab in the task just transitioned to settled/idle
    *  (work-done signal — agent stopped producing output, waiting on
@@ -2571,7 +2565,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           <ThemePicker />
           <Tip content={t("reportBug")}>
             <Button size="icon" variant="icon" aria-label={t("reportBug")} data-testid="sidebar-report-bug"
-              onClick={() => openIssue(t("bugIssueTitle"), t("bugIssueBody"))}>
+              onClick={() => { void reportBug(); }}>
               <Bug className={iconSize(compact)} />
             </Button>
           </Tip>

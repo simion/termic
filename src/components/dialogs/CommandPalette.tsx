@@ -40,10 +40,10 @@ import { effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
+import { reportBug } from "@/lib/reportBug";
 import { setTreeFold } from "@/lib/treeFold";
 
 // New-issue page for the project repo. Opened via the OS browser (open_path).
-const ISSUE_URL = "https://github.com/simion/termic/issues/new";
 
 // Section render order. Sections with no (filtered) commands are dropped.
 // System / Dark / Light only ever hold the Change-theme submenu's rows.
@@ -681,7 +681,7 @@ export function CommandPalette() {
     cmds.push({
       id: "open-issue", section: "Application", label: t("commandPalette.cmd.openIssue"),
       icon: Bug, keywords: "github bug report feedback",
-      run: act(() => { void openPath(ISSUE_URL); }),
+      run: act(() => { void reportBug(); }),
     });
 
     // ── Settings (deep links) ───────────────────────────────────────────

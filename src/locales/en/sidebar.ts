@@ -126,6 +126,7 @@ export default {
   // zh-CN locale intentionally keeps these in English.
   bugIssueTitle: "Bug: ",
   bugIssueBody: "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ",
+  bugIssueCrashLog: "Crash log: Termic has selected panic.log in your file manager. Drag it into this issue.",
   contact: "Contact",
   contactSubject: "Hello from Termic",
   shortcuts: "Keyboard shortcuts",

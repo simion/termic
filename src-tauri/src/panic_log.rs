@@ -14,15 +14,29 @@ use std::{
     io::Write,
     panic::PanicHookInfo,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
+
+/// Where the hooks write, set once by `install`.
+static LOG: OnceLock<PathBuf> = OnceLock::new();
+
+/// The log, if anything has been written to it: what the Report a bug button
+/// shows the user to attach.
+pub(crate) fn existing() -> Option<&'static Path> {
+    let path = LOG.get()?;
+    fs::metadata(path).ok().filter(|m| m.len() > 0).map(|_| path.as_path())
+}
 
 /// Past this size the log moves to `panic.log.1` before the next entry, so a
 /// panic in a loop cannot fill the disk. One generation is enough: the newest
 /// entry is the one anyone reads.
 const MAX_BYTES: u64 = 512 * 1024;
 
-/// Install the hook. Call once, first thing in `run()`.
+/// Install the hooks. Call once, first thing in `run()`.
 pub(crate) fn install(path: PathBuf) {
+    let _ = LOG.set(path.clone());
+    #[cfg(target_os = "macos")]
+    objc::install();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
@@ -59,6 +73,39 @@ fn format_entry(when: &str, thread: &str, at: &str, message: &str, backtrace: &s
     )
 }
 
+/// An uncaught Objective-C exception is not a Rust panic, so the panic hook
+/// never sees it. It gets its own entry, in the same `=== ` header format so
+/// one reader splits both. Not covered: one AppKit catches and logs itself.
+#[cfg(target_os = "macos")]
+mod objc {
+    use objc2::{msg_send, rc::Retained};
+    use objc2_foundation::{NSArray, NSException, NSSetUncaughtExceptionHandler, NSString};
+
+    pub(super) fn install() {
+        // SAFETY: the handler has the C signature Foundation calls it with.
+        unsafe { NSSetUncaughtExceptionHandler(on_exception as *const () as *mut core::ffi::c_void) }
+    }
+
+    pub(super) extern "C" fn on_exception(e: *mut NSException) {
+        let (Some(path), Some(e)) = (super::LOG.get(), unsafe { e.as_ref() }) else { return };
+        let reason = e.reason().map(|r| r.to_string()).unwrap_or_default();
+        // Not the typed `callStackSymbols()`: it panics on the nil an exception
+        // that was never raised has, and a panic here aborts with no entry.
+        let symbols: Option<Retained<NSArray<NSString>>> = unsafe { msg_send![e, callStackSymbols] };
+        let stack: Vec<String> = symbols.iter().flat_map(|a| a.iter()).map(|s| s.to_string()).collect();
+        let entry = super::format_exception(
+            &chrono::Local::now().to_rfc3339(), &e.name().to_string(), &reason, &stack.join("\n"));
+        let _ = super::append(path, &entry);
+    }
+}
+
+fn format_exception(when: &str, name: &str, reason: &str, stack: &str) -> String {
+    format!(
+        "=== {when} termic {} Objective-C exception {name}\n{reason}\n{stack}\n\n",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 fn append(path: &Path, entry: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -85,6 +132,30 @@ mod tests {
         assert!(text.contains("thread 'main' panicked at src/a.rs:1:2\nboom"));
         assert!(text.contains("thread 'worker' panicked at src/b.rs:3:4\nbang"));
         assert!(text.find("boom") < text.find("bang"));
+    }
+
+    #[test]
+    fn an_objc_exception_entry_shares_the_panic_header() {
+        let e = format_exception("t0", "NSRangeException", "index 3 beyond bounds", "0 CoreFoundation");
+        assert!(e.starts_with("=== t0 termic "), "{e}");
+        assert!(e.contains("Objective-C exception NSRangeException\nindex 3 beyond bounds\n0 CoreFoundation"), "{e}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_objc_handler_records_a_real_exception() {
+        use objc2_foundation::{NSException, NSString};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("panic.log");
+        // The only test that sets LOG: it is process-wide and set-once.
+        LOG.set(path.clone()).unwrap();
+        // SAFETY: a plain exception object, never raised.
+        let e = unsafe { NSException::exceptionWithName_reason_userInfo(
+            &NSString::from_str("NSRangeException"), Some(&NSString::from_str("index 3 beyond bounds")), None) };
+        objc::on_exception(objc2::rc::Retained::as_ptr(&e) as *mut NSException);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Objective-C exception NSRangeException\nindex 3 beyond bounds"), "{text}");
+        assert_eq!(existing(), Some(path.as_path()));
     }
 
     #[test]

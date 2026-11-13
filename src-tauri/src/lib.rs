@@ -23064,6 +23064,17 @@ fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// What the Report a bug button prefills: the version and OS, and the crash
+/// log when there is one, so it can show the user the file to attach.
+#[tauri::command]
+fn bug_report_info() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "os": format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        "crashLog": panic_log::existing().map(|p| p.to_string_lossy().into_owned()),
+    })
+}
+
 /// What to do once the OS launcher has been run for a file (GH #147).
 /// Only the real (non-e2e) build shells out, so the e2e binary never reaches
 /// the decision — the unit tests below still cover it in either build.
@@ -28646,7 +28657,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
             lsp_offer, lsp_catalog, lsp_install, lsp_install_zuban, lsp_check_update, lsp_update, lsp_start, lsp_send, lsp_stop, lsp_reap_foreign, lsp_list,
-            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, customizations_open, customizations_set_enabled, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, git_init_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, bug_report_info, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, customizations_open, customizations_set_enabled, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, git_init_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss,
             config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
             config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull, config_sync::sync_focus_pull,

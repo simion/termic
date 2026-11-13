@@ -1573,6 +1573,8 @@ export const browserCommandCheck = (command: string) =>
 /** Reveal an absolute path in the OS file manager (select it on macOS/Windows,
  *  open its parent on Linux). For task-relative paths use taskRevealPath. */
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+export const bugReportInfo = () =>
+  invoke<{ version: string; os: string; crashLog: string | null }>("bug_report_info");
 /** Hand an absolute FILE path to the OS default app, falling back to revealing
  *  it when nothing is registered for the extension. Resolves to which of the
  *  two happened; rejects only when neither worked. Unlike openPath it inspects

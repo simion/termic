@@ -126,6 +126,7 @@ export default {
   // 因此 zh-CN 有意保留英文原文。
   bugIssueTitle: "Bug: ",
   bugIssueBody: "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ",
+  bugIssueCrashLog: "Crash log: Termic has selected panic.log in your file manager. Drag it into this issue.",
   contact: "联系我们",
   contactSubject: "Hello from Termic",
   shortcuts: "键盘快捷键",
