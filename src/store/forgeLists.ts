@@ -1,8 +1,10 @@
 // Forge issue and PR lists, cached per query and shared by every reader: the
 // Todos view, the New Task dialog's pickers and Review PR's waiting list.
-// One bounded queue for the CLI subprocesses, at most one fetch in flight per
-// query, and a snapshot of the last good answers so a relaunch paints them
-// while the next fetch runs. Does NOT write to useApp (docs/performance.md
+// One bounded queue for the forge IPC calls (a Todos refresh is one batched
+// call, which Rust answers with a GraphQL query per GitHub host and its own
+// three workers for the rest), at most one fetch in flight per query, and a
+// snapshot of the last good answers so a relaunch paints them while the
+// next fetch runs. Does NOT write to useApp (docs/performance.md
 // bear traps 5 and 8).
 //
 // Readers outside the Todos view use `getState()` and the returned promise,
@@ -11,7 +13,8 @@
 
 import { create } from "zustand";
 import { useApp } from "@/store/app";
-import { projectForgeIssues, projectForgePrs } from "@/lib/ipc";
+import { projectForgeIssues, projectForgeLists, projectForgePrs } from "@/lib/ipc";
+import { lookupMessage } from "@/store/forgeRate";
 import { scoped } from "@/lib/profileScope";
 import { BODY_MAX as ISSUE_BODY_MAX, cleanIssueText } from "@/lib/issuePrompt";
 import { BODY_MAX as PR_BODY_MAX, cleanPrText } from "@/lib/prReview";
@@ -202,6 +205,10 @@ export const useForgeLists = create<ForgeListsState>(() => ({
 /** Bumped by `clearForgeLists`: a fetch started before it lands nowhere. */
 let epoch = 0;
 const inFlight = new Map<string, Promise<ForgeListAnswer>>();
+/** Keys whose in-flight fetch is a Todos batch. An urgent caller does not
+ *  join one: the batch answers only once every list in it has, GitLab and
+ *  Azure CLI calls included, and an open dialog must not wait that out. */
+const inBatch = new Set<string>();
 let active = 0;
 const queue: Array<{ key: string; run: () => void }> = [];
 
@@ -266,10 +273,12 @@ export function fetchForgeList(q: ForgeListQuery, opts?: FetchOptions): Promise<
 export function fetchForgeList(q: ForgeListQuery, opts: FetchOptions = {}): Promise<ForgeListAnswer> {
   const key = forgeListKey(q);
   const running = inFlight.get(key);
-  if (running) {
+  if (running && !(opts.urgent && inBatch.has(key))) {
     if (opts.urgent) hurry(key);
     return running;
   }
+  // From here this key's in-flight fetch is this one, not the batch's.
+  inBatch.delete(key);
 
   const at = epoch;
   const limit = limitOf(q);
@@ -283,40 +292,121 @@ export function fetchForgeList(q: ForgeListQuery, opts: FetchOptions = {}): Prom
         : projectForgePrs(q.projectId, { scope: q.scope, limit }),
     !!opts.urgent,
   )
-    .then(
-      (answer) => {
-        if (at !== epoch) return answer;
-        const now = Date.now();
-        if (answer.status === "ok") {
-          dirty = true;
-          setEntry(key, () => ({ query: q, status: "ok", ok: answer, okAt: now, fetchedAt: now }));
-        } else {
-          setEntry(key, (e) => ({
-            query: q,
-            status: isUnsupported(answer) ? "unsupported" : "error",
-            ok: e?.ok ?? null,
-            okAt: e?.okAt ?? 0,
-            fetchedAt: now,
-            errorMessage: answer.message || answer.status,
-          }));
-        }
-        return answer;
-      },
-      (err) => {
-        if (at === epoch) {
-          setEntry(key, (e) => ({
-            query: q, status: "error", ok: e?.ok ?? null, okAt: e?.okAt ?? 0,
-            fetchedAt: Date.now(), errorMessage: String(err),
-          }));
-        }
-        throw err;
-      },
-    )
+    .then((answer) => record(key, q, at, answer), (err) => recordFailure(key, q, at, err))
     .finally(() => {
       if (inFlight.get(key) === p) inFlight.delete(key);
     });
   inFlight.set(key, p);
   return p;
+}
+
+/** An entry after `answer` landed on it. A failure keeps the last ok rows. */
+function entryAfter(e: ForgeListEntry | undefined, q: ForgeListQuery, answer: ForgeListAnswer, now: number): ForgeListEntry {
+  if (answer.status === "ok") return { query: q, status: "ok", ok: answer, okAt: now, fetchedAt: now };
+  return {
+    query: q,
+    status: isUnsupported(answer) ? "unsupported" : "error",
+    ok: e?.ok ?? null,
+    okAt: e?.okAt ?? 0,
+    fetchedAt: now,
+    errorMessage: lookupMessage(answer) || answer.status,
+  };
+}
+
+/** An entry after its fetch threw. */
+function entryFailed(e: ForgeListEntry | undefined, q: ForgeListQuery, err: unknown, now: number): ForgeListEntry {
+  return { query: q, status: "error", ok: e?.ok ?? null, okAt: e?.okAt ?? 0, fetchedAt: now, errorMessage: String(err) };
+}
+
+/** Land one answer on its entry (unless `clearForgeLists` ran since). */
+function record(key: string, q: ForgeListQuery, at: number, answer: ForgeListAnswer): ForgeListAnswer {
+  if (at !== epoch) return answer;
+  if (answer.status === "ok") dirty = true;
+  setEntry(key, (e) => entryAfter(e, q, answer, Date.now()));
+  return answer;
+}
+
+function recordFailure(key: string, q: ForgeListQuery, at: number, err: unknown): never {
+  if (at === epoch) setEntry(key, (e) => entryFailed(e, q, err, Date.now()));
+  throw err;
+}
+
+/** `next` applied to every key in one store write: a batch lands dozens of
+ *  lists at once, and every write re-runs the Todos view's selectors. */
+function setEntries(keys: string[], next: (key: string, prev: ForgeListEntry | undefined) => ForgeListEntry) {
+  if (!keys.length) return;
+  useForgeLists.setState((s) => {
+    const entries = { ...s.entries };
+    for (const key of keys) entries[key] = next(key, entries[key]);
+    return { entries };
+  });
+}
+
+/** Fetch every list in `qs` that is missing or past the TTL (all of them
+ *  with `force`) in ONE IPC, which Rust answers with one GraphQL query per
+ *  GitHub host and the per-project CLI path for the rest. Lists already in
+ *  flight are joined, not fetched twice, and each list joins the batch under
+ *  its own key, so a dialog asking for one of them meanwhile waits on it. */
+export async function refreshForgeLists(qs: ForgeListQuery[], force = false): Promise<void> {
+  const { entries } = useForgeLists.getState();
+  const joined: Promise<unknown>[] = [];
+  const due = new Map<string, ForgeListQuery>();
+  for (const q of qs) {
+    const key = forgeListKey(q);
+    const running = inFlight.get(key);
+    if (running) { joined.push(running); continue; }
+    const e = entries[key];
+    if (!force && e && e.status !== "loading" && Date.now() - e.fetchedAt < FORGE_LIST_TTL_MS) continue;
+    due.set(key, q);
+  }
+  if (due.size) {
+    const at = epoch;
+    const keys = [...due.keys()];
+    const list = [...due.values()];
+    setEntries(keys, (key, e) => ({ query: due.get(key)!, status: "loading", ok: e?.ok ?? null, okAt: e?.okAt ?? 0, fetchedAt: e?.fetchedAt ?? 0 }));
+    // Every list lands in one write when the batch answers. A key an
+    // urgent dialog re-fetched meanwhile is left to that fetch.
+    const ours = (key: string, p: Promise<ForgeListAnswer> | undefined) => at === epoch && inFlight.get(key) === p;
+    const perKey = new Map<string, Promise<ForgeListAnswer>>();
+    const landed = schedule(
+      `batch:${keys.join("|")}`,
+      () => projectForgeLists(list.map((q) => ({ ...q, limit: limitOf(q) }))),
+      false,
+    ).then(
+      (answers) => {
+        const now = Date.now();
+        const mine = keys.filter((k) => ours(k, perKey.get(k)));
+        if (mine.some((k) => answers[keys.indexOf(k)]?.status === "ok")) dirty = true;
+        setEntries(mine, (key, e) => {
+          const a = answers[keys.indexOf(key)];
+          return a ? entryAfter(e, due.get(key)!, a, now) : entryFailed(e, due.get(key)!, "no answer for this list", now);
+        });
+        return answers;
+      },
+      (err) => {
+        const now = Date.now();
+        setEntries(keys.filter((k) => ours(k, perKey.get(k))), (key, e) => entryFailed(e, due.get(key)!, err, now));
+        throw err;
+      },
+    );
+    keys.forEach((key, i) => {
+      const p: Promise<ForgeListAnswer> = landed
+        .then((answers) => {
+          if (!answers[i]) throw new Error("no answer for this list");
+          return answers[i];
+        })
+        .finally(() => {
+          if (inFlight.get(key) !== p) return;
+          inFlight.delete(key);
+          inBatch.delete(key);
+        });
+      perKey.set(key, p);
+      inFlight.set(key, p);
+      inBatch.add(key);
+      joined.push(p);
+    });
+  }
+  await Promise.allSettled(joined);
 }
 
 const sameRows = (a: ForgeListAnswer, b: ForgeListAnswer) =>
@@ -334,7 +424,7 @@ export function afterRevalidate<L extends ForgeListAnswer>(
   answer: L,
 ): { lookup: L; refreshErr: string | null } {
   if (answer.status === "ok") return { lookup: shown && sameRows(shown, answer) ? shown : answer, refreshErr: null };
-  if (shown) return { lookup: shown, refreshErr: answer.message || answer.status };
+  if (shown) return { lookup: shown, refreshErr: lookupMessage(answer) || answer.status };
   return { lookup: answer, refreshErr: null };
 }
 
@@ -350,6 +440,7 @@ export async function refreshForgeList(q: ForgeListQuery, force = false): Promis
 export function clearForgeLists() {
   epoch++;
   inFlight.clear();
+  inBatch.clear();
   dirty = false;
   lastWritten = null;
   try { localStorage.removeItem(LS_FORGE_LISTS); } catch { /* private mode */ }

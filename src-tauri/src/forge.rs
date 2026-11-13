@@ -103,21 +103,7 @@ pub fn provider_for_remote(url: &str) -> Option<&'static str> {
         if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
             return Some(AZURE);
         }
-        // Lazily probe on first use: a PR poll can land before the app's
-        // startup detect() has finished, and a self-hosted host would
-        // otherwise be misread as "unsupported" until the next refresh.
-        let known = {
-            let cached = host_map().lock().unwrap().clone();
-            match cached {
-                Some(m) => m,
-                None => {
-                    let m = probe_authed_hosts();
-                    *host_map().lock().unwrap() = Some(m.clone());
-                    m
-                }
-            }
-        };
-        if let Some(p) = known.get(&host) {
+        if let Some(p) = authed_hosts().get(&host) {
             return Some(p);
         }
     }
@@ -129,6 +115,18 @@ pub fn provider_for_remote(url: &str) -> Option<&'static str> {
         return Some(GITLAB);
     }
     None
+}
+
+/// `host_map`, probed on first use: a PR poll can land before the app's
+/// startup detect() has finished, and a self-hosted host would otherwise be
+/// misread as "unsupported" until the next refresh.
+fn authed_hosts() -> HashMap<String, &'static str> {
+    let cached = host_map().lock().unwrap().clone();
+    cached.unwrap_or_else(|| {
+        let m = probe_authed_hosts();
+        *host_map().lock().unwrap() = Some(m.clone());
+        m
+    })
 }
 
 /// Run `auth status` for the CLIs that have one (gh, glab) and collect the
@@ -159,10 +157,12 @@ fn auth_text(o: &std::process::Output) -> String {
 /// logged-in lines only is deliberate: a host the CLI knows but is signed
 /// OUT of cannot answer us either.
 fn parse_auth_hosts(text: &str) -> Vec<String> {
+    const MARK: &str = "logged in to ";
     let mut out = Vec::new();
     for line in text.lines() {
-        let Some(rest) = line.split(" to ").nth(1) else { continue };
-        let host = rest.split_whitespace().next().unwrap_or("").trim();
+        // ASCII lowercasing keeps byte offsets, so `at` indexes `line` too.
+        let Some(at) = line.to_ascii_lowercase().find(MARK) else { continue };
+        let host = line[at + MARK.len()..].split_whitespace().next().unwrap_or("").trim();
         // Guard against "Logged in to the wrong thing" style prose.
         if host.contains('.') && !host.contains('/') {
             let host = host.to_lowercase();
@@ -224,6 +224,65 @@ fn reprobe_bin(name: &str) -> Option<String> {
 }
 
 fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::process::Output> {
+    cli_command(bin, args, cwd).output()
+}
+
+/// `run`, killed at `timeout`. For `gh api`, whose callers include the
+/// background poller: one stalled connection would otherwise hold its pass,
+/// and every later one, for the rest of the session. No sleep-polling (bear
+/// trap 9): a waiter thread blocks on the child, the caller on a channel.
+fn run_bounded(bin: &str, args: &[&str], cwd: Option<&Path>, timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    let mut cmd = cli_command(bin, args, cwd);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::proc_ctl::new_group(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let pid = child.id() as i32;
+    // Drained on their own threads, so a large answer cannot fill a pipe and
+    // stall the child into a timeout. Past MAX_OUTPUT the rest is read and
+    // dropped: the child still finishes, and memory stays bounded.
+    let drain = |r: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut over = false;
+        if let Some(mut r) = r {
+            let _ = r.by_ref().take(MAX_OUTPUT).read_to_end(&mut buf);
+            over = std::io::copy(&mut r, &mut std::io::sink()).is_ok_and(|n| n > 0);
+        }
+        (buf, over)
+    });
+    let out_h = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let err_h = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let status = match rx.recv_timeout(timeout) {
+        Ok(r) => r?,
+        Err(_) => {
+            crate::proc_ctl::signal_group(pid, crate::proc_ctl::Sig::Kill);
+            let _ = rx.recv();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out after {}s", timeout.as_secs())));
+        }
+    };
+    let (stdout, over) = out_h.join().unwrap_or_default();
+    let (stderr, _) = err_h.join().unwrap_or_default();
+    if over {
+        return Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, format!("answer larger than {} MiB", MAX_OUTPUT >> 20)));
+    }
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
+/// The most `run_bounded` keeps of a child's stdout. A GitHub answer is far
+/// smaller; anything past this is refused rather than held and parsed.
+/// Issue bodies are attacker-sized (anyone can file one on a public repo),
+/// so the cap is what bounds a Todos query, not GitHub. A refusal comes back
+/// as `ForgeError::TooLarge`, and the lists batch splits the query rather
+/// than sending its lists to the uncapped CLI path.
+const MAX_OUTPUT: u64 = 32 * 1024 * 1024;
+
+fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Command {
     let mut cmd = crate::proc_ctl::command(bin);
     cmd.args(args)
         // Login-shell PATH so the CLI can find its own helpers (git,
@@ -244,7 +303,257 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    cmd.output()
+    cmd
+}
+
+// ───────────────────────── gh api (budgeted) ─────────────────────────
+//
+// Every new GitHub read goes through `gh_api` / `gh_graphql`: `gh` keeps the
+// auth (keychain, GHE hosts), and the response's rate-limit headers and
+// GraphQL `rateLimit` object feed the ledger in forge_rate.rs. The legacy
+// `gh pr ...` / `gh issue ...` calls cannot report a cost; their callers
+// charge `forge_rate::record_estimated` instead.
+
+/// One HTTP answer as `gh api --include` printed it.
+#[derive(Debug)]
+struct ApiResponse {
+    status: u16,
+    /// Lowercased names.
+    headers: HashMap<String, String>,
+    /// The body parsed, when it is JSON. Parsed straight from gh's stdout,
+    /// so a large answer is not copied into a string first.
+    json: Option<serde_json::Value>,
+    /// The body as text on an error status only (its message, a
+    /// secondary-limit phrase); empty otherwise.
+    error_body: String,
+}
+
+/// `gh api --include` stdout: `HTTP/2.0 200 OK`, the headers, a blank line,
+/// the body. gh prints all of it on an error status too (and exits 1),
+/// which is the only way a 403 rate limit can be read at all. None when
+/// stdout is not that shape (no HTTP happened: gh not signed in, no
+/// network).
+fn parse_api_output(out: &[u8]) -> Option<ApiResponse> {
+    let mut lines = out.split_inclusive(|&b| b == b'\n');
+    let first = lines.next()?;
+    let mut head_len = first.len();
+    let status: u16 = std::str::from_utf8(first).ok()?.trim().strip_prefix("HTTP/")?
+        .split_whitespace().nth(1)?.parse().ok()?;
+    let mut headers = HashMap::new();
+    for raw in lines {
+        head_len += raw.len();
+        let line = String::from_utf8_lossy(raw);
+        let line = line.trim_end_matches(['\n', '\r']);
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+    let body = &out[head_len..];
+    Some(ApiResponse {
+        status,
+        headers,
+        json: serde_json::from_slice(body).ok(),
+        error_body: if status >= 400 { String::from_utf8_lossy(body).into_owned() } else { String::new() },
+    })
+}
+
+/// Past GitHub's own 10s GraphQL timeout with room for a slow network.
+const GH_API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// github.com, or a host `gh auth status` reported. Pure, for the tests.
+fn github_host_allowed(host: &str, authed: &HashMap<String, &'static str>) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == "github.com" || authed.get(&host) == Some(&GITHUB)
+}
+
+/// A refusal on a limit, worded for the callers that show Rust's text
+/// (PR create, comments). Lookups carry `until` as `retry_at` and the
+/// webview words those itself.
+pub(crate) fn rate_limited(host: &str, until: u64) -> ForgeError {
+    let at = chrono::DateTime::from_timestamp(until as i64, 0)
+        .map(|t| {
+            let t = t.with_timezone(&chrono::Local);
+            // A pause can run up to a day, so a bare "14:05" may be tomorrow.
+            let fmt = if t.date_naive() == chrono::Local::now().date_naive() { "%H:%M" } else { "%b %-d %H:%M" };
+            t.format(fmt).to_string()
+        })
+        .unwrap_or_default();
+    ForgeError::RateLimited {
+        until,
+        message: format!("GitHub rate limit reached on {host}. Termic is waiting until {at}."),
+    }
+}
+
+/// `gh api --hostname <host> --include <args...>`, charged to `feature`.
+/// A limit refusal pauses the host's background work (forge_rate) and comes
+/// back as `RateLimited`.
+///
+/// The rate decision is made here, where the token is spent, not by each
+/// caller: nothing goes out while GitHub's own refusal stands (any caller),
+/// and `background` work also waits out termic's budget and the account
+/// floor. Either comes back as `RateLimited` without spawning gh.
+fn gh_api(
+    host: &str,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    args: &[&str],
+) -> Result<ApiResponse, ForgeError> {
+    // The host comes from a task's stored PR url or a project's remote, both
+    // of which an agent in a task can write. `gh pr view` in the repo only
+    // ever talked to hosts gh is signed in to; `--hostname` would send to
+    // any, so only those are allowed here.
+    if !github_host_allowed(host, &authed_hosts()) {
+        return Err(ForgeError::Other(format!("{host} is not a GitHub host gh is signed in to.")));
+    }
+    let mut full = vec!["api", "--hostname", host, "--include"];
+    full.extend_from_slice(args);
+    gh_api_run(host, None, feature, bucket, background, &full)
+}
+
+/// `gh api --include <args...>` run in the repo at `cwd`, for an endpoint
+/// with `{owner}/{repo}` placeholders, which gh fills (and picks the host
+/// for) from that repo, as the plain `gh pr ...` calls do. Charged to the
+/// repo's API host.
+fn gh_api_in_repo(
+    cwd: &Path,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    args: &[&str],
+) -> Result<ApiResponse, ForgeError> {
+    let mut full = vec!["api", "--include"];
+    full.extend_from_slice(args);
+    gh_api_run(&api_host_for(None, cwd), Some(cwd), feature, bucket, background, &full)
+}
+
+fn gh_api_run(
+    host: &str,
+    cwd: Option<&Path>,
+    feature: &'static str,
+    bucket: crate::forge_rate::Bucket,
+    background: bool,
+    full: &[&str],
+) -> Result<ApiResponse, ForgeError> {
+    if let Some(until) = crate::forge_rate::refused_until(host, bucket) {
+        return Err(rate_limited(host, until));
+    }
+    if background {
+        // Termic's own policy, not GitHub's. Only a background caller gets
+        // this, and it never shows the message.
+        if let Err(p) = crate::forge_rate::background_gate(host, bucket) {
+            return Err(rate_limited(host, p.until));
+        }
+    }
+    let bin = reprobe_bin("gh").ok_or(ForgeError::CliMissing("gh"))?;
+    let o = run_bounded(&bin, full, cwd, GH_API_TIMEOUT).map_err(|e| match e.kind() {
+        std::io::ErrorKind::FileTooLarge => ForgeError::TooLarge(format!("gh api: {e}")),
+        _ => ForgeError::Other(format!("gh api: {e}")),
+    })?;
+    let Some(resp) = parse_api_output(&o.stdout) else {
+        return Err(classify_failure(GITHUB, &o));
+    };
+    let json = &resp.json;
+    let verdict = crate::forge_rate::observe(host, feature, bucket, &crate::forge_rate::Observation {
+        status: resp.status,
+        headers: Some(&resp.headers),
+        graphql_rate: json.as_ref().map(|v| &v["data"]["rateLimit"]).filter(|v| v.is_object()),
+        graphql_errors: json.as_ref().map(|v| &v["errors"]).filter(|v| v.is_array()),
+        body: &resp.error_body,
+    });
+    if let crate::forge_rate::Verdict::Limited { until } = verdict {
+        return Err(rate_limited(host, until));
+    }
+    if resp.status == 401 {
+        return Err(ForgeError::Auth(format!(
+            "gh is not authenticated for {host}. Run `gh auth login --hostname {host}` in a terminal."
+        )));
+    }
+    if resp.status >= 400 {
+        let msg = resp.json.as_ref().and_then(|v| v["message"].as_str()).map(str::to_string)
+            .unwrap_or_else(|| stderr_of(&o));
+        return Err(ForgeError::Other(format!("GitHub answered {}: {msg}", resp.status)));
+    }
+    Ok(resp)
+}
+
+/// The fields every termic GraphQL query asks for, so its cost and the
+/// account's window are recorded. A `rateLimit` selection adds no points.
+const RATE_LIMIT_SELECTION: &str = "rateLimit { cost limit remaining used resetAt }";
+
+/// A GraphQL query's answer. Errors can sit beside good `data` (one alias of
+/// a batch pointing at a deleted repo fails alone, as a null), so only a
+/// query with no data at all is an error.
+struct GraphqlAnswer {
+    data: serde_json::Value,
+}
+
+/// Run `query { rateLimit {...} <selection> }` against `host`'s GraphQL API.
+/// `background`: see `gh_api`.
+fn gh_graphql(host: &str, feature: &'static str, background: bool, selection: &str) -> Result<GraphqlAnswer, ForgeError> {
+    let query = format!("query={{ {RATE_LIMIT_SELECTION} {selection} }}");
+    let resp = gh_api(host, feature, crate::forge_rate::Bucket::Graphql, background, &["graphql", "-f", &query])?;
+    let mut v = resp.json.ok_or_else(|| ForgeError::Other("gh returned unparseable JSON".into()))?;
+    let data = v["data"].take();
+    if data.is_null() {
+        let msg = v["errors"][0]["message"].as_str().unwrap_or("GraphQL query failed");
+        return Err(ForgeError::Other(msg.to_string()));
+    }
+    Ok(GraphqlAnswer { data })
+}
+
+/// A GraphQL string literal. JSON string escaping is a valid GraphQL
+/// string, so serde does the work.
+fn gql_str(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
+}
+
+/// The GitHub hosts `gh` is signed in to, github.com when none is known
+/// yet (detect() has not run).
+fn github_hosts() -> Vec<String> {
+    let mut hosts: Vec<String> = host_map().lock().unwrap().as_ref()
+        .map(|m| m.iter().filter(|(_, p)| **p == GITHUB).map(|(h, _)| h.clone()).collect())
+        .unwrap_or_default();
+    if hosts.is_empty() {
+        hosts.push("github.com".into());
+    }
+    hosts.sort();
+    hosts
+}
+
+/// Seed the rate ledger from `GET /rate_limit` for each signed-in GitHub
+/// host it knows nothing current about. That endpoint does not count
+/// against the primary limit, so this is not charged to anything. Failures
+/// are silent: no window just means the documented defaults.
+pub fn probe_rate_limits() {
+    /// A host is probed at most this often, whatever asks: one that keeps
+    /// failing never gets a window, and a caller looping on `probe` would
+    /// otherwise stack a 45s `gh` per call.
+    const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+    static PROBED: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
+    let Some(bin) = reprobe_bin("gh") else { return };
+    for host in github_hosts() {
+        if crate::forge_rate::has_fresh_window(&host) {
+            continue;
+        }
+        {
+            let mut probed = PROBED.get_or_init(Default::default).lock().unwrap();
+            if probed.get(&host).is_some_and(|at| at.elapsed() < PROBE_EVERY) {
+                continue;
+            }
+            probed.insert(host.clone(), std::time::Instant::now());
+        }
+        let Ok(o) = run_bounded(&bin, &["api", "--hostname", &host, "rate_limit"], None, GH_API_TIMEOUT) else { continue };
+        if !o.status.success() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+            crate::forge_rate::record_rate_limit_resources(&host, &v);
+        }
+    }
 }
 
 // ───────────────────────── detection (Settings / hints) ─────────────────────────
@@ -591,7 +900,7 @@ pub struct PrStatus {
     pub head: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ForgeError {
     /// The provider's CLI binary isn't installed / resolvable.
     CliMissing(&'static str),
@@ -599,6 +908,24 @@ pub enum ForgeError {
     Auth(String),
     /// Anything else — network, unexpected output, …
     Other(String),
+    /// GitHub refused on a rate limit (forge_rate has paused the host), or
+    /// a background call met termic's own gate. `until` is when termic asks
+    /// again (epoch seconds); the message says so in English. Its own arm so
+    /// a batch can stop instead of retrying the same refusal item by item.
+    RateLimited { until: u64, message: String },
+    /// The answer was past `MAX_OUTPUT` and was not read.
+    TooLarge(String),
+}
+
+impl ForgeError {
+    /// The user-facing text of anything but `CliMissing`, whose hint each
+    /// caller words for its own purpose.
+    pub fn into_message(self) -> String {
+        match self {
+            ForgeError::CliMissing(cli) => format!("{cli} is not installed."),
+            ForgeError::Auth(m) | ForgeError::Other(m) | ForgeError::TooLarge(m) | ForgeError::RateLimited { message: m, .. } => m,
+        }
+    }
 }
 
 fn stderr_of(o: &std::process::Output) -> String {
@@ -676,7 +1003,9 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         "--json",
         "number,url,title,state,isDraft,reviewDecision,latestReviews,statusCheckRollup,baseRefName,headRefName",
     ]);
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "pr_status", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found for branch X" — a real, clean "no PR".
@@ -687,24 +1016,337 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
     }
     let v: serde_json::Value = serde_json::from_slice(&o.stdout)
         .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    Ok(Some(github_pr_status_from(&v)))
+}
+
+/// A PR in `gh pr view --json` shape to a `PrStatus`. The batched GraphQL
+/// path normalizes into the same shape first, so both read one way.
+fn github_pr_status_from(v: &serde_json::Value) -> PrStatus {
     let state = match v["state"].as_str().unwrap_or("") {
         "MERGED" => "merged",
         "CLOSED" => "closed",
         _ if v["isDraft"].as_bool().unwrap_or(false) => "draft",
         _ => "open",
     };
-    let review = github_review(&v);
-    Ok(Some(PrStatus {
+    PrStatus {
         provider: GITHUB.into(),
         number: v["number"].as_u64().unwrap_or(0),
         url: v["url"].as_str().unwrap_or("").to_string(),
         title: v["title"].as_str().unwrap_or("").to_string(),
         state: state.into(),
         checks: rollup_to_checks(&v["statusCheckRollup"]),
-        review,
+        review: github_review(v),
         base: v["baseRefName"].as_str().unwrap_or("").to_string(),
         head: v["headRefName"].as_str().unwrap_or("").to_string(),
-    }))
+    }
+}
+
+// ───────────────────────── batched PR status (GitHub) ─────────────────────────
+//
+// One GraphQL query with an alias per PR instead of one `gh pr view` per
+// task. GraphQL charges per connection with a 1-point minimum, so 50 PRs
+// cost about 2 points where 50 `gh pr view`s cost 50 and 50 subprocesses.
+
+/// One PR to look up: `repository(owner, name).pullRequest(number)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+/// Aliases per query. Keeps a query well under GitHub's node and timeout
+/// limits (each PR asks for up to 100 check contexts).
+pub const PR_BATCH_MAX: usize = 50;
+
+/// The same fields `github_pr_status` asks `gh pr view` for, in GraphQL.
+/// The rollup is the head commit's, which is what gh reads too.
+const PR_STATUS_SELECTION: &str = "number url title state isDraft reviewDecision baseRefName headRefName \
+latestReviews(first: 20) { nodes { state } } \
+commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { \
+__typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }";
+
+/// `(host, owner, repo, number)` from a GitHub PR web URL,
+/// `https://host/owner/repo/pull/N`. None for anything else.
+pub fn parse_github_pr_url(url: &str) -> Option<(String, String, String, u64)> {
+    let rest = url.trim().strip_prefix("https://").or_else(|| url.trim().strip_prefix("http://"))?;
+    let mut parts = rest.split('/');
+    let host = parts.next()?.to_lowercase();
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number: u64 = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
+    // The number goes into a GraphQL `Int` (32-bit): one past it fails the
+    // whole aliased query, not just its own alias.
+    if host.is_empty() || !github_slug_ok(owner, repo) || number == 0 || number > i32::MAX as u64 {
+        return None;
+    }
+    Some((host, owner.to_string(), repo.to_string(), number))
+}
+
+/// GitHub's own owner / repo charset and lengths (39 / 100). Both land in
+/// GraphQL arguments and `repo:` search qualifiers, where a space or a colon
+/// would add terms to a query other repos share.
+fn github_slug_ok(owner: &str, repo: &str) -> bool {
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s != "." && s != ".."
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    ok(owner, 39) && ok(repo, 100)
+}
+
+fn pr_batch_selection(refs: &[PrRef]) -> String {
+    refs.iter().enumerate().map(|(i, r)| format!(
+        "p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {}) {{ {PR_STATUS_SELECTION} }} }}",
+        gql_str(&r.owner), gql_str(&r.repo), r.number,
+    )).collect::<Vec<_>>().join(" ")
+}
+
+/// GraphQL's PR shape to gh's: connections flattened to the arrays
+/// `github_pr_status_from` reads.
+fn normalize_graphql_pr(pr: &serde_json::Value) -> serde_json::Value {
+    let mut v = pr.clone();
+    v["latestReviews"] = pr["latestReviews"]["nodes"].clone();
+    let rollup = &pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"];
+    v["statusCheckRollup"] = if rollup.is_array() { rollup.clone() } else { serde_json::Value::Array(Vec::new()) };
+    v
+}
+
+/// The answer to a batch, in `refs` order. None for a PR the query could
+/// not see (deleted repo, wrong number, no access): one bad alias does not
+/// fail the rest.
+fn parse_pr_batch(data: &serde_json::Value, n: usize) -> Vec<Option<PrStatus>> {
+    (0..n).map(|i| {
+        let pr = &data[format!("p{i}")]["pullRequest"];
+        pr.is_object().then(|| github_pr_status_from(&normalize_graphql_pr(pr)))
+    }).collect()
+}
+
+/// Status for up to `PR_BATCH_MAX` PRs on one host, in one query.
+pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef]) -> Result<Vec<Option<PrStatus>>, ForgeError> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The background poller's call, always: it waits out termic's budget too.
+    let ans = gh_graphql(host, feature, true, &pr_batch_selection(refs))?;
+    Ok(parse_pr_batch(&ans.data, refs.len()))
+}
+
+// ───────────────────────── batched lists (GitHub) ─────────────────────────
+//
+// The Todos view used to run one `gh issue list` / `gh pr list` per project
+// per list: 3 to 5 subprocesses a project, three at a time. Here every list
+// for one host is ONE GraphQL query:
+//
+// - repo-wide lists (open issues, open PRs) are one `repository` alias each;
+// - lists about the user (assigned, mentions, mine, review) are `search`
+//   aliases, one per scope per chunk of repos (`repo:` qualifiers, kept under
+//   GitHub's 256-character query limit), split back out by repository.
+
+/// `(owner, repo)` of a GitHub remote, either URL shape git uses.
+pub fn github_remote_slug(url: &str) -> Option<(String, String)> {
+    let u = url.trim();
+    let path = match u.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => u.split_once(':')?.1,
+    };
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let mut it = path.rsplit('/');
+    let repo = it.next()?.to_string();
+    let owner = it.next()?.to_string();
+    // A remote outside GitHub's charset is no slug: the caller takes the
+    // CLI path.
+    github_slug_ok(&owner, &repo).then_some((owner, repo))
+}
+
+/// Which list, as the picker and Todos name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    Issues(IssueScope),
+    Prs(PrScope),
+}
+
+/// One list for one repo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoList {
+    pub owner: String,
+    pub repo: String,
+    pub kind: ListKind,
+    /// 1..=100 (a GraphQL page). The caller sends anything larger the
+    /// per-repo CLI way.
+    pub limit: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ListRows {
+    Issues(Vec<ForgeIssue>),
+    Prs(Vec<ForgePr>),
+}
+
+const ISSUE_FIELDS: &str = "number title url body author { login } comments { totalCount } \
+labels(first: 20) { nodes { name } } updatedAt";
+const PR_FIELDS: &str = "number title url body author { login } headRefName isCrossRepository isDraft updatedAt";
+/// GitHub's cap on a search query string.
+const SEARCH_QUERY_MAX: usize = 256;
+/// One search page. A chunk whose personal list runs past this loses the
+/// oldest rows of some repos.
+// ponytail: one page per search alias; paginate on `issueCount > 100` if a
+// real inbox ever outgrows it.
+const SEARCH_PAGE: u32 = 100;
+
+/// The search qualifiers for a personal list, None for a repo-wide one.
+/// Newest first, like `gh issue list` / `gh pr list`.
+fn search_base(kind: ListKind) -> Option<&'static str> {
+    Some(match kind {
+        ListKind::Issues(IssueScope::Assigned) => "is:open is:issue assignee:@me sort:created-desc",
+        ListKind::Issues(IssueScope::Mentions) => "is:open is:issue mentions:@me sort:created-desc",
+        ListKind::Prs(PrScope::Mine) => "is:open is:pr author:@me sort:created-desc",
+        ListKind::Prs(PrScope::Review) => "is:open is:pr review-requested:@me sort:created-desc",
+        ListKind::Issues(IssueScope::All) | ListKind::Prs(PrScope::Open) => return None,
+    })
+}
+
+/// Search strings covering `repos`, each under the length cap.
+fn search_chunks(base: &str, repos: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = base.to_string();
+    for r in repos {
+        let q = format!(" repo:{r}");
+        if cur.len() > base.len() && cur.len() + q.len() > SEARCH_QUERY_MAX {
+            out.push(std::mem::replace(&mut cur, base.to_string()));
+        }
+        cur.push_str(&q);
+    }
+    if cur.len() > base.len() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Where each alias's answer goes.
+enum Alias {
+    /// Repo-wide list: rows for `lists[i]`.
+    Repo(usize),
+    /// Search: rows for every list of `kind` whose repo they belong to.
+    Search(ListKind),
+}
+
+fn lists_selection(lists: &[RepoList]) -> (String, Vec<Alias>) {
+    let mut sel = Vec::new();
+    let mut aliases = Vec::new();
+    for (i, l) in lists.iter().enumerate() {
+        if search_base(l.kind).is_some() {
+            continue;
+        }
+        let (conn, fields) = match l.kind {
+            ListKind::Issues(_) => ("issues", ISSUE_FIELDS),
+            ListKind::Prs(_) => ("pullRequests", PR_FIELDS),
+        };
+        sel.push(format!(
+            "a{}: repository(owner: {}, name: {}) {{ {conn}(states: OPEN, first: {}, orderBy: {{ field: CREATED_AT, direction: DESC }}) {{ nodes {{ {fields} }} }} }}",
+            aliases.len(), gql_str(&l.owner), gql_str(&l.repo), l.limit.clamp(1, 100),
+        ));
+        aliases.push(Alias::Repo(i));
+    }
+    // Personal lists: one alias per (scope, chunk), repos deduplicated.
+    let mut kinds: Vec<ListKind> = Vec::new();
+    for l in lists {
+        if search_base(l.kind).is_some() && !kinds.contains(&l.kind) {
+            kinds.push(l.kind);
+        }
+    }
+    for kind in kinds {
+        let mut repos: Vec<String> = lists.iter().filter(|l| l.kind == kind)
+            .map(|l| format!("{}/{}", l.owner, l.repo)).collect();
+        repos.sort();
+        repos.dedup();
+        for q in search_chunks(search_base(kind).unwrap_or_default(), &repos) {
+            sel.push(format!(
+                "a{}: search(query: {}, type: ISSUE, first: {SEARCH_PAGE}) {{ nodes {{ \
+                 ... on Issue {{ {ISSUE_FIELDS} repository {{ nameWithOwner }} }} \
+                 ... on PullRequest {{ {PR_FIELDS} repository {{ nameWithOwner }} }} }} }}",
+                aliases.len(), gql_str(&q),
+            ));
+            aliases.push(Alias::Search(kind));
+        }
+    }
+    (sel.join(" "), aliases)
+}
+
+/// GraphQL issue nodes in `gh issue list --json` shape for `parse_github_issues`.
+fn issue_nodes_as_gh(nodes: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::Value::Array(nodes.iter().map(|n| {
+        let mut v = n.clone();
+        v["comments"] = n["comments"]["totalCount"].clone();
+        v["labels"] = n["labels"]["nodes"].clone();
+        v
+    }).collect())
+}
+
+fn parse_lists(data: &serde_json::Value, lists: &[RepoList], aliases: &[Alias]) -> Vec<ListRows> {
+    let mut out: Vec<ListRows> = lists.iter().map(|l| match l.kind {
+        ListKind::Issues(_) => ListRows::Issues(Vec::new()),
+        ListKind::Prs(_) => ListRows::Prs(Vec::new()),
+    }).collect();
+    let empty = Vec::new();
+    for (ai, alias) in aliases.iter().enumerate() {
+        let a = &data[format!("a{ai}")];
+        match alias {
+            Alias::Repo(i) => {
+                let nodes = a["issues"]["nodes"].as_array().or(a["pullRequests"]["nodes"].as_array()).unwrap_or(&empty);
+                out[*i] = match lists[*i].kind {
+                    ListKind::Issues(_) => ListRows::Issues(parse_github_issues(&issue_nodes_as_gh(nodes))),
+                    ListKind::Prs(_) => ListRows::Prs(parse_github_prs(&serde_json::Value::Array(nodes.clone()))),
+                };
+            }
+            Alias::Search(kind) => {
+                for node in a["nodes"].as_array().unwrap_or(&empty) {
+                    let Some(name) = node["repository"]["nameWithOwner"].as_str() else { continue };
+                    // Every list asking for this repo and scope, not just the
+                    // first: two projects can share a remote (two clones).
+                    for (i, l) in lists.iter().enumerate() {
+                        if l.kind != *kind || !format!("{}/{}", l.owner, l.repo).eq_ignore_ascii_case(name) {
+                            continue;
+                        }
+                        let cap = l.limit as usize;
+                        match &mut out[i] {
+                            ListRows::Issues(v) if v.len() < cap => {
+                                v.extend(parse_github_issues(&issue_nodes_as_gh(std::slice::from_ref(node))));
+                            }
+                            ListRows::Prs(v) if v.len() < cap => {
+                                v.extend(parse_github_prs(&serde_json::Value::Array(vec![node.clone()])));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Lists per query. Keeps the answer (each repo list carries up to 100
+/// bodies) and the query string (one argv entry; Windows caps a command line
+/// at 32,767 characters) bounded however many projects the Todos view has.
+pub const LISTS_BATCH_MAX: usize = 30;
+
+/// Every list in `lists` (all on `host`, at most `LISTS_BATCH_MAX`) in one
+/// GraphQL query, answers in `lists` order. A user's view, not a timer, so
+/// it is not held by termic's budget.
+pub fn github_lists(host: &str, feature: &'static str, lists: &[RepoList]) -> Result<Vec<ListRows>, ForgeError> {
+    if lists.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (sel, aliases) = lists_selection(lists);
+    let ans = gh_graphql(host, feature, false, &sel)?;
+    Ok(parse_lists(&ans.data, lists, &aliases))
+}
+
+/// Whether a task's local branch is the PR's head. A fork PR's head is
+/// checked out under `pr-<n>` or `pr-<n>-<head>` (`project_fetch_pr_branch`).
+pub fn branch_matches_pr(current: &str, head: &str, number: u64) -> bool {
+    current == head || current == format!("pr-{number}") || current == format!("pr-{number}-{head}")
 }
 
 /// Collapse gh's statusCheckRollup array (a mix of CheckRun objects with
@@ -1252,24 +1894,28 @@ fn norm_time(s: &str) -> String {
 
 /// Every comment on the PR/MR, oldest first. `number` is required - the
 /// watcher only runs once the PR identity is known.
-pub fn pr_comments(provider: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
+/// `background`: the comment watcher. A GitHub host's rate gate then holds
+/// the whole answer (`RateLimited`) rather than half of it.
+pub fn pr_comments(provider: &str, cwd: &Path, number: u64, background: bool) -> Result<Vec<PrComment>, ForgeError> {
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     let mut out = match provider {
         GITLAB => gitlab_mr_comments(&bin, cwd, number)?,
         AZURE => azure_pr_comments(&bin, cwd, number)?,
-        _ => github_pr_comments(&bin, cwd, number)?,
+        _ => github_pr_comments(&bin, cwd, number, background)?,
     };
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     out.dedup_by(|a, b| a.id == b.id);
     Ok(out)
 }
 
-fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
+fn github_pr_comments(bin: &str, cwd: &Path, number: u64, background: bool) -> Result<Vec<PrComment>, ForgeError> {
     let n = number.to_string();
     // Discussion comments + review summaries in one call.
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &["pr", "view", &n, "--json", "comments,reviews"], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "comments", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -1287,12 +1933,20 @@ fn github_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrCommen
     let path = format!(
         "repos/{{owner}}/{{repo}}/pulls/{n}/comments?per_page=100&sort=created&direction=desc"
     );
-    if let Ok(o2) = run(bin, &["api", &path], Some(cwd)) {
-        if o2.status.success() {
-            if let Ok(v2) = serde_json::from_slice::<serde_json::Value>(&o2.stdout) {
+    // Through `gh api --include`, so the REST window and a core refusal reach
+    // the ledger, and the watcher's calls count against `CORE_CAP`.
+    match gh_api_in_repo(cwd, "comments", crate::forge_rate::Bucket::Core, background, &[&path]) {
+        Ok(resp) => {
+            if let Some(v2) = resp.json {
                 all.extend(parse_github_inline_comments(&v2));
             }
         }
+        // The watcher only reports comments newer than the newest it has
+        // seen, so the discussion half alone could move that mark past
+        // inline comments it never read. A held leg holds the whole answer.
+        Err(e @ ForgeError::RateLimited { .. }) if background => return Err(e),
+        // Best-effort otherwise, like before.
+        Err(_) => {}
     }
     Ok(all)
 }
@@ -1652,6 +2306,92 @@ pub fn provider_for_repo(cwd: &Path, remote: &str) -> (Option<&'static str>, Str
     (provider, remote_url)
 }
 
+/// The host of the repo at `cwd`'s remote. The provider cache first; on a
+/// miss (cold start, or `detect()` just cleared it) it is warmed, which is
+/// one `git` subprocess, the same one the lookup that follows would pay.
+fn remote_host_for(cwd: &Path) -> Option<String> {
+    host_of_remote(&repo_forge(cwd).1)
+}
+
+/// `provider_for_repo` for whichever remote `cwd` was last resolved with,
+/// without the `git remote` subprocess that finds the default one. On a
+/// miss (cold start, or `detect()` just cleared it) the cache is warmed,
+/// which is that subprocess once.
+pub fn repo_forge(cwd: &Path) -> (Option<&'static str>, String) {
+    let prefix = format!("{}\u{1}", cwd.to_string_lossy());
+    let cached = provider_cache().lock().unwrap().iter()
+        .find(|(k, hit)| k.starts_with(&prefix) && hit.at.elapsed() < PROVIDER_TTL)
+        .map(|(_, hit)| (hit.provider, hit.remote_url.clone()));
+    cached.unwrap_or_else(|| provider_for_repo(cwd, &crate::detect_default_remote(cwd)))
+}
+
+/// The GitHub API host a task's or repo's calls go to: the key the rate
+/// ledger uses, so the gate and the charges ask about the same host GitHub
+/// answered from. The stored PR url's host first (no subprocess), else the
+/// remote's.
+///
+/// A host gh is not signed in to maps to github.com: an SSH alias
+/// (`git@github-work:acme/app.git`) is where gh sends it too, and anything
+/// else (junk an agent wrote into `.git/config`) neither escapes the gate
+/// nor becomes a ledger row, and a Settings card, of its own.
+// ponytail: an SSH alias for a GHE host is gated as github.com; resolve it
+// through `ssh -G` if anyone runs one.
+pub fn api_host_for(pr_url: Option<&str>, cwd: &Path) -> String {
+    let authed = authed_hosts();
+    let allowed = |h: String| github_host_allowed(&h, &authed).then_some(h);
+    pr_url.and_then(parse_github_pr_url).and_then(|(h, ..)| allowed(h))
+        .or_else(|| remote_host_for(cwd).and_then(allowed))
+        .unwrap_or_else(|| "github.com".into())
+}
+
+/// Whether background work for a task waits out a GitHub rate pause
+/// (forge_rate). `provider` is the task's recorded forge. Unset is mostly a
+/// task with no PR found yet (the field is only written once one is), so
+/// it is resolved from the repo's remote: a GitLab or Azure task must not
+/// wait on github.com. A host the ledger has never seen is never paused.
+pub fn background_held(provider: Option<&str>, pr_url: Option<&str>, cwd: &Path) -> bool {
+    let github = match provider {
+        Some(p) => p == GITHUB,
+        None => repo_forge(cwd).0 == Some(GITHUB),
+    };
+    github && crate::forge_rate::background_gate(&api_host_for(pr_url, cwd), crate::forge_rate::Bucket::Graphql).is_err()
+}
+
+/// Refuse a legacy `gh` call before it runs while GitHub's own refusal for
+/// `bucket` stands. A user action still asks; it just is not sent into a
+/// refusal that would only extend the wait.
+fn gh_cli_admit(cwd: &Path, bucket: crate::forge_rate::Bucket) -> Result<(), ForgeError> {
+    let host = api_host_for(None, cwd);
+    match crate::forge_rate::refused_until(&host, bucket) {
+        Some(until) => Err(rate_limited(&host, until)),
+        None => Ok(()),
+    }
+}
+
+/// Charge one legacy `gh` CLI call (which cannot report its cost) to the
+/// rate ledger as an estimate. Not when gh failed on auth: nothing was sent.
+///
+/// A call GitHub refused on a limit is not charged: it teaches the ledger
+/// the refusal instead (the CLI prints no headers, so `forge_rate` times
+/// it), and comes back as `RateLimited` for the caller to return before it
+/// reads the output. Without this, every caller still on the CLI path kept
+/// firing into a refusal, which GitHub answers by extending it.
+fn charge_gh_cli(cwd: &Path, feature: &'static str, bucket: crate::forge_rate::Bucket, o: &std::process::Output) -> Result<(), ForgeError> {
+    if !o.status.success() {
+        let err = stderr_of(o).to_lowercase();
+        if err.contains("rate limit") {
+            let host = api_host_for(None, cwd);
+            let until = crate::forge_rate::record_cli_refusal(&host, bucket, err.contains("secondary rate limit"));
+            return Err(rate_limited(&host, until));
+        }
+        if matches!(classify_stderr(GITHUB, &err), ForgeError::Auth(_)) {
+            return Ok(());
+        }
+    }
+    crate::forge_rate::record_estimated(&api_host_for(None, cwd), feature, bucket);
+    Ok(())
+}
+
 /// Drop the cached provider answers. Called after `detect()` re-probes,
 /// because signing in to a new self-hosted instance can turn a previously
 /// unresolvable remote into a real one.
@@ -1741,8 +2481,10 @@ fn github_issue_args(limit: &str, scope: IssueScope) -> Vec<&str> {
 
 fn github_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
     let n = limit.to_string();
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, &github_issue_args(&n, scope), Some(cwd))
     .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // A repo with issues disabled is not an error worth a red banner.
@@ -1845,7 +2587,9 @@ pub fn pr_list(provider: &str, cwd: &Path, limit: u32, scope: PrScope) -> Result
 /// Run one `gh pr list` and parse it. Every GitHub list is the same call
 /// with different filters, newest first (gh's default order).
 fn github_pr_list(bin: &str, cwd: &Path, args: &[&str]) -> Result<Vec<ForgePr>, ForgeError> {
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(bin, args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         return Err(classify_failure(GITHUB, &o));
     }
@@ -1928,8 +2672,10 @@ pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<Fo
         return azure_pr_show(&bin, cwd, number);
     }
     let n = number.to_string();
+    gh_cli_admit(cwd, crate::forge_rate::Bucket::Graphql)?;
     let o = run(&bin, &["pr", "view", &n, "--json", PR_JSON_FIELDS], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
+    charge_gh_cli(cwd, "lists", crate::forge_rate::Bucket::Graphql, &o)?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
         // "no pull requests found" is an answer, not a failure: the number is
@@ -2434,6 +3180,16 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn run_bounded_refuses_an_answer_past_the_cap_and_keeps_a_normal_one() {
+        let big = format!("head -c {} /dev/zero", MAX_OUTPUT + 1);
+        let err = run_bounded("sh", &["-c", &big], None, std::time::Duration::from_secs(30)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge, "{err}");
+        let ok = run_bounded("sh", &["-c", "printf hi"], None, std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(ok.stdout, b"hi");
+    }
+
     #[test]
     fn remote_host_extraction() {
         let h = |u: &str| host_of_remote(u);
@@ -2459,6 +3215,9 @@ mod tests {
         assert_eq!(parse_auth_hosts(glab), vec!["git.internal.acme.com"]);
         // Prose without a hostname must not be mistaken for one.
         assert!(parse_auth_hosts("You are not logged in to any hosts\n").is_empty());
+        // Only logged-in lines: this list decides where gh api sends a token.
+        assert!(parse_auth_hosts("  X Failed to log in to ghe.acme.com account bob (keyring)\n").is_empty());
+        assert!(parse_auth_hosts("  ✓ Git operations for ghe.acme.com configured to use ssh.acme.com\n").is_empty());
         assert!(parse_auth_hosts("").is_empty());
     }
 
@@ -3355,5 +4114,247 @@ code.internal.acme.com configured to use ssh protocol.\n";
         ]}"#).unwrap();
         let out = parse_azure_threads(&v, &HashSet::new());
         assert_eq!(out[0].created_at, "2026-06-12T09:00:00Z");
+    }
+
+    #[test]
+    fn api_output_parses_status_headers_and_body() {
+        // Shape of `gh api --include`: an LF status line, CRLF headers
+        // with Go-canonical names, a blank line, the body.
+        let out = b"HTTP/2.0 200 OK\nContent-Type: application/json\r\nX-Ratelimit-Remaining: 4999\r\nX-Ratelimit-Resource: core\r\n\r\n{\"a\":1}";
+        let r = parse_api_output(out).unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.headers["x-ratelimit-remaining"], "4999");
+        assert_eq!(r.headers["x-ratelimit-resource"], "core");
+        assert_eq!(r.json, Some(serde_json::json!({ "a": 1 })));
+        // The body is only kept as text on an error status.
+        assert!(r.error_body.is_empty());
+        let r = parse_api_output(b"HTTP/2.0 403 Forbidden\r\n\r\nsecondary rate limit").unwrap();
+        assert_eq!(r.error_body, "secondary rate limit");
+        assert!(r.json.is_none());
+    }
+
+    #[test]
+    fn api_output_reads_a_bodiless_answer_and_rejects_non_http_text() {
+        let r = parse_api_output(b"HTTP/2.0 304 Not Modified\nEtag: \"x\"\r\n\r\n").unwrap();
+        assert_eq!(r.status, 304);
+        assert!(r.json.is_none() && r.error_body.is_empty());
+        // No HTTP happened (gh not signed in): stdout is empty.
+        assert!(parse_api_output(b"").is_none());
+        assert!(parse_api_output(b"To get started with GitHub CLI, please run:  gh auth login\n").is_none());
+    }
+
+    #[test]
+    fn gql_str_escapes_quotes_and_backslashes() {
+        assert_eq!(gql_str(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn github_pr_urls_parse_into_host_owner_repo_number() {
+        assert_eq!(parse_github_pr_url("https://github.com/acme/app/pull/12"),
+            Some(("github.com".into(), "acme".into(), "app".into(), 12)));
+        assert_eq!(parse_github_pr_url("https://GHE.acme.com/team/svc/pull/7#discussion"),
+            Some(("ghe.acme.com".into(), "team".into(), "svc".into(), 7)));
+        assert_eq!(parse_github_pr_url("https://gitlab.example.io/a/b/-/merge_requests/3"), None);
+        assert_eq!(parse_github_pr_url("https://github.com/acme/app/issues/12"), None);
+        assert_eq!(parse_github_pr_url(""), None);
+    }
+
+    #[test]
+    fn pr_batch_selection_aliases_each_pr_and_escapes_names() {
+        let sel = pr_batch_selection(&[
+            PrRef { owner: "acme".into(), repo: "app".into(), number: 1 },
+            PrRef { owner: "a\"b".into(), repo: "c".into(), number: 2 },
+        ]);
+        assert!(sel.starts_with("p0: repository(owner: \"acme\", name: \"app\") { pullRequest(number: 1) {"));
+        assert!(sel.contains("p1: repository(owner: \"a\\\"b\", name: \"c\") { pullRequest(number: 2) {"));
+    }
+
+    #[test]
+    fn pr_batch_answers_read_like_gh_pr_view_and_missing_aliases_are_none() {
+        // Synthetic GraphQL answer: p0 open with a failing check and an
+        // approval, p1 merged with no checks, p2 a repo the token cannot see.
+        let data = serde_json::json!({
+            "p0": { "pullRequest": {
+                "number": 1, "url": "https://github.com/acme/app/pull/1", "title": "Add thing",
+                "state": "OPEN", "isDraft": false, "reviewDecision": null,
+                "baseRefName": "main", "headRefName": "feat",
+                "latestReviews": { "nodes": [{ "state": "APPROVED" }] },
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": { "nodes": [
+                    { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" },
+                    { "__typename": "StatusContext", "state": "FAILURE" }
+                ] } } } }] }
+            } },
+            "p1": { "pullRequest": {
+                "number": 2, "url": "https://github.com/acme/app/pull/2", "title": "Fix",
+                "state": "MERGED", "isDraft": false, "reviewDecision": "APPROVED",
+                "baseRefName": "main", "headRefName": "fix",
+                "latestReviews": { "nodes": [] },
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
+            } },
+            "p2": null
+        });
+        let out = parse_pr_batch(&data, 3);
+        let p0 = out[0].as_ref().unwrap();
+        assert_eq!((p0.state.as_str(), p0.checks.as_str(), p0.review.as_str(), p0.head.as_str()), ("open", "failing", "approved", "feat"));
+        let p1 = out[1].as_ref().unwrap();
+        assert_eq!((p1.state.as_str(), p1.checks.as_str(), p1.review.as_str()), ("merged", "none", "approved"));
+        assert!(out[2].is_none());
+    }
+
+    #[test]
+    fn a_task_branch_matches_its_pr_head_including_fork_checkouts() {
+        assert!(branch_matches_pr("feat", "feat", 9));
+        assert!(branch_matches_pr("pr-9", "feat", 9));
+        assert!(branch_matches_pr("pr-9-feat", "feat", 9));
+        assert!(!branch_matches_pr("other", "feat", 9));
+        assert!(!branch_matches_pr("pr-10", "feat", 9));
+    }
+
+    #[test]
+    fn github_remote_slugs_parse_from_both_url_shapes() {
+        assert_eq!(github_remote_slug("git@github.com:acme/app.git"), Some(("acme".into(), "app".into())));
+        assert_eq!(github_remote_slug("https://github.com/acme/app"), Some(("acme".into(), "app".into())));
+        assert_eq!(github_remote_slug("ssh://git@ghe.acme.com:22/team/svc.git/"), Some(("team".into(), "svc".into())));
+        assert_eq!(github_remote_slug("https://github.com/acme"), None);
+        // Outside GitHub's charset: these would add terms to a shared search.
+        assert_eq!(github_remote_slug("https://github.com/acme/app is:closed"), None);
+        assert_eq!(github_remote_slug("https://github.com/ac:me/app"), None);
+        assert_eq!(github_remote_slug("git@github.com:acme/my_app.v2.git"), Some(("acme".into(), "my_app.v2".into())));
+    }
+
+    #[test]
+    fn search_chunks_stay_under_githubs_query_cap() {
+        let base = search_base(ListKind::Prs(PrScope::Review)).unwrap();
+        let repos: Vec<String> = (0..40).map(|i| format!("acme/service-number-{i}")).collect();
+        let chunks = search_chunks(base, &repos);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= SEARCH_QUERY_MAX && c.starts_with(base)));
+        let joined = chunks.join(" ");
+        assert!(repos.iter().all(|r| joined.contains(&format!("repo:{r}"))));
+        assert!(search_chunks(base, &[]).is_empty());
+    }
+
+    fn rl(owner: &str, repo: &str, kind: ListKind, limit: u32) -> RepoList {
+        RepoList { owner: owner.into(), repo: repo.into(), kind, limit }
+    }
+
+    #[test]
+    fn lists_selection_uses_repository_for_repo_wide_and_one_search_per_scope() {
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Open), 30),
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "api", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "api", ListKind::Issues(IssueScope::Assigned), 50),
+        ];
+        let (sel, aliases) = lists_selection(&lists);
+        assert_eq!(aliases.len(), 3, "{sel}");
+        assert!(sel.contains("a0: repository(owner: \"acme\", name: \"app\") { pullRequests(states: OPEN, first: 30,"));
+        assert!(sel.contains(r#"query: "is:open is:pr review-requested:@me sort:created-desc repo:acme/api repo:acme/app""#), "{sel}");
+        assert!(sel.contains(r#"query: "is:open is:issue assignee:@me sort:created-desc repo:acme/api""#), "{sel}");
+    }
+
+    #[test]
+    fn search_answers_split_back_out_by_repository_and_cap_at_the_limit() {
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 1),
+            rl("acme", "api", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "app", ListKind::Issues(IssueScope::All), 50),
+        ];
+        let (_, aliases) = lists_selection(&lists);
+        let pr = |n: u64, repo: &str| serde_json::json!({
+            "number": n, "title": format!("PR {n}"), "url": format!("https://github.com/{repo}/pull/{n}"),
+            "body": "", "author": { "login": "alice" }, "headRefName": "feat", "isCrossRepository": false,
+            "isDraft": false, "updatedAt": "2026-01-01T00:00:00Z", "repository": { "nameWithOwner": repo } });
+        // Alias 0 is the repo-wide issues list, alias 1 the review search.
+        let data = serde_json::json!({
+            "a0": { "issues": { "nodes": [{
+                "number": 5, "title": "Bug", "url": "https://github.com/acme/app/issues/5", "body": "b",
+                "author": { "login": "bob" }, "comments": { "totalCount": 3 },
+                "labels": { "nodes": [{ "name": "bug" }] }, "updatedAt": "2026-01-02T00:00:00Z" }] } },
+            "a1": { "nodes": [pr(1, "acme/app"), pr(2, "Acme/App"), pr(3, "acme/api"), pr(4, "other/repo")] },
+        });
+        let out = parse_lists(&data, &lists, &aliases);
+        let ListRows::Prs(app) = &out[0] else { panic!() };
+        assert_eq!(app.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1], "capped at its limit");
+        let ListRows::Prs(api) = &out[1] else { panic!() };
+        assert_eq!(api.iter().map(|p| p.number).collect::<Vec<_>>(), vec![3]);
+        let ListRows::Issues(issues) = &out[2] else { panic!() };
+        assert_eq!((issues[0].number, issues[0].comments, issues[0].labels.clone()), (5, 3, vec!["bug".to_string()]));
+    }
+
+    #[test]
+    fn two_lists_on_one_repo_and_scope_both_get_the_search_rows() {
+        // Two projects cloned from the same remote ask for the same list.
+        let lists = [
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+            rl("acme", "app", ListKind::Prs(PrScope::Review), 30),
+        ];
+        let (_, aliases) = lists_selection(&lists);
+        let data = serde_json::json!({ "a0": { "nodes": [{
+            "number": 9, "title": "PR 9", "url": "https://github.com/acme/app/pull/9", "body": "",
+            "author": { "login": "alice" }, "headRefName": "feat", "isCrossRepository": false,
+            "isDraft": false, "updatedAt": "2026-01-01T00:00:00Z", "repository": { "nameWithOwner": "acme/app" } }] } });
+        for rows in parse_lists(&data, &lists, &aliases) {
+            let ListRows::Prs(prs) = rows else { panic!() };
+            assert_eq!(prs.iter().map(|p| p.number).collect::<Vec<_>>(), vec![9]);
+        }
+    }
+
+    #[test]
+    fn gh_api_only_talks_to_github_com_and_signed_in_github_hosts() {
+        let authed: HashMap<String, &'static str> =
+            [("ghe.acme.com".to_string(), GITHUB), ("gitlab.example.io".to_string(), GITLAB)].into();
+        assert!(github_host_allowed("github.com", &authed));
+        assert!(github_host_allowed("GHE.acme.com", &authed));
+        // A GitLab host, or one an agent wrote into a remote, is refused.
+        assert!(!github_host_allowed("gitlab.example.io", &authed));
+        assert!(!github_host_allowed("github.corp.net", &authed));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_bounded_run_is_killed_at_its_timeout() {
+        let t = std::time::Instant::now();
+        let r = run_bounded("sleep", &["5"], None, std::time::Duration::from_millis(200));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3));
+        let o = run_bounded("echo", &["hi"], None, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "hi");
+    }
+
+    /// Live check of the GraphQL termic sends, against the signed-in `gh`.
+    /// Not run by default (needs network and auth). To run:
+    ///
+    /// TERMIC_LIVE_GH='owner/repo#123' cargo test --lib live_github -- --ignored --nocapture
+    ///
+    /// with any PR you can see; `TERMIC_LIVE_GH_HOST` for a GHE host.
+    #[test]
+    #[ignore = "live: needs a signed-in gh and TERMIC_LIVE_GH=owner/repo#N"]
+    fn live_github_batch_queries_parse() {
+        let spec = std::env::var("TERMIC_LIVE_GH").expect("set TERMIC_LIVE_GH=owner/repo#N");
+        let host = std::env::var("TERMIC_LIVE_GH_HOST").unwrap_or_else(|_| "github.com".into());
+        let (slug, n) = spec.split_once('#').expect("owner/repo#N");
+        let (owner, repo) = slug.split_once('/').expect("owner/repo#N");
+        let number: u64 = n.parse().expect("a PR number");
+
+        let st = github_pr_status_batch(&host, "live", &[PrRef { owner: owner.into(), repo: repo.into(), number }])
+            .expect("batched PR status query");
+        let pr = st[0].as_ref().expect("the PR came back");
+        assert_eq!(pr.number, number);
+        println!("pr: {pr:?}");
+
+        let kinds = [
+            ListKind::Issues(IssueScope::All), ListKind::Issues(IssueScope::Assigned),
+            ListKind::Issues(IssueScope::Mentions), ListKind::Prs(PrScope::Open),
+            ListKind::Prs(PrScope::Mine), ListKind::Prs(PrScope::Review),
+        ];
+        let lists: Vec<RepoList> = kinds.iter().map(|k| RepoList { owner: owner.into(), repo: repo.into(), kind: *k, limit: 5 }).collect();
+        let rows = github_lists(&host, "live", &lists).expect("batched lists query");
+        for (k, r) in kinds.iter().zip(&rows) {
+            let n = match r { ListRows::Issues(v) => v.len(), ListRows::Prs(v) => v.len() };
+            println!("{k:?}: {n} rows");
+            assert!(n <= 5);
+        }
+        println!("ledger: {:?}", crate::forge_rate::status());
     }
 }

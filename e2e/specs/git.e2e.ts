@@ -2595,13 +2595,16 @@ describe("pr card (#21)", () => {
       // Age the snapshot past the background cadence and run one pass, in a
       // single step so no real tick can slip in between and make the result
       // ambiguous. (One landing there would be the same feature working, but
-      // this case should prove it, not depend on luck.)
+      // this case should prove it, not depend on luck.) The seeded PR is
+      // merged, which the poller only rechecks hourly (SETTLED_STALE_MS in
+      // store/pr.ts), so it has to be older than that, not just the
+      // few-minute cadence an open PR gets.
       await browser.execute(async (id) => {
         const t = window.__termic!;
         t.usePr.setState((s: any) => ({
           byTask: {
             ...s.byTask,
-            [id!]: { ...s.byTask[id!], fetchedAt: Date.now() - 10 * 60_000 },
+            [id!]: { ...s.byTask[id!], fetchedAt: Date.now() - 2 * 60 * 60_000 },
           },
         }));
         await t.prStatusPassNow();

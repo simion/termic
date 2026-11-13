@@ -67,6 +67,22 @@ export default {
       signedInAs: "已登录为 <1>{{account}}</1>",
       probing: "正在检测 CLI…",
     },
+    forgeRate: {
+      title: "GitHub API 配额",
+      hint: "gh 令牌的限额由你的终端和所有运行 gh 的智能体共享。Termic 在后台最多只使用自己的份额，并在账户余量不足前暂停轮询。通过旧版 gh 命令发出的调用不会报告消耗，因此按估算计入。",
+      none: "尚无 GitHub 调用。",
+      left: "剩余 {{remaining}} / {{limit}}，{{time}} 重置",
+      unknown: "尚未获取到限额",
+      spent: "Termic 本小时：{{spent}} / {{cap}}",
+      estimated: "（其中 {{n}} 为估算）",
+      paused: "后台轮询已暂停，直到 {{time}}：{{reason}}",
+      bucket: { graphql: "GraphQL", core: "REST" },
+      feature: {
+        pr_status: "PR 状态",
+        lists: "issue 和 PR 列表",
+        comments: "PR 评论",
+      },
+    },
     desktop: {
       title: "桌面项",
       hint: "AppImage 是单个文件：运行它不会添加启动器项、图标，也不会注册 <1>termic://</1> 链接的处理程序。此操作会在你的主目录中写入一个桌面项（{{path}}），不会移动 AppImage。",

@@ -23,6 +23,8 @@ import { LINK_CLICK_MODIFIER as CLICK_MOD } from "@/lib/previewBrowser";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn, cleanLines } from "@/lib/utils";
 import { usePr } from "@/store/pr";
+import { activePause, clockAt, useForgeRate } from "@/store/forgeRate";
+import type { ForgeBucketStatus } from "@/lib/types";
 import { azurePatLoginCmd, forgeInstallCmd, forgeLoginCmd, forgeName } from "@/lib/forge";
 import { CircleCheck, CircleX, RefreshCw } from "lucide-react";
 import { IS_MAC } from "@/lib/shortcuts";
@@ -211,6 +213,19 @@ export function GeneralSection() {
           hints contextually). Re-probed on every Settings visit. */}
       <Block>
         <ForgeStatusBlock />
+      </Block>
+
+      {/* What GitHub says is left on the gh token, and what termic itself
+          spent this hour. The token is shared with agents and the user's
+          terminal, so the two are shown side by side. */}
+      <Block
+        id="setting-forge-rate"
+        className={cn(
+          "rounded-md transition-colors duration-700",
+          flashId === "forge-rate" && "bg-[var(--color-accent-deep)]/15",
+        )}
+      >
+        <ForgeRateBlock />
       </Block>
 
       <Block>
@@ -532,6 +547,68 @@ function ForgeStatusBlock() {
         {forges === null && (
           <div className="text-[12.5px] text-[var(--color-fg-faint)]">{t("general.forge.probing")}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Ledger refresh while the block is on screen. IPC only, no network: the
+ *  event already carries changes, this catches the ones its throttle drops
+ *  and the spend that ages out of the hour. */
+const RATE_REFRESH_MS = 15_000;
+
+function ForgeRateBlock() {
+  const { t, i18n } = useTranslation("settings");
+  const hosts = useForgeRate(s => s.hosts);
+  const refresh = useForgeRate(s => s.refresh);
+  useEffect(() => {
+    void refresh(true);
+    const id = window.setInterval(() => { void refresh(); }, RATE_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [refresh]);
+  // The UI language, not the system locale.
+  const fmt = (n: number) => n.toLocaleString(i18n.resolvedLanguage);
+  const bucketRow = (b: ForgeBucketStatus) => (
+    <div key={b.bucket} className="flex flex-wrap items-baseline gap-x-2 text-[12.5px] text-[var(--color-fg-dim)]">
+      <span className="w-16 shrink-0 text-[var(--color-fg)]">{t(`general.forgeRate.bucket.${b.bucket}`)}</span>
+      <span data-testid={`forge-rate-left-${b.bucket}`}>
+        {b.window
+          ? t("general.forgeRate.left", { remaining: fmt(b.window.remaining), limit: fmt(b.window.limit), time: clockAt(b.window.reset_at) })
+          : t("general.forgeRate.unknown")}
+      </span>
+      <span className="text-[var(--color-fg-faint)]">
+        · {t("general.forgeRate.spent", { spent: fmt(b.spent), cap: fmt(b.cap) })}
+        {b.estimated > 0 && <> {t("general.forgeRate.estimated", { n: fmt(b.estimated) })}</>}
+      </span>
+      {b.by_feature.length > 0 && (
+        <span className="basis-full pl-[4.5rem] text-[12px] text-[var(--color-fg-faint)]">
+          {b.by_feature.map(f => `${t(`general.forgeRate.feature.${f.feature}`, { defaultValue: f.feature })} ${fmt(f.cost)}`).join(" · ")}
+        </span>
+      )}
+    </div>
+  );
+  return (
+    <div data-testid="forge-rate-block">
+      <div className="text-[14px] font-medium">{t("general.forgeRate.title")}</div>
+      <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("general.forgeRate.hint")}</div>
+      <div className="mt-3 flex flex-col gap-2">
+        {hosts.length === 0 && (
+          <div className="text-[12.5px] text-[var(--color-fg-faint)]">{t("general.forgeRate.none")}</div>
+        )}
+        {hosts.map(h => {
+          const pause = activePause([h]);
+          return (
+            <div key={h.host} className="flex flex-col gap-1 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2">
+              <div className="font-mono text-[12px] text-[var(--color-fg)]">{h.host}</div>
+              {h.buckets.map(bucketRow)}
+              {pause && (
+                <div data-testid="forge-rate-paused" className="text-[12.5px] text-[var(--color-warn)]">
+                  {t("general.forgeRate.paused", { time: clockAt(pause.until), reason: t(`chrome:forgeRatePill.kind.${pause.kind}`) })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

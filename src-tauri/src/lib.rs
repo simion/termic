@@ -49,6 +49,7 @@ mod shell_env;
 mod automation;
 mod cli_server;
 mod forge;
+mod forge_rate;
 mod theme_import;
 mod mcp_server;
 mod mdns;
@@ -15517,6 +15518,23 @@ async fn detect_forges() -> Vec<forge::ForgeCliStatus> {
         .unwrap_or_default()
 }
 
+/// The GitHub rate ledger: each host's limits, what is left, termic's own
+/// spend in the last hour by feature, and whether background work is
+/// paused. `probe` first seeds unknown hosts from `GET /rate_limit` (free
+/// against the primary limit). Changes also arrive as
+/// `termic://forge-rate-changed` with the same payload.
+#[tauri::command]
+async fn forge_rate_status(probe: Option<bool>) -> Vec<forge_rate::RateStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if probe.unwrap_or(false) {
+            forge::probe_rate_limits();
+        }
+        forge_rate::status()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Everything the PR card needs in one round-trip: provider resolution
 /// from the task's remote + the live PR/MR snapshot (or a precise
 /// reason there isn't one). `status` tells the frontend exactly which
@@ -15528,12 +15546,16 @@ pub struct PrLookup {
     pub provider: Option<String>,
     pub remote_url: String,
     /// "ok" | "no-remote" | "unsupported-remote" | "cli-missing"
-    /// | "cli-unauthed" | "error".
+    /// | "cli-unauthed" | "rate-limited" | "error". "rate-limited" is GitHub
+    /// refusing on a limit; the webview words it from the rate ledger.
     pub status: String,
     /// Human hint for the non-ok states.
     pub message: String,
     /// Present iff status == "ok" AND a PR/MR exists for the branch.
     pub pr: Option<forge::PrStatus>,
+    /// "rate-limited" only: when termic asks that host again (epoch
+    /// seconds), for the webview to word in the UI's language and clock.
+    pub retry_at: Option<u64>,
 }
 
 /// The shared lookup body: resolve the repo's forge off its default remote,
@@ -15558,6 +15580,7 @@ fn pr_lookup_at(
             status: "no-remote".into(),
             message: "No git remote configured. Push the repo to GitHub, GitLab, or Azure DevOps first.".into(),
             pr: None,
+            retry_at: None,
         };
     }
     let Some(provider) = provider else {
@@ -15567,6 +15590,7 @@ fn pr_lookup_at(
             status: "unsupported-remote".into(),
             message: format!("Remote {} is not a GitHub, GitLab, or Azure DevOps host.", forge::remote_for_display(&remote_url)),
             pr: None,
+            retry_at: None,
         };
     };
     // Resolve by BRANCH first, and only fall back to the stored number.
@@ -15600,32 +15624,28 @@ fn pr_lookup_at(
             status: "ok".into(),
             message: String::new(),
             pr,
+            retry_at: None,
         },
-        Err(forge::ForgeError::CliMissing(cli)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "cli-missing".into(),
-            message: cli_missing_message(provider, &cli, &format!(
-                "see and create {}",
-                if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
-            )),
-            pr: None,
-        },
-        Err(forge::ForgeError::Auth(msg)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "cli-unauthed".into(),
-            message: msg,
-            pr: None,
-        },
-        Err(forge::ForgeError::Other(msg)) => PrLookup {
-            provider: Some(provider.to_string()),
-            remote_url,
-            status: "error".into(),
-            message: msg,
-            pr: None,
-        },
+        Err(e) => pr_lookup_failed(provider, remote_url, e),
     }
+}
+
+/// A lookup that failed, with the status the PR card turns into a hint.
+fn pr_lookup_failed(provider: &str, remote_url: String, e: forge::ForgeError) -> PrLookup {
+    let mut retry_at = None;
+    let (status, message) = match e {
+        forge::ForgeError::CliMissing(cli) => ("cli-missing", cli_missing_message(provider, &cli, &format!(
+            "see and create {}",
+            if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
+        ))),
+        forge::ForgeError::Auth(msg) => ("cli-unauthed", msg),
+        forge::ForgeError::RateLimited { until, message } => {
+            retry_at = Some(until);
+            ("rate-limited", message)
+        }
+        forge::ForgeError::Other(msg) | forge::ForgeError::TooLarge(msg) => ("error", msg),
+    };
+    PrLookup { provider: Some(provider.to_string()), remote_url, status: status.into(), message, pr: None, retry_at }
 }
 
 /// Whether a poll's PR differs from what the task record caches. The
@@ -15642,27 +15662,325 @@ fn pr_cache_differs(w: &Task, p: &forge::PrStatus, provider: &str) -> bool {
 
 fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    Ok(pr_lookup_task(&w))
+}
+
+/// A task's own lookup, its identity persisted.
+fn pr_lookup_task(w: &Task) -> PrLookup {
     let lookup = pr_lookup_at(Path::new(&w.path), w.pr_number, w.pr_provider.as_deref());
-    // Cache the identity on the task record so future polls (and the next
-    // app launch) can resolve by number.
-    if let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) {
-        // The title and state ride along (History searches and shows them),
-        // but a poll that saw nothing new writes nothing: this runs every
-        // few seconds per task with a PR.
-        if pr_cache_differs(&w, p, provider) {
-            let mut list = load_tasks_all();
-            if let Some(wm) = list.iter_mut().find(|x| x.id == id) {
-                wm.pr_url = Some(p.url.clone());
-                wm.pr_number = Some(p.number);
-                wm.pr_provider = Some(provider.to_string());
-                wm.pr_title = Some(p.title.clone());
-                wm.pr_state = Some(p.state.clone());
-                wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
-                let _ = save_task(wm);
+    persist_pr_identity(w, &lookup);
+    lookup
+}
+
+/// Cache the identity on the task record so future polls (and the next app
+/// launch) can resolve by number. The title and state ride along (History
+/// searches and shows them), but a poll that saw nothing new writes nothing:
+/// this runs every minute per task with a PR.
+fn persist_pr_identity(w: &Task, lookup: &PrLookup) {
+    let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) else { return };
+    if !pr_cache_differs(w, p, provider) {
+        return;
+    }
+    let mut list = load_tasks_all();
+    if let Some(wm) = list.iter_mut().find(|x| x.id == w.id) {
+        wm.pr_url = Some(p.url.clone());
+        wm.pr_number = Some(p.number);
+        wm.pr_provider = Some(provider.to_string());
+        wm.pr_title = Some(p.title.clone());
+        wm.pr_state = Some(p.state.clone());
+        wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
+        let _ = save_task(wm);
+    }
+}
+
+#[derive(Serialize)]
+struct TaskPrLookup {
+    id: String,
+    #[serde(flatten)]
+    lookup: PrLookup,
+}
+
+/// PR status for many tasks at once. A GitHub task whose record has a PR url
+/// goes into one GraphQL query per host (up to `PR_BATCH_MAX` PRs each);
+/// anything else takes the per-task `pr_lookup_at` path, and so does a batch
+/// answer that cannot be trusted on its own (see `batch_route`).
+///
+/// Background work, always: `gh_api` refuses a chunk while the host's gate
+/// is closed, and the rest of that host is left out of the answer, so the
+/// caller keeps what it had. How any other failure is answered: see
+/// `batch_failure_plan`.
+///
+/// Every way out of the batch into a per-task `gh pr view` (a task the query
+/// cannot hold, a chunk that keeps failing, an answer that needs a second
+/// look, a moved branch) spends from one `BATCH_FALLBACK_MAX` budget per
+/// pass. A task past it is left out, or answered with what the batch saw, and
+/// comes first next pass, since the caller asks stalest first.
+fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
+    let all = load_tasks_all();
+    // Rechecks of tasks that are gone or archived are never asked again.
+    rechecks().lock().retain(|id, _| all.iter().any(|t| &t.id == id && !t.archived));
+    let tasks: Vec<&Task> = ids.iter()
+        .filter_map(|id| all.iter().find(|t| &t.id == id))
+        .filter(|t| !t.is_main_checkout)
+        .collect();
+    let now = forge_rate::now_secs();
+    let mut budget = BATCH_FALLBACK_MAX;
+
+    // `single` carries what the batch saw, to answer with when the per-task
+    // lookup does not run this pass.
+    let mut by_host: std::collections::BTreeMap<String, Vec<(&Task, forge::PrRef)>> = Default::default();
+    let mut single: Vec<(&Task, Option<forge::PrStatus>)> = Vec::new();
+    for t in tasks {
+        let github = t.pr_provider.as_deref().map_or(true, |p| p == forge::GITHUB);
+        match t.pr_url.as_deref().and_then(forge::parse_github_pr_url) {
+            Some((host, owner, repo, number)) if github => {
+                by_host.entry(host).or_default().push((t, forge::PrRef { owner, repo, number }));
+            }
+            // A url the query cannot hold: per task, at the recheck pace.
+            _ => {
+                if take_recheck(&t.id, "", now) {
+                    single.push((t, None));
+                }
             }
         }
     }
-    Ok(lookup)
+
+    let ok = |t: &Task, pr: forge::PrStatus| -> TaskPrLookup {
+        // The cached remote, not a `git remote` per task per pass.
+        let (_, remote_url) = forge::repo_forge(Path::new(&t.path));
+        let lookup = PrLookup {
+            provider: Some(forge::GITHUB.to_string()),
+            remote_url,
+            status: "ok".into(),
+            message: String::new(),
+            pr: Some(pr),
+            retry_at: None,
+        };
+        persist_pr_identity(t, &lookup);
+        TaskPrLookup { id: t.id.clone(), lookup }
+    };
+
+    let mut out = Vec::new();
+    'hosts: for (host, items) in by_host {
+        for chunk in items.chunks(forge::PR_BATCH_MAX) {
+            let refs: Vec<forge::PrRef> = chunk.iter().map(|(_, r)| r.clone()).collect();
+            let answers = match forge::github_pr_status_batch(&host, "pr_status", &refs) {
+                Ok(a) => {
+                    batch_failures().lock().remove(&host);
+                    a
+                }
+                // The gate is closed, now or since a chunk ago: the rest of
+                // the host waits for the next pass.
+                Err(forge::ForgeError::RateLimited { .. }) => continue 'hosts,
+                Err(e) => {
+                    let streak = {
+                        let mut f = batch_failures().lock();
+                        let n = f.entry(host.clone()).or_insert(0);
+                        *n = n.saturating_add(1);
+                        *n
+                    };
+                    match batch_failure_plan(&e, streak) {
+                        FailurePlan::Answer => {
+                            for (t, _) in chunk {
+                                let (_, remote_url) = forge::repo_forge(Path::new(&t.path));
+                                let failed = pr_lookup_failed(forge::GITHUB, remote_url, e.clone());
+                                out.push(TaskPrLookup { id: t.id.clone(), lookup: failed });
+                            }
+                        }
+                        FailurePlan::LeaveOut => {
+                            eprintln!("[pr] batch status on {host} failed, retrying next pass: {e:?}");
+                        }
+                        FailurePlan::FallBack => {
+                            eprintln!("[pr] batch status on {host} keeps failing, per task within the pass budget: {e:?}");
+                            single.extend(chunk.iter().map(|(t, _)| (*t, None)));
+                        }
+                    }
+                    continue;
+                }
+            };
+            for ((t, r), answer) in chunk.iter().zip(answers) {
+                // An answer about some other PR (a host that re-homed it, or
+                // a renamed repo) is not trusted, nor persisted onto the
+                // task: the per-task lookup finds what the branch is on.
+                let answer = answer.filter(|p| answer_is_for(&p.url, &host, r));
+                let path = Path::new(&t.path);
+                let branch = head_branch(path);
+                match batch_route(answer.as_ref(), branch.as_deref()) {
+                    BatchRoute::Trusted => out.push(ok(t, answer.expect("trusted means answered"))),
+                    BatchRoute::Single => {
+                        if take_recheck(&t.id, "", now) {
+                            single.push((t, answer));
+                        } else if let Some(pr) = answer {
+                            // Closed, as of this pass. A replacement on the
+                            // same branch is looked for at the recheck pace.
+                            out.push(ok(t, pr));
+                        }
+                    }
+                    BatchRoute::Moved => {
+                        let pr = answer.expect("moved means answered");
+                        let branch = branch.as_deref().unwrap_or_default();
+                        out.push(ok(t, moved_branch_pr(t, branch, pr, now, &mut budget)));
+                    }
+                }
+            }
+        }
+    }
+
+    for (t, batch_pr) in single {
+        let path = Path::new(&t.path);
+        if forge::background_held(t.pr_provider.as_deref(), t.pr_url.as_deref(), path) {
+            continue;
+        }
+        if budget == 0 {
+            if let Some(pr) = batch_pr {
+                out.push(ok(t, pr));
+            }
+            continue;
+        }
+        budget -= 1;
+        out.push(TaskPrLookup { id: t.id.clone(), lookup: pr_lookup_task(t) });
+    }
+    out
+}
+
+/// Whether a batch answer's url names the PR that was asked for. Case
+/// aside: GitHub answers with the canonical spelling.
+fn answer_is_for(url: &str, host: &str, asked: &forge::PrRef) -> bool {
+    forge::parse_github_pr_url(url).is_some_and(|(h, owner, repo, number)| {
+        h.eq_ignore_ascii_case(host)
+            && owner.eq_ignore_ascii_case(&asked.owner)
+            && repo.eq_ignore_ascii_case(&asked.repo)
+            && number == asked.number
+    })
+}
+
+/// The checkout's branch from its HEAD file, without a `git` subprocess
+/// (the batch asks this for every task, every pass). A worktree's `.git` is
+/// a `gitdir:` pointer file. Anything unexpected asks git.
+fn head_branch(repo: &Path) -> Option<String> {
+    let dot_git = repo.join(".git");
+    let git_dir = match std::fs::read_to_string(&dot_git) {
+        Ok(pointer) => {
+            let dir = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+            if dir.is_absolute() { dir } else { repo.join(dir) }
+        }
+        Err(_) => dot_git,
+    };
+    match std::fs::read_to_string(git_dir.join("HEAD")) {
+        Ok(head) => match head.trim().strip_prefix("ref: refs/heads/") {
+            Some(b) if !b.is_empty() => Some(b.to_string()),
+            Some(_) => current_branch(repo),
+            // Detached.
+            None => None,
+        },
+        Err(_) => current_branch(repo),
+    }
+}
+
+/// What a batch answer for one task means.
+#[derive(Debug, PartialEq, Eq)]
+enum BatchRoute {
+    /// The PR the task is on: use it.
+    Trusted,
+    /// Open, but the task's branch is no longer its head: the task moved to
+    /// another branch, which may have a PR of its own (`moved_branch_pr`).
+    Moved,
+    /// Missing (deleted repo, wrong number, lost access) or closed (not
+    /// merged): the full per-task lookup, whose by-branch half is what finds
+    /// a replacement PR opened on the same branch. At the recheck pace.
+    Single,
+}
+
+fn batch_route(answer: Option<&forge::PrStatus>, branch: Option<&str>) -> BatchRoute {
+    match answer {
+        None => BatchRoute::Single,
+        Some(p) if p.state == "closed" => BatchRoute::Single,
+        // Detached HEAD (a PR review checkout) has no branch to disagree.
+        Some(p) => match branch {
+            Some(b) if !forge::branch_matches_pr(b, &p.head, p.number) => BatchRoute::Moved,
+            _ => BatchRoute::Trusted,
+        },
+    }
+}
+
+/// How often one task's batch answer gets a per-task second look (a moved
+/// branch, or an answer the batch could not trust). Without this each cost a
+/// `gh pr view` every pass, forever: a deleted repo's PR never stops being
+/// missing.
+const RECHECK_SECS: u64 = 180;
+
+/// Per task: what was last rechecked (the moved branch, or "" for a
+/// per-task lookup) and when.
+fn rechecks() -> &'static Mutex<HashMap<String, (String, u64)>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<String, (String, u64)>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether to recheck again: something new (`key`), or the last look is
+/// older than `RECHECK_SECS`.
+fn recheck_due(last: Option<&(String, u64)>, key: &str, now: u64) -> bool {
+    last.map_or(true, |(k, at)| k != key || now >= at + RECHECK_SECS)
+}
+
+/// `recheck_due`, and if so, mark it done now.
+fn take_recheck(id: &str, key: &str, now: u64) -> bool {
+    let mut m = rechecks().lock();
+    if !recheck_due(m.get(id), key, now) {
+        return false;
+    }
+    m.insert(id.to_string(), (key.to_string(), now));
+    true
+}
+
+/// The PR for a task whose branch moved off `batch_pr`: the branch's own PR
+/// when it has one (the record re-points to it and the next pass trusts the
+/// batch again), else `batch_pr`, which is what the stored number would
+/// answer anyway. By branch only, at the recheck pace, within the pass's
+/// budget, and not while the host is held.
+fn moved_branch_pr(t: &Task, branch: &str, batch_pr: forge::PrStatus, now: u64, budget: &mut usize) -> forge::PrStatus {
+    let path = Path::new(&t.path);
+    if *budget == 0 || forge::background_held(t.pr_provider.as_deref(), t.pr_url.as_deref(), path) {
+        return batch_pr;
+    }
+    if !take_recheck(&t.id, branch, now) {
+        return batch_pr;
+    }
+    *budget -= 1;
+    match forge::pr_status(forge::GITHUB, path, None) {
+        Ok(Some(own)) => own,
+        _ => batch_pr,
+    }
+}
+
+/// Per-task `gh pr view`s one batched pass may start, however it got there
+/// (the old poller's per-tick cap).
+const BATCH_FALLBACK_MAX: usize = 8;
+
+/// Consecutive non-limit batch failures per host, reset by a good answer.
+fn batch_failures() -> &'static Mutex<HashMap<String, u32>> {
+    static F: std::sync::OnceLock<Mutex<HashMap<String, u32>>> = std::sync::OnceLock::new();
+    F.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FailurePlan {
+    /// Answer every task with the failure's status: missing CLI or signed
+    /// out, which the card turns into a hint the user can act on.
+    Answer,
+    /// Answer nobody this pass, so a transient 502 or a timeout does not
+    /// replace good lookups with an error.
+    LeaveOut,
+    /// It keeps failing (an older GHES missing a queried field): ask per
+    /// task, which may still work there, within the pass budget.
+    FallBack,
+}
+
+fn batch_failure_plan(e: &forge::ForgeError, streak: u32) -> FailurePlan {
+    match e {
+        forge::ForgeError::CliMissing(_) | forge::ForgeError::Auth(_) => FailurePlan::Answer,
+        _ if streak <= 1 => FailurePlan::LeaveOut,
+        _ => FailurePlan::FallBack,
+    }
 }
 
 /// A member's PR/MR lookup inside a multi-repo task: the `PrLookup`
@@ -15682,9 +16000,21 @@ pub struct MemberPrLookup {
     pub lookup: PrLookup,
 }
 
-fn member_pr_lookups(id: &str) -> Result<Vec<MemberPrLookup>, String> {
+/// `background`: a poller. None, with nothing called, while any member's
+/// GitHub host is rate-paused; the caller keeps the rows it has. All or
+/// nothing, so a held member's row is never dropped from the list.
+// ponytail: one paused GitHub member holds the task's other members too;
+// split per member if mixed-host multi-repo tasks show up.
+fn member_pr_lookups(id: &str, background: bool) -> Result<Option<Vec<MemberPrLookup>>, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
-    Ok(on_disk_members(&w)
+    if background && on_disk_members(&w).any(|m| {
+        let cwd = Path::new(&m.path);
+        forge::provider_for_repo(cwd, &detect_default_remote(cwd)).0 == Some(forge::GITHUB)
+            && forge::background_held(Some(forge::GITHUB), None, cwd)
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(on_disk_members(&w)
         .map(|m| {
             let cwd = Path::new(&m.path);
             // Frozen `m.branch` is the create-time value; read HEAD like
@@ -15702,7 +16032,7 @@ fn member_pr_lookups(id: &str) -> Result<Vec<MemberPrLookup>, String> {
                 lookup: pr_lookup_at(cwd, None, None),
             }
         })
-        .collect())
+        .collect()))
 }
 
 /// One issue-list round-trip: provider resolution + the open issues, or
@@ -15716,6 +16046,8 @@ struct IssueLookup {
     status: String,
     message: String,
     issues: Vec<forge::ForgeIssue>,
+    /// As `PrLookup::retry_at`.
+    retry_at: Option<u64>,
 }
 
 /// The "CLI missing" hint, per forge: az is two installs (CLI + the
@@ -15746,6 +16078,7 @@ fn issue_lookup_blocking(project_id: &str, limit: u32, scope: forge::IssueScope)
         status: status.into(),
         message,
         issues: Vec::new(),
+        retry_at: None,
     };
     if remote_url.is_empty() {
         return Ok(none(
@@ -15765,6 +16098,7 @@ fn issue_lookup_blocking(project_id: &str, limit: u32, scope: forge::IssueScope)
         status: status.into(),
         message,
         issues,
+        retry_at: None,
     };
     match forge::issue_list(provider, &cwd, limit, scope) {
         Ok(issues) => Ok(with("ok", String::new(), issues)),
@@ -15777,7 +16111,10 @@ fn issue_lookup_blocking(project_id: &str, limit: u32, scope: forge::IssueScope)
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
-        Err(forge::ForgeError::Other(msg)) => Ok(with("error", msg, Vec::new())),
+        Err(forge::ForgeError::RateLimited { until, message }) => {
+            Ok(IssueLookup { retry_at: Some(until), ..with("rate-limited", message, Vec::new()) })
+        }
+        Err(forge::ForgeError::Other(msg) | forge::ForgeError::TooLarge(msg)) => Ok(with("error", msg, Vec::new())),
     }
 }
 
@@ -15788,6 +16125,8 @@ struct PrPickList {
     status: String,
     message: String,
     prs: Vec<forge::ForgePr>,
+    /// As `PrLookup::retry_at`.
+    retry_at: Option<u64>,
 }
 
 /// One of the PR picker's lists for a PROJECT, and the by-number lookup
@@ -15810,6 +16149,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>, scope: 
         status: status.into(),
         message,
         prs: Vec::new(),
+        retry_at: None,
     };
     if remote_url.is_empty() {
         return Ok(none("no-remote", "No git remote configured, so there are no pull requests to pull from.".into()));
@@ -15823,6 +16163,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>, scope: 
         status: status.into(),
         message,
         prs,
+        retry_at: None,
     };
     let result = match number {
         // One number: `pr view`. Not found is a status, not an error, because
@@ -15841,7 +16182,10 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>, scope: 
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
-        Err(forge::ForgeError::Other(msg)) => Ok(with("error", msg, Vec::new())),
+        Err(forge::ForgeError::RateLimited { until, message }) => {
+            Ok(PrPickList { retry_at: Some(until), ..with("rate-limited", message, Vec::new()) })
+        }
+        Err(forge::ForgeError::Other(msg) | forge::ForgeError::TooLarge(msg)) => Ok(with("error", msg, Vec::new())),
     }
 }
 
@@ -15972,6 +16316,185 @@ async fn project_forge_provider(project_id: String) -> Result<ForgeProvider, Str
 
 /// Open issues for a PROJECT (not a task): the New Task dialog runs before
 /// any task exists, so this resolves the repo from the project root.
+/// One list the Todos view (or a dialog) reads: `kind` "issues" | "prs",
+/// `scope` as `project_forge_issues` / `project_forge_prs` take it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForgeListQuery {
+    project_id: String,
+    kind: String,
+    scope: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ForgeListAnswer {
+    Issues(IssueLookup),
+    Prs(PrPickList),
+}
+
+/// A list answer with no rows, shaped for the list it answers.
+fn list_answer_empty(issues: bool, provider: Option<String>, remote_url: String, status: &str, message: String, retry_at: Option<u64>) -> ForgeListAnswer {
+    let status = status.to_string();
+    if issues {
+        ForgeListAnswer::Issues(IssueLookup { provider, remote_url, status, message, issues: Vec::new(), retry_at })
+    } else {
+        ForgeListAnswer::Prs(PrPickList { provider, remote_url, status, message, prs: Vec::new(), retry_at })
+    }
+}
+
+/// Many project lists in one call, answers in `queries` order. GitHub lists
+/// on one host go out as GraphQL queries of up to `forge::LISTS_BATCH_MAX`
+/// lists each (`forge::github_lists`); the rest (GitLab, Azure, no forge, a
+/// limit past one GraphQL page) take the per-project CLI path, three at a
+/// time. A failed GitHub query falls back to that path too, which is also
+/// what turns the failure into the usual "cli-missing" / "cli-unauthed"
+/// statuses, except a rate limit, which answers each of its lists (and the
+/// host's later chunks) with the limit instead of asking again.
+fn forge_lists_blocking(queries: &[ForgeListQuery]) -> Vec<ForgeListAnswer> {
+    let projects = load_projects_all();
+    let limit_of = |q: &ForgeListQuery| if q.kind == "issues" {
+        q.limit.unwrap_or(50).clamp(1, 200)
+    } else {
+        q.limit.unwrap_or(30).clamp(1, 100)
+    };
+    let mut out: Vec<Option<ForgeListAnswer>> = queries.iter().map(|_| None).collect();
+    let mut by_host: std::collections::BTreeMap<String, Vec<(usize, forge::RepoList, String)>> = Default::default();
+    let mut single: Vec<usize> = Vec::new();
+    for (i, q) in queries.iter().enumerate() {
+        let limit = limit_of(q);
+        let batched = projects.iter().find(|p| p.id == q.project_id).and_then(|p| {
+            let cwd = PathBuf::from(&p.root_path);
+            let (provider, remote_url) = forge::provider_for_repo(&cwd, &detect_default_remote(&cwd));
+            if provider != Some(forge::GITHUB) || limit > 100 {
+                return None;
+            }
+            let host = forge::host_of_remote(&remote_url)?;
+            let (owner, repo) = forge::github_remote_slug(&remote_url)?;
+            let kind = if q.kind == "issues" {
+                forge::ListKind::Issues(forge::IssueScope::parse(q.scope.as_deref()))
+            } else {
+                forge::ListKind::Prs(forge::PrScope::parse(q.scope.as_deref()))
+            };
+            Some((host, forge::RepoList { owner, repo, kind, limit }, remote_url))
+        });
+        match batched {
+            Some((host, list, remote_url)) => by_host.entry(host).or_default().push((i, list, remote_url)),
+            None => single.push(i),
+        }
+    }
+
+    for (host, items) in by_host {
+        let mut limited: Option<forge::ForgeError> = None;
+        // A stack of chunks, so one that comes back too large can be split
+        // and asked again as two.
+        let mut chunks: Vec<&[(usize, forge::RepoList, String)]> = items.chunks(forge::LISTS_BATCH_MAX).rev().collect();
+        while let Some(chunk) = chunks.pop() {
+            let result = match &limited {
+                Some(e) => Err(e.clone()),
+                None => {
+                    let lists: Vec<forge::RepoList> = chunk.iter().map(|(_, l, _)| l.clone()).collect();
+                    forge::github_lists(&host, "lists", &lists)
+                }
+            };
+            match result {
+                Ok(rows) => {
+                    for ((i, _, remote_url), rows) in chunk.iter().zip(rows) {
+                        let (provider, remote_url) = (Some(forge::GITHUB.to_string()), remote_url.clone());
+                        out[*i] = Some(match rows {
+                            forge::ListRows::Issues(issues) => ForgeListAnswer::Issues(IssueLookup {
+                                provider, remote_url, status: "ok".into(), message: String::new(), issues, retry_at: None,
+                            }),
+                            forge::ListRows::Prs(prs) => ForgeListAnswer::Prs(PrPickList {
+                                provider, remote_url, status: "ok".into(), message: String::new(), prs, retry_at: None,
+                            }),
+                        });
+                    }
+                }
+                // GitHub said stop: the per-project CLI path would only ask
+                // again, list by list. Each list says why instead.
+                Err(e @ forge::ForgeError::RateLimited { .. }) => {
+                    let forge::ForgeError::RateLimited { until, message } = &e else { unreachable!() };
+                    for (i, list, remote_url) in chunk {
+                        let issues = matches!(list.kind, forge::ListKind::Issues(_));
+                        out[*i] = Some(list_answer_empty(
+                            issues, Some(forge::GITHUB.to_string()), remote_url.clone(), "rate-limited", message.clone(), Some(*until),
+                        ));
+                    }
+                    limited = Some(e);
+                }
+                // Past the output cap (issue bodies are attacker-sized):
+                // halve it. A single list still too large answers an error
+                // rather than going to the CLI path, which has no cap.
+                Err(forge::ForgeError::TooLarge(message)) => {
+                    if chunk.len() > 1 {
+                        let (a, b) = chunk.split_at(chunk.len() / 2);
+                        chunks.push(b);
+                        chunks.push(a);
+                    } else {
+                        for (i, list, remote_url) in chunk {
+                            let issues = matches!(list.kind, forge::ListKind::Issues(_));
+                            out[*i] = Some(list_answer_empty(
+                                issues, Some(forge::GITHUB.to_string()), remote_url.clone(), "error", message.clone(), None,
+                            ));
+                        }
+                    }
+                }
+                // Anything else falls back, which is also what turns it into
+                // the usual cli-missing / cli-unauthed statuses.
+                Err(_) => single.extend(chunk.iter().map(|(i, _, _)| *i)),
+            }
+        }
+    }
+
+    // The per-project path, three workers, like the webview's queue.
+    let one = |i: usize| -> ForgeListAnswer {
+        let q = &queries[i];
+        let limit = limit_of(q);
+        let failed = |message: String| (None, String::new(), "error".to_string(), message);
+        if q.kind == "issues" {
+            ForgeListAnswer::Issues(issue_lookup_blocking(&q.project_id, limit, forge::IssueScope::parse(q.scope.as_deref()))
+                .unwrap_or_else(|e| {
+                    let (provider, remote_url, status, message) = failed(e);
+                    IssueLookup { provider, remote_url, status, message, issues: Vec::new(), retry_at: None }
+                }))
+        } else {
+            ForgeListAnswer::Prs(pr_picker_blocking(&q.project_id, limit, None, forge::PrScope::parse(q.scope.as_deref()))
+                .unwrap_or_else(|e| {
+                    let (provider, remote_url, status, message) = failed(e);
+                    PrPickList { provider, remote_url, status, message, prs: Vec::new(), retry_at: None }
+                }))
+        }
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done: Mutex<Vec<(usize, ForgeListAnswer)>> = Mutex::new(Vec::new());
+    std::thread::scope(|sc| {
+        for _ in 0..3.min(single.len()) {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&i) = single.get(k) else { break };
+                let a = one(i);
+                done.lock().push((i, a));
+            });
+        }
+    });
+    for (i, a) in done.into_inner() {
+        out[i] = Some(a);
+    }
+    out.into_iter().zip(queries).map(|(a, q)| a.unwrap_or_else(|| {
+        list_answer_empty(q.kind == "issues", None, String::new(), "error", "no answer".into(), None)
+    })).collect()
+}
+
+/// Many forge lists at once, for the Todos view. See `forge_lists_blocking`.
+#[tauri::command]
+async fn project_forge_lists(queries: Vec<ForgeListQuery>) -> Result<Vec<ForgeListAnswer>, String> {
+    tauri::async_runtime::spawn_blocking(move || forge_lists_blocking(&queries))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn project_forge_issues(project_id: String, limit: Option<u32>, scope: Option<String>) -> Result<IssueLookup, String> {
     let limit = limit.unwrap_or(50).clamp(1, 200);
@@ -16003,19 +16526,39 @@ fn branch_then_number<T, E>(
     }
 }
 
+/// PR status for many tasks in one call: the background poller's path, so
+/// always rate-gated. See `pr_lookup_batch`; tasks a closed gate skipped are
+/// absent.
 #[tauri::command]
-async fn task_pr_status(id: String) -> Result<PrLookup, String> {
-    tauri::async_runtime::spawn_blocking(move || pr_lookup_blocking(&id))
+async fn task_pr_status_batch(ids: Vec<String>) -> Result<Vec<TaskPrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || pr_lookup_batch(&ids))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// `background`: a poller, not a user. A GitHub task whose host is paused
+/// (forge_rate) answers None without calling anything. Required, so a new
+/// caller has to say which it is rather than landing on the ungated path.
+#[tauri::command]
+async fn task_pr_status(id: String, background: bool) -> Result<Option<PrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        if background && forge::background_held(w.pr_provider.as_deref(), w.pr_url.as_deref(), Path::new(&w.path)) {
+            return Ok(None);
+        }
+        Ok(Some(pr_lookup_task(&w)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Live PR/MR status for each non-host member of a multi-repo task. Same
 /// cadence contract as `task_pr_status` (the pr store folds it into the
 /// task's refresh) - one forge CLI call per member with a forge remote.
+/// `background` as `task_pr_status`.
 #[tauri::command]
-async fn task_member_pr_status(id: String) -> Result<Vec<MemberPrLookup>, String> {
-    tauri::async_runtime::spawn_blocking(move || member_pr_lookups(&id))
+async fn task_member_pr_status(id: String, background: bool) -> Result<Option<Vec<MemberPrLookup>>, String> {
+    tauri::async_runtime::spawn_blocking(move || member_pr_lookups(&id, background))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -16083,7 +16626,7 @@ async fn task_pr_create(
                     if provider == forge::GITLAB { "a merge request" } else { "a pull request" }
                 )))
             }
-            Err(forge::ForgeError::Auth(m)) | Err(forge::ForgeError::Other(m)) => return Err(m),
+            Err(e) => return Err(e.into_message()),
         };
         // Persist identity immediately — the follow-up lookup also does
         // this, but creation should never lose the URL even if the status
@@ -16106,19 +16649,28 @@ async fn task_pr_create(
 /// Every comment on the task's PR/MR (discussion + review +
 /// inline), oldest first, normalized timestamps. Requires the PR
 /// identity to be known (a status poll or create already cached it).
+/// `background` (the comment watcher): None while a GitHub host is paused.
 #[tauri::command]
-async fn task_pr_comments(id: String) -> Result<Vec<forge::PrComment>, String> {
+async fn task_pr_comments(id: String, background: bool) -> Result<Option<Vec<forge::PrComment>>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let provider = w.pr_provider.clone().ok_or("no PR known for this task yet")?;
         let number = w.pr_number.ok_or("no PR known for this task yet")?;
         let cwd = PathBuf::from(&w.path);
-        forge::pr_comments(&provider, &cwd, number).map_err(|e| match e {
+        if background && forge::background_held(Some(&provider), w.pr_url.as_deref(), &cwd) {
+            return Ok(None);
+        }
+        let comments = match forge::pr_comments(&provider, &cwd, number, background) {
+            // Held mid-call (the inline leg met the gate): nothing was read.
+            Err(forge::ForgeError::RateLimited { .. }) if background => return Ok(None),
+            other => other,
+        };
+        comments.map(Some).map_err(|e| match e {
             forge::ForgeError::CliMissing(cli) => cli_missing_message(&provider, &cli, &format!(
                 "read {} comments",
                 if provider == forge::GITLAB { "merge request" } else { "pull request" }
             )),
-            forge::ForgeError::Auth(m) | forge::ForgeError::Other(m) => m,
+            e => e.into_message(),
         })
     })
     .await
@@ -27763,6 +28315,10 @@ pub fn run() {
         .manage(PtyManager::default())
         .setup(|app| {
             caffeinate::start(app.handle().clone());
+            {
+                let h = app.handle().clone();
+                forge_rate::on_changed(move |s| { let _ = h.emit("termic://forge-rate-changed", s); });
+            }
             // CLI detection that ran on the fallback PATH re-runs (GH #441).
             {
                 let h = app.handle().clone();
@@ -28066,7 +28622,7 @@ pub fn run() {
             desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, project_git_current_branch, task_git_checkout, task_git_update, task_git_update_all, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
-            detect_forges, task_pr_status, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
+            detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, project_forge_lists, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
@@ -34689,6 +35245,84 @@ mod tests {
         assert_eq!(dirs, vec!["api"]);
     }
 
+    fn pr(state: &str, head: &str, number: u64) -> forge::PrStatus {
+        forge::PrStatus {
+            provider: "github".into(), number, url: format!("https://github.com/o/r/pull/{number}"),
+            title: "t".into(), state: state.into(), checks: "none".into(), review: "none".into(),
+            base: "main".into(), head: head.into(),
+        }
+    }
+
+    #[test]
+    fn batch_route_trusts_only_an_open_pr_on_the_tasks_branch() {
+        assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("feat")), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), Some("feat")), BatchRoute::Trusted);
+        // Fork checkouts and a detached review checkout are still the PR.
+        assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("pr-5-feat")), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("open", "feat", 5)), None), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("follow-up")), BatchRoute::Moved);
+        assert_eq!(batch_route(Some(&pr("closed", "feat", 5)), Some("feat")), BatchRoute::Single);
+        assert_eq!(batch_route(None, Some("feat")), BatchRoute::Single);
+    }
+
+    #[test]
+    fn a_moved_branch_is_looked_up_once_per_window_and_again_on_a_new_branch() {
+        let now = 1_800_000_000;
+        assert!(recheck_due(None, "follow-up", now));
+        let last = ("follow-up".to_string(), now);
+        assert!(!recheck_due(Some(&last), "follow-up", now + RECHECK_SECS - 1));
+        assert!(recheck_due(Some(&last), "follow-up", now + RECHECK_SECS));
+        assert!(recheck_due(Some(&last), "another", now + 1));
+    }
+
+    #[test]
+    fn a_failed_batch_hints_on_auth_skips_once_then_falls_back() {
+        let other = forge::ForgeError::Other("502".into());
+        assert_eq!(batch_failure_plan(&forge::ForgeError::Auth("x".into()), 1), FailurePlan::Answer);
+        assert_eq!(batch_failure_plan(&forge::ForgeError::CliMissing("gh"), 1), FailurePlan::Answer);
+        assert_eq!(batch_failure_plan(&other, 1), FailurePlan::LeaveOut);
+        assert_eq!(batch_failure_plan(&other, 2), FailurePlan::FallBack);
+        let limited = pr_lookup_failed("github", String::new(), forge::ForgeError::RateLimited { until: 42, message: "m".into() });
+        assert_eq!((limited.status.as_str(), limited.retry_at), ("rate-limited", Some(42)));
+    }
+
+    #[test]
+    fn an_empty_list_answer_has_its_own_lists_shape() {
+        let as_json = |a: ForgeListAnswer| serde_json::to_value(a).unwrap();
+        let prs = as_json(list_answer_empty(false, None, String::new(), "error", "no answer".into(), None));
+        assert!(prs.get("prs").is_some() && prs.get("issues").is_none());
+        let issues = as_json(list_answer_empty(true, None, String::new(), "rate-limited", "m".into(), Some(42)));
+        assert!(issues.get("issues").is_some());
+        assert_eq!(issues["status"], "rate-limited");
+        assert_eq!(issues["retry_at"], 42);
+    }
+
+    #[test]
+    fn a_batch_answer_is_trusted_only_for_the_pr_that_was_asked() {
+        let asked = forge::PrRef { owner: "acme".into(), repo: "app".into(), number: 7 };
+        assert!(answer_is_for("https://github.com/acme/app/pull/7", "github.com", &asked));
+        // GitHub's canonical spelling of the same PR.
+        assert!(answer_is_for("https://github.com/Acme/App/pull/7", "github.com", &asked));
+        // A host re-homing the task, another PR, a renamed repo.
+        assert!(!answer_is_for("https://github.com/acme/app/pull/7", "ghe.acme.com", &asked));
+        assert!(!answer_is_for("https://github.com/acme/app/pull/8", "github.com", &asked));
+        assert!(!answer_is_for("https://github.com/acme/app-2/pull/7", "github.com", &asked));
+        assert!(!answer_is_for("file:///etc/passwd", "github.com", &asked));
+    }
+
+    #[test]
+    fn head_branch_reads_a_checkout_and_a_worktree_without_git() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo);
+        assert_eq!(head_branch(repo).as_deref(), Some("main"));
+        let wt = dir.path().join("wt");
+        git(&["worktree", "add", "-b", "feat/x", wt.to_str().unwrap()], repo).unwrap();
+        assert_eq!(head_branch(&wt).as_deref(), Some("feat/x"));
+        git(&["checkout", "--detach"], &wt).unwrap();
+        assert_eq!(head_branch(&wt), None);
+    }
+
     #[test]
     fn member_pr_lookups_labels_rows_with_the_live_branch() {
         with_scratch_data_dir(|_| {
@@ -34719,7 +35353,7 @@ mod tests {
                 },
             ];
             crate::save_task(&ws).unwrap();
-            let rows = member_pr_lookups("t1").unwrap();
+            let rows = member_pr_lookups("t1", false).unwrap().unwrap();
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].dir_name, "api");
             assert_eq!(rows[0].branch, "feat-live");

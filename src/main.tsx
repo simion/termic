@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -83,6 +83,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/ptyOutputActivity"),
         import("@/store/todos"),
         import("@/store/forgeLists"),
+        import("@/store/forgeRate"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -124,6 +125,9 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       useTodos: todos.useTodos,
       useForgeLists: forgeLists.useForgeLists,
       clearForgeLists: forgeLists.clearForgeLists,
+      // The GitHub rate ledger's mirror. Exposed so a spec can seed a pause:
+      // no fixture repo talks to GitHub, so nothing real would ever pause.
+      useForgeRate: forgeRate.useForgeRate,
       // The webview half of `termic scratchpad`. Exposed so a spec can land a
       // write in the SAME tick as an editor remount, which a round trip over
       // the control socket can only hit by luck (lib/scratchLive).

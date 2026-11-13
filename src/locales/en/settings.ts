@@ -68,6 +68,22 @@ export default {
       signedInAs: "Signed in as <1>{{account}}</1>",
       probing: "Probing CLIs…",
     },
+    forgeRate: {
+      title: "GitHub API budget",
+      hint: "The gh token's limits are shared with your terminal and with every agent running gh. Termic spends at most its own share in the background and pauses polling before the account runs low. Calls through the older gh commands report no cost, so they count as estimates.",
+      none: "No GitHub calls yet.",
+      left: "{{remaining}} of {{limit}} left, resets {{time}}",
+      unknown: "Limit not reported yet",
+      spent: "Termic this hour: {{spent}} of {{cap}}",
+      estimated: "({{n}} estimated)",
+      paused: "Background polling paused until {{time}}: {{reason}}",
+      bucket: { graphql: "GraphQL", core: "REST" },
+      feature: {
+        pr_status: "PR status",
+        lists: "issue and PR lists",
+        comments: "PR comments",
+      },
+    },
     desktop: {
       title: "Desktop entry",
       hint: "An AppImage is a single file: running it does not add a launcher entry, an icon, or a handler for <1>termic://</1> links. This writes a desktop entry into your home directory ({{path}}). It does not move the AppImage.",

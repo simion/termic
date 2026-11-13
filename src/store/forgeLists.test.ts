@@ -8,6 +8,7 @@ import {
   FORGE_LIST_TTL_MS,
   parseSnapshot,
   refreshForgeList,
+  refreshForgeLists,
   serializeSnapshot,
   SNAPSHOT_BUDGET_CHARS,
   useForgeLists,
@@ -16,12 +17,14 @@ import {
 import { BODY_MAX, issueContext } from "@/lib/issuePrompt";
 import { prReviewPrompt } from "@/lib/prReview";
 import { useApp } from "@/store/app";
+import { rateLimitedText } from "@/store/forgeRate";
 import * as ipc from "@/lib/ipc";
 import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/lib/types";
 
 vi.mock("@/lib/ipc", () => ({
   projectForgeIssues: vi.fn(),
   projectForgePrs: vi.fn(),
+  projectForgeLists: vi.fn(),
 }));
 
 // node vitest has no localStorage. Installed before the store module runs, so
@@ -70,6 +73,70 @@ describe("forge lists", () => {
     clearForgeLists();
     stored.clear();
     useApp.setState({ projects: [] });
+  });
+
+  describe("a Todos batch", () => {
+    it("lands every list in one store write", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([issue(1)]), prsOk([pr(2)]), issuesOk([issue(3)])]);
+      let writes = 0;
+      const unsub = useForgeLists.subscribe(() => { writes++; });
+      await refreshForgeLists([assigned("p1"), mine("p1"), assigned("p2")]);
+      unsub();
+      // One for the loading marks, one for the answers.
+      expect(writes).toBe(2);
+      expect(cachedForgeList(mine("p1"))?.prs.map((p) => p.number)).toEqual([2]);
+      expect(cachedForgeList(assigned("p2"))?.issues.map((i) => i.number)).toEqual([3]);
+    });
+
+    it("does not make a dialog wait it out: an urgent fetch runs on its own", async () => {
+      const batch = deferred<(IssueLookup | PrPickList)[]>();
+      vi.mocked(ipc.projectForgeLists).mockReturnValueOnce(batch.promise);
+      vi.mocked(ipc.projectForgePrs).mockResolvedValueOnce(prsOk([pr(9)]));
+      const todos = refreshForgeLists([assigned("p1"), mine("p1")]);
+
+      // The dialog does not join the batch, and a second dialog asking
+      // meanwhile joins the first dialog's fetch rather than a third.
+      const first = fetchForgeList(mine("p1"), { urgent: true });
+      const second = fetchForgeList(mine("p1"), { urgent: true });
+      expect(second).toBe(first);
+      // It answers while the batch is still out.
+      expect((await first).prs.map((p) => p.number)).toEqual([9]);
+      expect(ipc.projectForgePrs).toHaveBeenCalledTimes(1);
+      batch.resolve([issuesOk([issue(1)]), prsOk([pr(2)])]);
+      await todos;
+      // The batch does not overwrite the list the dialog re-fetched.
+      expect(cachedForgeList(mine("p1"))?.prs.map((p) => p.number)).toEqual([9]);
+      expect(cachedForgeList(assigned("p1"))?.issues.map((i) => i.number)).toEqual([1]);
+    });
+
+    it("words a rate-limited list in the UI language, keeping the rows it had", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([issue(1)])]);
+      await refreshForgeLists([assigned("p1")]);
+      const refused: IssueLookup = { ...issuesOk([]), status: "rate-limited", message: "GitHub rate limit reached on github.com." };
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([refused]);
+      await refreshForgeLists([assigned("p1")], true);
+      const e = useForgeLists.getState().entries[forgeListKey(assigned("p1"))];
+      expect(e.status).toBe("error");
+      expect(e.errorMessage).toMatch(/Termic asks again/);
+      expect(cachedForgeList(assigned("p1"))?.issues.map((i) => i.number)).toEqual([1]);
+    });
+
+    it("sends each query with its own scope and limit", async () => {
+      vi.mocked(ipc.projectForgeLists).mockResolvedValueOnce([issuesOk([]), prsOk([])]);
+      await refreshForgeLists([assigned("p1"), mine("p1")]);
+      expect(vi.mocked(ipc.projectForgeLists).mock.calls[0][0]).toEqual([
+        { projectId: "p1", kind: "issues", scope: "assigned", limit: 50 },
+        { projectId: "p1", kind: "prs", scope: "mine", limit: 30 },
+      ]);
+    });
+
+    it("records a thrown batch on every list in it", async () => {
+      vi.mocked(ipc.projectForgeLists).mockRejectedValueOnce(new Error("ipc down"));
+      await refreshForgeLists([assigned("p1"), mine("p1")]);
+      const { entries } = useForgeLists.getState();
+      expect(entries[forgeListKey(assigned("p1"))].status).toBe("error");
+      expect(entries[forgeListKey(mine("p1"))].errorMessage).toContain("ipc down");
+    });
   });
 
   it("treats a missing limit as the IPC's default, so both spellings are one query", () => {
@@ -244,6 +311,16 @@ describe("forge lists", () => {
       expect(afterRevalidate(shown, failed)).toEqual({ lookup: shown, refreshErr: "gh: not logged in" });
       // No message: the status names it.
       expect(afterRevalidate(shown, { ...failed, message: "" }).refreshErr).toBe("cli-unauthed");
+    });
+
+    it("words a rate refusal in the UI's language, timed from the answer's own retry_at", () => {
+      const shown = prsOk([pr(4)]);
+      const refused = {
+        provider: "github", remote_url: "", status: "rate-limited",
+        message: "GitHub rate limit reached on github.com. Termic is waiting until 14:05.",
+        retry_at: 2_000_000_000, prs: [],
+      } as PrPickList;
+      expect(afterRevalidate(shown, refused).refreshErr).toBe(rateLimitedText(2_000_000_000));
     });
 
     it("answers with the failure when nothing was shown, as before the cache", () => {

@@ -10,7 +10,7 @@ import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, PrScope, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, ForgeProvider, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, ForgeRateStatus, TaskPrLookup, PeerStatus, PeerGrant, PairingView, PairModeView, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
   SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
 } from "./types";
@@ -998,17 +998,37 @@ export const taskDiscard = (id: string, dirName: string, paths: string[]) =>
  *  probes only, no network (except az's PAT-only profile lookup). */
 export const detectForges = () =>
   invoke<ForgeCliStatus[]>("detect_forges");
+/** The GitHub rate ledger per host: limits, what is left, termic's own
+ *  spend this hour, and whether background polling is paused. `probe`
+ *  first seeds unknown hosts from GET /rate_limit (free). Changes also
+ *  arrive as `termic://forge-rate-changed`. */
+export const forgeRateStatus = (probe = false) =>
+  invoke<ForgeRateStatus[]>("forge_rate_status", { probe });
 /** Live PR/MR lookup for the task's branch. Hits the network via
  *  the forge CLI - poll at a slow cadence (the pr store owns this). */
 export const taskPrStatus = (id: string) =>
-  invoke<PrLookup>("task_pr_status", { id });
+  invoke<PrLookup>("task_pr_status", { id, background: false });
+/** `taskPrStatus` for a poller rather than a user: null, with nothing
+ *  called, while the task's GitHub host is rate-paused (forge_rate.rs). */
+export const taskPrStatusBackground = (id: string) =>
+  invoke<PrLookup | null>("task_pr_status", { id, background: true });
+/** PR status for many tasks in one call (the background poller, so always
+ *  rate-gated). GitHub tasks with a PR url share one GraphQL query per host;
+ *  the rest take the per-task path. Tasks on a paused host are absent from
+ *  the answer. */
+export const taskPrStatusBatch = (ids: string[]) =>
+  invoke<TaskPrLookup[]>("task_pr_status_batch", { ids });
 /** Per-member PR/MR lookups for a multi-repo task - one entry per on-disk
  *  NON-host composition member (the host is `task_pr_status`'s own lookup;
  *  a member whose checkout vanished produces no entry). Same
  *  per-member cost as a task lookup, so it rides inside the pr store's
  *  refresh rather than polling on its own. */
 export const taskMemberPrStatus = (id: string) =>
-  invoke<MemberPrLookup[]>("task_member_pr_status", { id });
+  invoke<MemberPrLookup[] | null>("task_member_pr_status", { id, background: false }).then(r => r ?? []);
+/** `taskMemberPrStatus` for a poller: null, with nothing called, while any
+ *  member's GitHub host is rate-paused. */
+export const taskMemberPrStatusBackground = (id: string) =>
+  invoke<MemberPrLookup[] | null>("task_member_pr_status", { id, background: true });
 /** Which forge a project's repo is hosted on, or null. Cached in Rust and
  *  network-free, so callers may treat it as cheap. */
 export const projectForgeProvider = (projectId: string) =>
@@ -1018,6 +1038,15 @@ export const projectForgeProvider = (projectId: string) =>
  *  task exists). Network-bound via the forge CLI. */
 export const projectForgeIssues = (projectId: string, limit?: number, scope?: IssueScope) =>
   invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null, scope: scope ?? null });
+
+/** Many project lists in one call, answers in order: every GitHub list on
+ *  a host is one GraphQL query, the rest take the per-project CLI path.
+ *  Each answer is the IssueLookup / PrPickList its single call returns. */
+export const projectForgeLists = (queries: (
+  | { projectId: string; kind: "issues"; scope: IssueScope; limit: number }
+  | { projectId: string; kind: "prs"; scope: PrScope; limit: number }
+)[]) =>
+  invoke<(IssueLookup | PrPickList)[]>("project_forge_lists", { queries });
 
 /** YOUR open PRs for a project's repo, or one PR by number. See `ForgePr` for
  *  why that is the default list. `scope: "review"` lists the open PRs waiting
@@ -1044,7 +1073,11 @@ export const taskPrCreate = (id: string, title: string, body: string, base: stri
 /** Every comment on the task's PR/MR, oldest first. Requires the PR
  *  identity to be cached (a status poll or create already ran). */
 export const taskPrComments = (id: string) =>
-  invoke<PrComment[]>("task_pr_comments", { id });
+  invoke<PrComment[]>("task_pr_comments", { id, background: false });
+/** The comment watcher's read: null while the task's GitHub host is
+ *  rate-paused (forge_rate.rs). */
+export const taskPrCommentsBackground = (id: string) =>
+  invoke<PrComment[] | null>("task_pr_comments", { id, background: true });
 export const taskSetPrWatch = (id: string, watch: boolean) =>
   invoke<void>("task_set_pr_watch", { id, watch });
 export const taskSetPrCommentsSeen = (id: string, iso: string) =>
