@@ -2,7 +2,7 @@ name: Performance (nightly)
 
 # NOT on pull_request, and that is the point.
 #
-# The metrics here are durations and memory. macos-14 is a 3-core virtualised
+# The metrics here are durations and memory. macos-26 is a 3-core virtualised
 # runner and Apple's Virtualization Framework does not expose Metal Performance
 # Shaders to the guest, so the spread between two runs of identical code is
 # wider than most regressions we would want to catch. Gating a merge on that
@@ -49,12 +49,12 @@ concurrency:
 
 jobs:
   perf:
-    name: startup + memory (macos-14)
+    name: startup + memory (macos-26)
 
     # Cron is upstream-only, so forks stop getting nightly failure mail.
     # Manual dispatch stays open everywhere.
     if: github.event_name == 'workflow_dispatch' || github.repository == 'simion/termic'
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

@@ -33,12 +33,12 @@ concurrency:
 
 jobs:
   servers:
-    name: download + drive real servers (macos-14)
+    name: download + drive real servers (macos-26)
 
     # Cron is upstream-only, so forks stop getting nightly failure mail.
     # Manual dispatch stays open everywhere.
     if: github.event_name == 'workflow_dispatch' || github.repository == 'simion/termic'
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

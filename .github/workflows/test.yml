@@ -126,7 +126,7 @@ jobs:
     # required check yet — it's here to surface flakiness so we can harden it
     # before gating merges on it. Screenshots are skipped in CI (CI=true).
     name: E2E (WebdriverIO, macOS)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -43,7 +43,7 @@ TERMIC_E2E_VISIBLE=1 npm run test:e2e   # same, without the rebuild
 Rebuild (`npm run e2e:build`, or `make e2e`) **after any Rust or frontend
 change** — the frontend is embedded in the e2e binary. Screenshots land in
 `.e2e/artifacts/` (gitignored, local only — no-op in CI via `snap()`). Runs
-locally and in a non-required `macos-14` CI job (see docs/e2e-tests.md).
+locally and in a non-required `macos-26` CI job (see docs/e2e-tests.md).
 
 Never build the e2e binary with a bare `cargo build` — that produces a binary
 that points at the (unrunning) dev server and the window comes up blank. Always

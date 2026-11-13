@@ -277,7 +277,7 @@ CI runs show the distribution.
 ### Tier 2: nightly, off the PR path
 
 Same shape as Orca's `terminal-perf.yml`. Cron plus `workflow_dispatch`
-on `macos-14`, JSON artifact on `always()`, traces on `failure()`.
+on `macos-26`, JSON artifact on `always()`, traces on `failure()`.
 
 **A nightly nobody watches fails silently.** Every scheduled run from the
 day it landed (5 for 5) died before running one spec: the step built an
@@ -438,7 +438,7 @@ otherwise be rediscovered.
 ## Finding: one stale doc line
 
 **CLAUDE.md says the e2e suite is "laptop-only, no CI".** It is not.
-`.github/workflows/test.yml` has an `e2e` job on `macos-14` that builds
+`.github/workflows/test.yml` has an `e2e` job on `macos-26` that builds
 the `--features e2e` binary and runs the full suite on every PR. Its own
 comment says it is deliberately not a required check yet, "here to
 surface flakiness so we can harden it before gating merges on it". That

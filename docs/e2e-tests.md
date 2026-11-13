@@ -149,7 +149,7 @@ so the spec asks for twice that on a 2x display.
 ## CI
 
 The suite runs on all three platforms for PRs and pushes to `main`: `e2e`
-(`macos-14`) and `e2e-linux` (WebKitGTK under Xvfb, `ubuntu-22.04`) in
+(`macos-26`; `macos-14` was retired in 2026-11) and `e2e-linux` (WebKitGTK under Xvfb, `ubuntu-22.04`) in
 `.github/workflows/test.yml`, and the Windows job (WebView2) in
 `.github/workflows/windows.yml`. Specs for a feature a platform does not have
 are excluded in `wdio.conf.ts` (Touch ID off macOS). None is a **required check yet**: they are there to
