@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dataDir } from "../../wdio.conf.js";
 import { archiveTask, clickByText, clickWhenVisible, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible, controlConnect } from "../helpers";
@@ -1141,5 +1142,34 @@ describe("history view", () => {
     await browser.waitUntil(async () => (await listBox()).rows === all.rows, {
       timeout: 5_000, timeoutMsg: "clearing the filter did not restore the archive",
     });
+  });
+});
+
+// The Report a bug button selects the crash log in the file manager and asks
+// for it, but only when the log has something in it. The click itself opens
+// the browser and Finder, so this asserts what the real app tells the button.
+describe("report a bug", () => {
+  const log = path.join(dataDir, "logs", "panic.log");
+  // A real entry from earlier in this run is evidence, so it is put back.
+  const before = existsSync(log) ? readFileSync(log) : null;
+  after(() => { if (before) writeFileSync(log, before); else rmSync(log, { force: true }); });
+  const info = () => browser.execute(() => window.__termic!.invoke("bug_report_info")) as unknown as
+    Promise<{ version: string; os: string; crashLog: string | null }>;
+
+  it("names the crash log only once it has an entry", async () => {
+    await waitForAppShell();
+    rmSync(log, { force: true });
+    const none = await info();
+    expect(none.crashLog).toBeNull();
+    expect(none.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(none.os).toMatch(/^(macos|linux|windows) /);
+
+    mkdirSync(path.dirname(log), { recursive: true });
+    writeFileSync(log, "");
+    expect((await info()).crashLog).toBeNull();
+
+    writeFileSync(log, "=== t0 termic 0.0.0 thread 'main' panicked at src/a.rs:1:2\nboom\n\n");
+    const got = await info();
+    expect(path.resolve(got.crashLog!)).toBe(path.resolve(log));
   });
 });

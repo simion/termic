@@ -158,6 +158,41 @@ mod tests {
         assert_eq!(existing(), Some(path.as_path()));
     }
 
+    /// The real path: a child process raises an exception nothing catches,
+    /// Foundation calls the installed handler, then the process aborts. Raised
+    /// on a GCD thread, because a Rust thread's catch_unwind would claim it first.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_uncaught_objc_exception_crashes_with_an_entry() {
+        const CHILD: &str = "TERMIC_TEST_OBJC_CRASH_LOG";
+        if let Some(path) = std::env::var_os(CHILD) {
+            install(PathBuf::from(path));
+            extern "C" fn raise(_: *mut core::ffi::c_void) {
+                use objc2_foundation::{NSException, NSString};
+                // SAFETY: a plain exception object.
+                let e = unsafe { NSException::exceptionWithName_reason_userInfo(
+                    &NSString::from_str("NSRangeException"), Some(&NSString::from_str("boom from gcd")), None) };
+                e.raise();
+            }
+            unsafe extern "C" {
+                fn dispatch_get_global_queue(identifier: isize, flags: usize) -> *mut core::ffi::c_void;
+                fn dispatch_async_f(q: *mut core::ffi::c_void, ctx: *mut core::ffi::c_void, f: extern "C" fn(*mut core::ffi::c_void));
+            }
+            unsafe { dispatch_async_f(dispatch_get_global_queue(0, 0), std::ptr::null_mut(), raise) };
+            loop { std::thread::park(); }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs").join("panic.log");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "panic_log::tests::an_uncaught_objc_exception_crashes_with_an_entry", "--test-threads=1"])
+            .env(CHILD, &path)
+            .output().unwrap();
+        assert!(!out.status.success(), "the child should have aborted");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        assert!(text.contains("Objective-C exception NSRangeException\nboom from gcd\n"), "{text}");
+        assert!(text.contains("CoreFoundation"), "a raised exception carries its stack: {text}");
+    }
+
     #[test]
     fn an_oversized_log_rotates_once_instead_of_growing() {
         let dir = tempfile::tempdir().unwrap();
