@@ -1184,6 +1184,15 @@ impl Node {
             // Closed here while the other side was typing.
             return json(403, &serde_json::json!({ "error": "not_pairing" }));
         }
+        if (now_ms() - msg.ts).abs() > FRESH_WINDOW_MS {
+            // A pair whose clocks disagree would have every call refused
+            // (open_sealed), so do not make one. The sealed answer carries
+            // this clock, for the other side to say by how much.
+            dlog(&format!("[peers] {} asked to pair with a clock off by {} s; refused", clean_name(&inc.peer.name), (msg.ts - now_ms()) / 1000));
+            self.close_pair_mode();
+            let (_, body) = self.seal_reply(&inc.key, &path, &inc.peer.id, &msg.rid, serde_json::json!({}));
+            return (409, body);
+        }
         let their_grant = msg.body.get("grant").and_then(|v| v.as_str()).and_then(Grant::parse).unwrap_or_default();
         let replaces_existing = self.store.lock().unwrap().peers.iter().any(|p| p.id == inc.peer.id);
         self.persist_pair(new_record(&inc.peer, inc.ip, &inc.key, their_grant));
@@ -1329,15 +1338,26 @@ impl Node {
             }
             return Err(not_pairing());
         }
+        let opened = || {
+            serde_json::from_slice::<pc::Envelope>(&reply)
+                .ok()
+                .filter(|e| e.from == started.to.id)
+                .and_then(|e| pc::open(&key, &path, &me.id, &e))
+                .and_then(|p| Sealed::parse(&p))
+                .filter(|m| m.rid == rid)
+        };
+        if status == 409 {
+            if let Some(m) = opened() {
+                return Err(format!(
+                    "{}. Paired machines must agree within 5 minutes. Turn on automatic time and check the time zone on both, then pair again.",
+                    clock_skew(&hello.name, m.ts - now_ms())
+                ));
+            }
+        }
         if status != 200 {
             return Err(format!("{} refused the pairing ({status}).", hello.name));
         }
-        let their_grant = serde_json::from_slice::<pc::Envelope>(&reply)
-            .ok()
-            .filter(|e| e.from == started.to.id)
-            .and_then(|e| pc::open(&key, &path, &me.id, &e))
-            .and_then(|p| Sealed::parse(&p))
-            .filter(|m| m.rid == rid)
+        let their_grant = opened()
             .map(|m| m.body.get("grant").and_then(|v| v.as_str()).and_then(Grant::parse).unwrap_or_default())
             .ok_or("The other machine's answer did not check out, so nothing was paired.")?;
         let replaces_existing = self.store.lock().unwrap().peers.iter().any(|p| p.id == started.to.id);
@@ -1384,7 +1404,11 @@ impl Node {
 
     fn on_call(&self, body: &[u8], src: IpAddr) -> (u16, Vec<u8>) {
         let path = format!("{PREFIX}/call");
-        let Some((rec, msg)) = self.open_sealed(&path, body) else { return self.refuse() };
+        let (rec, msg) = match self.open_sealed(&path, body) {
+            Ok(x) => x,
+            Err(Some(rec)) => return self.clock_answer(&rec, &path),
+            Err(None) => return self.refuse(),
+        };
         self.backoff_reset();
         let their_grant = msg.grant;
         self.touch(&rec.id, Some(src), msg.port, their_grant);
@@ -1436,7 +1460,7 @@ impl Node {
 
     fn on_unpair(&self, body: &[u8]) -> (u16, Vec<u8>) {
         let path = format!("{PREFIX}/unpair");
-        let Some((rec, msg)) = self.open_sealed(&path, body) else { return self.refuse() };
+        let Ok((rec, msg)) = self.open_sealed(&path, body) else { return self.refuse() };
         {
             let mut s = self.store.lock().unwrap();
             s.peers.retain(|p| p.id != rec.id);
@@ -1450,25 +1474,37 @@ impl Node {
     }
 
     /// Open a sealed request: a known sender, a valid seal, fresh, unseen.
-    /// Any failure is the same None, and the caller answers it the same way.
-    fn open_sealed(&self, path: &str, body: &[u8]) -> Option<(PeerRecord, Sealed)> {
-        let env: pc::Envelope = serde_json::from_slice(body).ok()?;
+    /// Err(None) for an unknown sender, a bad seal or a replay, answered with
+    /// the one bare 401. Err(Some) is the paired machine itself with a
+    /// timestamp outside the window: a clock that is off, not a revoked pair.
+    fn open_sealed(&self, path: &str, body: &[u8]) -> Result<(PeerRecord, Sealed), Option<Box<PeerRecord>>> {
+        let env: pc::Envelope = serde_json::from_slice(body).map_err(|_| None)?;
         let rec = {
             let s = self.store.lock().unwrap();
-            s.peers.iter().find(|p| p.id == env.from).cloned()?
+            s.peers.iter().find(|p| p.id == env.from).cloned().ok_or(None)?
         };
-        let plain = pc::open(&rec.key()?, path, &self.self_id(), &env)?;
-        let msg = Sealed::parse(&plain)?;
+        let plain = pc::open(&rec.key().ok_or(None)?, path, &self.self_id(), &env).ok_or(None)?;
+        let msg = Sealed::parse(&plain).ok_or(None)?;
         let now = now_ms();
         if (now - msg.ts).abs() > FRESH_WINDOW_MS {
-            return None;
+            return Err(Some(Box::new(rec)));
         }
         let mut seen = self.replay.lock().unwrap();
         seen.retain(|_, ts| (now - *ts).abs() <= FRESH_WINDOW_MS);
         if seen.insert(format!("{}:{}", rec.id, msg.rid), msg.ts).is_some() {
-            return None;
+            return Err(None);
         }
-        Some((rec, msg))
+        Ok((rec, msg))
+    }
+
+    /// The paired machine's call was sealed correctly but stamped outside the
+    /// window: answer 409 with this clock (the sealed ts), so it can say the
+    /// clocks disagree instead of marking the pair revoked. Nothing runs.
+    fn clock_answer(&self, rec: &PeerRecord, path: &str) -> (u16, Vec<u8>) {
+        let key = rec.key().expect("opened with it");
+        let out = Sealed::new(serde_json::json!({}), None);
+        let (_, body) = json(200, &pc::seal(&key, path, &self.self_id(), &rec.id, &out.to_bytes()));
+        (409, body)
     }
 
     /// The one refusal: a bare 401 after a growing delay, identical for an
@@ -1561,6 +1597,17 @@ impl Node {
                 return Reply::err(&req.id, ErrorCode::PeerUnreachable, unreachable_msg(&name, &e.to_string()));
             }
         };
+        if status == 409 {
+            let their_ts = serde_json::from_slice::<pc::Envelope>(&bytes)
+                .ok()
+                .filter(|e| e.from == rec.id)
+                .and_then(|e| pc::open(&key, &path, &me, &e))
+                .and_then(|p| Sealed::parse(&p))
+                .map(|m| m.ts);
+            if let Some(ts) = their_ts {
+                return Reply::err(&req.id, ErrorCode::Conflict, clock_skew_msg(&name, ts - now_ms()));
+            }
+        }
         if status == 401 {
             self.mark_revoked(&rec.id);
             return Reply::err(
@@ -1721,6 +1768,25 @@ pub(crate) fn handle_verb(node: &Arc<Node>, req: &Request, _sink: &mut dyn Event
 
 /// A new pair, as either side stores it: this side lets the other drive
 /// (pairing means working together; Settings narrows it to Reply only).
+/// Calls must be stamped within FRESH_WINDOW_MS of the receiver's clock;
+/// pairing has no such check, so a pair with a wrong clock pairs fine and
+/// then has every call refused.
+fn clock_skew(name: &str, skew_ms: i64) -> String {
+    let mins = skew_ms.abs() / 60_000;
+    let (h, m) = (mins / 60, mins % 60);
+    let amount = if h > 0 { format!("{h} h {m} min") } else { format!("{m} min") };
+    let dir = if skew_ms > 0 { "ahead of" } else { "behind" };
+    format!("{name}'s clock is {amount} {dir} this machine's")
+}
+
+fn clock_skew_msg(name: &str, skew_ms: i64) -> String {
+    format!(
+        "{}, so it refuses every call (the two must agree within 5 minutes). \
+         Turn on automatic time and check the time zone on both machines.",
+        clock_skew(name, skew_ms)
+    )
+}
+
 fn new_record(peer: &Who, ip: IpAddr, key: &[u8; 32], their_grant: Grant) -> PeerRecord {
     PeerRecord {
         id: peer.id.clone(),
@@ -2750,8 +2816,55 @@ mod tests {
         let mut old = Sealed::new(msg.body.clone(), None);
         old.ts -= 600_000;
         let env = pc::seal(&key, &path, &a.node.self_id(), &b.node.self_id(), &old.to_bytes());
-        let (status, _) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
-        assert_eq!(status, 401);
+        let (status, out) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
+        assert_eq!(status, 409, "the paired machine with a wrong clock is told so, not refused as a stranger");
+        let e: pc::Envelope = serde_json::from_slice(&out).unwrap();
+        let theirs = Sealed::parse(&pc::open(&key, &path, &a.node.self_id(), &e).unwrap()).unwrap();
+        assert!((theirs.ts - now_ms()).abs() < 5_000, "the answer carries B's clock");
+
+        // The same stale message from an unpaired key is still the bare 401.
+        let env = pc::seal(&[7u8; 32], &path, &a.node.self_id(), &b.node.self_id(), &old.to_bytes());
+        let (status, out) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
+        assert_eq!((status, out.len()), (401, 0));
+    }
+
+    #[test]
+    fn a_pairing_from_a_clock_hours_off_is_refused_and_stores_nothing() {
+        let (a, b) = (machine("A"), machine("B"));
+        let code = b.node.open_pair_mode().unwrap().code;
+        let target: SocketAddr = addr(&b).parse().unwrap();
+        let (me, them) = (a.node.who(), b.node.self_id());
+        let (pake, msg_a) = pc::Pake::start_a(&code, &me.id, &them);
+        let start = serde_json::json!({ "from": me, "msg": pc::b64(&msg_a) });
+        let (status, body) = http(target, "POST", &format!("{PREFIX}/pair/start"), start.to_string().as_bytes(), Duration::from_secs(5)).unwrap();
+        assert_eq!(status, 200);
+        let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let secret = pake.finish(&pc::unb64(started["msg"].as_str().unwrap()).unwrap()).unwrap();
+        let key = pc::pair_key(&secret, &me.id, &them);
+        let path = format!("{PREFIX}/pair/confirm");
+        // The right code, from a machine whose clock is 8 hours ahead.
+        let mut msg = Sealed::new(serde_json::json!({ "grant": Grant::Drive }), None);
+        msg.ts += 8 * 3_600_000;
+        let env = pc::seal(&key, &path, &me.id, &them, &msg.to_bytes());
+        let confirm = serde_json::json!({ "pairing": started["pairing"], "env": env });
+        let (status, out) = http(target, "POST", &path, confirm.to_string().as_bytes(), Duration::from_secs(5)).unwrap();
+        assert_eq!(status, 409);
+        let e: pc::Envelope = serde_json::from_slice(&out).unwrap();
+        let theirs = Sealed::parse(&pc::open(&key, &path, &me.id, &e).unwrap()).unwrap();
+        assert_eq!(theirs.rid, msg.rid);
+        assert!((theirs.ts - now_ms()).abs() < 5_000, "the answer carries B's clock");
+        assert!(b.node.find(&me.id).is_err(), "B stored no pair");
+        assert!(b.node.pair_mode_view().is_none(), "B closed pairing mode");
+        assert!(b.ui.pairings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clock_skew_is_worded_with_its_size_and_direction() {
+        assert_eq!(
+            clock_skew_msg("win", 477 * 60_000 + 30_000),
+            "win's clock is 7 h 57 min ahead of this machine's, so it refuses every call (the two must agree within 5 minutes). Turn on automatic time and check the time zone on both machines."
+        );
+        assert!(clock_skew_msg("win", -6 * 60_000).contains("6 min behind"));
     }
 
     #[test]
