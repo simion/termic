@@ -580,6 +580,13 @@ element, which sits inside `[data-main-content]`, so the active tab closes).
 Close Window stays in File and Window with no shortcut. A ⌘W the page DOES
 handle never reaches the menu: the keydown `preventDefault` consumes it.
 
+The stock item is found by its title, since muda does not expose its kind:
+"Close Window" on macOS ("C&lose Window" with the mnemonic stripped),
+"Close" on Windows. Matching only "Close" bound nothing on macOS, so the
+fix above never ran in a release until 1.22.1's successor; `app_menu` now
+logs `[menu] no Close Window item found` when nothing matches. To check a
+build: the File menu shows Close Tab ⌘W (System Events, or just look).
+
 ## Go to line in a markdown preview (⌘G)
 
 `preview-go-to-line` is contextual: no `case` in `useShortcuts`.

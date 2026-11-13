@@ -28119,9 +28119,7 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         let MenuItemKind::Submenu(sub) = top else { continue };
         for (i, item) in sub.items()?.into_iter().enumerate() {
             let MenuItemKind::Predefined(p) = item else { continue };
-            // The predefined item's kind is not exposed; muda titles the
-            // macOS Close Window item "Close".
-            if p.text()? != "Close" {
+            if !is_close_window_title(&p.text()?) {
                 continue;
             }
             sub.remove(&p)?;
@@ -28136,7 +28134,21 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
             }
         }
     }
+    if !bound {
+        // Silent here meant ⌘W in a preview iframe quit Termic for every
+        // release since muda's title stopped matching (see below).
+        dlog("[menu] no Close Window item found; ⌘W stays Close Window and a preview iframe's ⌘W closes the window");
+    }
     Ok(menu)
+}
+
+/// The predefined Close Window item, by title: its kind is not exposed.
+/// muda titles it "C&lose Window" (mnemonic stripped: "Close Window") on
+/// macOS and "Close" on Windows. Matching only "Close" left ⌘W unbound on
+/// macOS, so it kept closing the window from inside a preview iframe.
+#[cfg(target_os = "macos")]
+fn is_close_window_title(text: &str) -> bool {
+    matches!(text, "Close Window" | "Close")
 }
 
 /// Tell the focused window to close its innermost thing (tab, pane, then
@@ -29215,6 +29227,14 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn close_window_is_found_by_the_title_muda_gives_it_on_macos() {
+        assert!(super::is_close_window_title("Close Window"), "muda's macOS title");
+        assert!(super::is_close_window_title("Close"));
+        assert!(!super::is_close_window_title("Close All"));
+    }
 
     #[test]
     fn keychain_blocked_only_where_the_profile_blocks() {
