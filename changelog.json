@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.23.0",
+      "date": "2026-11-13",
+      "summary": "Agents pair computers for you, faster PR badges, easy-to-send crash logs."
+    },
+    {
       "version": "1.22.1",
       "date": "2026-11-11",
       "summary": "Secrets for agents, a sectioned New Task dialog, and accounts that share your MCP servers."

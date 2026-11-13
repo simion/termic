@@ -4,6 +4,24 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.23.0] - 2026-11-13
+
+Agents pair computers for you, faster PR badges, easy-to-send crash logs.
+
+### Features
+- Pairing: an agent can pair this machine with another one end to end. It asks the other machine to show a code, then asks you only for the 4 digits (`termic peer pair <machine>`, MCP `peer_pair`).
+- PR status for GitHub tasks is fetched in one query per host instead of one call per task, so a merge shows within a minute even with many PR tasks. Merged and closed PRs are re-checked hourly instead of every tick.
+- Todos: every GitHub list on a host loads in one query instead of one call per project and list.
+- Termic tracks its share of your GitHub API limit. Background polling pauses before it can run the token dry, Settings, General shows the budget per host, and a top-bar pill appears while polling is paused ([#455](https://github.com/simion/termic/pull/455)).
+- Report a bug fills in the Termic version and OS. When Termic has a crash log, it also selects the file in Finder (Explorer on Windows) so you can drag it into the issue.
+- macOS: the crash log also records Objective-C exceptions, which it missed before.
+- New Task: importing an existing worktree uses the column beside the fields, like the branch, PR and issue sources ([#456](https://github.com/simion/termic/pull/456)).
+
+### Bug fixes
+- Pairing with a machine whose clock is off now says so, with how far off it is. Before, each side showed the other as revoked, and removing and re-pairing never fixed it.
+- macOS: ⌘W inside an HTML preview closes the tab instead of the whole window.
+- Sandbox: a caged agent's hook no longer hangs forever when its terminal is gone, and `cargo test` run by a caged agent finishes ([#457](https://github.com/simion/termic/pull/457)).
+
 ## [1.22.1] - 2026-11-11
 
 Secrets for agents, a sectioned New Task dialog, and accounts that share your MCP servers.
