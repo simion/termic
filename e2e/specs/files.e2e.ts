@@ -22,6 +22,11 @@ declare global {
 // The gesture is pointer-based, not HTML5 DnD (WKWebView's native drag is
 // unreliable and Tauri intercepts it for file drops), so the spec can drive it
 // with synthetic pointer events through the app's real handlers.
+/** This task's terminal. Every visited task stays mounted, so the first
+ *  `[data-terminal-host]` in the DOM can be a hidden task's, 0x0 at the
+ *  window's corner: a drop point measured from it lands outside the window. */
+const terminalOf = (taskId: string) => `[data-task-id="${taskId}"] [data-terminal-host]`;
+
 describe("drag a file onto a terminal", () => {
   let taskId!: string;
   after(async () => {
@@ -48,14 +53,14 @@ describe("drag a file onto a terminal", () => {
   // "ok" when the terminal is the topmost element at the drop point; otherwise
   // the class/tag of whatever is covering it (a dialog backdrop or row).
   const topOfTerminal = () =>
-    browser.execute(() => {
-      const host = document.querySelector("[data-terminal-host]") as HTMLElement | null;
+    browser.execute((sel) => {
+      const host = document.querySelector(sel) as HTMLElement | null;
       if (!host) return "no terminal";
       const p = window.__dropPoint!(host);
       const hit = document.elementFromPoint(p.x, p.y) as HTMLElement | null;
       if (!hit) return "nothing";
       return hit.closest("[data-terminal-host]") ? "ok" : hit.className || hit.tagName;
-    });
+    }, terminalOf(taskId));
 
   // Drop near the terminal's bottom-RIGHT, not its center: dialogs are
   // centered, and a palette left open by another spec (specs can share the
@@ -73,9 +78,9 @@ describe("drag a file onto a terminal", () => {
   // point from the terminal's own rect so the drop hit test is real.
   const dragRowTo = (row: string, to: "terminal" | "sidebar") =>
     browser.execute(
-      (sel, where) => {
+      (sel, where, term) => {
         const el = document.querySelector(sel) as HTMLElement;
-        const host = document.querySelector("[data-terminal-host]") as HTMLElement;
+        const host = document.querySelector(term) as HTMLElement;
         const from = el.getBoundingClientRect();
         const target =
           where === "terminal"
@@ -101,6 +106,7 @@ describe("drag a file onto a terminal", () => {
       },
       `[data-path="${row}"]`,
       to,
+      terminalOf(taskId),
     );
 
   it("sends the task-relative path to the terminal", async () => {
@@ -112,9 +118,10 @@ describe("drag a file onto a terminal", () => {
     await browser.waitUntil(
       () =>
         browser.execute(
-          () =>
+          (term) =>
             !!document.querySelector('[data-path="README.md"]') &&
-            !!document.querySelector("[data-terminal-host]"),
+            !!document.querySelector(term),
+          terminalOf(taskId),
         ),
       { timeout: 15_000, timeoutMsg: "tree row + terminal never both appeared" },
     );
@@ -207,8 +214,8 @@ describe("drop a file from Finder onto a terminal", () => {
   // the terminal's bottom-right (clear of centered dialogs), or the sidebar.
   const emitDrag = (kind: "over" | "drop" | "leave", where: "terminal" | "sidebar", paths: string[] = []) =>
     browser.execute(
-      async (k, w, ps) => {
-        const host = document.querySelector("[data-terminal-host]") as HTMLElement;
+      async (k, w, ps, term) => {
+        const host = document.querySelector(term) as HTMLElement;
         const r = host.getBoundingClientRect();
         const position = w === "terminal" ? { x: r.right - 60, y: r.bottom - 60 } : { x: 20, y: 200 };
         await window.__termic!.invoke("plugin:event|emit_to", {
@@ -220,6 +227,7 @@ describe("drop a file from Finder onto a terminal", () => {
       kind,
       where,
       paths,
+      terminalOf(taskId),
     );
 
   const highlighted = () => browser.execute(() => !!document.querySelector(".termic-drop-target"));
@@ -229,7 +237,7 @@ describe("drop a file from Finder onto a terminal", () => {
     await requireTermicApi();
     taskId = await openTask("e2e-finder-drop");
     await browser.waitUntil(
-      () => browser.execute(() => !!document.querySelector("[data-terminal-host]")),
+      () => browser.execute((term) => !!document.querySelector(term), terminalOf(taskId)),
       { timeout: 15_000, timeoutMsg: "terminal never appeared" },
     );
     await dismissOverlays();

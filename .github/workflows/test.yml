@@ -143,7 +143,11 @@ jobs:
       - name: Build e2e binary
         run: npm run e2e:build
       - name: Run e2e suite
+        # A hang otherwise runs to the 6h job default and, being cancelled
+        # rather than failed, uploads none of the evidence below.
+        timeout-minutes: 75
         env:
+          TERMIC_E2E_FAIL_CAPTURE: "1"
           TERMIC_E2E_TIMING: "1"
         run: npm run test:e2e
       - name: Slowest e2e cases

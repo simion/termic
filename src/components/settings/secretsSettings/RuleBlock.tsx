@@ -95,7 +95,12 @@ export function RuleBlock({ title, kind, set, inherited, hit, onChange }: {
       step: rects.length > 1 ? rects[1].top - rects[0].top : rects[i].height,
     };
     setDrag(d);
+    // only the pointer that started the drag moves it: WebKit sends a
+    // synthetic move at the real cursor after a re-render, which is another
+    // pointer when a test drives this one, and it dropped the rule back.
+    const id = e.pointerId;
     const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
       const dy = ev.clientY - d.startY;
       if (!d.started && Math.abs(dy) < 4) return;
       d = { ...d, dy, started: true };
@@ -107,7 +112,8 @@ export function RuleBlock({ title, kind, set, inherited, hit, onChange }: {
       window.removeEventListener("pointercancel", onUp);
       stopDrag.current = null;
     };
-    const onUp = () => {
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
       stop();
       if (d.started) move(d.from, dropIndex(d));
       setDrag(null);

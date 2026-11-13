@@ -95,13 +95,30 @@ export function useScrollSync(
   // what was on screen last time the effect ran: the pane that was already
   // showing is the one the reader is looking at, so it leads.
   const shownRef = useRef({ visible, editorVisible });
+  // the preview's place while it is shown alone, as a source line. Opening the
+  // split narrows it, and text that wraps differently moves every block, so
+  // the scrollTop it had then points somewhere else (section 5 for 10).
+  const previewLineRef = useRef<number | null>(null);
   useEffect(() => {
     const was = shownRef.current;
     shownRef.current = { visible, editorVisible };
     const scroller = scrollerRef.current, host = hostRef.current;
-    if (!view || !scroller || !host || !visible || !editorVisible) return;
-    const ed = view.scrollDOM;
+    if (!view || !scroller || !host || !visible) return;
     const anchors = () => (anchorsRef.current ??= previewAnchors(scroller, host, view.state.doc.lines + 1));
+    if (!editorVisible) {
+      const note = () => {
+        if (scroller.clientHeight) previewLineRef.current = yToLine(anchors(), scroller.scrollTop);
+      };
+      // a resize only drops the anchors: the place stays the line last noted,
+      // and rebuilding them per delivery would walk the DOM for nothing.
+      const ro = new ResizeObserver(() => { anchorsRef.current = null; });
+      ro.observe(host);
+      ro.observe(scroller);
+      scroller.addEventListener("scroll", note, { passive: true });
+      note();
+      return () => { ro.disconnect(); scroller.removeEventListener("scroll", note); };
+    }
+    const ed = view.scrollDOM;
     // each side's scroll drives the other, and writing scrollTop fires a
     // scroll event back on the driven side. That echo is recognised by the
     // value it lands on, not by a time window: a busy frame (mermaid, a big
@@ -134,6 +151,15 @@ export function useScrollSync(
     // (an older observer, so notified first) puts back the position it had
     // when it was hidden. Syncing earlier would be undone by that restore.
     let first: "editor" | "preview" | null = was.visible && !was.editorVisible ? "preview" : "editor";
+    const keep = first === "preview" ? previewLineRef.current : null;
+    previewLineRef.current = null;
+    /** Put both panes on the line the preview showed alone. */
+    const restore = (line: number): boolean => {
+      if (!scroller.clientHeight || !ed.clientHeight) return false;
+      echoPv = drive(scroller, lineToY(anchors(), line));
+      echoEd = drive(ed, editorYForLine(view, line));
+      return true;
+    };
     // `first` is spent only by a sync that RAN. WebKitGTK can deliver the
     // first observation while the editor still has no height (it lays the
     // split out a callback later); spending it there left the editor where
@@ -141,7 +167,7 @@ export function useScrollSync(
     // getting its height is itself a resize, so the next delivery retries.
     const ro = new ResizeObserver(() => {
       anchorsRef.current = null;
-      if (first && sync(first)) first = null;
+      if (first && (keep != null ? restore(keep) : sync(first))) first = null;
     });
     ro.observe(host);
     ro.observe(scroller);

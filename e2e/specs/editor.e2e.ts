@@ -4417,6 +4417,14 @@ describe("markdown split: scroll sync and preview comments", () => {
   });
 
   it("shows the same comment beside its source in the editor", async () => {
+    // CodeMirror draws only the lines near its viewport, and the zoom case
+    // above reflows both panes: on a narrow window (a CI runner's) that left
+    // the editor short of section 30, so its card was simply not drawn yet.
+    await browser.execute((line) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
+      v.dispatch({ effects: v.constructor.scrollIntoView(v.state.doc.line(line).from, { y: "center" }) });
+    }, headingLine(30) + 2);
     await browser.waitUntil(
       () => browser.execute((id) =>
         Array.from(document.querySelectorAll(`[data-task-id="${id}"] .cm-editor .tc-comment-card`))
@@ -4473,6 +4481,9 @@ describe("markdown split: scroll sync and preview comments", () => {
         const scroller = host.parentElement!;
         const h = host.querySelectorAll("h2")[9];
         scroller.scrollTop += h.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+        // an occluded e2e window gets no scroll events, and the preview notes
+        // its place from them: a reader's real scroll always sends one.
+        scroller.dispatchEvent(new Event("scroll"));
       });
       return (await previewTopSection()) === 10;
     }, { timeout: 5_000, timeoutMsg: "could not scroll the preview to section 10" });

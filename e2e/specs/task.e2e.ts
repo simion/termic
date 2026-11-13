@@ -274,6 +274,22 @@ const firstSpawnArgv = async (id: string) => {
 // and flags a warning in a pane you have not opened, explanations live behind
 // (i) while warnings stay on screen, a disabled Create says what is missing
 // and goes there from any section, and Cmd+Enter creates.
+/** Where the picker column sits: beside the fields from a 1100px viewport
+ *  (`min-[1100px]:` in NewTaskDialog), stacked under them below it. CI
+ *  windows can be narrower than a desktop's, so the spec checks the layout
+ *  the viewport calls for instead of assuming the wide one. */
+async function pickerPlacement(): Promise<string> {
+  return browser.execute(() => {
+    const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+    const fields = r('[data-testid="new-task-fields"]');
+    const picker = r('[data-testid="new-task-picker"]');
+    const beside = picker.x >= fields.x + fields.width && Math.abs(picker.y - fields.y) <= 1;
+    const below = picker.y >= fields.y + fields.height - 1;
+    const wide = window.innerWidth >= 1100;
+    return (wide ? beside : below) ? "beside or below, by width" : `wrong for a ${window.innerWidth}px viewport: beside=${beside} below=${below}`;
+  });
+}
+
 describe("new task dialog: side rail", () => {
   const NAME = '[data-testid="new-task-name"]';
   const created: string[] = [];
@@ -542,13 +558,9 @@ describe("new task dialog: side rail", () => {
     const LIST = '[data-testid="new-task-picker"] [data-testid="import-column"] [data-testid="import-list"]';
     await waitVisible(LIST);
     await settledSnap("new-task-c-import-worktree.png");
-    const side = await browser.execute(() => {
-      const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
-      const fields = r('[data-testid="new-task-fields"]');
-      const picker = r('[data-testid="new-task-picker"]');
-      return { right: picker.x >= fields.x + fields.width, top: Math.abs(picker.y - fields.y) <= 1, wide: picker.width > 200 };
-    });
-    expect(side).toEqual({ right: true, top: true, wide: true });
+    expect(await pickerPlacement()).toBe("beside or below, by width");
+    expect((await browser.execute(() =>
+      document.querySelector('[data-testid="new-task-picker"]')!.getBoundingClientRect().width)) > 200).toBe(true);
     expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Existing worktree/);
 
     // a pick fills Name and unblocks Create. The seeded `sbcheck` worktree
@@ -721,13 +733,7 @@ describe("new task dialog: side rail", () => {
     const LIST = '[data-testid="new-task-pane-task"] [data-testid="branch-column"] [data-testid="checkout-branch-list"]';
     await waitVisible(LIST);
     // Beside, not under: the same split as an issue or a PR.
-    const side = await browser.execute(() => {
-      const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
-      const fields = r('[data-testid="new-task-fields"]');
-      const picker = r('[data-testid="new-task-picker"]');
-      return { right: picker.x >= fields.x + fields.width, top: Math.abs(picker.y - fields.y) <= 1 };
-    });
-    expect(side).toEqual({ right: true, top: true });
+    expect(await pickerPlacement()).toBe("beside or below, by width");
     expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Branches/);
 
     // main is the one branch every seed has.

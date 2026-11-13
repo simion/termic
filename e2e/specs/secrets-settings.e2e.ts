@@ -19,8 +19,20 @@ const settingsLoad = () => browser.execute(() => window.__termic!.invoke("settin
 
 /** Wait until the saved Settings satisfy `pred` (saves are async). */
 async function waitSaved(pred: (s: any) => boolean, msg: string) {
-  await browser.waitUntil(async () => pred(await settingsLoad()), { timeout: 10_000, timeoutMsg: msg });
+  let last: any;
+  await browser.waitUntil(async () => pred(last = await settingsLoad()), { timeout: 10_000 }).catch(async () => {
+    const toasts = await browser.execute(() => window.__termic!.useUI.getState().toasts.map((t: any) => t.msg));
+    throw new Error(`${msg}; last env_guard ${JSON.stringify(last?.env_guard)}, toasts ${JSON.stringify(toasts)}`);
+  });
 }
+
+/** The saved kept-out rules equal `want`, compared field by field. Not by
+ *  JSON.stringify: Windows hands the entries back as {all, name}, and a string
+ *  compare read that as a different rule on every Windows run. */
+const guardIs = (s: any, want: { name: string; all: boolean }[]) => {
+  const got: any[] = s.env_guard ?? [];
+  return got.length === want.length && got.every((r, i) => r.name === want[i].name && r.all === want[i].all);
+};
 
 /** Set a <select> the way React sees it. */
 const setSelect = (sel: string, value: string) =>
@@ -930,7 +942,7 @@ describe("settings: env vars kept out of agents", () => {
 
   it("switches a var to all agents and back", async () => {
     await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="all"]`);
-    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: PAT, all: true }]), "the all-agents scope never saved");
+    await waitSaved(s => guardIs(s, [{ name: PAT, all: true }]), "the all-agents scope never saved");
     expect(await statusText(PAT)).toBe("Hidden from every agent tab.");
     await clickPresent(`[data-testid="kept-out-scope-${PAT}"] [data-value="caged"]`);
     // caged is a detected var's default, so no rule is left behind
@@ -945,7 +957,7 @@ describe("settings: env vars kept out of agents", () => {
     await setInputValue('[data-testid="kept-out-add-input"]', "STRIPE_SECRET_KEY");
     await clickPresent('[data-testid="kept-out-add"]');
     await waitVisible(row("STRIPE_SECRET_KEY"));
-    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: "STRIPE_SECRET_KEY", all: true }]), "the added name never saved");
+    await waitSaved(s => guardIs(s, [{ name: "STRIPE_SECRET_KEY", all: true }]), "the added name never saved");
     expect(await statusText("STRIPE_SECRET_KEY")).toBe("Not set right now. Kept out if it ever is.");
     expect(await browser.execute(() => document.querySelector('[data-testid="kept-out-scope-STRIPE_SECRET_KEY"] [data-value="all"]')?.getAttribute("aria-pressed"))).toBe("true");
     await snap("secrets-kept-out-added.png");
@@ -965,7 +977,7 @@ describe("settings: env vars kept out of agents", () => {
     await clickPresent('[data-testid="kept-out-add"]');
     await waitVisible(row(HF));
     await clickPresent(`[data-testid="kept-out-scope-${HF}"] [data-value="caged"]`);
-    await waitSaved(s => JSON.stringify(s.env_guard) === JSON.stringify([{ name: HF, all: false }]), "the caged scope dropped the unset built-in");
+    await waitSaved(s => guardIs(s, [{ name: HF, all: false }]), "the caged scope dropped the unset built-in");
     await waitVisible(row(HF));
     expect(await browser.execute((n) => document.querySelector(`[data-testid="kept-out-scope-${n}"] [data-value="caged"]`)?.getAttribute("aria-pressed"), HF)).toBe("true");
     expect(await statusText(HF)).toBe("Not set right now. Kept out if it ever is.");
@@ -1051,6 +1063,9 @@ describe("settings: env vars kept out of agents", () => {
       }
       const id = await openTask("kept-out env");
       await waitForAgentReady(id);
+      // "ready" is any output, and on Windows ConPTY's own escapes arrive
+      // before the agent script has written its line: wait for the line.
+      await browser.waitUntil(async () => lastSpawn(id) > 0, { timeout: 30_000, timeoutMsg: "the agent never logged its spawn" });
       return id;
     };
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());

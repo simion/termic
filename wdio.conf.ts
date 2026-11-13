@@ -41,7 +41,11 @@ export const config: WebdriverIO.Config = {
   runner: "local",
   tsConfigPath: path.join(repoRoot, "e2e", "tsconfig.json"),
 
-  specs: [path.join(repoRoot, "e2e", "specs", "**", "*.e2e.ts")],
+  // TERMIC_E2E_SPECS=git,editor runs just those files: a CI job started by
+  // hand on a branch can then repeat the specs it is chasing, not all 49.
+  specs: process.env.TERMIC_E2E_SPECS
+    ? process.env.TERMIC_E2E_SPECS.split(",").map(n => path.join(repoRoot, "e2e", "specs", `${n.trim()}.e2e.ts`))
+    : [path.join(repoRoot, "e2e", "specs", "**", "*.e2e.ts")],
   // Specs for features a platform does not have: Touch ID for sudo is
   // macOS only.
   exclude: [
@@ -192,6 +196,14 @@ export const config: WebdriverIO.Config = {
    *  which case costs the minutes is how you end up optimising a 300ms
    *  sleep in a seven minute file. Off by default: it writes a file and
    *  nobody needs it on a normal run. */
+  // TERMIC_E2E_WINDOW=WxH sizes the window before a spec file runs, so a
+  // run on a big desktop can reproduce a CI runner's small screen.
+  async before() {
+    const want = process.env.TERMIC_E2E_WINDOW?.match(/^(\d+)x(\d+)$/);
+    if (want) await browser.setWindowSize(Number(want[1]), Number(want[2]));
+    const vp = await browser.execute(() => `${window.innerWidth}x${window.innerHeight} on ${screen.width}x${screen.height}`);
+    console.log(`[e2e] viewport ${vp}`);
+  },
   async afterTest(test, _context, result) {
     // Opt-in failure capture (`TERMIC_E2E_FAIL_CAPTURE=1`, set by the Windows
     // workflow): a screenshot and the visible text of the window at the
@@ -200,6 +212,12 @@ export const config: WebdriverIO.Config = {
     if (process.env.TERMIC_E2E_FAIL_CAPTURE && !(result as { passed?: boolean }).passed) {
       const slug = `${test.parent} ${test.title}`.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 120);
       try { await browser.saveScreenshot(path.join(artifactsDir, `FAIL-${slug}.png`)); } catch { /* no display */ }
+      // The whole screen on macOS too: a system prompt (Keychain, a privacy
+      // ask) sits outside the webview, and it is what can stop every app
+      // after it from answering the driver.
+      if (process.platform === "darwin") {
+        try { execFileSync("screencapture", ["-x", path.join(artifactsDir, `FAIL-${slug}-screen.png`)], { timeout: 10_000 }); } catch { /* no permission */ }
+      }
       try {
         const text = await browser.execute(() => document.body?.innerText?.slice(0, 20_000) ?? "");
         writeFileSync(path.join(artifactsDir, `FAIL-${slug}.txt`), String(text));

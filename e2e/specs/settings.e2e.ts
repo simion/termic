@@ -696,7 +696,14 @@ describe("settings rail", () => {
     let pane = "";
     for (const c of ["claude", "codex", "other"]) {
       await clickPresent(`[data-testid="mcp-client-${c}"]`);
-      if (c !== "other") await clickPresent('[data-testid="mcp-show-block"]');
+      if (c !== "other") {
+        await clickPresent('[data-testid="mcp-show-block"]');
+        // the block draws once its command is built, which is async (the
+        // CLI sidecar's path on Windows) and can land after the click.
+        const marker = c === "claude" ? "claude mcp add-json" : "[mcp_servers.termic]";
+        await browser.waitUntil(async () => (await paneText()).includes(marker),
+          { timeout: 8_000, timeoutMsg: `the ${c} block never rendered` });
+      }
       if (c === "other") {
         await browser.waitUntil(
           async () => (await paneText()).includes("http://127.0.0.1:"),

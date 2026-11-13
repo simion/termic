@@ -60,6 +60,15 @@ The e2e binary is built with `VITE_E2E=1`, which exposes `window.__termic`
 That flag is unset in normal `npm run build`, so real release bundles still
 tree-shake `__termic` out.
 
+Two knobs for chasing a failure:
+
+- `TERMIC_E2E_SPECS=git,editor` runs just those spec files. A CI job started
+  by hand (`gh workflow run test.yml --ref <branch>`) can then repeat the
+  specs it is chasing.
+- `TERMIC_E2E_WINDOW=WxH` sizes the window before each spec file, in PHYSICAL
+  pixels (`2048x1536` is a 1024x768 viewport on a Retina screen). Every run
+  logs `[e2e] viewport WxH on screen` so the size a failure saw is on record.
+
 Tests run **on a real Mac only** — they launch a GUI window.
 
 On Linux the same commands work, on your own desktop or headless the way CI
@@ -422,6 +431,35 @@ window still does not take focus.
 
 A window built by a NEW code path (a third `WebviewWindowBuilder`) has to call
 the helper too, or it is the one window that pops up.
+
+### CI screens are 1024x768, and the layout is a narrow one there
+
+The macOS and Windows runners have a 1024x768 screen, so the window opens at
+a 972px-wide viewport (logged as `[e2e] viewport`), where a desktop gets
+1500. Below 1100px the New Task picker stacks under the fields, and with the
+sidebar and right panel open the status bar is under 560px, where the cage
+chip drops its labels. Specs written on a big screen assumed the wide layout
+and failed every macOS and Windows run. Reproduce with
+`TERMIC_E2E_WINDOW=2048x1536`, and either assert the layout the width calls
+for or give the spec the room (hide the right panel, as `secrets-task` does).
+Text a narrow layout hides is gone from `innerText`; read `textContent` when
+the case is about which data landed, not about the layout.
+
+Three traps found the same day, each a flake that looked like a bug elsewhere:
+
+- **The first match in the DOM is not yours.** Every visited task stays
+  mounted, so `document.querySelector(".xterm-screen")` can return a hidden
+  task's terminal, 0x0 at the window's corner. A drag or a drop measured from
+  it lands outside the window. Scope to `[data-task-id="<id>"]` and pick a
+  visible one, as `clickFor` in `shortcuts-linux.e2e.ts` does.
+- **WebKit sends a synthetic mouse move at the real cursor** after a
+  re-render (a screenshot is enough). A drag held across a `snap()` received it
+  as part of the gesture, and the rule dropped back. App-side drags should
+  follow only the `pointerId` that started them (`RuleBlock.tsx`).
+- **An occluded window gets no scroll events.** Setting `scrollTop` moves the
+  pane but fires nothing, so a feature that listens for scroll never hears it.
+  Dispatch `new Event("scroll")` after setting it, as a reader's real scroll
+  would have sent one.
 
 ### The window may be occluded, and then nothing animates
 

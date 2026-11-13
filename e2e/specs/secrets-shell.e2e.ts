@@ -218,9 +218,12 @@ import {
     // pre-filtered to this shell.
     expect(await browser.execute((s) => document.querySelector(s)?.getAttribute("data-value") ?? "", `${act} [data-testid="activity-who"]`)).toMatch(new RegExp(`${roleTab}$`));
     const row = `${act} [data-testid="activity-row"][data-kind="rule"][data-who="shell"]`;
-    await browser.waitUntil(async () => (await textOf(row).catch(() => "")).includes("/repos/acme/widget"),
+    // textContent, not innerText: a narrow window (a CI runner's) hides the
+    // row's path column, and this asserts which request landed, not the layout.
+    const rowText = () => browser.execute((s) => document.querySelector(s)?.textContent ?? "", row);
+    await browser.waitUntil(async () => (await rowText()).includes("/repos/acme/widget"),
       { timeout: 10_000, timeoutMsg: "the blocked row never reached Activity" });
-    expect(await textOf(row)).toContain("DELETE");
+    expect(await rowText()).toContain("DELETE");
     // the role may be shared, so a shell's Allow never acts on a default.
     expect(await browser.execute((b) => document.querySelector(b)?.getAttribute("data-scope"), `${row} [data-testid="secrets-allow"]`)).toBe(null);
     // one scope only: a shell has no task allows, so the menu offers the role.

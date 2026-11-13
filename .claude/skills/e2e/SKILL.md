@@ -40,6 +40,11 @@ make e2e_visible                        # make e2e, with the window on screen
 TERMIC_E2E_VISIBLE=1 npm run test:e2e   # same, without the rebuild
 ```
 
+CI runs on a 1024x768 screen (a 972px viewport). Before calling a UI spec
+done, run it narrow too: `TERMIC_E2E_WINDOW=2048x1536 npm run test:e2e`
+(physical pixels, so 1024x768 on Retina). `TERMIC_E2E_SPECS=a,b` limits a run
+to those spec files. See "CI screens are 1024x768" in docs/e2e-tests.md.
+
 Rebuild (`npm run e2e:build`, or `make e2e`) **after any Rust or frontend
 change** — the frontend is embedded in the e2e binary. Screenshots land in
 `.e2e/artifacts/` (gitignored, local only — no-op in CI via `snap()`). Runs

@@ -29,6 +29,10 @@ const openMenu = (sel: string) => browser.execute((s) => {
   let taskId: string | null = null;
   // the project default the uncaged case sets, restored in after().
   let prevProjectDefault: string | null | undefined;
+  // The cage chip drops its labels when the status bar is under 560px, which
+  // a CI runner's ~1024px screen gives with the right panel open, and this
+  // spec reads those labels. Hidden here, put back in after().
+  let hidRightPanel = false;
 
   const clickButton = (text: string) => browser.waitUntil(
     () => browser.execute((sel, t) => {
@@ -48,6 +52,12 @@ const openMenu = (sel: string) => browser.execute((s) => {
   before(async () => {
     await waitForAppShell();
     await requireTermicApi();
+    hidRightPanel = await browser.execute(() => {
+      const a = window.__termic!.useApp.getState();
+      if (a.rightPanelHidden) return false;
+      a.toggleRightPanel();
+      return true;
+    });
     prevSettings = await browser.execute(async () => JSON.stringify(await window.__termic!.ipc.settingsLoad()));
     lastPick = await browser.execute(() => JSON.stringify(
       Object.entries(localStorage).filter(([k]) => k.endsWith("newTaskLastSandboxMode"))));
@@ -86,6 +96,7 @@ const openMenu = (sel: string) => browser.execute((s) => {
   });
 
   after(async () => {
+    if (hidRightPanel) await browser.execute(() => window.__termic!.useApp.getState().toggleRightPanel());
     await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
     if (prevProjectDefault !== undefined) {
       await browser.execute(async (prev) => {

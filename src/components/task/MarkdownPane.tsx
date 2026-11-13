@@ -248,7 +248,9 @@ export function MarkdownPane(
             visible={visible && showPreview}
             ownsFind={ownsFind && showPreview}
             editorVisible={showEditor}
-            syncView={view === "split" ? editorView : null}
+            // in preview too, not only split: the hook notes the preview's
+            // place as a source line there, for the split to open on it.
+            syncView={view === "source" ? null : editorView}
             commentFile={commentFile}
             edit={editTarget}
             reader={reader}

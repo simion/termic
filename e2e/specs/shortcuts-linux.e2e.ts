@@ -22,7 +22,7 @@
 // chord arrives. docs/shortcuts.md lists the ones a real desktop takes.
 
 import { execFileSync } from "node:child_process";
-import { archiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell } from "../helpers";
+import { archiveTask, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell } from "../helpers";
 
 const xdo = (...args: string[]): string =>
   execFileSync("xdotool", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -186,6 +186,11 @@ const ptyBytes = () => browser.execute(() => {
     });
   });
 
+  // Every case here acts on this task, and some keys really navigate:
+  // Ctrl+Shift+Tab walks back through recent tabs, which can be another
+  // spec's task depending on what ran before. Put it back each time.
+  beforeEach(async () => { if (taskId) await ensureActiveTask(taskId); });
+
   after(async () => {
     if (!canPress) return;
     await intercept(false);
@@ -293,10 +298,17 @@ const ptyBytes = () => browser.execute(() => {
   it("copies a terminal selection with Ctrl+Shift+C", async () => {
     putClipboard("not-yet-copied");
     // Select with a real drag across the fixture's banner line.
+    // This task's agent terminal, as clickFor finds it: the first match in
+    // the DOM can be a hidden task's (0x0, at the window's corner) or the
+    // bottom panel's shell, whose prompt is what got copied instead.
     const box = await browser.execute((sel) => {
-      const r = document.querySelector(sel)!.getBoundingClientRect();
+      const el = [...document.querySelectorAll<HTMLElement>(sel)].find(e => {
+        const r = e.getBoundingClientRect();
+        return !e.closest("[data-bottom-split]") && r.width > 0 && r.height > 0;
+      })!;
+      const r = el.getBoundingClientRect();
       return { x: Math.round(r.left), y: Math.round(r.top) };
-    }, TERMINAL) as { x: number; y: number };
+    }, `[data-task-id="${taskId}"] ${TERMINAL}`) as { x: number; y: number };
     const { win, x, y } = appWindow();
     xdo("windowfocus", win);
     xdo("mousemove", String(x + box.x + 12), String(y + box.y + 10));
@@ -317,16 +329,21 @@ const ptyBytes = () => browser.execute(() => {
     const original = await browser.execute(
       (id) => window.__termic!.ipc.taskFileRead(id, "README.md"), taskId,
     ) as unknown as string;
-    // not scoped by [data-task-id]: the file tree is the right panel's,
-    // outside every task mount, and it only ever shows the active task.
-    const README = '[data-path="README.md"]';
     // the editor IS inside the task mount, and hidden tasks keep theirs
     const EDITOR = `[data-task-id="${taskId}"] .cm-content`;
-    await browser.waitUntil(
-      () => browser.execute((sel) => !!document.querySelector(sel), README),
-      { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" },
-    );
-    await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), README);
+    // Opened through the store in the source view: the file tree's first
+    // README row can be the Git panel's, and a tab another spec left on the
+    // markdown preview has no .cm-content. Either one failed this case, and
+    // left the README tab in front of the terminal every later case clicks.
+    const agentTab = await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      const was = app.activeTab[id];
+      app.openPreviewTab(id, { type: "edit", path: "README.md", title: "README.md" });
+      const s = window.__termic!.useApp.getState();
+      const tab = s.tabs[id].find((t: any) => t.type === "edit" && t.path === "README.md");
+      s.patchTab(id, tab.id, { mdView: "source" });
+      return was;
+    }, taskId) as unknown as string;
     await browser.waitUntil(
       () => browser.execute((sel) => !!document.querySelector(sel), EDITOR),
       { timeout: 10_000, timeoutMsg: "the editor never opened README" },
@@ -351,6 +368,8 @@ const ptyBytes = () => browser.execute(() => {
       await browser.execute(
         (id, text) => window.__termic!.ipc.taskFileWrite(id, "README.md", text), taskId, original,
       );
+      // back to the agent: the cases below click its terminal.
+      await browser.execute((id, tab) => window.__termic!.useApp.getState().setActiveTabId(id, tab), taskId, agentTab);
     }
   });
 
