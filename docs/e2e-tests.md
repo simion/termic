@@ -168,6 +168,33 @@ gitignored `.e2e/` fixture profile is recreated by `node scripts/e2e-seed.mjs`
 (the `snap()` helper). Artifacts upload on failure. To promote it to required,
 add it to branch protection once it's proven stable over ~20-30 runs.
 
+### The macOS CI freeze: killed and retried, not fixed
+
+On the `macos-26` runner the app sometimes freezes for good, about one spec
+file in ten, usually the first case of `board.e2e.ts` and sometimes in
+`agent.e2e.ts`. It has never been seen on a real Mac in use. Samples of the
+frozen app (`FAIL-*-sample-*.txt`) all show the same thing: the main thread
+spends every display refresh in `RemoteScrollingCoordinatorProxyMac::
+displayDidRefresh`, waiting on WebKit's scrolling thread, which waits for a
+rendering update from the WebContent process. WebContent and the GPU process
+are idle in their run loops, page timers still firing. So it is not our
+JavaScript and not WebGL, and the driver, which needs the main thread for
+every command, never gets a turn.
+
+Ruled out, each by a run that froze anyway: overlay scrollbars
+(`AppleShowScrollBars`), a visible window instead of the alpha-0 one, splitting
+the windowless cases into their own launch, and
+`WebKitDebugUseUISideCompositing=NO`.
+
+What `wdio.conf.ts` does instead, on macOS CI only: after a failed case it
+asks the page for `true` with a 5s limit. No answer means the freeze: it
+samples the app and WebKit's processes (with `TERMIC_E2E_FAIL_CAPTURE`), kills
+the app so the rest of the file fails in a second rather than 60s each, and
+`specFileRetries: 1` runs the file again in a fresh app. The retry is for the
+whole file and any failure, so a case that fails once and passes on the rerun
+shows up as a retry in the log, not as red. Read the log for `app frozen` and
+`Retrying` before calling a macOS run clean.
+
 ## Isolation
 
 `wdio.conf.ts` points the launched app at a throwaway `TERMIC_DATA_DIR`

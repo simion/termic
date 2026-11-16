@@ -37,6 +37,26 @@ export const dataDir = path.join(repoRoot, ".e2e", "profile");
 const timingLog = path.join(repoRoot, ".e2e", "timings.txt");
 const artifactsDir = path.join(repoRoot, ".e2e", "artifacts");
 
+/** The macOS runner's WebKit freeze: see "The macOS CI freeze" in
+ *  docs/e2e-tests.md. A spec file that hit it is rerun once in a fresh app. */
+const macCi = process.platform === "darwin" && !!process.env.CI;
+
+/** Whether the page still answers a trivial script within `ms`. */
+async function pageAnswers(ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); });
+  try {
+    return await Promise.race([browser.execute(() => true).then(() => true, () => false), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Every pid matching `pattern` (pgrep -f), or none. */
+function pids(pattern: string): string[] {
+  try { return execFileSync("pgrep", ["-f", pattern], { encoding: "utf8" }).trim().split("\n").filter(Boolean); } catch { return []; }
+}
+
 export const config: WebdriverIO.Config = {
   runner: "local",
   tsConfigPath: path.join(repoRoot, "e2e", "tsconfig.json"),
@@ -80,6 +100,10 @@ export const config: WebdriverIO.Config = {
   // stack trace (we don't use the mock plugin; restoreAllMocks runs anyway).
   logLevel: "silent",
   mochaOpts: { ui: "bdd", timeout: 60_000 },
+  // macOS CI only: the WebKit freeze above, once a file's app has been
+  // killed for it, fails every case left in that file. One fresh launch
+  // gets the file a fair run. Elsewhere a failure is a failure.
+  specFileRetries: macCi ? 1 : 0,
 
   // Poll conditions every 100ms (default 500) so browser.waitUntil-based waits
   // fire the instant the condition is met. NOTE: we deliberately do NOT use
@@ -209,7 +233,10 @@ export const config: WebdriverIO.Config = {
     // workflow): a screenshot and the visible text of the window at the
     // moment a case failed, into the artifacts dir CI uploads. On a runner
     // nobody can look at, it is the only record of what the screen showed.
-    if (process.env.TERMIC_E2E_FAIL_CAPTURE && !(result as { passed?: boolean }).passed) {
+    const failed = !(result as { passed?: boolean }).passed;
+    // A failure that left the page unable to answer at all is the freeze.
+    const frozen = failed && !(await pageAnswers(5_000));
+    if (process.env.TERMIC_E2E_FAIL_CAPTURE && failed) {
       const slug = `${test.parent} ${test.title}`.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 120);
       try { await browser.saveScreenshot(path.join(artifactsDir, `FAIL-${slug}.png`)); } catch { /* no display */ }
       // The whole screen on macOS too: a system prompt (Keychain, a privacy
@@ -218,10 +245,29 @@ export const config: WebdriverIO.Config = {
       if (process.platform === "darwin") {
         try { execFileSync("screencapture", ["-x", path.join(artifactsDir, `FAIL-${slug}-screen.png`)], { timeout: 10_000 }); } catch { /* no permission */ }
       }
-      try {
-        const text = await browser.execute(() => document.body?.innerText?.slice(0, 20_000) ?? "");
-        writeFileSync(path.join(artifactsDir, `FAIL-${slug}.txt`), String(text));
-      } catch { /* app gone */ }
+      if (!frozen) {
+        try {
+          const text = await browser.execute(() => document.body?.innerText?.slice(0, 20_000) ?? "");
+          writeFileSync(path.join(artifactsDir, `FAIL-${slug}.txt`), String(text));
+        } catch { /* app gone */ }
+      } else if (process.platform === "darwin") {
+        // Frozen: every thread of the app and of WebKit's WebContent and GPU
+        // processes, since the thread that would log why is the stuck one.
+        for (const [tag, pattern] of [["app", appBinary], ["webkit", "com.apple.WebKit.(WebContent|GPU)"]]) {
+          for (const pid of pids(pattern)) {
+            try { execFileSync("sample", [pid, "2", "-file", path.join(artifactsDir, `FAIL-${slug}-sample-${tag}-${pid}.txt`)], { timeout: 30_000, stdio: "ignore" }); } catch { /* gone */ }
+          }
+        }
+      }
+    }
+    // A frozen app on the macOS runner never comes back, and each case left
+    // would wait out its full 60s on it. Killing it fails them in a second,
+    // and specFileRetries runs the file again in a fresh app.
+    if (macCi && frozen) {
+      console.log(`[e2e] app frozen after "${test.title}", killing it`);
+      for (const pid of pids(appBinary)) {
+        try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ }
+      }
     }
     if (!process.env.TERMIC_E2E_TIMING) return;
     const ms = (result as { duration?: number }).duration ?? 0;

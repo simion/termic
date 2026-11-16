@@ -60,6 +60,19 @@ describe("board view", () => {
   // them like t2-t4 so a throw half way still leaves nothing live behind.
   let cap: string[] = [];
 
+  before(async () => {
+    // A run of this file that froze was killed before its after hook could
+    // archive anything (wdio.conf.ts), and the rerun would then trip over
+    // its own "board-a already exists". Sweep by name.
+    await waitForAppShell();
+    const live = await browser.execute(() =>
+      window.__termic!.useApp.getState().tasks
+        .filter((w: any) => !w.archived && /^board-/.test(w.name))
+        .map((w: any) => w.id as string),
+    );
+    for (const id of live) await archiveTask(id);
+  });
+
   after(async () => {
     // The filter query is session state; a later spec file gets a fresh
     // launch, but a throw mid-case should not leave this file's board
