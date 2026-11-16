@@ -1258,6 +1258,22 @@ Three things to carry forward:
   every link goes through `openWebUrl` (Rust, `spawn_os_open`) instead. Do
   not add a new `openUrl` call without the `IS_LINUX` branch.
 
+## The AppImage's WebKitGTK aborts on a COLRv1 emoji font
+
+The AppImage carries Ubuntu 22.04's WebKitGTK, and its Skia aborts drawing a
+glyph from a COLRv1 color font (`colrv1_configure_skpaint`, assertion
+`__n < this->size()`). The web process dies with SIGABRT, the window goes
+blank, and the app and its agents keep running behind it. Fedora 45's only
+color emoji font is `Noto-COLRv1.ttf`, so one emoji on screen was enough.
+
+`appimage_env::hide_colrv1_fonts` points our own process at
+`<data dir>/appimage-fonts.conf`: the system's `/etc/fonts/fonts.conf` plus a
+`rejectfont` for `*COLRv1*`. Checked with fontconfig on Ubuntu 22.04: the
+COLRv1 file drops out of `fc-list` and nothing else does. Emoji fall back to
+another emoji font, or tofu. It is AppImage only (a host WebKitGTK is newer),
+never overrides a `FONTCONFIG_FILE` the user set, and children lose ours by
+the same rule as the rest of the AppImage's environment.
+
 ## WebKitGTK refuses `navigator.clipboard.readText()`, gesture or not
 
 Ctrl+Shift+V pasted nothing into a terminal on Linux. The handler was

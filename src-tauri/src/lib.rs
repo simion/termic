@@ -28247,6 +28247,9 @@ pub fn run() {
         } else {
             dlog("[gpu] non-NVIDIA GPU (or nouveau/offload); keeping WebKitGTK DMA-BUF renderer on");
         }
+        if let Ok(dir) = global_dir() {
+            appimage_env::hide_colrv1_fonts(&dir);
+        }
     }
     // `mut` is only used when the e2e plugin is compiled in.
     #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]

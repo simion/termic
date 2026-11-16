@@ -33,6 +33,7 @@
 //! on the machine they are written on. Off an AppImage `$APPDIR` is unset and
 //! the override list is empty.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 /// What to do to one variable in a child: `Some` replaces it, `None` removes.
@@ -43,6 +44,45 @@ pub type Override = (String, Option<String>);
 /// overwrites `GTK_THEME` unconditionally and defaults `GDK_BACKEND` to x11,
 /// both meant for our window only.
 const NOT_FOR_CHILDREN: &[&str] = &["APPDIR", "APPIMAGE", "ARGV0", "OWD", "GDK_BACKEND", "GTK_THEME"];
+
+/// The fontconfig file `hide_colrv1_fonts` points our own process at. A
+/// `FONTCONFIG_FILE` naming it is ours, so children lose it; one the user
+/// set is theirs and passes through.
+const OWN_FONTCONFIG: &str = "appimage-fonts.conf";
+
+/// The system's config plus one rule: no COLRv1 font.
+const FONTCONFIG: &str = r#"<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <selectfont><rejectfont><glob>*COLRv1*</glob></rejectfont></selectfont>
+</fontconfig>
+"#;
+
+/// Keep COLRv1 color fonts away from the WebKitGTK we bundle.
+///
+/// The AppImage carries Ubuntu 22.04's WebKitGTK, whose Skia aborts on a
+/// COLRv1 glyph (`colrv1_configure_skpaint`: assertion `__n < this->size()`).
+/// The web process dies, the window goes blank and the app keeps running
+/// behind it. Fedora 45's only color emoji font is `Noto-COLRv1.ttf`, so one
+/// emoji in a task title or a file name was enough. Emoji fall back to
+/// whatever other emoji font is installed, or tofu, which beats a blank
+/// window. The host's own WebKitGTK (a `.deb`, a dev build) is not affected,
+/// so only an AppImage does this, and never over a `FONTCONFIG_FILE` the
+/// user set. Call before GTK starts: the WebKit helpers inherit it.
+pub fn hide_colrv1_fonts(dir: &Path) {
+    if !cfg!(target_os = "linux")
+        || std::env::var_os("APPDIR").is_none()
+        || std::env::var_os("FONTCONFIG_FILE").is_some()
+        || !Path::new("/etc/fonts/fonts.conf").exists()
+    {
+        return;
+    }
+    let path = dir.join(OWN_FONTCONFIG);
+    if std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, FONTCONFIG)).is_ok() {
+        std::env::set_var("FONTCONFIG_FILE", &path);
+    }
+}
 
 /// Where AppImage mounts live: `<tmp>/.mount_`, from our own `$APPDIR`.
 ///
@@ -68,7 +108,9 @@ pub fn overrides_for(env: impl IntoIterator<Item = (String, String)>, appdir: &s
     };
     let mut out = Vec::new();
     for (k, v) in env {
-        if NOT_FOR_CHILDREN.contains(&k.as_str()) {
+        if NOT_FOR_CHILDREN.contains(&k.as_str())
+            || (k == "FONTCONFIG_FILE" && v.ends_with(&format!("/{OWN_FONTCONFIG}")))
+        {
             out.push((k, None));
             continue;
         }
@@ -133,6 +175,20 @@ mod tests {
 
     fn get<'a>(o: &'a [Override], k: &str) -> Option<&'a Option<String>> {
         o.iter().find(|(n, _)| n == k).map(|(_, v)| v)
+    }
+
+    #[test]
+    fn our_fontconfig_file_stays_out_of_children_and_the_users_does_not() {
+        let o = run(&[("FONTCONFIG_FILE", "/home/u/.local/share/termic/appimage-fonts.conf")]);
+        assert_eq!(get(&o, "FONTCONFIG_FILE"), Some(&None));
+        let o = run(&[("FONTCONFIG_FILE", "/home/u/my-fonts.conf")]);
+        assert_eq!(get(&o, "FONTCONFIG_FILE"), None);
+    }
+
+    #[test]
+    fn the_fontconfig_keeps_the_system_config_and_rejects_colrv1() {
+        assert!(FONTCONFIG.contains(r#"<include ignore_missing="yes">/etc/fonts/fonts.conf</include>"#));
+        assert!(FONTCONFIG.contains("<rejectfont><glob>*COLRv1*</glob></rejectfont>"));
     }
 
     #[test]
