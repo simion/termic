@@ -1500,7 +1500,7 @@ Point `onOpenAutoFocus` at the field the user types into first
 HOVER does the same: with the pointer resting on an (i) or a blocked Create,
 the first Escape closes the tooltip.
 
-### An Objective-C exception during an event used to abort the app
+## An Objective-C exception during an event used to abort the app
 
 GH #429, #439. tao overrides `sendEvent:` with a Rust `extern "C"` fn
 that calls `[NSApplication sendEvent:]`. Rust frames with the C ABI cannot
