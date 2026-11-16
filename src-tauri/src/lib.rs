@@ -733,6 +733,12 @@ pub struct Task {
     /// appends at the bottom instead of jumping to the top.
     #[serde(default)]
     pub order: Option<u32>,
+    /// Pinned in the sidebar (GH #458): neither the sidebar query nor the
+    /// project's filter hides it, and its project and task group stay listed
+    /// with it. Written by `task_set_pinned`. Omitted from the file while
+    /// false, so a record that was never pinned reads and writes as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// Task group this task belongs to in the sidebar, or `None`. A group is
     /// born when an agent running in task A creates task B through the CLI
     /// or MCP: both join a group whose `id` is A's task id, so the
@@ -7461,6 +7467,7 @@ fn task_open_repo(
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        pinned: false,
         group: None,
         spawned_by: None,
         schedule: None,
@@ -7906,6 +7913,7 @@ fn task_import_worktree(
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        pinned: false,
         group: None,
         spawned_by: None,
         schedule: None,
@@ -8361,6 +8369,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        pinned: false,
         group: None,
         spawned_by: None,
         schedule: None,
@@ -8775,6 +8784,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        pinned: false,
         group: None,
         spawned_by: None,
         schedule: None,
@@ -12474,6 +12484,19 @@ fn task_set_yolo(id: String, yolo: bool) -> Result<(), String> {
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.yolo = yolo;
     save_task(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pin or unpin a task in the sidebar (GH #458). Only the flag changes: the
+/// task keeps its order, its group and its tabs.
+#[tauri::command]
+fn task_set_pinned(id: String, pinned: bool) -> Result<(), String> {
+    let mut list = load_tasks_all();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
+    if w.pinned != pinned {
+        w.pinned = pinned;
+        save_task(w).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -28624,7 +28647,7 @@ pub fn run() {
             window_close_if_not_last,
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
-            tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
+            tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo, task_set_pinned,
             task_set_role, secret_probe, secret_store, secret_forget, secrets_protected_available, secrets_gh_accounts, secrets_exposed, secrets_test_request, env_guard_list, env_guard_save, agent_set_pass_env,
             broker_counts, broker_events, broker_all_events, broker_set_paused, broker_allow, broker_unallow,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, sandbox_remove_allowed, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
@@ -38414,6 +38437,20 @@ filename f.rs
 
     fn ids(list: &[Task]) -> Vec<&str> {
         list.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    // GH #458: a task nobody pinned writes no `pinned` key at all, so its
+    // file is byte-for-byte what it was before the field existed, and a file
+    // from before the field reads as unpinned.
+    #[test]
+    fn pinned_is_omitted_while_false_and_survives_a_round_trip() {
+        let plain = serde_json::to_value(Task { id: "a".into(), ..Default::default() }).unwrap();
+        assert!(plain.get("pinned").is_none(), "{plain}");
+        let pinned = Task { id: "a".into(), pinned: true, ..Default::default() };
+        let json = serde_json::to_string(&pinned).unwrap();
+        assert!(json.contains("\"pinned\":true"), "{json}");
+        assert!(serde_json::from_str::<Task>(&json).unwrap().pinned);
+        assert!(!serde_json::from_str::<Task>("{\"id\":\"a\"}").unwrap().pinned);
     }
 
     // Nobody has dragged anything yet: every task carries `order: None`, and

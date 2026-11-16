@@ -379,6 +379,9 @@ export interface AppState {
   /** Optimistically set a task's YOLO flag in the store. The caller
    *  persists via ipc.taskSetYolo. */
   setTaskYolo: (taskId: string, yolo: boolean) => void;
+  /** Mirror a task's pin (GH #458) after, or just before, `ipc.taskSetPinned`.
+   *  Bails on an unchanged value: `tasks` feeds every sidebar row (bear trap 8). */
+  setTaskPinned: (taskId: string, pinned: boolean) => void;
   /** Mirror a task's recurring schedule (GH #300) after `taskSetSchedule`
    *  landed. Bails on an unchanged record (bear trap 8): `tasks` feeds every
    *  sidebar row. The schedule runner is the only caller. */
@@ -2259,6 +2262,11 @@ export const useApp = create<AppState>((set, get) => ({
   setTaskYolo: (taskId, yolo) => set(s => ({
     tasks: s.tasks.map(w => w.id === taskId ? { ...w, yolo } : w),
   })),
+  setTaskPinned: (taskId, pinned) => set(s => {
+    const cur = s.tasks.find(w => w.id === taskId);
+    if (!cur || !!cur.pinned === pinned) return s;
+    return { tasks: s.tasks.map(w => w.id === taskId ? { ...w, pinned: pinned || undefined } : w) };
+  }),
   setTaskSchedule: (taskId, schedule) => set(s => {
     const cur = s.tasks.find(w => w.id === taskId);
     if (!cur || sameSchedule(cur.schedule, schedule)) return s;

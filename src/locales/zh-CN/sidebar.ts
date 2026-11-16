@@ -142,6 +142,8 @@ export default {
   taskMenu: "任务菜单",
   spotlightTip: "Spotlight：更改会与 {{branch}} 同步",
   menuNew: "新建",
+  pinTask: "固定",
+  unpinTask: "取消固定",
   stopSpotlight: "停止 Spotlight",
   startSpotlight: "开始 Spotlight",
   sandboxSettings: "沙箱设置",

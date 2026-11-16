@@ -84,7 +84,8 @@ export function taskMatchesText(task: Task, facts: TaskFilterFacts | undefined, 
 /** Tasks that pass `filter` (both parts AND). The active task always stays:
  *  opening a task clears its notification, and without the exemption the
  *  row the user just clicked would vanish from under the cursor. It drops
- *  out once another task is selected. */
+ *  out once another task is selected. A PINNED task (GH #458) always stays,
+ *  until it is unpinned. */
 export function filterTasks(
   list: Task[],
   filter: TaskFilter | undefined,
@@ -95,6 +96,7 @@ export function filterTasks(
   if (!isFilterActive(filter)) return list;
   return list.filter(t =>
     t.id === activeTaskId
+    || !!t.pinned
     || ((!filter.bell || !!facts[t.id]?.notification)
       && taskMatchesText(t, facts[t.id], agents, filter.text)));
 }

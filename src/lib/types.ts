@@ -329,6 +329,10 @@ export interface Task {
    *  sort AFTER any ordered sibling — so untouched projects stay in creation
    *  order and a newly created task appends at the bottom. */
   order?: number;
+  /** Pinned in the sidebar (GH #458): the sidebar query and the project's
+   *  filter never hide it, and its project and group stay listed with it.
+   *  Absent (not false) on a task nobody pinned. Written by `taskSetPinned`. */
+  pinned?: boolean;
   /** Sidebar task group (see `TaskGroup`). Absent on ungrouped tasks. */
   group?: TaskGroup;
   /** Id of the task whose agent created this one through the CLI or MCP.

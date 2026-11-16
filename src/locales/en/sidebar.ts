@@ -142,6 +142,8 @@ export default {
   taskMenu: "Task menu",
   spotlightTip: "Spotlight: changes are synced with {{branch}}",
   menuNew: "New",
+  pinTask: "Pin",
+  unpinTask: "Unpin",
   stopSpotlight: "Stop spotlight",
   startSpotlight: "Start spotlight",
   sandboxSettings: "Sandbox settings",

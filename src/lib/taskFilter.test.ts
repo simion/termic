@@ -127,6 +127,21 @@ describe("filterTasks", () => {
     expect(filterTasks(list, { text: "", bell: true }, facts, [], "c").map(t => t.id)).toEqual(["a", "b", "c"]);
   });
 
+  it("keeps a pinned task whatever the filter says (GH #458)", () => {
+    // c has no notification and does not match "alp", so only the pin keeps it.
+    const pinned = [task("a", "alpha"), task("b", "beta"), { ...task("c", "gamma"), pinned: true }];
+    const ids = (f: { text: string; bell: boolean }, active: string | null = null) =>
+      filterTasks(pinned, f, facts, [], active).map(t => t.id);
+    expect(ids({ text: "alp", bell: false })).toEqual(["a", "c"]);
+    expect(ids({ text: "zzz", bell: false })).toEqual(["c"]);
+    expect(ids({ text: "", bell: true })).toEqual(["a", "b", "c"]);
+    // Pinned and active together is one row, not two.
+    expect(ids({ text: "zzz", bell: false }, "c")).toEqual(["c"]);
+    // Unpinned, the same task goes like any other.
+    expect(filterTasks(list, { text: "zzz", bell: false }, facts, [], null)).toEqual([]);
+    expect(filterTasks(list, { text: "alp", bell: false }, facts, [], null).map(t => t.id)).toEqual(["a"]);
+  });
+
   it("isFilterActive treats whitespace as empty", () => {
     expect(isFilterActive(undefined)).toBe(false);
     expect(isFilterActive({ text: " ", bell: false })).toBe(false);
