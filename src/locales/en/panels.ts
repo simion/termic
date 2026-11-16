@@ -237,6 +237,7 @@ export default {
     stopAllTip: "Stop all running scripts",
     runTip: "Run (opens the run terminal tabs)",
     runAllTip: "Run all configured run scripts",
+    pickTip: "Choose what to run",
     runAtRootTip: "Run at the repository root (spotlight is active)",
     runWorktreeTip: "Run in this worktree. Spotlighted tasks run at the repository root.",
     openPreviewTip: "Open preview ({{url}})",

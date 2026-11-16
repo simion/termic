@@ -398,6 +398,82 @@ describe("sidebar run stop", () => {
   });
 });
 
+// With more than one thing to run, the top bar's Run is a single button that
+// opens the menu; with one, it runs at once next to a separate chevron.
+describe("run button", () => {
+  let taskId!: string;
+  const setProject = (patch: Record<string, unknown>) =>
+    browser.execute(async (p) => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((x: any) => x.name === "fixture-repo");
+      await t.ipc.projectUpdate({ ...proj, ...p });
+      await t.useApp.getState().loadAll();
+    }, patch);
+  // The button the user sees: every visited task stays mounted, so scope to
+  // a rendered one.
+  const button = () =>
+    browser.execute(() => {
+      const shown = (sel: string) =>
+        [...document.querySelectorAll<HTMLElement>(sel)].find(e => e.getBoundingClientRect().width > 0) ?? null;
+      const run = shown('[data-testid="run-button"]');
+      return {
+        run: !!run,
+        menu: run?.getAttribute("aria-haspopup") ?? null,
+        chevron: !!shown('[data-testid="run-menu"]'),
+      };
+    });
+  after(async () => {
+    await browser.keys("Escape");
+    await setProject({ run_script: "", run_scripts: [] });
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("runs directly when there is only the run script", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await setProject({ run_script: "echo main-run", run_scripts: [] });
+    taskId = await openTask("e2e-run-button");
+    await ensureActiveTask(taskId);
+    await browser.waitUntil(async () => {
+      const b = await button();
+      return b.run && b.menu === null && b.chevron;
+    }, { timeout: 8_000, timeoutMsg: "expected a plain Run button beside a chevron" });
+  });
+
+  it("opens a menu of every run when there is more than one", async () => {
+    await setProject({ run_script: "echo main-run", run_scripts: [{ label: "e2e-extra", command: "echo extra" }] });
+    await browser.waitUntil(async () => {
+      const b = await button();
+      return b.run && b.menu === "menu" && !b.chevron;
+    }, { timeout: 8_000, timeoutMsg: "Run never became the menu trigger" });
+
+    // Radix opens on pointerdown, which a WebDriver click never emits in
+    // WebKit (see git.e2e.ts history scope), so dispatch the pair.
+    await browser.execute(() => {
+      const el = [...document.querySelectorAll<HTMLElement>('[data-testid="run-button"]')]
+        .find(e => e.getBoundingClientRect().width > 0)!;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    });
+    await waitVisible('[data-testid="run-primary"]');
+    const items = await browser.execute(() =>
+      [...document.querySelectorAll('[role="menuitem"]')].map(e => e.textContent?.trim()));
+    expect(items).toContain("e2e-extra");
+    await snap("run-button-menu.png");
+
+    // The menu's Run launches the primary run, as the button used to.
+    await clickWhenVisible('[data-testid="run-primary"]');
+    await browser.waitUntil(
+      () => browser.execute((id) =>
+        (window.__termic!.useApp.getState().tabs[id] ?? []).some(
+          (t: any) => t.runTab?.member === "" && (t.runTab?.kind ?? "run") === "run"),
+        taskId),
+      { timeout: 15_000, timeoutMsg: "the menu's Run never opened the run tab" },
+    );
+  });
+});
+
 // P1: the Run commands manager (GH #124). Guards that it opens for a project
 // and closes. (Persisting a command edits projects.json; opening + rendering is
 // the robust check that the dialog is wired.)

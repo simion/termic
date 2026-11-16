@@ -232,6 +232,7 @@ export default {
     stopAllTip: "停止所有正在运行的脚本",
     runTip: "运行（打开运行终端标签页）",
     runAllTip: "运行所有已配置的运行脚本",
+    pickTip: "选择要运行的内容",
     runAtRootTip: "在仓库根目录运行（Spotlight 已激活）",
     runWorktreeTip: "在此工作树中运行。被 Spotlight 的任务在仓库根目录运行。",
     openPreviewTip: "打开预览（{{url}}）",

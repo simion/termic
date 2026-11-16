@@ -249,6 +249,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Project reorder | Reorder projects | `projects.e2e.ts` |
 | ✅ Resume closed tab | resumeClosedTab reopens a tab and consumes the entry | `task.e2e.ts` |
 | ✅ Copy agent CLI briefing | The task's right-click menu offers "Copy agent CLI briefing" in the copy/edit block (the short paste-into-a-prompt fragment carrying one task's address, `src/lib/agentBriefing.ts`), running it reaches the clipboard (asserted via the success toast: the webview has write-only clipboard permission, so the block's CONTENT is pinned by `src/lib/agentBriefing.test.ts` instead), and the command palette offers the same action | `task.e2e.ts` |
+| ✅ Run button | With only the run script, the top bar's Run runs at once beside a separate chevron; with more than one thing to run (custom commands or several repos) Run itself opens the menu, which lists the run first, and that item opens the run tab | `run.e2e.ts` |
 | ✅ Run stop | Kill a running run tab's PTY → it stops | `run.e2e.ts` |
 | ✅ Project group | Assign a project to a group | `projects.e2e.ts` |
 | ✅ Task sandbox | Enable enforce mode then turn it off (per task) | `settings.e2e.ts` |

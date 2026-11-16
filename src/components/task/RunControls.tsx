@@ -1,8 +1,9 @@
 // Run controls (GH #54). Rendered in the UnifiedBar's top-right cluster
 // (next to Prompts). Runs and setups ALWAYS launch as terminal tabs in the
 // active pane — tabs + splits give full placement control, so there is no
-// footer-log mode anymore. Visible Setup + Run/Stop buttons, extras (open
-// URL, configure) behind a chevron. Individual Run tabs carry their own
+// footer-log mode anymore. Visible Run/Stop button, extras (setup, open
+// URL, configure) behind a chevron. With several things to run, Run and
+// the chevron are one button that opens the menu. Individual Run tabs carry their own
 // pill controls (play / restart / stop).
 //
 // Spotlight-enabled projects: while this task is spotlighted its run
@@ -62,6 +63,11 @@ export function RunControls({ task }: { task: Task }) {
   // PRIMARY run tabs (host + composition members) drive the main button —
   // a running custom command must not flip Run into Stop.
   const running = primaryRunTabs.some(t => !!t.ptyId);
+  // More than one thing to run (the primary run plus custom commands, or
+  // several repos): Run itself opens the menu instead of guessing (no
+  // separate chevron). With nothing configured but custom commands, Run
+  // alone would only toast "no run script", so the menu wins there too.
+  const pick = !running && (customCmds.length > 0 || targets.length > 1);
   // Host preview URL resolved from CURRENT config (Settings / `.termic.yaml`),
   // not the run tab's launch-time snapshot — otherwise configuring preview
   // after a run started, or a single-repo task (no baked target), would
@@ -119,13 +125,14 @@ export function RunControls({ task }: { task: Task }) {
             <span>{stopLabel}</span>
           </Button>
         </Tip>
-      ) : (
+      ) : !pick && (
         <Tip
           content={runTip}
           side="bottom"
         >
           <Button
             size="sm" variant="ghost" className="gap-1.5" data-no-drag
+            data-testid="run-button"
             onClick={() => { void launchRunTabs(task.id); }}
           >
             <Play className="h-3.5 w-3.5" />
@@ -134,11 +141,23 @@ export function RunControls({ task }: { task: Task }) {
         </Tip>
       )}
       <DropdownRoot onOpenChange={(open) => { if (open) refreshCustomCmds(); }}>
-        <DropdownTrigger asChild>
-          <Button size="sm" variant="ghost" className="px-1" data-no-drag>
-            <ChevronDown className="h-3.5 w-3.5" />
-          </Button>
-        </DropdownTrigger>
+        {pick ? (
+          <Tip content={t("runControls.pickTip")} side="bottom">
+            <DropdownTrigger asChild>
+              <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="run-button">
+                <Play className="h-3.5 w-3.5" />
+                <span>{runLabel}</span>
+                <ChevronDown className="-ml-0.5 h-3.5 w-3.5" />
+              </Button>
+            </DropdownTrigger>
+          </Tip>
+        ) : (
+          <DropdownTrigger asChild>
+            <Button size="sm" variant="ghost" className="px-1" data-no-drag data-testid="run-menu">
+              <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownTrigger>
+        )}
         {/* All items here are single-line, so vertically center the leading
             icon against the label (the shared DropdownItem top-aligns for the
             two-line items other menus use, which leaves single-line icons
@@ -147,6 +166,16 @@ export function RunControls({ task }: { task: Task }) {
             mass sits below the font box center. Scoped here so only the Run
             dropdown changes. */}
         <DropdownMenu align="end" className="[&_[role=menuitem]]:items-center [&_[role=menuitem]>svg]:mt-0 [&_[role=menuitem]>svg]:translate-y-[1px]">
+          {/* Merged button: the primary run is a choice like the others. */}
+          {pick && targets.length > 0 && (
+            <>
+              <DropdownItem data-testid="run-primary" onSelect={() => { void launchRunTabs(task.id); }}>
+                <Play className="h-4 w-4" />
+                <span>{runLabel}</span>
+              </DropdownItem>
+              <DropdownSeparator />
+            </>
+          )}
           {isMultiRepo && targets.length > 0 && (
             <>
               <DropdownLabel>{t("runControls.runScripts")}</DropdownLabel>
