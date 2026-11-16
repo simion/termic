@@ -76,14 +76,57 @@ fn format_entry(when: &str, thread: &str, at: &str, message: &str, backtrace: &s
 /// An uncaught Objective-C exception is not a Rust panic, so the panic hook
 /// never sees it. It gets its own entry, in the same `=== ` header format so
 /// one reader splits both. Not covered: one AppKit catches and logs itself.
+///
+/// Nor one thrown while handling an event (GH #429, #439). tao's
+/// `sendEvent:` override is a Rust `extern "C"` fn calling
+/// `[NSApplication sendEvent:]`, so an exception from AppKit or WebKit
+/// unwinds into a frame that cannot unwind: Rust aborts with
+/// `panic_cannot_unwind`, the exception never counts as uncaught, and the
+/// log got only that panic. `guard_send_event` catches it one frame lower,
+/// inside NSApplication's own implementation, records it, and drops that one
+/// event, which is what a plain Cocoa app's run loop does by default.
 #[cfg(target_os = "macos")]
 mod objc {
-    use objc2::{msg_send, rc::Retained};
+    use std::{panic::AssertUnwindSafe, sync::OnceLock};
+    use objc2::{msg_send, rc::Retained, runtime::{AnyClass, AnyObject, Imp, Sel}, sel};
     use objc2_foundation::{NSArray, NSException, NSSetUncaughtExceptionHandler, NSString};
 
     pub(super) fn install() {
         // SAFETY: the handler has the C signature Foundation calls it with.
         unsafe { NSSetUncaughtExceptionHandler(on_exception as *const () as *mut core::ffi::c_void) }
+        guard_send_event();
+    }
+
+    /// NSApplication's own `sendEvent:`, which ours replaces.
+    static ORIGINAL: OnceLock<Imp> = OnceLock::new();
+
+    /// Swap `-[NSApplication sendEvent:]` for one that runs the original
+    /// inside an Objective-C catch. tao's subclass reaches it through
+    /// `super`, so this works before or after tao registers that subclass.
+    fn guard_send_event() {
+        let sel = sel!(sendEvent:);
+        let Some(method) = AnyClass::get(c"NSApplication").and_then(|c| c.instance_method(sel)) else { return };
+        if ORIGINAL.get().is_some() { return }
+        // SAFETY: `guarded` has the method's signature, (self, _cmd, NSEvent*) -> void.
+        let old = unsafe { method.set_implementation(std::mem::transmute::<SendEvent, Imp>(guarded)) };
+        let _ = ORIGINAL.set(old);
+    }
+
+    type SendEvent = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+
+    unsafe extern "C-unwind" fn guarded(this: *mut AnyObject, sel: Sel, event: *mut AnyObject) {
+        let Some(&original) = ORIGINAL.get() else { return };
+        // SAFETY: the IMP this one replaced, called with the arguments it was given.
+        let original = unsafe { std::mem::transmute::<Imp, SendEvent>(original) };
+        survive(AssertUnwindSafe(|| unsafe { original(this, sel, event) }));
+    }
+
+    /// Run `f`; an Objective-C exception it throws is recorded instead of
+    /// propagating. A Rust panic still passes through.
+    pub(super) fn survive(f: impl FnOnce() + std::panic::UnwindSafe) {
+        if let Err(Some(e)) = objc2::exception::catch(f) {
+            on_exception(Retained::as_ptr(&e) as *mut NSException);
+        }
     }
 
     pub(super) extern "C" fn on_exception(e: *mut NSException) {
@@ -156,6 +199,17 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("Objective-C exception NSRangeException\nindex 3 beyond bounds"), "{text}");
         assert_eq!(existing(), Some(path.as_path()));
+
+        // Shares LOG with the case above. A RAISED exception inside the guard
+        // returns normally and lands in the log with its stack.
+        objc::survive(|| {
+            let e = unsafe { NSException::exceptionWithName_reason_userInfo(
+                &NSString::from_str("NSInternalInconsistencyException"), Some(&NSString::from_str("thrown during an event")), None) };
+            e.raise();
+        });
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Objective-C exception NSInternalInconsistencyException\nthrown during an event\n"), "{text}");
+        assert!(text.contains("CoreFoundation"), "a raised exception carries its stack: {text}");
     }
 
     /// The real path: a child process raises an exception nothing catches,
@@ -191,6 +245,50 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap_or_default();
         assert!(text.contains("Objective-C exception NSRangeException\nboom from gcd\n"), "{text}");
         assert!(text.contains("CoreFoundation"), "a raised exception carries its stack: {text}");
+    }
+
+    /// GH #429: the crash's shape. A nounwind `extern "C"` frame (tao's
+    /// `send_event`) calls `[NSApplication sendEvent:]`, and AppKit throws.
+    /// Without the guard the child aborts with `panic_cannot_unwind`; with
+    /// it the call returns and the exception is in the log.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_exception_during_an_event_is_survived_and_recorded() {
+        use objc2::{class, msg_send, runtime::{AnyObject, Imp, Sel}, sel};
+        const CHILD: &str = "TERMIC_TEST_OBJC_EVENT_LOG";
+        if let Some(path) = std::env::var_os(CHILD) {
+            unsafe extern "C-unwind" fn appkit_throws(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {
+                use objc2_foundation::{NSException, NSString};
+                let e = unsafe { NSException::exceptionWithName_reason_userInfo(
+                    &NSString::from_str("NSInternalInconsistencyException"), Some(&NSString::from_str("thrown in sendEvent")), None) };
+                e.raise();
+            }
+            // Stand-in for AppKit's implementation, installed BEFORE the guard wraps it.
+            let m = class!(NSApplication).instance_method(sel!(sendEvent:)).unwrap();
+            type F = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+            unsafe { m.set_implementation(std::mem::transmute::<F, Imp>(appkit_throws)) };
+            if std::env::var_os("TERMIC_TEST_NO_GUARD").is_none() {
+                install(PathBuf::from(path));
+            }
+            extern "C" fn tao_send_event(app: &AnyObject) {
+                let none: *mut AnyObject = std::ptr::null_mut();
+                let _: () = unsafe { msg_send![app, sendEvent: none] };
+            }
+            let app: *mut AnyObject = unsafe { msg_send![class!(NSApplication), sharedApplication] };
+            tao_send_event(unsafe { &*app });
+            println!("survived");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("panic.log");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "panic_log::tests::an_exception_during_an_event_is_survived_and_recorded", "--test-threads=1", "--nocapture"])
+            .env(CHILD, &path)
+            .output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && stdout.contains("survived"), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        assert!(text.contains("Objective-C exception NSInternalInconsistencyException\nthrown in sendEvent\n"), "{text}");
     }
 
     #[test]

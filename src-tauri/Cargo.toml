@@ -161,7 +161,7 @@ windows-core = "0.61"
 # Both crates are already in the dependency tree via tauri/wry, so pinning
 # them here doesn't change resolution.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSData"] }
 # NSApplication.setApplicationIconImage, used ONLY by set_dev_dock_icon (debug
 # builds): `tauri dev` runs an unbundled binary, so the dock icon can't come

@@ -1499,3 +1499,22 @@ Point `onOpenAutoFocus` at the field the user types into first
 `autoFocus` on the input alone did not win that race. A tooltip open from
 HOVER does the same: with the pointer resting on an (i) or a blocked Create,
 the first Escape closes the tooltip.
+
+### An Objective-C exception during an event used to abort the app
+
+GH #429, #439. tao overrides `sendEvent:` with a Rust `extern "C"` fn
+that calls `[NSApplication sendEvent:]`. Rust frames with the C ABI cannot
+unwind, so an exception AppKit or WebKit throws while handling an event
+hit that frame and Rust aborted with `panic in a function that cannot
+unwind`. The crash report shows `panic_cannot_unwind` under
+`tao::...::send_event`, and the exception itself is gone: the Objective-C
+runtime saw Rust's abort pad as a handler, so the uncaught-exception
+handler never ran either.
+
+`panic_log::objc::guard_send_event` replaces NSApplication's own
+`sendEvent:` (the one tao reaches through `super`) with a wrapper that
+catches the exception, writes it to `panic.log` with its name, reason and
+stack, and drops that one event. That is what an ordinary Cocoa app's run
+loop does with such an exception. If a crash still reads
+`panic_cannot_unwind`, the throw came through another Rust `extern "C"`
+method (a tao view or delegate callback), not through `sendEvent:`.
