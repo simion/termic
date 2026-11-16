@@ -123,6 +123,19 @@ export function nextDraft(d: DraftState, data: string, answering: boolean): Draf
 /** How long after the user's last keystroke an automatic send waits. */
 export const TYPING_QUIET_MS = 1500;
 
+// ── A draft nobody touches expires ──
+//
+// The tracker is a guess from keystrokes, and a wrong guess held every message
+// for that agent until someone pressed Enter in its terminal: a delegated
+// worker sat done for minutes with a report waiting (`queue-held ... why=draft
+// in the prompt`) and nothing on screen said why. So a draft with no keystroke
+// for this long is assumed gone and automatic sends resume. The cost, accepted
+// on purpose: a real draft left alone this long gets the message typed after it.
+let draftStaleMs = 2 * 60_000;
+export const draftStaleAfterMs = (): number => draftStaleMs;
+/** e2e only: a spec cannot wait two minutes. */
+export function setDraftStaleMs(ms: number): void { draftStaleMs = ms; }
+
 /** A payload that is the user pressing a key, as opposed to one of xterm's
  *  automatic replies (a cursor-position report starts with ESC too). A bare
  *  ESC and the arrow keys are keys; any other ESC sequence is not. */

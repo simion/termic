@@ -3646,6 +3646,31 @@ describe("agent messages wait for your draft", () => {
       timeout: 30_000, timeoutMsg: "the report stayed queued behind a draft that was not there",
     });
   });
+
+  // A draft the tracker believes in but nobody touches expires, so a wrong
+  // guess cannot hold another agent's report until someone presses Enter.
+  // Two minutes in the app; shortened here.
+  it("a draft left untouched expires, and the held report goes", async function () {
+    this.timeout(90_000);
+    await browser.execute(() => window.__termic!.setDraftStaleMs(4_000));
+    try {
+      await typeIntoAgent(taskId, "left alone");
+      await browser.waitUntil(composing, { timeout: 5_000, timeoutMsg: "the draft was never noticed" });
+      const r = await cliRpc({ cmd: "send", task: NAME, prompt: "fifth-report" });
+      expect(r.ok).toBe(true);
+      expect(r.data.mode).toBe("queued");
+      await browser.waitUntil(async () => !(await composing()), {
+        timeout: 15_000, timeoutMsg: "the untouched draft never expired",
+      });
+      // The accepted cost: the fixture's tty line still holds the draft, so
+      // the report is typed after it. What matters is that it went.
+      await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await logs()).includes("fifth-report"), {
+        timeout: 30_000, timeoutMsg: "the report stayed queued after the draft expired",
+      });
+    } finally {
+      await browser.execute(() => window.__termic!.setDraftStaleMs(120_000));
+    }
+  });
 });
 
 // `termic send --now` (MCP `task_send` with `now`): the message that cannot

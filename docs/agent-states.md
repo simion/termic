@@ -211,6 +211,16 @@ based and so agent-agnostic; a key that clears a draft in only one agent
 (claude's double Escape) leaves the message held until the next Enter,
 which is the safe failure.
 
+**A draft nobody touches expires after 2 minutes** (`draftStaleAfterMs` in
+`lib/draftTracker.ts`). The tracker is an estimate, and a wrong one held a
+delegated worker's queue for minutes after its `Stop` hook had reported done,
+with `queue-held ... why=draft in the prompt` the only trace. Each real key
+re-arms the timer (xterm's replies do not: claude's fullscreen mode asks for the
+cursor position many times a second); when it fires the draft is empty, the
+flip wakes the queue as a cleared draft would, and the log says `draft-expired`.
+The accepted cost: a real draft left alone that long gets the message typed
+after it.
+
 ## What each surface draws
 
 Priority, high to low, and it is the same chain everywhere:

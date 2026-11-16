@@ -54,7 +54,7 @@ import { imageFromClipboard, pastePathText, windowsPasteText } from "@/lib/clipb
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage } from "@/lib/agentSend";
 import { queueLooksStalled } from "@/lib/queueStall";
-import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState, isUserKey, typingHoldMs } from "@/lib/draftTracker";
+import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState, isUserKey, typingHoldMs, draftStaleAfterMs } from "@/lib/draftTracker";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
@@ -540,8 +540,11 @@ const captureArmedRef = useRef(false);
   // scheduled for when the keys go quiet (lib/draftTracker, typingHoldMs).
   const lastKeyAtRef = useRef(0);
   const quietRetryRef = useRef(0);
+  // Clears a draft left untouched for draftStaleAfterMs (lib/draftTracker).
+  const draftExpiryRef = useRef(0);
   const trackDraft = useCallback((data: string) => {
-    if (isUserKey(data)) lastKeyAtRef.current = Date.now();
+    const userKey = isUserKey(data);
+    if (userKey) lastKeyAtRef.current = Date.now();
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
     // Blocked on a prompt of its own (a permission dialog, a question): this
     // key answers that, it is not a character in the input box. Read BEFORE
@@ -552,7 +555,25 @@ const captureArmedRef = useRef(false);
     const composing = isComposing(next);
     // Written only when it flips: this runs on every keystroke (bear trap 8).
     if (!!cur?.composing !== composing) patchTab(task.id, tab.id, { composing });
-  }, [task.id, tab.id]);
+    // Re-armed by real keys only: xterm's own replies (claude's fullscreen
+    // asks for the cursor position many times a second) are not the user.
+    if (userKey || !composing) {
+      window.clearTimeout(draftExpiryRef.current);
+      draftExpiryRef.current = 0;
+    }
+    if (userKey && composing) {
+      draftExpiryRef.current = window.setTimeout(() => {
+        draftExpiryRef.current = 0;
+        draftRef.current = EMPTY_DRAFT;
+        const now = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+        if (!now?.composing) return;
+        // Flipping it wakes the queue kick below, like a draft the user cleared.
+        patchTab(task.id, tab.id, { composing: false });
+        logWorkState("draft-expired", `task="${task.name}" cli=${tab.cli} queued=${now.queue?.length ?? 0} idleMs=${draftStaleAfterMs()}`);
+      }, draftStaleAfterMs());
+    }
+  }, [task.id, task.name, tab.id, tab.cli]);
+  useEffect(() => () => window.clearTimeout(draftExpiryRef.current), []);
 
   // Single funnel for every "work done" transition. Enforces one-done-per-
   // submit (blocks oscillation / late-OSC re-fires) and suppresses the

@@ -173,6 +173,7 @@ export interface TermicApi {
   clearForgeLists: () => void;
   /** The GitHub rate ledger's mirror (store/forgeRate.ts). */
   useForgeRate: { getState: () => any; setState: (p: any) => void };
+  setDraftStaleMs: (ms: number) => void;
   /** Tasks mid-creation (GH #242 — non-blocking worktree create). Seeding an
    *  entry directly lets specs catch PendingTaskRow / CreatingTaskPane in
    *  their "creating" state without racing the fixture repo's near-instant
