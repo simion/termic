@@ -183,8 +183,15 @@ every command, never gets a turn.
 
 Ruled out, each by a run that froze anyway: overlay scrollbars
 (`AppleShowScrollBars`), a visible window instead of the alpha-0 one, splitting
-the windowless cases into their own launch, and
-`WebKitDebugUseUISideCompositing=NO`.
+the windowless cases into their own launch,
+`WebKitDebugUseUISideCompositing=NO`, and display or system sleep (the
+runner's `pmset -g` already reports both prevented, and `caffeinate -dimsu`
+made no difference).
+
+What the freezes share is job age, not a spec: across six probes that looped
+the same five files, the first pass (about 7 minutes) never froze and the
+later passes did, in whichever file was running. Every file is a fresh app
+launch, so whatever accumulates lives outside the app.
 
 What `wdio.conf.ts` does instead, on macOS CI only: after a failed case it
 asks the page for `true` with a 5s limit. No answer means the freeze: it
