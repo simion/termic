@@ -191,7 +191,15 @@ made no difference).
 What the freezes share is job age, not a spec: across six probes that looped
 the same five files, the first pass (about 7 minutes) never froze and the
 later passes did, in whichever file was running. Every file is a fresh app
-launch, so whatever accumulates lives outside the app.
+launch, so whatever accumulates lives outside the app, and it is not
+leftover processes or memory: a probe that logged both between passes saw
+no WebKit or termic process outlive its pass, no swap, and flat free
+memory.
+
+A retried file starts in the same profile with the killed attempt's tasks
+still live, so a spec that creates a task by name sweeps that name in its
+`before` (`board.e2e.ts`, `windowless.e2e.ts`). Without it the retry fails
+on "already exists" and the log reads like a second freeze.
 
 What `wdio.conf.ts` does instead, on macOS CI only: after a failed case it
 asks the page for `true` with a 5s limit. No answer means the freeze: it

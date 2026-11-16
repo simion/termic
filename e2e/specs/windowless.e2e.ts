@@ -74,6 +74,14 @@ const artifacts = path.join(
       const u = window.__termic!.useUI.getState();
       u.closeRace?.(); u.closeWelcome?.(); u.closeChangelog?.();
     });
+    // A killed first attempt (wdio.conf.ts, macOS CI) never reaches `after`,
+    // so its task is still live and the retry would die on "bg-mode already
+    // exists". Sweep by name.
+    const left = await browser.execute(() =>
+      window.__termic!.useApp.getState().tasks
+        .filter((w: any) => !w.archived && w.name === "bg-mode")
+        .map((w: any) => w.id as string));
+    for (const id of left) await archiveTask(id);
     taskId = await openTask("bg-mode");
     // Wait for the PTY so there is a real terminal to collapse.
     await browser.waitUntil(
