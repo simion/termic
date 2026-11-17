@@ -3331,7 +3331,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   listed whatever they say, so say so, or it reads as a match. */}
               {w.pinned && (
                 <span data-testid="task-pinned-mark" title={t("pinnedMark")} className="flex shrink-0 items-center">
-                  <Pin className="h-3 w-3 text-[var(--color-fg-faint)]" />
+                  <Pin className="h-3.5 w-3.5 text-[var(--color-accent)]" />
                 </span>
               )}
               {/* Mode (sandbox, docker, dangerous YOLO; absent when there is
