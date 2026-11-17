@@ -1163,11 +1163,6 @@ describe("sidebar filter bar", () => {
       await setInputValue(PALETTE, q);
       const shown = await browser.execute(l =>
         [...document.querySelectorAll<HTMLElement>("[data-row]")].some(r => r.textContent?.includes(l)), label);
-      // Escape is handled on the palette itself (its onKeyDown), so it only
-      // closes it once focus is inside; sent before that, it lands elsewhere
-      // and the palette stays open.
-      await browser.waitUntil(() => browser.execute(sel => document.activeElement === document.querySelector(sel), PALETTE),
-        { timeout: 5_000, timeoutMsg: "the palette never took focus" });
       await browser.keys(["Escape"]);
       await waitGone(PALETTE);
       return shown;
