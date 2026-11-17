@@ -424,7 +424,11 @@ export function EditorPane({ task, tab, active, onContent }: {
           const text = v.state.doc.toString();
           if (text !== lastFlushedRef.current) {
             lastFlushedRef.current = text;
-            trackPadDiskWrite(scratchTarget, tab.scratchId, scratchWrite(scratchTarget, tab.scratchId, text)).catch(() => {});
+            // After the writes already in flight: scratch_write runs on a
+            // blocking pool, so two unchained flushes can land out of order
+            // and leave the older text on disk for good.
+            const prior = padDiskSettled(scratchTarget, tab.scratchId);
+            trackPadDiskWrite(scratchTarget, tab.scratchId, prior.then(() => scratchWrite(scratchTarget, tab.scratchId, text))).catch(() => {});
           }
           // Re-sniff the syntax as the buffer fills. An edit tab resolves
           // this once at mount because its PATH answers, but a pad is always
