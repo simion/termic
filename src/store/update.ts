@@ -39,6 +39,7 @@ import { getVersion } from "@tauri-apps/api/app";
 const CHANGELOG_URL = "https://termic.dev/updates/changelog.json";
 const CHANGELOG_MD_URL = "https://termic.dev/updates/changelog.md";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1h
+const MANUAL_CHECK_TIMEOUT_MS = 10_000;
 
 // localStorage keys. Kept here (not in prefs.ts) because this is app
 // state, not a user-facing Settings preference.
@@ -245,7 +246,10 @@ export const useUpdate = create<UpdateState>((set, get) => ({
     // reports up-to-date rather than offering an install.
     if (import.meta.env.DEV || isBetaBuild()) return "uptodate";
     try {
-      const u = await check();
+      // Bounded: someone is watching the spinner. With no timeout, a network
+      // that drops packets instead of refusing them leaves it spinning and
+      // the check reports nothing at all.
+      const u = await check({ timeout: MANUAL_CHECK_TIMEOUT_MS });
       // An explicit check UNDISMISSES. Dismissing the card means "not now",
       // and asking for a check is the user changing their mind: without this
       // both surfaces stay hidden (each hides on `version === dismissedVersion`),

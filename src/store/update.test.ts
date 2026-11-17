@@ -132,6 +132,12 @@ describe("checkNow", () => {
     expect(useUpdate.getState().dismissedVersion).toBe("1.11.0");
   });
 
+  it("bounds the manual check, so a hung network still reports", async () => {
+    vi.mocked(check).mockResolvedValue(null as never);
+    await useUpdate.getState().checkNow();
+    expect(vi.mocked(check)).toHaveBeenLastCalledWith({ timeout: 10_000 });
+  });
+
   it("keeps the dismissal when the check throws", async () => {
     useUpdate.setState({ dismissedVersion: "1.11.0" });
     vi.mocked(check).mockRejectedValue(new Error("offline"));
