@@ -171,6 +171,9 @@ export const config: WebdriverIO.Config = {
   },
   async onPrepare() {
     mkdirSync(artifactsDir, { recursive: true });
+    // The first file's app, too, starts from the default frame: a frame an
+    // earlier run left (200000px wide in the one seen) failed that file.
+    rmSync(windowStateFile, { force: true });
     // a run launched from an agent tab inherits that tab's TERMIC_* (task,
     // tab, pty, sandbox mode). They describe the outer app, not the one under
     // test, and the app and every termic-cli a spec runs would act on them.
