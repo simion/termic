@@ -407,6 +407,16 @@ while IFS= read -r line; do
       done
       set_title "✳ ${name} iip-after"
       continue ;;
+    "#busy")
+      # An ordinary turn, only long enough to be SEEN working (~3s). The
+      # default turn spins for 0.45s, under the ~0.7s termic takes to latch
+      # the working badge, so a spec waiting for "working" after it raced the
+      # turn's end and sometimes saw only done. No input is read until the
+      # turn ends, so what is typed meanwhile queues up as the next prompts.
+      for i in $(seq 1 10); do set_title "${SPINNER[$((i % 8))]} ${name}"; sleep 0.3; done
+      echo "FAKE-AGENT busy turn done"
+      set_title "✳ ${name}"
+      continue ;;
     "#longwork")
       # A turn long enough for a spec to interrupt it. The first attempt at
       # this raced a ~1s turn and pressed the key after it had already ended,

@@ -702,7 +702,8 @@ describe("message queue", () => {
   // popover). The point of both is to IGNORE the work-done gate, so each case
   // queues while the agent is mid-turn and asserts the messages arrive anyway.
   it("sends every queued message now, in order, while the agent is working", async () => {
-    await submitToAgent(taskId, "work");
+    // A turn that lasts: the default one can end before the badge latches.
+    await submitToAgent(taskId, "#busy");
     await waitForWorkBadge(taskId, "working", {
       timeout: 10_000, message: "agent never went back to working",
     });
