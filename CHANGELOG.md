@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.24.1] - 2026-11-17
+## [1.24.2] - 2026-11-17
 
 One Run button for every run command, pinned tasks, and a macOS crash fixed.
 
@@ -17,6 +17,7 @@ One Run button for every run command, pinned tasks, and a macOS crash fixed.
 - Agents: a draft Termic only guessed from keystrokes no longer holds other agents' messages forever. After 2 minutes with no typing, the queued messages are delivered.
 - Scratchpads: an agent's write and your own edit landing close together could leave the older text in the pad's file. Writes now land in order.
 - Linux: the AppImage window no longer goes blank when the only color emoji font is a COLRv1 one (Fedora 45).
+- Crash log: a crash from a fatal signal (SIGSEGV, SIGBUS, SIGILL, SIGABRT) now leaves an entry, and so does the interface resetting on macOS because its web page process was killed ([#460](https://github.com/simion/termic/pull/460)).
 
 ## [1.23.0] - 2026-11-13
 
