@@ -37,6 +37,8 @@ pub(crate) fn install(path: PathBuf) {
     let _ = LOG.set(path.clone());
     #[cfg(target_os = "macos")]
     objc::install();
+    #[cfg(unix)]
+    signals::install(&path);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
@@ -149,6 +151,25 @@ fn format_exception(when: &str, name: &str, reason: &str, stack: &str) -> String
     )
 }
 
+/// The web content process was killed and the webview reloaded itself. To the
+/// user the interface just resets, and the OS leaves no report for it: the app
+/// did not crash, so this line is the only trace.
+#[cfg(target_os = "macos")]
+pub(crate) fn record_webcontent_terminated(window: &str) {
+    if let Some(path) = LOG.get() {
+        let entry = format_webcontent_terminated(&chrono::Local::now().to_rfc3339(), window);
+        let _ = append(path, &entry);
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn format_webcontent_terminated(when: &str, window: &str) -> String {
+    format!(
+        "=== {when} termic {} webcontent-terminated window={window}\nthe web content process ended and the webview was reloaded\n\n",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 fn append(path: &Path, entry: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -159,6 +180,114 @@ fn append(path: &Path, entry: &str) -> std::io::Result<()> {
         let _ = fs::rename(path, old);
     }
     OpenOptions::new().create(true).append(true).open(path)?.write_all(entry.as_bytes())
+}
+
+#[cfg(unix)]
+mod signals {
+    use libc::c_int;
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, path::Path, sync::OnceLock};
+
+    const SIGNALS: [(c_int, &str); 4] = [
+        (libc::SIGSEGV, "SIGSEGV"),
+        (libc::SIGBUS, "SIGBUS"),
+        (libc::SIGILL, "SIGILL"),
+        (libc::SIGABRT, "SIGABRT"),
+    ];
+
+    /// Built at install: the handler cannot allocate, so it only reads this.
+    static PATH: OnceLock<CString> = OnceLock::new();
+    /// What each signal did before, written once at install and read by the
+    /// handler, which hands the signal back to it after logging.
+    static mut PREVIOUS: [libc::sigaction; 4] = unsafe { std::mem::zeroed() };
+
+    pub(super) fn install(path: &Path) {
+        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else { return };
+        if PATH.set(c_path).is_err() {
+            return;
+        }
+        for (i, (signal, _)) in SIGNALS.iter().enumerate() {
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = on_signal as extern "C" fn(c_int) as usize;
+                // On the alternate stack Rust sets up per thread, so a stack
+                // overflow (SIGSEGV with no stack left) can still run this.
+                action.sa_flags = libc::SA_ONSTACK;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaction(*signal, &action, std::ptr::addr_of_mut!(PREVIOUS[i]));
+            }
+        }
+    }
+
+    /// Only async-signal-safe calls from here on: no allocation, no locks, no
+    /// formatting machinery. `open`, `write`, `close`, `time`, `sigaction` and
+    /// `raise` are all on the safe list.
+    extern "C" fn on_signal(signal: c_int) {
+        let mut buf = [0u8; 160];
+        let name = SIGNALS.iter().find(|(s, _)| *s == signal).map_or("?", |(_, n)| *n);
+        let now = unsafe { libc::time(std::ptr::null_mut()) } as u64;
+        let len = render(&mut buf, now, signal, name);
+        if let Some(path) = PATH.get() {
+            unsafe {
+                let fd = libc::open(
+                    path.as_ptr(),
+                    libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_CLOEXEC,
+                    0o644,
+                );
+                if fd >= 0 {
+                    libc::write(fd, buf.as_ptr().cast(), len);
+                    libc::close(fd);
+                }
+            }
+        }
+        // Hand the signal back to whatever handled it before (Rust's own
+        // stack-overflow handler, or the default that kills the process), so
+        // the crash report and exit status stay what they would have been.
+        if let Some(i) = SIGNALS.iter().position(|(s, _)| *s == signal) {
+            unsafe {
+                libc::sigaction(signal, std::ptr::addr_of!(PREVIOUS[i]), std::ptr::null_mut());
+                libc::raise(signal);
+            }
+        }
+    }
+
+    /// `=== unix:<secs> termic <version> signal <n> <NAME>\n\n` into `buf`,
+    /// returning its length. Hand-rolled integer formatting: `format!`
+    /// allocates, which a signal handler must not do. Anything that does not
+    /// fit is cut off, never overrun.
+    pub(super) fn render(buf: &mut [u8], secs: u64, signal: c_int, name: &str) -> usize {
+        let mut n = 0;
+        put(buf, &mut n, b"=== unix:");
+        put_u64(buf, &mut n, secs);
+        put(buf, &mut n, b" termic ");
+        put(buf, &mut n, env!("CARGO_PKG_VERSION").as_bytes());
+        put(buf, &mut n, b" signal ");
+        put_u64(buf, &mut n, signal.max(0) as u64);
+        put(buf, &mut n, b" ");
+        put(buf, &mut n, name.as_bytes());
+        put(buf, &mut n, b"\n\n");
+        n
+    }
+
+    fn put(buf: &mut [u8], n: &mut usize, bytes: &[u8]) {
+        let room = buf.len() - *n;
+        let take = bytes.len().min(room);
+        buf[*n..*n + take].copy_from_slice(&bytes[..take]);
+        *n += take;
+    }
+
+    fn put_u64(buf: &mut [u8], n: &mut usize, mut value: u64) {
+        let mut digits = [0u8; 20];
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        put(buf, n, &digits[i..]);
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +447,52 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("recorded 7"), "{text}");
         assert!(text.contains("panic_log.rs"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_entry_is_one_header_line_and_never_overruns() {
+        let mut buf = [0u8; 160];
+        let n = signals::render(&mut buf, 1_700_000_000, 11, "SIGSEGV");
+        let text = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(text.starts_with("=== unix:1700000000 termic "), "{text}");
+        assert!(text.ends_with(" signal 11 SIGSEGV\n\n"), "{text}");
+        // A buffer too small for the entry is cut off, not overrun.
+        let mut tiny = [0u8; 12];
+        assert_eq!(signals::render(&mut tiny, 1_700_000_000, 11, "SIGSEGV"), 12);
+    }
+
+    /// The crashing half runs in a child process: a fatal signal cannot be
+    /// observed from inside the process that takes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fatal_signal_leaves_an_entry_and_still_kills_the_process() {
+        const ME: &str = "panic_log::tests::a_fatal_signal_leaves_an_entry_and_still_kills_the_process";
+        if let Some(log) = std::env::var_os("PANIC_LOG_CHILD") {
+            signals::install(Path::new(&log));
+            // SIGABRT, what `abort()` raises after `panic_cannot_unwind`. A
+            // SIGSEGV raised by hand would not do: Rust's own SIGSEGV handler
+            // only expects a real fault and lets a synthetic one run on.
+            unsafe { libc::raise(libc::SIGABRT) };
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("panic.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", ME, "--nocapture", "--test-threads=1"])
+            .env("PANIC_LOG_CHILD", &log)
+            .status()
+            .unwrap();
+        let text = fs::read_to_string(&log).unwrap_or_default();
+        assert!(text.contains(" signal 6 SIGABRT"), "{text}");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGABRT), "the signal must still end the process");
+    }
+
+    #[test]
+    fn a_webcontent_entry_names_the_window() {
+        let entry = format_webcontent_terminated("t0", "main");
+        assert!(entry.starts_with("=== t0 termic "));
+        assert!(entry.contains(" webcontent-terminated window=main\n"));
     }
 }

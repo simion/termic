@@ -28277,6 +28277,15 @@ pub fn run() {
     // `mut` is only used when the e2e plugin is compiled in.
     #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]
     let mut builder = tauri::Builder::default();
+    // Replaces tauri's default (reload the webview) with the same reload, plus
+    // a line in panic.log: otherwise the interface resets with no trace.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.on_web_content_process_terminate(|webview| {
+            panic_log::record_webcontent_terminated(webview.label());
+            let _ = webview.reload();
+        });
+    }
     // E2E-ONLY (`--features e2e`): embed the WebDriver HTTP server so the
     // WebdriverIO e2e suite can drive this WKWebView window. Absent from
     // every normal dev and release build. The plugin exposes no IPC
