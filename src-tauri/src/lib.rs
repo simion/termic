@@ -29274,6 +29274,24 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 #[cfg(test)]
 mod tests {
 
+    /// An executable script for a test that will RUN it, written by a child
+    /// process. On Linux, exec of a file fails with ETXTBSY while any process
+    /// holds it open for writing, and a sibling test thread that forks while
+    /// this one's write fd is open inherits it until its own exec. Writing in
+    /// `sh` keeps the fd out of this process, so no fork can carry it.
+    #[cfg(unix)]
+    fn write_test_script(path: &std::path::Path, body: &str) {
+        use std::io::Write;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "could not write {}", path.display());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn close_window_is_found_by_the_title_muda_gives_it_on_macos() {
@@ -31847,12 +31865,10 @@ mod tests {
         let venv_bin = dir.path().join(".venv/bin");
         fs::create_dir_all(&venv_bin).unwrap();
         let local_zuban = venv_bin.join("zuban");
-        fs::write(&local_zuban, "#!/bin/sh\n").unwrap();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&local_zuban, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_test_script(&local_zuban, "#!/bin/sh\n");
+        #[cfg(not(unix))]
+        fs::write(&local_zuban, "#!/bin/sh\n").unwrap();
         let (exe, args) = lsp_resolve_server(dir.path(), "python").expect("a python server");
         assert_eq!(exe, local_zuban.to_string_lossy());
         assert_eq!(args, vec!["server".to_string()]);
@@ -32118,7 +32134,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_typed_command_beats_everything_termic_knows() {
-        use std::os::unix::fs::PermissionsExt;
         // The escape hatch: a server termic does not ship (pylsp, jedi, a
         // wrapper script). It must win over both the pick and the default
         // order, because it is the most explicit thing anybody said.
@@ -32126,8 +32141,7 @@ mod tests {
         let venv = dir.path().join(".venv/bin");
         fs::create_dir_all(&venv).unwrap();
         let zuban = venv.join("zuban");
-        fs::write(&zuban, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&zuban, fs::Permissions::from_mode(0o755)).unwrap();
+        write_test_script(&zuban, "#!/bin/sh\n");
 
         let (exe, args) = lsp_resolve_server_preferring(
             dir.path(), "python", Some("zuban"), Some("./scripts/pylsp --stdio"),
@@ -32183,7 +32197,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_picked_server_beats_the_default_order() {
-        use std::os::unix::fs::PermissionsExt;
         // A checkout with BOTH zuban and ty in its virtualenv. The default
         // order prefers zuban (it understands Django); somebody who wants ty
         // has no way to say so without this, which was the whole complaint.
@@ -32191,9 +32204,7 @@ mod tests {
         let venv = dir.path().join(".venv/bin");
         fs::create_dir_all(&venv).unwrap();
         for name in ["zuban", "ty"] {
-            let p = venv.join(name);
-            fs::write(&p, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            write_test_script(&venv.join(name), "#!/bin/sh\n");
         }
 
         let (exe, _) = lsp_resolve_server_preferring(dir.path(), "python", None, None).unwrap();
@@ -32207,7 +32218,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_pick_that_resolves_to_nothing_falls_back_instead_of_failing() {
-        use std::os::unix::fs::PermissionsExt;
         // A preference is a preference, not an assertion that the binary is
         // installed. Someone who picks basedpyright and then works on a
         // machine without it should still get navigation, not silence.
@@ -32215,8 +32225,7 @@ mod tests {
         let venv = dir.path().join(".venv/bin");
         fs::create_dir_all(&venv).unwrap();
         let zuban = venv.join("zuban");
-        fs::write(&zuban, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&zuban, fs::Permissions::from_mode(0o755)).unwrap();
+        write_test_script(&zuban, "#!/bin/sh\n");
 
         // Names that CANNOT resolve here, whatever this machine has installed.
         // Deliberately not "basedpyright": plenty of dev machines have it on
@@ -32237,12 +32246,10 @@ mod tests {
         // Windows runs the `.bat` beside a Bundler binstub, never the
         // extensionless script itself.
         let binstub = dir.path().join(if cfg!(windows) { "bin/ruby-lsp.bat" } else { "bin/ruby-lsp" });
-        fs::write(&binstub, "#!/bin/sh\n").unwrap();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&binstub, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_test_script(&binstub, "#!/bin/sh\n");
+        #[cfg(not(unix))]
+        fs::write(&binstub, "#!/bin/sh\n").unwrap();
         let (exe, args) = lsp_resolve_server(dir.path(), "ruby").expect("a ruby server");
         assert_eq!(Path::new(&exe), binstub.as_path());
         assert!(args.is_empty(), "ruby-lsp takes no arguments: {args:?}");
