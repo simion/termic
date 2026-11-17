@@ -978,6 +978,10 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             name.as_deref(), color.as_deref(), caller_task.as_deref(), join.as_deref(), *leave,
         ),
+        Command::Run { task, project, setup, stop, status, member, cwd } => handle_run(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            *setup, *stop, *status, member.as_deref(),
+        ),
         Command::PadList { task, project, scope, cwd } => handle_pad(
             &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "list" }),
@@ -2525,7 +2529,7 @@ fn handle_logs(
     let kind = if shell { "aux" } else { "agent" };
     let pty = match tab {
         Some(sel) => {
-            let rt = match resolve_tab_selector(host, &t, sel) {
+            let rt = match resolve_tab_selector_with(host, &t, sel, TabReach::AgentsOrRunRead) {
                 Ok(rt) => rt,
                 Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
             };
@@ -3749,6 +3753,53 @@ fn handle_group(
     )
 }
 
+// ───────────────────────────── run scripts ───────────────────────────
+
+/// `run`: the task's run (or setup) script in its Run tab. The webview owns
+/// it because the tab IS the run: the app's Run button, the sidebar's play
+/// button and this verb all go through one launch path (`lib/runTabs.ts`),
+/// so the user sees an agent's dev server where they would see their own.
+#[allow(clippy::too_many_arguments)]
+fn handle_run(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    setup: bool,
+    stop: bool,
+    status: bool,
+    member: Option<&str>,
+) -> Reply {
+    if stop && status {
+        return Reply::err(id, ErrorCode::BadRequest, "--stop and --status are separate calls");
+    }
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    if t.archived {
+        return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+    }
+    let params = serde_json::json!({
+        "taskId": t.id,
+        "which": if setup { "setup" } else { "run" },
+        "action": if stop { "stop" } else if status { "status" } else { "start" },
+        "member": member,
+    });
+    let value = match host.rpc("run_script", params, PROJECT_RPC_TIMEOUT) {
+        Ok(v) => v,
+        Err(e) => return Reply::err(id, ErrorCode::BadRequest, &e),
+    };
+    let mut data: proto::RunData = match serde_json::from_value(value) {
+        Ok(d) => d,
+        Err(e) => return Reply::err(id, ErrorCode::Internal, format!("bad run reply from webview: {e}")),
+    };
+    data.task = qualified(&projects, &t);
+    Reply::ok(id, ReplyData::Run(data))
+}
+
 // ───────────────────────────── scratchpads ───────────────────────────
 
 /// Every pad verb: resolve the task here (the same rules every task verb
@@ -4869,6 +4920,10 @@ pub(crate) enum TabReach {
     /// shell and custom-terminal tabs (`termic tab --shell`), so refusing
     /// to close them would leave exactly the litter #185 is about.
     AnyStripTab,
+    /// Agent tabs, plus run/setup tabs for READING. `logs` only: `termic
+    /// run` hands an agent its dev server's tab id so it can read the
+    /// output. Nothing goes into the PTY, and shells stay unreachable.
+    AgentsOrRunRead,
 }
 
 /// Resolve `--tab <n|id|title>` against the task's strip, from the
@@ -4894,7 +4949,12 @@ fn resolve_tab_selector_with(
 ) -> Result<ResolvedTab, proto::ErrorBody> {
     let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
     let gate = |index: u32, t: &TabAgentState, strip_len: usize| -> Result<ResolvedTab, proto::ErrorBody> {
-        if reach == TabReach::AgentsOnly && t.kind != "agent" {
+        let reachable = match reach {
+            TabReach::AgentsOnly => t.kind == "agent",
+            TabReach::AgentsOrRunRead => t.kind == "agent" || t.kind == "run",
+            TabReach::AnyStripTab => true,
+        };
+        if !reachable {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
@@ -4939,7 +4999,8 @@ fn resolve_tab_selector_with(
                 || pt.cli == "shell"
                 || pt.run_member.is_some()
                 || host.agents().iter().any(|a| a.id == pt.cli && a.kind == "terminal");
-            if terminal_kind && reach == TabReach::AgentsOnly {
+            let run_read = reach == TabReach::AgentsOrRunRead && pt.run_member.is_some();
+            if terminal_kind && reach != TabReach::AnyStripTab && !run_read {
                 return Some(Err(err(
                     ErrorCode::Unsupported,
                     "that tab is not an agent tab; only agent tabs are reachable, the rest are write-only from the CLI".into(),
@@ -8086,6 +8147,39 @@ mod tests {
         assert!(err.message.contains("nope"), "{}", err.message);
     }
 
+    #[test]
+    fn run_hands_the_resolved_task_to_the_webview_and_names_it() {
+        let host = StubHost::default();
+        let run = |setup, stop, status, member: Option<&str>| Command::Run {
+            task: Some("w3".into()), project: None, setup, stop, status,
+            member: member.map(str::to_string), cwd: None,
+        };
+        host.script_rpc("run_script", Ok(serde_json::json!({
+            "task": "", "which": "run",
+            "targets": [{ "member": "", "script": "npm run dev", "tab_id": "t1", "running": true, "outcome": "started" }],
+        })));
+        let reply = handle(&req(run(false, false, false, None), Some("tok")), &host);
+        let Some(ReplyData::Run(d)) = reply.data else { panic!("expected run, got {reply:?}") };
+        assert!(d.task.contains('/'), "qualified as project/name: {}", d.task);
+        assert_eq!(d.targets[0].outcome.as_deref(), Some("started"));
+        let sent = host.rpc_calls.lock().unwrap().last().unwrap().1.clone();
+        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "run", "action": "start", "member": null }));
+
+        host.script_rpc("run_script", Ok(serde_json::json!({ "task": "", "which": "setup", "targets": [] })));
+        handle(&req(run(true, true, false, Some("api")), Some("tok")), &host);
+        let sent = host.rpc_calls.lock().unwrap().last().unwrap().1.clone();
+        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "setup", "action": "stop", "member": "api" }));
+
+        // The webview's refusal (no script configured) is the caller's error.
+        host.script_rpc("run_script", Err("no run script configured".into()));
+        let err = handle(&req(run(false, false, false, None), Some("tok")), &host).error.expect("error");
+        assert!(err.message.contains("no run script"), "{}", err.message);
+
+        let before = host.rpc_calls.lock().unwrap().len();
+        assert!(!handle(&req(run(false, true, true, None), Some("tok")), &host).ok);
+        assert_eq!(host.rpc_calls.lock().unwrap().len(), before, "refused before the webview");
+    }
+
     fn group_cmd(task: &str, name: Option<&str>, color: Option<&str>) -> Command {
         Command::Group {
             task: Some(task.into()),
@@ -10097,6 +10191,25 @@ mod tests {
                 other => panic!("{sel}: {other:?}"),
             }
         }
+    }
+
+    /// `logs --tab` reads a run tab (`termic run` hands out its id); driving
+    /// verbs still refuse it, and a shell stays unreachable for both.
+    #[test]
+    fn a_run_tab_is_readable_but_not_drivable() {
+        let mut host = StubHost::default();
+        let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab { props: Default::default(), marked_unread: false,
+            agent_args: Vec::new(), id: id.into(), cli: cli.into(), title: None, custom_title: false,
+            is_default: false, command: None, session_id: None, pane_leaf_id: None,
+            run_member: run.map(str::to_string), pinned: false, scheduled: Vec::new(),
+        };
+        let t = host.tasks.iter_mut().find(|t| t.id == "w3").unwrap();
+        t.persisted_tabs = vec![persisted("tab-run", "custom", Some("")), persisted("tab-sh", "shell", None)];
+        let t = t.clone();
+        let ok = |sel: &str, reach| resolve_tab_selector_with(&host, &t, sel, reach).is_ok();
+        assert!(ok("tab-run", TabReach::AgentsOrRunRead));
+        assert!(!ok("tab-run", TabReach::AgentsOnly));
+        assert!(!ok("tab-sh", TabReach::AgentsOrRunRead));
     }
 
     #[test]

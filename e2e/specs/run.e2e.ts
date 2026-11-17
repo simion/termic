@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { archiveTask, clickWhenVisible, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickWhenVisible, cliRpc, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // P0: the Run feature (#54/#124) launches commands in dedicated run tabs.
 // Guards a custom run: it opens a run tab whose PTY actually executes the
@@ -508,5 +508,81 @@ describe("run config", () => {
       { timeout: 8_000, timeoutMsg: "run commands manager never opened" },
     );
     await snap("run-config.png");
+  });
+});
+
+// `termic run` / MCP `task_run`: an agent starts the task's dev server in the
+// SAME Run tab the Run button drives, so the user sees it and can stop it.
+// Over the real control socket: auth, task resolution, the webview RPC, the
+// launch path, and the PTY the tab spawns (read back through `logs --tab`).
+describe("termic run", () => {
+  let taskId!: string;
+  const setRunScript = (run_script: string) =>
+    browser.execute(async (s) => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((x: any) => x.name === "fixture-repo");
+      await t.ipc.projectUpdate({ ...proj, run_script: s, run_scripts: [] });
+      await t.useApp.getState().loadAll();
+    }, run_script);
+  const ptyOf = (tabId: string) =>
+    browser.execute(
+      (id, tab) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.id === tab)?.ptyId ?? null,
+      taskId, tabId,
+    );
+  after(async () => {
+    await setRunScript("");
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("says when nothing is configured, and refuses to start it", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await setRunScript("");
+    taskId = await openTask("e2e-cli-run");
+    const status = await cliRpc({ cmd: "run", task: taskId, status: true });
+    expect(status.ok).toBe(true);
+    expect(status.data.targets).toEqual([]);
+    const start = await cliRpc({ cmd: "run", task: taskId });
+    expect(start.ok).toBe(false);
+    expect(start.error.message).toContain("no run script configured");
+  });
+
+  it("starts the run script in the task's Run tab, once", async () => {
+    await setRunScript("echo cli-run-ok; sleep 120");
+    const r = await cliRpc({ cmd: "run", task: taskId });
+    expect(r.ok).toBe(true);
+    const [target] = r.data.targets;
+    expect(target).toMatchObject({ script: "echo cli-run-ok; sleep 120", running: true, outcome: "started" });
+    expect(typeof target.tab_id).toBe("string");
+
+    await browser.waitUntil(async () => !!(await ptyOf(target.tab_id)), {
+      timeout: 20_000, timeoutMsg: "the Run tab never spawned its PTY",
+    });
+    let logs: any;
+    await browser.waitUntil(async () => {
+      logs = await cliRpc({ cmd: "logs", task: taskId, tab: target.tab_id });
+      return logs.ok && String(logs.data.data).includes("cli-run-ok");
+    }, { timeout: 20_000, interval: 250 }).catch(() => {
+      throw new Error(`the run script's output never reached its tab: ${JSON.stringify(logs).slice(0, 400)}`);
+    });
+
+    // Asking again leaves the running server alone: same tab, same process.
+    const pty = await ptyOf(target.tab_id);
+    const again = await cliRpc({ cmd: "run", task: taskId });
+    expect(again.data.targets[0]).toMatchObject({ tab_id: target.tab_id, outcome: "already_running" });
+    expect(await ptyOf(target.tab_id)).toBe(pty);
+  });
+
+  it("stops it, and status reads it as stopped", async () => {
+    const r = await cliRpc({ cmd: "run", task: taskId, stop: true });
+    expect(r.ok).toBe(true);
+    expect(r.data.targets[0]).toMatchObject({ running: false, outcome: "stopped" });
+    const tabId = r.data.targets[0].tab_id;
+    await browser.waitUntil(async () => !(await ptyOf(tabId)), {
+      timeout: 15_000, timeoutMsg: "the Run tab's PTY never exited",
+    });
+    const status = await cliRpc({ cmd: "run", task: taskId, status: true });
+    expect(status.data.targets[0]).toMatchObject({ tab_id: tabId, running: false });
+    expect(status.data.targets[0].outcome).toBeUndefined();
   });
 });

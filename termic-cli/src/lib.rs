@@ -175,8 +175,11 @@ start another agent beside you (`tab`); launch new tasks with their own agents \
 another project is linked to yours instead), a block you name for the \
 batch of work with `group --name`; prompt another task's agent (`send`, \
 typed at once even mid-turn, or with --queue after its turn ends) and \
-read what it produced (`logs`, `result`); retitle your own task \
-(`rename`); label your own tab with what you are working on, shown on \
+read what it produced (`logs`, `result`); start your task's dev server \
+with `run` when it has a run script configured (it runs in the task's Run \
+tab, where the user sees and stops it; `run --status` shows the script) \
+rather than launching your own npm run dev or similar in a shell; retitle \
+your own task (`rename`);label your own tab with what you are working on, shown on \
 the task's sidebar row (`prop ticket ABC-1`); and keep notes, plans, findings, logs and reports the user \
 should READ in a scratchpad (`scratchpad new`, `scratchpad write`), a tab \
 in your task that updates live and stays out of git: use one instead of \
@@ -208,7 +211,8 @@ Quick start, from inside a task (your own task is the default target):
   termic scratchpad write <id> --append -c \"<text>\"      update it (omit -c to read stdin)
   termic new <name> -p \"<prompt>\"                        launch a new task with its agent
   termic group --name \"<what this batch is>\"              name the group your new tasks join
-  termic prop ticket ABC-1                                label your tab on the sidebar row"
+  termic prop ticket ABC-1                                label your tab on the sidebar row
+  termic run                                              start the dev server (the configured run script)"
     };
 }
 
@@ -812,8 +816,8 @@ target closed underneath the session (agent exited or task archived)."
 escapes intact; long tails are trimmed to fit the 1 MB reply line once \
 JSON-escaped) to stdout; --shell reads the aux terminal instead, --tab \
 reads one strip tab (a tab id, a 1-based index into status's tab list, or \
-a title; agent tabs only, since shell and terminal tabs retain no output). \
-This is the rendered terminal stream, useful for a quick look; for the \
+a title; agent tabs, or a run tab's id from `run`, since shell and terminal \
+tabs retain no output). This is the rendered terminal stream, useful for a quick look; for the \
 agent's structured answer prefer `termic result` or the RESULT.md file \
 convention. A note goes to stderr when older output was already dropped. \
 Without <TASK>, resolves from the current directory.
@@ -1316,6 +1320,52 @@ Exit codes: 0 ok, 1 error (unknown task, unknown colour, archived task, \
         /// Take the task out of its group.
         #[arg(long, conflicts_with_all = ["name", "color"])]
         leave: bool,
+    },
+
+    /// Start, stop or show a task's run (or setup) script in its Run tab.
+    #[command(
+        after_help = "Starts the run script configured for the task (Settings, Repositories, \
+or `scripts.run` in `.termic.yaml`) in the task's Run tab: the same tab the \
+app's Run button drives, where the user sees its output and can stop it. \
+When the task has one, use this to start its dev server instead of running \
+`npm run dev` or similar in your own shell. A script already running is left \
+alone; stop it first to restart it. --setup does the same for the setup \
+script. A multi-repo task runs every member with a run script, or only \
+--member's.
+
+--status starts nothing: it shows each configured script and whether it is \
+running. --stop stops it. Read its output with `logs --tab <tab id>`.
+
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current \
+directory.
+
+With --output-format json, one object: {\"task\", \"which\", \"targets\": \
+[{\"member\", \"script\", \"tab_id\", \"running\", \"outcome\"}]}, outcome one \
+of started, already_running, stopped, not_running (absent for --status).
+
+Exit codes: 0 ok, 1 error (unknown or archived task, no script configured, \
+unknown member), 4 app not running, 5 CLI disabled, 6 refused, 8 connection \
+lost."
+    )]
+    Run {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+        /// The setup script instead of the run script.
+        #[arg(long)]
+        setup: bool,
+        /// Stop it.
+        #[arg(long, conflicts_with = "status")]
+        stop: bool,
+        /// Only show what is configured and running.
+        #[arg(long)]
+        status: bool,
+        /// A multi-repo task's member repo (its directory name).
+        #[arg(long)]
+        member: Option<String>,
     },
 
     /// Archive a task: SIGKILL its live agents, remove its worktree.
@@ -2461,6 +2511,22 @@ outside.",
                     caller_task: parent_task_from_env(),
                     join: join.clone(),
                     leave: *leave,
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
+        }
+        Cmd::Run { task, project, setup, stop, status, member } => {
+            let data = client::request(
+                &mut conn,
+                proto::Command::Run {
+                    task: task.clone().or_else(|| own_env("TERMIC_TASK_ID")),
+                    project: project.clone(),
+                    setup: *setup,
+                    stop: *stop,
+                    status: *status,
+                    member: member.clone(),
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 },
                 &token,
             )?;
@@ -3853,6 +3919,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
             OutputFormat::Text => output::group_text(&g),
         }),
         (Cmd::Group { .. }, _) => Err(unexpected("group")),
+        (Cmd::Run { .. }, proto::ReplyData::Run(r)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&r),
+            OutputFormat::Text => output::run_text(&r),
+        }),
+        (Cmd::Run { .. }, _) => Err(unexpected("run")),
         (Cmd::Prop { value, .. }, proto::ReplyData::Prop(p)) => Ok(match format {
             OutputFormat::Json | OutputFormat::StreamJson => output::json(&p),
             OutputFormat::Text => output::prop_text(&p, value.is_some()),
@@ -4563,6 +4634,24 @@ mod tests {
             let err = pre_connect_guard(&parse(bad).cmd).expect_err(&format!("{bad:?} should be refused"));
             assert_eq!(err.code, exit_code::ERROR, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn run_flags_and_text() {
+        let bare = Cli::try_parse_from(["termic", "run"]).unwrap();
+        assert!(matches!(&bare.cmd, Cmd::Run { task: None, setup: false, stop: false, status: false, member: None, .. }));
+        let full = Cli::try_parse_from(["termic", "run", "fix-x", "--setup", "--stop", "--member", "api"]).unwrap();
+        assert!(matches!(&full.cmd, Cmd::Run { task: Some(t), setup: true, stop: true, member: Some(m), .. } if t == "fix-x" && m == "api"));
+        // --stop and --status are two different calls.
+        assert!(Cli::try_parse_from(["termic", "run", "--stop", "--status"]).is_err());
+
+        let d = |targets| proto::RunData { task: "web/x".into(), which: "run".into(), targets };
+        assert_eq!(output::run_text(&d(vec![])), "web/x has no run script configured");
+        let t = proto::RunTarget {
+            member: "api".into(), script: "npm run dev".into(), tab_id: Some("t1".into()),
+            running: true, outcome: Some("already_running".into()),
+        };
+        assert_eq!(output::run_text(&d(vec![t])), "web/x (api): run already running, tab t1: npm run dev");
     }
 
     #[test]

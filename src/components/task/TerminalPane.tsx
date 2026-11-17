@@ -3039,11 +3039,13 @@ const captureArmedRef = useRef(false);
           // no agent id → Rust falls back to the task's primary
           // CLI for the profile.
           agent_id: isAgent || isRegistryTerminal ? tab.cli : undefined,
-          // CLI attach/logs targeting: agent tabs only (run/setup tabs
-          // and shells are not addressable). The default target is the
-          // task's primary tab of its OWN cli, one per task, so
-          // `termic attach` with several agents open stays
-          // deterministic.
+          // CLI attach/logs targeting: agent tabs, and run/setup tabs by
+          // id only (`termic run` hands an agent the tab id so `logs --tab`
+          // reads its dev server; kind "run" is never a default target and
+          // every agent-only path filters on kind). Shells are not
+          // addressable. The default target is the task's primary tab of
+          // its OWN cli, one per task, so `termic attach` with several
+          // agents open stays deterministic.
           role: isAgent
             ? {
                 task_id: task.id,
@@ -3053,7 +3055,9 @@ const captureArmedRef = useRef(false);
                 kind: "agent" as const,
                 is_default: isPrimaryTab && tab.cli === task.cli,
               }
-            : undefined,
+            : tab.runTab
+              ? { task_id: task.id, tab_id: tab.id, kind: "run" as const, is_default: false }
+              : undefined,
           // Activity monitor provenance (reporting only). Unlike `task_id`
           // and `role` above, EVERY tab type sets this: a run script or a
           // scratch shell eating a core is exactly what the monitor is for,

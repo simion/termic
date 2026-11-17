@@ -1126,7 +1126,7 @@ export interface SpawnArgs {
    *  an output ring Rust-side for `termic logs`. */
   /** Mirrors Rust's `PtyRole`. `tab_id` is the stable selector `--tab`
    *  resolves to (index and title both move; the tab uuid does not). */
-  role?: { task_id: string; tab_id?: string; kind: "agent" | "aux"; is_default?: boolean };
+  role?: { task_id: string; tab_id?: string; kind: "agent" | "aux" | "run"; is_default?: boolean };
   /** Mirrors Rust's `PtyOwner`: REPORTING ONLY, read by the Activity
    *  monitor to group rows under their project / task / tab. Set it on
    *  every spawn, including shells and run scripts — unlike `task_id`

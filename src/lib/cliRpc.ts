@@ -59,7 +59,7 @@ import {
   agentDisplayName, cliSupportsResumeById, isTerminalCli, isTerminalEntry, visibleCliIds,
   workDoneCapable,
 } from "@/lib/agents";
-import { launchSetupTab } from "@/lib/runTabs";
+import { launchSetupTab, runScriptRpc } from "@/lib/runTabs";
 import {
   derivedBranch,
   readNewTaskMode,
@@ -1470,6 +1470,7 @@ const handlers: Record<string, Handler> = {
   set_task_group: setTaskGroupHandler,
   pad: padHandler,
   schedule: scheduleHandler,
+  run_script: runScriptRpc,
   project_add: projectAddHandler,
   project_remove: projectRemoveHandler,
 };

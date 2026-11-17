@@ -121,7 +121,12 @@ use std::io::{self, BufRead, Read, Write};
 /// the field and create a task with no member worktrees, or with every
 /// member linked, which reads as success. `project list` reports each
 /// project's `type` and members.
-pub const PROTOCOL_VERSION: u32 = 24;
+///
+/// v25: the `run` verb starts, stops or reports a task's run (or setup)
+/// script in its Run tab, the same tab the app's Run button drives. A v24
+/// server does not know the verb, and the version check says "restart the
+/// app" where the bare failure would read as a broken command.
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -745,6 +750,27 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         leave: bool,
     },
+    /// v25: the task's run script (or, with `setup`, its setup script) in
+    /// its Run tab, exactly as the app's Run button starts it. Starts what
+    /// is not already running; `stop` stops it; `status` only reports what
+    /// is configured and running. `member` narrows a multi-repo task's run
+    /// to one member repo. cwd-aware when `task` absent.
+    Run {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        setup: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stop: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        status: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// List a task's scratchpads. cwd-aware when `task` absent.
     PadList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1136,6 +1162,7 @@ pub enum ReplyData {
     Archive(ArchiveData),
     Rename(RenameData),
     Group(GroupData),
+    Run(RunData),
     Pad(PadData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
@@ -1481,6 +1508,35 @@ pub struct GroupData {
     /// Its group after the call, or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<TaskGroupInfo>,
+}
+
+/// Reply to `run` (v25).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunData {
+    /// The task, as `project/name`.
+    pub task: String,
+    /// "run" or "setup". (Not `kind`: that is the reply's own tag.)
+    pub which: String,
+    /// One per configured script: the host's, then each multi-repo member
+    /// with one. Empty when nothing is configured.
+    pub targets: Vec<RunTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunTarget {
+    /// "" for the host project, else the member repo's directory name.
+    pub member: String,
+    /// The configured command.
+    pub script: String,
+    /// Its Run tab, once one exists: `logs --tab` reads its output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    /// Running after the call.
+    pub running: bool,
+    /// What this call did: "started", "already_running", "stopped" or
+    /// "not_running". Absent for `status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// One scratchpad, as `pad list` and every other pad verb report it.
@@ -2673,6 +2729,9 @@ mod tests {
                 cwd: None,
             },
             Command::ScheduleRun { task: Some("parent-1".into()), project: None, cwd: None },
+            // v25: run / setup scripts.
+            Command::Run { task: Some("fix-auth".into()), project: None, setup: false, stop: false, status: false, member: None, cwd: None },
+            Command::Run { task: None, project: None, setup: true, stop: true, status: false, member: Some("api".into()), cwd: Some("/t".into()) },
             Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: true, archive_tasks: false, cwd: None },
             Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: false, archive_tasks: true, cwd: None },
         ] {
@@ -3067,6 +3126,17 @@ mod tests {
                 text: "All tests pass.".into(),
             }),
             ReplyData::Attach(AttachData { task_id: "w1".into(), reason: "archived".into() }),
+            ReplyData::Run(RunData {
+                task: "web/fix-auth".into(),
+                which: "run".into(),
+                targets: vec![RunTarget {
+                    member: String::new(),
+                    script: "npm run dev".into(),
+                    tab_id: Some("t1".into()),
+                    running: true,
+                    outcome: Some("started".into()),
+                }],
+            }),
             ReplyData::Schedule(ScheduleData {
                 schedules: vec![ScheduleSummary {
                     task_id: "w1".into(),

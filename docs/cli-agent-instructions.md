@@ -269,6 +269,25 @@ with it, as the sidebar's Move to group does. `--leave` leaves the rest of
 the group as it is. A move is a call of its own: rename or recolour in
 another. Over MCP: `task_group` with `join` or `leave`.
 
+### Starting the dev server
+
+When your task has a run script configured, start the dev server with
+`run`, not with your own `npm run dev` (or similar) in a shell:
+
+    "$TERMIC_CLI" run             # start it in the task's Run tab
+    "$TERMIC_CLI" run --status    # what is configured, and is it running
+    "$TERMIC_CLI" run --stop      # stop it
+
+It runs the configured script in the task's Run tab, the same tab the
+app's Run button drives, so the user sees its output and can stop it,
+and it gets the task's own port. A script already running is left alone:
+stop it first to restart it. `--setup` does the same for the setup
+script, and `--member <dir>` narrows a multi-repo task to one member.
+The reply names each script's tab: `logs --tab <tab id>` reads its
+output. With nothing configured, `run` fails and `run --status` lists no
+scripts; then start it yourself. Over MCP: `task_run` (`setup`, `stop`,
+`status`, `member`).
+
 ### Driving an existing task
 
 - `"$TERMIC_CLI" send <task> -p "<text>"` - prompt the RUNNING

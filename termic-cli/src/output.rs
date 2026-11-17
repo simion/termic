@@ -248,6 +248,29 @@ pub fn group_text(d: &GroupData) -> String {
     lines.join("\n")
 }
 
+/// `run`: one line per configured script.
+pub fn run_text(d: &termic_proto::RunData) -> String {
+    if d.targets.is_empty() {
+        return format!("{} has no {} script configured", d.task, d.which);
+    }
+    d.targets
+        .iter()
+        .map(|t| {
+            let who = if t.member.is_empty() { d.task.clone() } else { format!("{} ({})", d.task, t.member) };
+            let state = match t.outcome.as_deref() {
+                Some("already_running") => "already running",
+                Some("not_running") => "was not running",
+                Some(o) => o,
+                None if t.running => "running",
+                None => "not running",
+            };
+            let tab = t.tab_id.as_deref().map(|id| format!(", tab {id}")).unwrap_or_default();
+            format!("{who}: {} {state}{tab}: {}", d.which, t.script)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One line saying how a watched run ended.
 pub fn outcome_text(r: &WaitResult) -> String {
     match r.outcome {
