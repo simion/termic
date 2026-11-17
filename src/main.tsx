@@ -17,7 +17,7 @@ import { initWindowlessMode } from "@/lib/windowlessMode";
 import { initModKeyClass } from "@/lib/modKeyClass";
 import { installRecentPlacesTracker } from "@/lib/recentPlacesTracker";
 import { initUserPresence } from "@/lib/userPresence";
-import { initWindowFocus } from "@/lib/windowFocus";
+import { initWindowFocus, pinWindowFocus } from "@/lib/windowFocus";
 
 // StrictMode disabled: it double-mounts effects in dev, which races our async
 // PTY spawn flow (first spawn gets killed by the strict teardown before its
@@ -154,6 +154,8 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       },
       ipc,
       invoke: core.invoke,
+      // Presence a spec states holds against the desktop's own focus events.
+      pinWindowFocus,
       runTabs,
       scriptRuns: scriptRuns.useScriptRuns,
       // Prompt library (localStorage-backed): exposed so the reorder-drag spec
