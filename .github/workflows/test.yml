@@ -110,6 +110,7 @@ jobs:
         run: |
           mkdir -p .e2e/artifacts
           cp /tmp/termic-debug.log .e2e/artifacts/ 2>/dev/null || true
+          cp /tmp/termic-workstate-e2e.log .e2e/artifacts/ 2>/dev/null || true
           cp .e2e/profile/e2e-*.log .e2e/artifacts/ 2>/dev/null || true
       - name: Upload artifacts
         if: always()
@@ -169,6 +170,11 @@ jobs:
           # are swallowed so an unreadable sibling cannot fail the job.
           find /var/folders -maxdepth 4 -name termic-debug.log 2>/dev/null \
             | head -5 | while read -r f; do cp "$f" ".e2e/artifacts/$(basename "$(dirname "$f")")-termic-debug.log" 2>/dev/null || true; done
+          # Why a badge did or did not move (every refused or downgraded
+          # transition is a line), and what the fixture agent actually read.
+          # A badge case that fails only here cannot be explained without them.
+          cp "${TMPDIR%/}/termic-workstate-e2e.log" .e2e/artifacts/ 2>/dev/null || true
+          cp .e2e/profile/e2e-*.log .e2e/artifacts/ 2>/dev/null || true
           ls -la .e2e/artifacts || true
 
       - name: Upload artifacts on failure
