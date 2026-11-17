@@ -168,47 +168,48 @@ gitignored `.e2e/` fixture profile is recreated by `node scripts/e2e-seed.mjs`
 (the `snap()` helper). Artifacts upload on failure. To promote it to required,
 add it to branch protection once it's proven stable over ~20-30 runs.
 
-### The macOS CI freeze: killed and retried, not fixed
+### One app per spec file (macOS, Linux), and the freeze it fixed
 
-On the `macos-26` runner the app sometimes freezes for good, about one spec
-file in ten, usually the first case of `board.e2e.ts` and sometimes in
-`agent.e2e.ts`. It has never been seen on a real Mac in use. Samples of the
-frozen app (`FAIL-*-sample-*.txt`) all show the same thing: the main thread
-spends every display refresh in `RemoteScrollingCoordinatorProxyMac::
-displayDidRefresh`, waiting on WebKit's scrolling thread, which waits for a
-rendering update from the WebContent process. WebContent and the GPU process
-are idle in their run loops, page timers still firing. So it is not our
-JavaScript and not WebGL, and the driver, which needs the main thread for
-every command, never gets a turn.
+`@wdio/tauri-service`'s embedded driver starts the app ONCE, in its
+`onPrepare`, and reuses it for every spec file. It relaunches only an app
+that no longer answers, in `onWorkerStart`. Left alone, the whole suite runs
+in one process, and each file inherits every window, webview and in-memory
+state the files before it left. So `wdio.conf.ts`'s `onWorkerEnd` ends the
+app after every file: `termic quit` over the control socket (the same
+teardown as Cmd-Q), SIGKILL only if it is still there 10s later (the log
+says `the app did not quit`), then it deletes `.window-state-e2e.json` so
+the next app does not restore the last one's frame. The next file's
+`onWorkerStart` finds nothing answering and launches a fresh app.
 
-Ruled out, each by a run that froze anyway: overlay scrollbars
-(`AppleShowScrollBars`), a visible window instead of the alpha-0 one, splitting
-the windowless cases into their own launch,
-`WebKitDebugUseUISideCompositing=NO`, and display or system sleep (the
-runner's `pmset -g` already reports both prevented, and `caffeinate -dimsu`
-made no difference).
+The quit is clean on purpose: a hard kill drops a localStorage write a spec's
+cleanup has just made, and the next file boots with another spec's pref. It
+is sent from `onWorkerEnd`, after the session is deleted, because quitting
+from the worker's `after` hook failed the file on the session delete.
 
-What the freezes share is job age, not a spec: across six probes that looped
-the same five files, the first pass (about 7 minutes) never froze and the
-later passes did, in whichever file was running. Every file is a fresh app
-launch, so whatever accumulates lives outside the app, and it is not
-leftover processes or memory: a probe that logged both between passes saw
-no WebKit or termic process outlive its pass, no swap, and flat free
-memory.
+Not on Windows, which keeps one app for the run. There, after a clean quit
+the relaunched app's WebDriver did not come up within 60s (2 runs of 2),
+and `taskkill /F` lost the pref described above. Windows never froze.
 
-A retried file starts in the same profile with the killed attempt's tasks
-still live, so a spec that creates a task by name sweeps that name in its
-`before` (`board.e2e.ts`, `windowless.e2e.ts`). Without it the retry fails
-on "already exists" and the log reads like a second freeze.
+**The freeze.** On the `macos-26` runner the shared app froze for good in
+most full runs, almost always in `windowless.e2e.ts` near the end of the
+suite. Samples of the frozen app showed the main thread spending every
+display refresh in `RemoteScrollingCoordinatorProxyMac::displayDidRefresh`,
+waiting on WebKit's scrolling thread, which waits for a rendering update
+from WebContent, and two CVDisplayLink threads in an app that only ever
+needs one. The app sampled had been launched at the start of the job, 28
+minutes earlier, with six WebContent processes alive. Bisecting the suite
+found no single spec responsible: it needed enough of the suite before it,
+in whichever order. With one app per file, six full macOS runs had no
+freeze, where the shared app froze in almost every one.
 
-What `wdio.conf.ts` does instead, on macOS CI only: after a failed case it
-asks the page for `true` with a 5s limit. No answer means the freeze: it
-samples the app and WebKit's processes (with `TERMIC_E2E_FAIL_CAPTURE`), kills
-the app so the rest of the file fails in a second rather than 60s each, and
-`specFileRetries: 1` runs the file again in a fresh app. The retry is for the
-whole file and any failure, so a case that fails once and passes on the rerun
-shows up as a retry in the log, not as red. Read the log for `app frozen` and
-`Retrying` before calling a macOS run clean.
+The kill and the `specFileRetries: 1` that used to recover from it are gone.
+`afterTest` still samples the app and WebKit (with
+`TERMIC_E2E_FAIL_CAPTURE`) and kills a frozen app on macOS CI, so the rest of
+the file fails in a second rather than 60s each. A frozen app now fails the
+run, which is the point: read the `FAIL-*-sample-*.txt` artifacts.
+
+`board.e2e.ts` and `windowless.e2e.ts` still sweep a task name their `before`
+creates, since a run killed mid-file leaves it live in the profile.
 
 ## Isolation
 

@@ -229,9 +229,13 @@ teardown (see `git.e2e.ts` commit-push), or later specs lose their base. A
 genuinely remote-less repo falls back to local `main` via `resolve_base_ref`
 (lib.rs); the no-remote race + New Task cases in `task.e2e.ts` cover it.
 
-Each spec **file** gets its own app launch (one window per file, not per
-`it`); tests within a file share that window and run sequentially, so order
-them so earlier state doesn't break later ones, or reset between them.
+Each spec **file** gets its own app launch on macOS and Linux (one window
+per file, not per `it`): `wdio.conf.ts` quits the app after every file,
+because the WebDriver service would otherwise reuse one app for the whole
+run. Windows keeps one app for the run, so a file there still sees what the
+files before it left (see docs/e2e-tests.md). Tests within a file share that
+window and run sequentially, so order them so earlier state doesn't break
+later ones, or reset between them.
 
 **Leave the fixture the way you found it, including UNTRACKED files.** The
 seed self-heals tracked paths (`git checkout HEAD -- .`) and deliberately does

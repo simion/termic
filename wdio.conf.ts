@@ -2,7 +2,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:net";
+import { homedir } from "node:os";
+import { createConnection, createServer } from "node:net";
 
 // End-to-end config for the termic app. WebdriverIO drives the REAL macOS
 // WKWebView window via @wdio/tauri-service's embedded WebDriver provider
@@ -57,6 +58,33 @@ function pids(pattern: string): string[] {
   try { return execFileSync("pgrep", ["-f", pattern], { encoding: "utf8" }).trim().split("\n").filter(Boolean); } catch { return []; }
 }
 
+/** The e2e build's own window-state file (`window_state_filename` in lib.rs),
+ *  under the app config dir tauri's window-state plugin writes to. */
+const windowStateFile = path.join(
+  process.platform === "darwin"
+    ? path.join(homedir(), "Library", "Application Support")
+    : process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
+  "com.simion.termic",
+  ".window-state-e2e.json",
+);
+
+/** Ask the app to quit over its control socket (`termic quit`). Resolves
+ *  once the request is answered or refused; never throws. */
+function quitApp(): Promise<void> {
+  return new Promise(resolve => {
+    try {
+      const token = readFileSync(path.join(dataDir, "cli-token"), "utf8").trim();
+      const c = createConnection(path.join(dataDir, "termic.sock"));
+      const done = () => { clearTimeout(t); c.destroy(); resolve(); };
+      const t = setTimeout(done, 5_000);
+      c.on("connect", () => c.write(JSON.stringify({ id: "e2e-quit", token, cmd: "quit", commit: true }) + "\n"));
+      c.on("data", done);
+      c.on("error", done);
+      c.on("close", done);
+    } catch { resolve(); }
+  });
+}
+
 export const config: WebdriverIO.Config = {
   runner: "local",
   tsConfigPath: path.join(repoRoot, "e2e", "tsconfig.json"),
@@ -100,10 +128,6 @@ export const config: WebdriverIO.Config = {
   // stack trace (we don't use the mock plugin; restoreAllMocks runs anyway).
   logLevel: "silent",
   mochaOpts: { ui: "bdd", timeout: 60_000 },
-  // macOS CI only: the WebKit freeze above, once a file's app has been
-  // killed for it, fails every case left in that file. One fresh launch
-  // gets the file a fair run. Elsewhere a failure is a failure.
-  specFileRetries: macCi ? 1 : 0,
 
   // Poll conditions every 100ms (default 500) so browser.waitUntil-based waits
   // fire the instant the condition is met. NOTE: we deliberately do NOT use
@@ -114,6 +138,37 @@ export const config: WebdriverIO.Config = {
   waitforTimeout: 15_000,
   waitforInterval: 100,
 
+  // A fresh app for every spec file, on macOS and Linux. The embedded driver
+  // starts the app ONCE in onPrepare and reuses it for every file; it
+  // relaunches only one that no longer answers (onWorkerStart). So without
+  // this the whole suite ran in one process for 30 minutes, every file
+  // inheriting the windows, webviews and state of the ones before it, and on
+  // the macOS runner that long-lived app is what WebKit's display-refresh
+  // freeze needed (docs/e2e-tests.md).
+  //
+  // `termic quit` first, the same teardown as Cmd-Q, and SIGKILL only for an
+  // app that will not go: a hard kill can drop the localStorage write a
+  // spec's cleanup just made. From here, not the worker's `after` hook: the
+  // session is already deleted, so the exit cannot fail the file.
+  //
+  // Not on Windows, which keeps one app for the run (it never froze there).
+  // After a clean quit the relaunched app's WebDriver did not come up within
+  // 60s (2 runs of 2), and taskkill /F instead lost a pref a spec's cleanup
+  // had just written, so the next file booted with it.
+  async onWorkerEnd() {
+    if (process.platform === "win32") return;
+    await quitApp();
+    for (let i = 0; i < 100 && pids(appBinary).length; i++) await new Promise(r => setTimeout(r, 100));
+    if (pids(appBinary).length) console.log("[e2e] the app did not quit within 10s, killing it");
+    for (const pid of pids(appBinary)) {
+      try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ }
+    }
+    // Gone before the next file's health check, or it finds the dying one.
+    for (let i = 0; i < 100 && pids(appBinary).length; i++) await new Promise(r => setTimeout(r, 100));
+    // The clean quit saved the window's frame, and the next app would restore
+    // it: a file that left the window 200000px wide handed that to the next.
+    rmSync(windowStateFile, { force: true });
+  },
   async onPrepare() {
     mkdirSync(artifactsDir, { recursive: true });
     // a run launched from an agent tab inherits that tab's TERMIC_* (task,
@@ -261,8 +316,10 @@ export const config: WebdriverIO.Config = {
       }
     }
     // A frozen app on the macOS runner never comes back, and each case left
-    // would wait out its full 60s on it. Killing it fails them in a second,
-    // and specFileRetries runs the file again in a fresh app.
+    // would wait out its full 60s on it. Killing it fails them in a second.
+    // Not retried: the freeze it was built for needed one app living through
+    // the whole suite, which onWorkerEnd now prevents, so a freeze here is
+    // news (docs/e2e-tests.md).
     if (macCi && frozen) {
       console.log(`[e2e] app frozen after "${test.title}", killing it`);
       for (const pid of pids(appBinary)) {

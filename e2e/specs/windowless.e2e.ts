@@ -74,9 +74,10 @@ const artifacts = path.join(
       const u = window.__termic!.useUI.getState();
       u.closeRace?.(); u.closeWelcome?.(); u.closeChangelog?.();
     });
-    // A killed first attempt (wdio.conf.ts, macOS CI) never reaches `after`,
-    // so its task is still live and the retry would die on "bg-mode already
-    // exists". Sweep by name.
+    // A run killed mid-file (wdio.conf.ts kills a frozen app on macOS CI, or
+    // someone pressed Ctrl-C) never reaches `after`, so its task is still
+    // live and the next run would die on "bg-mode already exists". Sweep by
+    // name.
     const left = await browser.execute(() =>
       window.__termic!.useApp.getState().tasks
         .filter((w: any) => !w.archived && w.name === "bg-mode")

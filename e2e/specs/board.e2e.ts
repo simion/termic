@@ -61,9 +61,9 @@ describe("board view", () => {
   let cap: string[] = [];
 
   before(async () => {
-    // A run of this file that froze was killed before its after hook could
-    // archive anything (wdio.conf.ts), and the rerun would then trip over
-    // its own "board-a already exists". Sweep by name.
+    // A run of this file killed mid-way (a frozen app, wdio.conf.ts, or a
+    // Ctrl-C) never reaches its after hook, and the next run would then trip
+    // over its own "board-a already exists". Sweep by name.
     await waitForAppShell();
     const live = await browser.execute(() =>
       window.__termic!.useApp.getState().tasks
