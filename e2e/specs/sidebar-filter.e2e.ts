@@ -748,6 +748,12 @@ describe("sidebar filter bar", () => {
       await setQuery("");
       await browser.execute(i => window.__termic!.useUI.getState().setTaskFilterText(i, ""), pid);
       await dismissOverlays();
+      // A failed assertion above must not leave the fixture pinned for the
+      // cases after this one: a pinned task ignores every filter they use.
+      if (await pinned(b)) {
+        await browser.execute(i => window.__termic!.useApp.getState().setTaskPinned(i, false), b);
+        await browser.waitUntil(async () => !(await pinned(b)), { timeout: 5_000, timeoutMsg: "cleanup could not unpin the fixture task" });
+      }
       await restoreActive(prev);
     }
   });
