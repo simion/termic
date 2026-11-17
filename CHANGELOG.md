@@ -4,13 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.24.2] - 2026-11-17
+## [1.24.3] - 2026-11-17
 
-One Run button for every run command, pinned tasks, and a macOS crash fixed.
+One Run button for every run command, agents start your dev server, pinned tasks.
 
 ### Features
 - Run: with custom run commands or several repos, the top bar's Run button opens a menu of every run, with the main one first. With only the run script it still runs at once.
 - Sidebar: pin a task from its menu, and no filter hides it. A pin mark on the row says why it stays ([#458](https://github.com/simion/termic/issues/458)).
+- Agents start the task's dev server in its Run tab, where you can see and stop it, instead of in a hidden shell (`termic run`, MCP `task_run`). `--status` says whether a run script is configured.
 
 ### Bug fixes
 - macOS: an Objective-C exception thrown while handling an event no longer quits Termic. It is written to the crash log and that one event is dropped ([#429](https://github.com/simion/termic/issues/429), [#439](https://github.com/simion/termic/issues/439)).
@@ -18,6 +19,9 @@ One Run button for every run command, pinned tasks, and a macOS crash fixed.
 - Scratchpads: an agent's write and your own edit landing close together could leave the older text in the pad's file. Writes now land in order.
 - Linux: the AppImage window no longer goes blank when the only color emoji font is a COLRv1 one (Fedora 45).
 - Crash log: a crash from a fatal signal (SIGSEGV, SIGBUS, SIGILL, SIGABRT) now leaves an entry, and so does the interface resetting on macOS because its web page process was killed ([#460](https://github.com/simion/termic/pull/460)).
+- Linux: after an auto-update, Termic starts again by itself instead of having to be launched by hand.
+- Linux: the tray icon is visible on both dark and light panels (GNOME, KDE).
+- Check for updates gives up after 10 seconds on a network that does not answer, and says the check failed instead of spinning.
 
 ## [1.23.0] - 2026-11-13
 

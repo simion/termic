@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "1.24.2",
+      "version": "1.24.3",
       "date": "2026-11-17",
-      "summary": "One Run button for every run command, pinned tasks, and a macOS crash fixed."
+      "summary": "One Run button for every run command, agents start your dev server, pinned tasks."
     },
     {
       "version": "1.23.0",
