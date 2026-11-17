@@ -688,6 +688,76 @@ describe("sidebar filter bar", () => {
     }
   });
 
+  it("Pin keeps a task listed whatever the filters say, and Unpin lets them hide it again (GH #458)", async () => {
+    const pid = await fixtureId();
+    const prev = await activeTaskId();
+    const ROW = (id: string) => `[data-sidebar-task-row="${id}"]`;
+    const pinned = (id: string) => browser.execute(i =>
+      !!window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.pinned, id);
+    // The real menu, the real item: Radix opens on pointerdown, and the
+    // trigger is hover-only, so a plain click would never reach it.
+    const openMenu = async (id: string) => {
+      await browser.execute(sel => {
+        const el = document.querySelector(sel) as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+      }, `${ROW(id)} [data-testid="task-menu-trigger"]`);
+      await waitVisible('[data-testid="task-menu-pin"]');
+    };
+    const pinLabel = () => browser.execute(() =>
+      document.querySelector('[data-testid="task-menu-pin"]')?.textContent?.trim() ?? null);
+    try {
+      // The open task is `c`, so `b` is not held up by being active.
+      await ensureActiveTask(c);
+      await openMenu(b);
+      expect(await pinLabel()).toBe("Pin");
+      await snap("sidebar-task-menu-pin.png");
+      await clickWhenVisible('[data-testid="task-menu-pin"]');
+      await browser.waitUntil(() => pinned(b), { timeout: 5_000, timeoutMsg: "Pin did not mark the task pinned" });
+      await dismissOverlays();
+      // The row says why it ignores the filters, and only the pinned row does.
+      expect(await present(`${ROW(b)} [data-testid="task-pinned-mark"]`)).toBe(true);
+      expect(await present(`${ROW(a)} [data-testid="task-pinned-mark"]`)).toBe(false);
+      await openMenu(b);
+      expect(await pinLabel()).toBe("Unpin");
+      await dismissOverlays();
+
+      // The sidebar query: `b` matches nothing here, and stays, with its project.
+      await setQuery("sfilter-no-such-thing");
+      await waitTree([a, b, c], s => s.includes(b) && !s.includes(a), "a pinned task was hidden by the sidebar query");
+      expect(await present(`[data-project-id="${pid}"]`)).toBe(true);
+      await snap("sidebar-filter-pinned-survives.png");
+      await setQuery("");
+
+      // The project's own filter bar, the same way.
+      await browser.execute(i => window.__termic!.useUI.getState().setTaskFilterText(i, "sfilter-no-such-thing"), pid);
+      await waitTree([a, b, c], s => s.includes(b) && !s.includes(a), "a pinned task was hidden by the project filter");
+      await browser.execute(i => window.__termic!.useUI.getState().setTaskFilterText(i, ""), pid);
+
+      // Unpin, and the same query hides it again.
+      await openMenu(b);
+      await clickWhenVisible('[data-testid="task-menu-pin"]');
+      await browser.waitUntil(async () => !(await pinned(b)), { timeout: 5_000, timeoutMsg: "Unpin did not clear the pin" });
+      await dismissOverlays();
+      expect(await present(`${ROW(b)} [data-testid="task-pinned-mark"]`)).toBe(false);
+      await setQuery("sfilter-no-such-thing");
+      await waitTree([a, b, c], s => !s.includes(b), "an unpinned task was still kept by the query");
+    } finally {
+      await setQuery("");
+      await browser.execute(i => window.__termic!.useUI.getState().setTaskFilterText(i, ""), pid);
+      await dismissOverlays();
+      // A failed assertion above must not leave the fixture pinned for the
+      // cases after this one: a pinned task ignores every filter they use.
+      if (await pinned(b)) {
+        await browser.execute(i => window.__termic!.useApp.getState().setTaskPinned(i, false), b);
+        await browser.waitUntil(async () => !(await pinned(b)), { timeout: 5_000, timeoutMsg: "cleanup could not unpin the fixture task" });
+      }
+      await restoreActive(prev);
+    }
+  });
+
   it("a project with no matches hides, and the empty state clears the query", async () => {
     const pid = await fixtureId();
     const prev = await activeTaskId();

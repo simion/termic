@@ -13,7 +13,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { reportBug } from "@/lib/reportBug";
-import { taskRename, taskReorder, taskGroupJoin, taskGroupLeave, taskGroupNew, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup, procmonOpenWindow, ptyKill } from "@/lib/ipc";
+import { taskRename, taskReorder, taskSetPinned, taskGroupJoin, taskGroupLeave, taskGroupNew, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup, procmonOpenWindow, ptyKill } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
 import { copyAgentBriefing } from "@/lib/agentBriefing";
 import { groupOf, projectSections } from "@/lib/projectGroups";
@@ -1198,7 +1198,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // an empty project can still be found to start a task in. The inactive
   // fold is not drawn: the filter already removed the clutter it hides.
   const queryProjectIds = queryMatchIds && new Set(
-    queryLiveTasks.filter(w => queryMatchIds.has(w.id) || w.id === activeTask).map(w => w.project_id),
+    queryLiveTasks.filter(w => queryMatchIds.has(w.id) || w.id === activeTask || w.pinned).map(w => w.project_id),
   );
   const queryNamed = queryOn
     ? new Set(taskQuery.query.clauses.filter(c => c.key === "project" && !c.negated).flatMap(c => c.values))
@@ -1516,7 +1516,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             const filterOn = filterSet && !queryOn;
             const filterPaused = filterSet && queryOn;
             const queryTasks = queryMatchIds
-              ? taskList.filter(w => queryMatchIds.has(w.id) || w.id === activeTask)
+              ? taskList.filter(w => queryMatchIds.has(w.id) || w.id === activeTask || w.pinned)
               : taskList;
             const visibleTasks = filterOn ? filterTasks(queryTasks, filter, tabFacts, agents, activeTask) : queryTasks;
             // "No matching tasks" only when the filter left the list EMPTY. The
@@ -2953,6 +2953,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const collapsed = dragging || storeCollapsed;
   const setTaskCollapsed = useApp(s => s.setTaskCollapsed);
   const setTaskYolo = useApp(s => s.setTaskYolo);
+  const setTaskPinned = useApp(s => s.setTaskPinned);
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
   const addTab = useApp(s => s.addTab);
   const resumeClosedTab = useApp(s => s.resumeClosedTab);
@@ -3326,6 +3327,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} size="h-3.5 w-3.5" />}
               {branchMode === "inline" && branchText && <TaskBranchText branch={branchText} placement="inline" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
+              {/* Why this row ignores the filters (GH #458): a pinned task stays
+                  listed whatever they say, so say so, or it reads as a match. */}
+              {w.pinned && (
+                <span data-testid="task-pinned-mark" title={t("pinnedMark")} className="flex shrink-0 items-center">
+                  <Pin className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                </span>
+              )}
               {/* Mode (sandbox, docker, dangerous YOLO; absent when there is
                   none), inline with the name's other marks. It had a trailing
                   slot of its own, and an OPTIONAL trailing slot cannot line
@@ -3570,6 +3578,24 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     ? t("yoloAutoEnforceFs")
                     : w.yolo ? t("yoloOn") : t("yoloOff")}
                 </span>
+              </DropdownItem>
+              {/* Pin (GH #458): a pinned task stays listed whatever the sidebar
+                  query or the project's filter says. Mirrors the store first,
+                  like the YOLO toggle, so the row reacts before the write. */}
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                data-testid="task-menu-pin"
+                onSelect={() => {
+                  const next = !w.pinned;
+                  setTaskPinned(w.id, next);
+                  taskSetPinned(w.id, next).catch(e => {
+                    setTaskPinned(w.id, !next);
+                    useUI.getState().pushToast(String(e), "error");
+                  });
+                }}
+              >
+                {w.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                <span>{w.pinned ? t("unpinTask") : t("pinTask")}</span>
               </DropdownItem>
               <DropdownItem
                 className="items-center [&>svg]:mt-0"

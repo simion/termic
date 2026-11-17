@@ -238,6 +238,7 @@ export const taskArchive  = (id: string, deleteBranch?: boolean, skipScripts?: b
   invoke<void>("task_archive", { id, deleteBranch, skipScripts });
 export const taskRestore  = (id: string) => invoke<Task>("task_restore", { id });
 export const taskDelete   = (id: string) => invoke<void>("task_delete", { id });
+export const taskSetPinned = (id: string, pinned: boolean) => invoke<void>("task_set_pinned", { id, pinned });
 export const taskSetCli   = (id: string, cli: string) => invoke<Task>("task_set_cli", { id, cli });
 /** Update a custom-command task's launch command (multiline bash
  *  script). Only valid for cli==="custom" tasks. Persists and
