@@ -14,7 +14,7 @@ import { EMPTY_TABS, isUserWatching, useApp } from "@/store/app";
 import { logWorkState } from "@/lib/workStateLog";
 import { usePr, prRelevant } from "@/store/pr";
 import {
-  QUIET_MS, SAMPLE_MS, SCROLLBACK_STABLE_SAMPLES, SETTLE_SAMPLES,
+  QUIET_MS, SAMPLE_MS, SCROLLBACK_STABLE_SAMPLES, SETTLE_SAMPLES, settleIsStale,
 } from "@/lib/settleTiming";
 import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
@@ -1773,7 +1773,16 @@ const captureArmedRef = useRef(false);
       // If the user was looking then, they saw the result even if they
       // navigate away before this 5s timer fires → no badge.
       const seenAtIdle = isUserWatching(task.id, tab.id);
+      const armedAt = Date.now();
       settleTimer = setTimeout(() => {
+        // Armed for the turn before a submit: that turn already ended, and
+        // firing now would hand the new one its done (settleIsStale).
+        if (settleIsStale(armedAt, submitAtRef.current)) {
+          settleTimer = null;
+          wdlog(`settle dropped, a submit came after it was armed (${reason})`);
+          logWorkState("settle-drop", `task="${task.name}" cli=${tab.cli} armedAgoMs=${Date.now() - armedAt} why=${reason}`);
+          return;
+        }
         wdlog(`settle fired → workState=done`);
         fireDone(`settle timer (${reason})`, "done", seenAtIdle);
         settleTimer = null;

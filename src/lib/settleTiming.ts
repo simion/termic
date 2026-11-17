@@ -46,3 +46,18 @@ export const QUIET_MS = 4_000;
  * even when a status counter keeps ticking.
  */
 export const SCROLLBACK_STABLE_SAMPLES = 3;
+
+/**
+ * Whether a settle timer was armed for a turn the user has since moved past.
+ *
+ * Two demoters can end one turn: byte-quiet on the sampler fires at +4..7s of
+ * silence and the settle timer at +5s, and `fireDone` cannot cancel the timer
+ * (it lives in the settle effect). A submit landing between the two hands the
+ * done token back, so the stale timer then spends it as the NEW turn's done,
+ * and the store's sticky-done gate refuses that turn's "working" for
+ * STICKY_DONE_MS. Measured on CI: done, Enter 230ms later, a second done 74ms
+ * after that, then ten refused busy titles over the whole next turn.
+ */
+export function settleIsStale(armedAt: number, lastSubmitAt: number): boolean {
+  return lastSubmitAt >= armedAt;
+}

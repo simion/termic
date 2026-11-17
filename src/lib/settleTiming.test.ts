@@ -18,6 +18,7 @@ import {
   SAMPLE_MS,
   SCROLLBACK_STABLE_SAMPLES,
   SETTLE_SAMPLES,
+  settleIsStale,
 } from "./settleTiming";
 
 /** WebKit's background-timer clamp for a hidden webview. */
@@ -47,5 +48,19 @@ describe("settle timing survives the hidden-webview timer clamp", () => {
     expect(SCROLLBACK_STABLE_SAMPLES * SAMPLE_MS).toBeGreaterThanOrEqual(
       HIDDEN_WEBVIEW_CLAMP_MS,
     );
+  });
+});
+
+describe("settleIsStale", () => {
+  it("drops a settle armed before the latest submit", () => {
+    // Armed when the old turn went idle, the user submitted after: stale.
+    expect(settleIsStale(1_000, 1_230)).toBe(true);
+  });
+  it("keeps a settle armed for the current turn", () => {
+    // Submit, then the new turn goes idle and arms: this one is the turn's own.
+    expect(settleIsStale(5_000, 1_230)).toBe(false);
+  });
+  it("keeps a settle when nothing has been submitted since spawn", () => {
+    expect(settleIsStale(5_000, 0)).toBe(false);
   });
 });
