@@ -4,6 +4,19 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.24.0] - 2026-11-17
+
+One Run button for every run command, and a macOS crash fixed.
+
+### Features
+- Run: with custom run commands or several repos, the top bar's Run button opens a menu of every run, with the main one first. With only the run script it still runs at once.
+
+### Bug fixes
+- macOS: an Objective-C exception thrown while handling an event no longer quits Termic. It is written to the crash log and that one event is dropped ([#429](https://github.com/simion/termic/issues/429), [#439](https://github.com/simion/termic/issues/439)).
+- Agents: a draft Termic only guessed from keystrokes no longer holds other agents' messages forever. After 2 minutes with no typing, the queued messages are delivered.
+- Scratchpads: an agent's write and your own edit landing close together could leave the older text in the pad's file. Writes now land in order.
+- Linux: the AppImage window no longer goes blank when the only color emoji font is a COLRv1 one (Fedora 45).
+
 ## [1.23.0] - 2026-11-13
 
 Agents pair computers for you, faster PR badges, easy-to-send crash logs.
