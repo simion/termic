@@ -1155,10 +1155,14 @@ describe("termic new --checkout: an existing branch into a new worktree", () => 
     // A commit of its own, pushed straight to the remote without ever being
     // a local branch or touching the main checkout: exactly a colleague's
     // branch, as far as this repo can tell.
+    // A run that died inside this block never reached `after`, and left the
+    // branch on the remote with ITS tip: a plain push of this run's commit is
+    // then a non-fast-forward and every later run fails here. Clean first.
+    await cleanUp();
     tip = gitIn(fixture, `-c user.email=e2e@termic.dev -c user.name=e2e commit-tree "HEAD^{tree}" -p HEAD -m "colleague work"`);
     gitIn(fixture, `push -q origin ${tip}:refs/heads/${BRANCH}`);
   });
-  after(async () => {
+  async function cleanUp() {
     await browser.execute(async (name) => {
       const t = window.__termic!;
       for (const task of t.useApp.getState().tasks) {
@@ -1174,7 +1178,8 @@ describe("termic new --checkout: an existing branch into a new worktree", () => 
     ]) {
       try { gitIn(fixture, args); } catch { /* already gone */ }
     }
-  });
+  }
+  after(cleanUp);
 
   it("checks out a remote-only branch, naming the task after it", async () => {
     const r = await rpc({
