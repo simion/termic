@@ -5614,7 +5614,7 @@ dependencies = [
 
 [[package]]
 name = "termic"
-version = "1.24.0"
+version = "1.24.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

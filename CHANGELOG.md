@@ -4,12 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.24.0] - 2026-11-17
+## [1.24.1] - 2026-11-17
 
-One Run button for every run command, and a macOS crash fixed.
+One Run button for every run command, pinned tasks, and a macOS crash fixed.
 
 ### Features
 - Run: with custom run commands or several repos, the top bar's Run button opens a menu of every run, with the main one first. With only the run script it still runs at once.
+- Sidebar: pin a task from its menu, and no filter hides it. A pin mark on the row says why it stays ([#458](https://github.com/simion/termic/issues/458)).
 
 ### Bug fixes
 - macOS: an Objective-C exception thrown while handling an event no longer quits Termic. It is written to the crash log and that one event is dropped ([#429](https://github.com/simion/termic/issues/429), [#439](https://github.com/simion/termic/issues/439)).
