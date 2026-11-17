@@ -31,8 +31,17 @@ Three directories, different owners:
   stack but no message. Rotated once to `panic.log.1` past 512 KiB. Global, not
   per profile. Ask for this file first when someone reports a crash. On
   macOS it also gets uncaught Objective-C exceptions (name, reason, call
-  stack), headed `Objective-C exception` instead of `panicked at`. The
-  Report a bug button (`src/lib/reportBug.ts`) selects this file in the
+  stack), headed `Objective-C exception` instead of `panicked at`.
+  Two more kinds of entry cover what no hook can see. A fatal signal
+  (`SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGABRT`) writes one header line,
+  `=== unix:<secs> termic <ver> signal <n> <NAME>`, from a handler that only
+  makes async-signal-safe calls and then hands the signal back, so the OS
+  crash report and exit status are unchanged. On macOS, a WebContent process
+  that was killed (the webview resets itself, the app does not crash) writes
+  `webcontent-terminated window=<label>`: without it that reset leaves no trace
+  at all. SIGKILL cannot be intercepted, so a process killed that way is only
+  visible through this last entry.
+  The Report a bug button (`src/lib/reportBug.ts`) selects this file in the
   file manager when it is non-empty and the issue body asks for it.
 - `<global_dir>/sync/` + `<global_dir>/sync-state.json`: config sync (`config_sync.rs`, the idea doc is [ideas/config-sync.md](ideas/config-sync.md)). `sync/` is ONE git clone per machine of the user's private sync repo, holding `README.md`, a machine-wide `prefs.json` (the unscoped "sync" keys of `src/lib/prefsRegistry.ts`), `themes/`, and `profiles/<sync-id>/` per bound profile (`profile.json` with its name, `projects/<id>.json`, `agents/<id>.json`, `settings.json`, the profile-scoped `prefs.json`, and `removed.json` tombstones). Every file is sorted-key, pretty-printed JSON with a trailing newline. `sync-state.json` is never committed: last sync time and error, the files a rebase stopped on and the choice made for each, and the notices a pull applied until dismissed (safety-default changes, and custom agents deleted on another machine, which are applied rather than asked because they delete no files). Both live inside the data dir on purpose: the Seatbelt deny covers them and Docker mounts only named subfolders, so a caged agent can neither read the setup nor push to the repo (see [sandbox.md](sandbox.md)).
 - `$TMPDIR/termic-attachments/` — files handed to an agent as FILES rather than as text: `<task_id>/` for a staged drop, `clipboard/` for an image pasted into a terminal (`clipboard_image_save`, pruned after 7 days). Deliberately NOT under the app data dir, which the Seatbelt profile ends by denying outright (CLI token); `$TMPDIR` is on `builtin_runtime_paths` and is mounted read-only into every Docker container at the same absolute path. `lib.rs#attachments_dir()`.
