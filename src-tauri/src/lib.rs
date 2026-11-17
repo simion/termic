@@ -32604,17 +32604,15 @@ mod tests {
         // server that answers nothing, which is the worst failure this
         // subsystem has. Verified live on this machine before the check
         // existed.
+        //
+        // Links to true/false, not scripts written here: on Linux, exec of a
+        // file this process just wrote fails with ETXTBSY whenever another
+        // test thread forks while the write fd is open, and that flaked CI.
         let dir = tempdir().unwrap();
         let good = dir.path().join("runs");
         let bad = dir.path().join("shim");
-        fs::write(&good, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::write(&bad, "#!/bin/sh\necho 'unavailable for the active toolchain' >&2\nexit 1\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            for p in [&good, &bad] {
-                fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        std::os::unix::fs::symlink("/usr/bin/true", &good).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/false", &bad).unwrap();
         // The uncached form: the cached one is keyed by path forever, which
         // would make this test order-dependent against its siblings.
         assert!(lsp_candidate_runs_uncached(good.to_str().unwrap(), &["--version"]));
