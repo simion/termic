@@ -27093,11 +27093,13 @@ fn paint_t_mark(rgba: &mut [u8], w: usize, color: [u8; 4]) {
 ///
 /// Everywhere else the pixels are drawn as they are (Linux trays and
 /// Windows have no template images), and a black mark vanished on a dark
-/// panel, GNOME's top bar included. The accent orange of the badge icon
-/// reads on dark and light panels alike, with nothing to detect.
+/// panel, GNOME's top bar included. An orange mark reads on both, with
+/// nothing to detect: #bf694d, the accent (#d97757) a shade darker, clears
+/// 3:1 contrast on a #1e1e1e panel (4.2), a #f0f0f0 one (3.4), white and
+/// black. The accent itself fell to 2.7 on the light panel.
 fn tray_icon_image() -> tauri::image::Image<'static> {
     const W: usize = 32;
-    const MARK: [u8; 4] = if cfg!(target_os = "macos") { [0, 0, 0, 255] } else { [217, 119, 87, 255] }; // #d97757
+    const MARK: [u8; 4] = if cfg!(target_os = "macos") { [0, 0, 0, 255] } else { [191, 105, 77, 255] }; // #bf694d
     let mut rgba = vec![0u8; W * W * 4];
     paint_t_mark(&mut rgba, W, MARK);
     tauri::image::Image::new_owned(rgba, W as u32, W as u32)
