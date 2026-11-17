@@ -27088,13 +27088,18 @@ fn paint_t_mark(rgba: &mut [u8], w: usize, color: [u8; 4]) {
     for cy in 2..7 { fill(2, cy); fill(3, cy); }        // stem
 }
 
-/// 32×32 template image of the app mark. macOS recolors template images
-/// itself, so only alpha matters; color is black + opaque wherever the mark
-/// is painted.
+/// 32×32 image of the app mark. On macOS a template image: the menu bar
+/// recolors it, so only alpha matters and the black is never seen.
+///
+/// Everywhere else the pixels are drawn as they are (Linux trays and
+/// Windows have no template images), and a black mark vanished on a dark
+/// panel, GNOME's top bar included. The accent orange of the badge icon
+/// reads on dark and light panels alike, with nothing to detect.
 fn tray_icon_image() -> tauri::image::Image<'static> {
     const W: usize = 32;
+    const MARK: [u8; 4] = if cfg!(target_os = "macos") { [0, 0, 0, 255] } else { [217, 119, 87, 255] }; // #d97757
     let mut rgba = vec![0u8; W * W * 4];
-    paint_t_mark(&mut rgba, W, [0, 0, 0, 255]);
+    paint_t_mark(&mut rgba, W, MARK);
     tauri::image::Image::new_owned(rgba, W as u32, W as u32)
 }
 
