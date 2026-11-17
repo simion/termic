@@ -28788,6 +28788,12 @@ pub fn run() {
                 if code.is_none() && confirm_quit_or_exit(app) {
                     api.prevent_exit();
                 }
+                // A restart spawns the next process from this one's
+                // environment while we still hold the control socket; this
+                // tells it to wait for us instead of deferring to us.
+                if *code == Some(tauri::RESTART_EXIT_CODE) {
+                    std::env::set_var(cli_server::RELAUNCH_ENV, "1");
+                }
             }
             // Dock-icon click on a windowless app (applicationShouldHandle-
             // Reopen). Unhandled before, but moot then: closing the window

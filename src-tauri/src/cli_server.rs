@@ -150,10 +150,39 @@ pub fn start(app: tauri::AppHandle) {
 /// routes links to the running app itself and never gets here; Windows and
 /// Linux do spawn a second process, which is exactly this path.
 pub fn another_instance_running(deep_link: Option<&str>) -> bool {
+    // Read and cleared first, debug or not, so no child of ours inherits it.
+    let relaunched = std::env::var_os(RELAUNCH_ENV).is_some();
+    if relaunched {
+        std::env::remove_var(RELAUNCH_ENV);
+    }
     if cfg!(debug_assertions) {
         return false;
     }
+    // A restart (the updater's relaunch) spawns us BEFORE the old process
+    // has exited (tauri::process::restart spawns, then exits), and its
+    // socket answers until it is gone. Deferring to it raises an instance
+    // that is dying and leaves nothing running, which fits the report that
+    // Linux needed a manual launch after every update. Wait for it to go.
+    if relaunched {
+        if let Ok(dir) = crate::global_dir() {
+            wait_for_owner_to_exit(&dir.join(proto::SOCKET_FILE), Duration::from_secs(15));
+        }
+    }
     raise_owner(deep_link)
+}
+
+/// Set by the exiting process when its exit is a restart, so the process it
+/// spawns knows the instance holding the socket is on its way out.
+pub const RELAUNCH_ENV: &str = "TERMIC_RELAUNCHED";
+
+/// Until `sock` stops answering hello, or `limit` passes. One bounded wait at
+/// boot, only after a restart; past the limit the normal single-instance
+/// rule applies, so a predecessor that never exits still wins.
+fn wait_for_owner_to_exit(sock: &Path, limit: Duration) {
+    let until = std::time::Instant::now() + limit;
+    while live_owner(sock).is_some() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Hand a `termic://` URL (or a bare raise) to whichever instance owns
@@ -175,31 +204,7 @@ pub fn raise_owner(deep_link: Option<&str>) -> bool {
 /// file left by a crash), ask it to raise its window (and take over any
 /// deep link we were launched with) and report true.
 fn raise_existing(sock: &Path, deep_link: Option<&str>) -> bool {
-    let Ok(stream) = proto::local::connect(sock) else { return false };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let Ok(mut writer) = stream.try_clone() else { return false };
-    let mut reader = BufReader::new(stream);
-    // Confirm a live instance via hello. A parseable hello reply (any
-    // protocol) means a sibling is running and owns this data dir.
-    let hello = Request {
-        id: "preflight".into(),
-        token: None,
-        profile: None,
-        peer: None,
-        from_task: None,
-        cmd: Command::Hello,
-    };
-    if proto::write_msg(&mut writer, &hello).is_err() {
-        return false;
-    }
-    let alive = matches!(
-        proto::read_msg::<_, Reply>(&mut reader),
-        Ok(Some(reply)) if reply.ok && matches!(reply.data, Some(ReplyData::Hello(_)))
-    );
-    if !alive {
-        return false;
-    }
+    let Some((mut writer, mut reader)) = live_owner(sock) else { return false };
     // Best-effort: bring the running instance to front, then let the caller
     // exit. If the raise is dropped, single-instance still holds; the user
     // just may need to click the running window. With a deep link, one
@@ -219,6 +224,37 @@ fn raise_existing(sock: &Path, deep_link: Option<&str>) -> bool {
     });
     let _ = proto::read_msg::<_, Reply>(&mut reader);
     true
+}
+
+/// A connection to the live termic that owns `sock`, confirmed by a hello
+/// reply (not a stale socket file left by a crash), or None.
+fn live_owner(sock: &Path) -> Option<(proto::local::Stream, BufReader<proto::local::Stream>)> {
+    let stream = proto::local::connect(sock).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let mut writer = stream.try_clone().ok()?;
+    let mut reader = BufReader::new(stream);
+    // Confirm a live instance via hello. A parseable hello reply (any
+    // protocol) means a sibling is running and owns this data dir.
+    let hello = Request {
+        id: "preflight".into(),
+        token: None,
+        profile: None,
+        peer: None,
+        from_task: None,
+        cmd: Command::Hello,
+    };
+    if proto::write_msg(&mut writer, &hello).is_err() {
+        return None;
+    }
+    let alive = matches!(
+        proto::read_msg::<_, Reply>(&mut reader),
+        Ok(Some(reply)) if reply.ok && matches!(reply.data, Some(ReplyData::Hello(_)))
+    );
+    if !alive {
+        return None;
+    }
+    Some((writer, reader))
 }
 
 fn server_main(app: tauri::AppHandle) {
@@ -9030,6 +9066,30 @@ mod tests {
         assert_eq!(*host.deep_links.lock().unwrap(), vec![url.to_string()]);
         // Still raises: the link is useless behind another window.
         assert_eq!(*host.raised.lock().unwrap(), 1);
+    }
+
+    // The relaunch after an update: the old process still answers while it
+    // exits. The wait must end as soon as it stops answering, and must give
+    // up on one that never does rather than hang the launch.
+    #[test]
+    fn a_relaunch_waits_for_the_exiting_owner_and_no_longer() {
+        let (sock, _guard, _host) = spawn_server_arc(StubHost::default());
+        let gone = sock.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            // The owner going away: nothing answers at this path any more.
+            let _ = std::fs::remove_file(gone);
+        });
+        let t = std::time::Instant::now();
+        wait_for_owner_to_exit(&sock, Duration::from_secs(10));
+        assert!(live_owner(&sock).is_none());
+        assert!(t.elapsed() < Duration::from_secs(5), "waited {:?} after the owner left", t.elapsed());
+
+        let (stays, _guard2, _host2) = spawn_server_arc(StubHost::default());
+        let t = std::time::Instant::now();
+        wait_for_owner_to_exit(&stays, Duration::from_millis(400));
+        assert!(t.elapsed() >= Duration::from_millis(400));
+        assert!(live_owner(&stays).is_some(), "an owner that stays still owns it");
     }
 
     #[test]
