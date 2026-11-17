@@ -144,6 +144,7 @@ export default {
   menuNew: "新建",
   pinTask: "固定",
   unpinTask: "取消固定",
+  pinnedMark: "已固定：无论筛选条件如何都会保留显示",
   stopSpotlight: "停止 Spotlight",
   startSpotlight: "开始 Spotlight",
   sandboxSettings: "沙箱设置",

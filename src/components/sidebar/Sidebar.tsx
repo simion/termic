@@ -3327,6 +3327,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} size="h-3.5 w-3.5" />}
               {branchMode === "inline" && branchText && <TaskBranchText branch={branchText} placement="inline" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
+              {/* Why this row ignores the filters (GH #458): a pinned task stays
+                  listed whatever they say, so say so, or it reads as a match. */}
+              {w.pinned && (
+                <span data-testid="task-pinned-mark" title={t("pinnedMark")} className="flex shrink-0 items-center">
+                  <Pin className="h-3 w-3 text-[var(--color-fg-faint)]" />
+                </span>
+              )}
               {/* Mode (sandbox, docker, dangerous YOLO; absent when there is
                   none), inline with the name's other marks. It had a trailing
                   slot of its own, and an OPTIONAL trailing slot cannot line

@@ -717,6 +717,9 @@ describe("sidebar filter bar", () => {
       await clickWhenVisible('[data-testid="task-menu-pin"]');
       await browser.waitUntil(() => pinned(b), { timeout: 5_000, timeoutMsg: "Pin did not mark the task pinned" });
       await dismissOverlays();
+      // The row says why it ignores the filters, and only the pinned row does.
+      expect(await present(`${ROW(b)} [data-testid="task-pinned-mark"]`)).toBe(true);
+      expect(await present(`${ROW(a)} [data-testid="task-pinned-mark"]`)).toBe(false);
       await openMenu(b);
       expect(await pinLabel()).toBe("Unpin");
       await dismissOverlays();
@@ -738,6 +741,7 @@ describe("sidebar filter bar", () => {
       await clickWhenVisible('[data-testid="task-menu-pin"]');
       await browser.waitUntil(async () => !(await pinned(b)), { timeout: 5_000, timeoutMsg: "Unpin did not clear the pin" });
       await dismissOverlays();
+      expect(await present(`${ROW(b)} [data-testid="task-pinned-mark"]`)).toBe(false);
       await setQuery("sfilter-no-such-thing");
       await waitTree([a, b, c], s => !s.includes(b), "an unpinned task was still kept by the query");
     } finally {

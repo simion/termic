@@ -144,6 +144,7 @@ export default {
   menuNew: "New",
   pinTask: "Pin",
   unpinTask: "Unpin",
+  pinnedMark: "Pinned: stays listed whatever the filters say",
   stopSpotlight: "Stop spotlight",
   startSpotlight: "Start spotlight",
   sandboxSettings: "Sandbox settings",
