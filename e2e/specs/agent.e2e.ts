@@ -702,6 +702,21 @@ describe("message queue", () => {
   // popover). The point of both is to IGNORE the work-done gate, so each case
   // queues while the agent is mid-turn and asserts the messages arrive anyway.
   it("sends every queued message now, in order, while the agent is working", async () => {
+    // The case before ends when its queued line REACHES the agent, i.e. at the
+    // start of that turn. Submitting inside it loses this turn's badge: that
+    // turn's done lands after this submit, so the store's sticky-done gate
+    // (app.ts setWorkState) sees no send since the done and refuses every
+    // "working" for 8s, longer than #busy lasts. Start once the last send's
+    // turn has been called done. (A watched tab's done is downgraded to idle,
+    // which the gate does not hold, so idle is settled too.)
+    await browser.waitUntil(
+      () => browser.execute((id) => {
+        const t = window.__termic!.useApp.getState().tabs[id][0];
+        if (t.workState === "working") return false;
+        return t.workState !== "done" || (t.workDoneAt ?? 0) > (t.lastInputAt ?? 0);
+      }, taskId),
+      { timeout: 15_000, interval: 200, timeoutMsg: "the previous turn was never called done" },
+    );
     // A turn that lasts: the default one can end before the badge latches.
     await submitToAgent(taskId, "#busy");
     await waitForWorkBadge(taskId, "working", {
