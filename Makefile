@@ -163,6 +163,7 @@ dev: ## Run termic in dev mode (Vite HMR + Rust auto-rebuild).
 	@# TS2307 "Cannot find module"). npm install is a ~1s no-op when
 	@# node_modules is already in sync, so always run it first.
 	@npm install --no-fund --no-audit
+	@node scripts/prune-target.mjs
 	@# Run dev.mjs directly (not via `npm run`): npm 11 swallows Ctrl+C and
 	@# orphans the tauri/cargo/app subtree. Direct exec makes node the
 	@# process-group leader so dev.mjs's signal handler can tear the group down.
@@ -227,6 +228,7 @@ e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Rea
 	@# harmless diagnostic.
 	@[ -x node_modules/.bin/wdio ] || npm install
 	@node scripts/e2e-seed.mjs
+	@node scripts/prune-target.mjs
 	@npm run e2e:build
 	@npm run test:e2e
 .PHONY: e2e
@@ -621,7 +623,11 @@ reset_dev: ## DESTRUCTIVE (dev profile only): wipe the dev data dir + ~/termic_d
 endif
 .PHONY: reset_dev
 
-clean: ## Remove build artifacts (frontend dist + rust target). Recovers ~3GB.
+prune: ## Drop Rust incremental caches over 8 GB (TERMIC_INCREMENTAL_CAP_GB). Runs on its own before dev and e2e.
+	@node scripts/prune-target.mjs
+.PHONY: prune
+
+clean: ## Remove build artifacts (frontend dist + rust target). Recovers tens of GB on a long-lived checkout.
 	@rm -rf dist node_modules/.vite src-tauri/target
 	@echo "✓ Cleaned dist/, .vite cache, src-tauri/target/"
 .PHONY: clean
