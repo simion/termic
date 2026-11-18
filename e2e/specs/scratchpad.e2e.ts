@@ -126,6 +126,21 @@ describe("scratchpads", () => {
       ).toUpperCase().includes("JSON"), taskId),
       { timeout: 10_000, timeoutMsg: "the syntax button never named JSON" },
     );
+    // Leaving markdown swaps the markdown shell for the plain editor, which
+    // REMOUNTS it, and the button names JSON before the new view exists. That
+    // view focuses itself on load; if the next case has opened the syntax
+    // picker by then, the focus leaves the non-modal dialog and Radix closes
+    // it. Measured: the view landed ~25ms after the button changed, and a
+    // picker opened in that gap was gone 500ms later with focus in
+    // cm-content. Wait for the new view, and for the focus it takes.
+    await browser.waitUntil(
+      () => browser.execute((id) => {
+        const root = document.querySelector(`[data-task-id="${id}"]`);
+        return !!(root?.querySelector(".cm-editor") as { __cmView?: unknown } | null)?.__cmView
+          && !!document.activeElement?.closest(".cm-editor");
+      }, taskId),
+      { timeout: 10_000, timeoutMsg: "the JSON pad's editor never remounted and took focus" },
+    );
   });
 
   it("takes a manual syntax pick and persists it in the index", async () => {
