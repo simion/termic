@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker, idleBuildDirs] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -85,6 +85,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/forgeLists"),
         import("@/store/forgeRate"),
         import("@/lib/draftTracker"),
+        import("@/lib/idleBuildDirs"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -132,6 +133,9 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // How long an untouched draft holds automatic sends. Two minutes in the
       // app, which no spec can wait out.
       setDraftStaleMs: draftTracker.setDraftStaleMs,
+      // One idle build-folder cleanup pass. Its real schedule is off in this
+      // binary (a 6-hour timer has nothing to drive in a spec).
+      runIdleBuildDirCleanup: idleBuildDirs.runIdleBuildDirCleanup,
       // The webview half of `termic scratchpad`. Exposed so a spec can land a
       // write in the SAME tick as an editor remount, which a round trip over
       // the control socket can only hit by luck (lib/scratchLive).

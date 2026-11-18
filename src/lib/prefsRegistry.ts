@@ -107,6 +107,8 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "branchPrefix", scoped: false, class: "sync" },
   { key: "useBranchAsTaskName", scoped: false, class: "sync" },
   { key: "archiveDeleteBranch", scoped: false, class: "sync" },
+  { key: "freeIdleBuildDirs", scoped: false, class: "sync" },
+  { key: "freeIdleBuildDirsDays", scoped: false, class: "sync" },
   { key: "queueMinIntervalMs", scoped: false, class: "sync" },
   { key: "queueStallMs", scoped: false, class: "sync" },
   { key: "boardArchiveLimitMode", scoped: true, class: "sync" },

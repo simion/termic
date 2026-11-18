@@ -91,6 +91,7 @@ mod docker;
 mod agent_dirs;
 mod profiles;
 mod schedules;
+mod build_dirs;
 mod sudo_touchid;
 mod caffeinate;
 mod panic_log;
@@ -786,6 +787,16 @@ pub struct Task {
     /// See docs/profiles.md, "the profile rides the DATA, not the call".
     #[serde(skip)]
     pub profile: ProfileId,
+    /// RFC3339, stamped by `task_mark_active` when the task becomes the
+    /// active one in the UI (throttled to once an hour by the caller). The
+    /// idle build-folder cleanup (build_dirs.rs) measures idleness from
+    /// max(this, `created`). `None` on tasks never opened since it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<String>,
+    /// RFC3339, set when build_dirs.rs deleted this task's build folders.
+    /// The next open re-runs the setup script (or toasts) and clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts_freed_at: Option<String>,
 }
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
@@ -3678,7 +3689,9 @@ struct PtySlot {
     /// above: `task_id` doubles as the sandbox trigger and `role` makes a
     /// PTY CLI-addressable (and allocates a retention ring), so neither
     /// can be set on a plain shell or a run-script tab just to label it.
-    /// NOTHING may branch on this field except reporting.
+    /// NOTHING may branch on this field except reporting, and the idle
+    /// build-folder cleanup (build_dirs.rs), which reads it only to leave a
+    /// task with an open shell ALONE.
     owner: Option<PtyOwner>,
     /// `--name` of the Docker container this PTY's `docker run` is
     /// attached to, if this is a Docker-sandboxed spawn. `None` for every
@@ -7472,6 +7485,8 @@ fn task_open_repo(
         group: None,
         spawned_by: None,
         schedule: None,
+        last_active_at: None,
+        artifacts_freed_at: None,
     };
     // a picked role only sticks where the Keychain block applies; no pick
     // takes the defaults.
@@ -7918,6 +7933,8 @@ fn task_import_worktree(
         group: None,
         spawned_by: None,
         schedule: None,
+        last_active_at: None,
+        artifacts_freed_at: None,
     };
     // a picked role only sticks where the Keychain block applies; no pick
     // takes the defaults.
@@ -8374,6 +8391,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         group: None,
         spawned_by: None,
         schedule: None,
+        last_active_at: None,
+        artifacts_freed_at: None,
     };
     // a picked role only sticks where the Keychain block applies; no pick
     // takes the defaults.
@@ -8789,6 +8808,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         group: None,
         spawned_by: None,
         schedule: None,
+        last_active_at: None,
+        artifacts_freed_at: None,
     };
     // a picked role only sticks where the Keychain block applies; no pick
     // takes the defaults.
@@ -28677,7 +28698,7 @@ pub fn run() {
             task_group_leave,
             task_group_update,
             task_group_dissolve,
-            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
+            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id, build_dirs::task_mark_active, build_dirs::idle_build_dirs_free,
             task_set_tabs, task_set_tab_session_id, task_set_tab_scheduled,
             task_set_schedule, schedule_prune_reports, schedule_delete_reports, schedule_report_status,
             task_set_split_layout,

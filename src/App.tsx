@@ -12,6 +12,7 @@ import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
 import { initForgeRate } from "@/store/forgeRate";
 import { initScheduledTicker } from "@/lib/scheduledTicker";
+import { initIdleBuildDirCleanup } from "@/lib/idleBuildDirs";
 import { initSchedules } from "@/lib/schedules/watcher";
 import { sudoTouchIdSetOffer, taskSpotlightStatus } from "@/lib/ipc";
 import { reapOrphanedServers } from "@/lib/lsp/pageSession";
@@ -105,6 +106,8 @@ export function App() {
     // different job. That ticker kicks queued messages in open chats; this one
     // creates runs, and its watcher settles them when they end.
     void loaded.then(() => initSchedules());
+    // Idle build-folder cleanup: a pass two minutes in, then every 6 hours.
+    void loaded.then(() => initIdleBuildDirCleanup());
     // Linux AppImage only: offer to add a launcher entry, once ever. A no-op
     // on every other platform and on a build that is not an AppImage, and it
     // asks only once whatever the answer, so it cannot become a thing that

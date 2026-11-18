@@ -194,6 +194,12 @@ export default {
       hintOn: "Start the archive dialog's \"Delete the git branch\" box ticked. You can still untick it for any single archive. A project's main checkout is never affected.",
       hintOff: "Archiving also deletes the task's branch. A project's main checkout is never affected.",
     },
+    buildDirs: {
+      label: "Free build folders of idle tasks",
+      hint: "Deletes node_modules, cargo target and similar folders that git ignores, in the worktrees of open tasks you have not opened for a while. Never touches a task with a running agent, terminal or script, or a project's main checkout. Opening the task again re-runs its setup script.",
+      after: "After",
+      days: "days idle",
+    },
   },
 
   notifications: {

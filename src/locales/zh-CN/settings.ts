@@ -193,6 +193,12 @@ export default {
       hintOn: "归档对话框的「删除 git 分支」默认勾选。单次归档仍可取消勾选。项目的主检出永不受影响。",
       hintOff: "归档同时会删除任务的分支。项目的主检出永不受影响。",
     },
+    buildDirs: {
+      label: "清理闲置任务的构建目录",
+      hint: "在一段时间未打开的任务工作树中，删除 git 已忽略的 node_modules、cargo target 等目录。正在运行智能体、终端或脚本的任务，以及项目的主检出，永不受影响。再次打开任务时会重新运行其安装脚本。",
+      after: "闲置",
+      days: "天后",
+    },
   },
 
   notifications: {

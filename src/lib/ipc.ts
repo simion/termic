@@ -658,6 +658,11 @@ export const taskRename   = (id: string, name: string) => invoke<void>("task_ren
 export const taskRecordSpawn = (id: string) => invoke<number>("task_record_spawn", { id });
 export const taskSetHasHistory = (id: string, value: boolean) =>
   invoke<void>("task_set_has_history", { id, value });
+/** Stamp last_active_at; returns (and clears) artifacts_freed_at. */
+export const taskMarkActive = (id: string) => invoke<string | null>("task_mark_active", { id });
+/** Free build folders of idle tasks in this window's profile. */
+export const idleBuildDirsFree = (idleDays: number, keep: string[]) =>
+  invoke<{ tasks: string[]; bytes: number }>("idle_build_dirs_free", { idleDays, keep });
 export const taskSetAgentSessionId = (id: string, cli: string, uuid: string) =>
   invoke<void>("task_set_agent_session_id", { id, cli, uuid });
 /** Replace the task's durable agent-tab list (metadata + order). Each

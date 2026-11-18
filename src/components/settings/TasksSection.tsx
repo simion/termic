@@ -67,6 +67,10 @@ export function TasksSection() {
   const setConfirmBeforeArchiveTask = usePrefs(s => s.setConfirmBeforeArchiveTask);
   const archiveDeleteBranch = usePrefs(s => s.archiveDeleteBranch);
   const setArchiveDeleteBranch = usePrefs(s => s.setArchiveDeleteBranch);
+  const freeIdleBuildDirs = usePrefs(s => s.freeIdleBuildDirs);
+  const setFreeIdleBuildDirs = usePrefs(s => s.setFreeIdleBuildDirs);
+  const freeIdleBuildDirsDays = usePrefs(s => s.freeIdleBuildDirsDays);
+  const setFreeIdleBuildDirsDays = usePrefs(s => s.setFreeIdleBuildDirsDays);
   const boardArchiveLimitMode = usePrefs(s => s.boardArchiveLimitMode);
   const setBoardArchiveLimitMode = usePrefs(s => s.setBoardArchiveLimitMode);
   const boardArchiveLimit = usePrefs(s => s.boardArchiveLimit);
@@ -407,6 +411,30 @@ export function TasksSection() {
           value={archiveDeleteBranch}
           onChange={setArchiveDeleteBranch}
         />
+      </Block>
+
+      {/* Idle build-folder cleanup (src/lib/idleBuildDirs.ts). */}
+      <Block>
+        <Toggle
+          label={t("tasks.buildDirs.label")}
+          hint={t("tasks.buildDirs.hint")}
+          value={freeIdleBuildDirs}
+          onChange={setFreeIdleBuildDirs}
+        />
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("tasks.buildDirs.after")}</span>
+          <Input
+            type="number"
+            min={1}
+            max={365}
+            value={freeIdleBuildDirsDays}
+            disabled={!freeIdleBuildDirs}
+            onChange={(e) => setFreeIdleBuildDirsDays(Number(e.target.value) || 1)}
+            className="w-20 font-mono"
+            data-testid="free-idle-build-dirs-days"
+          />
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("tasks.buildDirs.days")}</span>
+        </div>
       </Block>
 
       {/* A render cap for the board's Archived column, not a data one:

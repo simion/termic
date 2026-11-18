@@ -88,6 +88,8 @@ const LS_CONFIRM_ARCHIVE_TASK = "confirmBeforeArchiveTask";
 const LS_OFFER_TOUCH_ID_SUDO = "offerTouchIdForSudo";
 const LS_CONFIRM_ACCOUNT_RESTART = "confirmBeforeAccountRestart";
 const LS_ARCHIVE_DELETE_BRANCH = "archiveDeleteBranch";
+const LS_FREE_IDLE_BUILD_DIRS = "freeIdleBuildDirs";
+const LS_FREE_IDLE_BUILD_DIRS_DAYS = "freeIdleBuildDirsDays";
 const LS_WORKING_INDICATOR = "workingIndicator";
 const LS_PARTIAL_DONE_INDICATOR = "partialDoneIndicator";
 const LS_ATTENTION_INDICATOR = "attentionIndicator";
@@ -595,6 +597,11 @@ interface PrefsState {
    *  the answer. Never applies to main-checkout entries, which have no
    *  worktree branch to delete. */
   archiveDeleteBranch: boolean;
+  /** Free regenerable build folders (node_modules, cargo target, ...) in the
+   *  worktrees of open tasks idle for `freeIdleBuildDirsDays`. ON by
+   *  default. See src/lib/idleBuildDirs.ts. */
+  freeIdleBuildDirs: boolean;
+  freeIdleBuildDirsDays: number;
   /** Show a spinner on an agent's tab (and sidebar icon) WHILE it's
    *  working. ON by default (an explicit off in localStorage is kept). The
    *  "working" workState is always tracked internally to drive work-done
@@ -1080,6 +1087,8 @@ interface PrefsState {
   setOfferTouchIdForSudo: (v: boolean) => void;
   setConfirmBeforeAccountRestart: (v: boolean) => void;
   setArchiveDeleteBranch: (v: boolean) => void;
+  setFreeIdleBuildDirs: (v: boolean) => void;
+  setFreeIdleBuildDirsDays: (days: number) => void;
   setWorkingIndicator: (v: boolean) => void;
   setPartialDoneIndicator: (v: boolean) => void;
   setAttentionIndicator: (v: boolean) => void;
@@ -1468,6 +1477,8 @@ function readStoredPrefs() {
     offerTouchIdForSudo: initialOfferTouchIdForSudo,
     confirmBeforeAccountRestart: initialConfirmAccountRestart,
     archiveDeleteBranch: initialArchiveDeleteBranch,
+    freeIdleBuildDirs: lsGetBool(LS_FREE_IDLE_BUILD_DIRS, true),
+    freeIdleBuildDirsDays: Math.max(1, Math.min(365, Math.round(lsGetNum(LS_FREE_IDLE_BUILD_DIRS_DAYS, 14)))),
     workingIndicator: initialWorkingIndicator,
     partialDoneIndicator: initialPartialDoneIndicator,
     attentionIndicator: initialAttentionIndicator,
@@ -1854,6 +1865,15 @@ export const usePrefs = create<PrefsState>(set => ({
   setArchiveDeleteBranch: (v) => {
     try { localStorage.setItem(LS_ARCHIVE_DELETE_BRANCH, v ? "1" : "0"); } catch {}
     set({ archiveDeleteBranch: v });
+  },
+  setFreeIdleBuildDirs: (v) => {
+    try { localStorage.setItem(LS_FREE_IDLE_BUILD_DIRS, v ? "1" : "0"); } catch {}
+    set({ freeIdleBuildDirs: v });
+  },
+  setFreeIdleBuildDirsDays: (days) => {
+    const clamped = Math.max(1, Math.min(365, Math.round(days)));
+    try { localStorage.setItem(LS_FREE_IDLE_BUILD_DIRS_DAYS, String(clamped)); } catch {}
+    set({ freeIdleBuildDirsDays: clamped });
   },
   setWorkingIndicator: (v) => {
     try { localStorage.setItem(LS_WORKING_INDICATOR, v ? "1" : "0"); } catch {}

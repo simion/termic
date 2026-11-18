@@ -470,6 +470,11 @@ export interface Task {
   pr_watch?: boolean;
   /** Newest comment timestamp (RFC3339 UTC) the watcher already handled. */
   pr_comments_seen_at?: string | null;
+  /** RFC3339, when the task was last made active (stamped at most hourly). */
+  last_active_at?: string | null;
+  /** RFC3339, when the idle cleanup freed its build folders. Cleared on the
+   *  next open, which re-runs setup or says so. */
+  artifacts_freed_at?: string | null;
 }
 
 /** One durable agent tab persisted on a task. Mirror of

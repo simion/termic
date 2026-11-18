@@ -120,6 +120,12 @@ export default {
     startFailed: "无法启动智能体来运行「{{title}}」。",
   },
 
+  buildDirs: {
+    freedToast_one: "已从 {{count}} 个闲置任务释放 {{size}}",
+    freedToast_other: "已从 {{count}} 个闲置任务释放 {{size}}",
+    restoreToast: "{{name}} 的构建目录已于 {{date}} 清理。如有缺失，请重新安装依赖。",
+  },
+
   runTabs: {
     run: "运行",
     setup: "安装环境",

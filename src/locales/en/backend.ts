@@ -124,6 +124,12 @@ export default {
     startFailed: "Couldn't start the agent to run \"{{title}}\".",
   },
 
+  buildDirs: {
+    freedToast_one: "Freed {{size}} from {{count}} idle task",
+    freedToast_other: "Freed {{size}} from {{count}} idle tasks",
+    restoreToast: "Build folders in {{name}} were freed on {{date}}. Reinstall dependencies if something is missing.",
+  },
+
   runTabs: {
     run: "Run",
     setup: "Setup",
