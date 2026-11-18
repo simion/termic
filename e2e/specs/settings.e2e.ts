@@ -4484,6 +4484,15 @@ describe("cloned agents inherit rather than copy", () => {
       timeout: 10_000, timeoutMsg: "cloning claude never added an agent",
     });
     cloneId = ((await agentIds()) as string[]).find(i => !before.includes(i))!;
+    // The panel mirrors the clone into the store at once but writes it to disk
+    // on a 500ms debounce. Moving on before that lands lets the pending save
+    // overwrite the next case's agentsSave with the clone's original fields,
+    // so the override is gone from disk and the remounted panel never offers
+    // a reset. Reproduced locally by reading settings_load after the write.
+    await browser.waitUntil(() => browser.execute(async (id) => {
+      const s = await window.__termic!.invoke("settings_load") as { agents: { id: string }[] };
+      return s.agents.some(a => a.id === id);
+    }, cloneId), { timeout: 10_000, timeoutMsg: "the clone never reached disk" });
 
     const stored = await record(cloneId) as Record<string, unknown>;
     expect(stored.extends).toBe("claude");
@@ -4533,9 +4542,8 @@ describe("cloned agents inherit rather than copy", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
     // Wait for the panel to actually GO before asking for it back: two store
     // writes back to back can land in one render, and then nothing remounts.
-    // This case has failed in CI on Linux and on macOS with the reset button
-    // absent. The cause was not reproduced, so this and the retried click
-    // below close the two windows the steps left open rather than a proven one.
+    // (The reset button going missing in CI was the clone's debounced save,
+    // handled in the first case.)
     await browser.waitUntil(
       () => browser.execute(() => !document.querySelector('[data-agent-id][data-kind="agent"]')),
       { timeout: 10_000, timeoutMsg: "the agents panel never unmounted, so it cannot have reloaded" });
