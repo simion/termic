@@ -106,8 +106,10 @@ with Ctrl** (`isAppChordInTerminal`), and keeps plain Ctrl+letter for the
 shell. That was always the stated rule and used to be applied to four
 hand-picked shortcuts, so Ctrl+Alt+Left (pane left) or Ctrl+Alt+P (prompt
 palette) pressed in a terminal went to the PTY as an escape sequence. The
-terminal's own three are excluded: copy, paste, and Ctrl+Shift+F, which there
-is that terminal's find.
+terminal's own two are excluded: copy and paste. Ctrl+Shift+F is not among
+them: it used to be the terminal's find, which made find-in-files unreachable
+from the place focus nearly always is, so it goes to the app like any other
+chord and a terminal's find is Ctrl+Alt+F.
 
 **The desktop takes some chords before any application sees them**, and which
 ones is a fact about the desktop, read here from GNOME's own settings on

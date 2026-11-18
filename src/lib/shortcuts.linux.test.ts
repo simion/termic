@@ -94,10 +94,14 @@ describe("what a terminal hands to the app off macOS", () => {
     expect(app(ev("}", { shiftKey: true }))).toBe(true);         // next tab
   });
 
-  it("leaves the terminal its own copy, paste and find", () => {
+  it("leaves the terminal its own copy and paste", () => {
     expect(app(ev("C", { shiftKey: true }))).toBe(false);
     expect(app(ev("V", { shiftKey: true }))).toBe(false);
-    expect(app(ev("F", { shiftKey: true }))).toBe(false);
+  });
+
+  it("hands Ctrl+Shift+F to the app as find-in-files, and keeps Ctrl+Alt+F for the terminal's find", () => {
+    expect(app(ev("F", { shiftKey: true }))).toBe(true);
+    expect(app(ev("f", { altKey: true }))).toBe(false);
   });
 
   it("does not take Alt+Arrow, which has no Cmd in it", () => {

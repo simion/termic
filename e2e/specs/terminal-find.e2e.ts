@@ -80,11 +80,11 @@ describe("find in terminal", () => {
     }, { timeout: 40_000, interval: 100, timeoutMsg: `${scope} never printed the fixture` });
   };
 
-  // ⌘F on macOS; Ctrl+Shift+F elsewhere, since plain Ctrl+F is the shell's
-  // (isTerminalFindCombo).
+  // ⌘F on macOS; Ctrl+Alt+F elsewhere, since plain Ctrl+F is the shell's and
+  // Ctrl+Shift+F is find-in-files (isTerminalFindCombo).
   const openFind = (scope: string) => key(scope, process.platform === "darwin"
     ? { key: "f", code: "KeyF", metaKey: true }
-    : { key: "F", code: "KeyF", ctrlKey: true, shiftKey: true });
+    : { key: "f", code: "KeyF", ctrlKey: true, altKey: true });
 
   /** Set the find input the way typing does (React tracks the native setter). */
   const setQuery = (scope: string, q: string) =>
@@ -202,5 +202,23 @@ describe("find in terminal", () => {
     expect(await browser.execute((sel) => !!document.querySelector(`${sel} [data-testid="terminal-find"]`), mainScope())).toBe(false);
     await findKey(bottomScope(), { key: "Escape" });
     await waitState(bottomScope(), { label: null, all: 0, active: 0 }, "closing the footer's find left highlights");
+  });
+
+  // Focus is nearly always in a terminal, so find-in-files has to work from
+  // one. Off macOS its key, Ctrl+Shift+F, used to be the terminal's own find,
+  // which left find-in-files unreachable by keyboard from an agent tab.
+  it("the find-in-files key from a terminal opens Find in files, not the terminal's find", async () => {
+    await key(mainScope(), process.platform === "darwin"
+      ? { key: "f", code: "KeyF", metaKey: true, shiftKey: true }
+      : { key: "F", code: "KeyF", ctrlKey: true, shiftKey: true });
+    try {
+      await browser.waitUntil(
+        () => browser.execute((id) => window.__termic!.useUI.getState().findInFilesTaskId === id, taskId),
+        { timeout: 8_000, timeoutMsg: "the find-in-files key in a terminal did not open Find in files" },
+      );
+      expect(await browser.execute((sel) => !!document.querySelector(`${sel} [data-testid="terminal-find"]`), mainScope())).toBe(false);
+    } finally {
+      await browser.execute(() => window.__termic!.useUI.setState({ findInFilesTaskId: null }));
+    }
   });
 });

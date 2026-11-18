@@ -51,9 +51,12 @@ describe("terminal find key", () => {
     expect(isTerminalFindCombo(key({ metaKey: true, shiftKey: true }), true)).toBe(false);
     expect(isTerminalFindCombo(key({ ctrlKey: true }), true)).toBe(false);
   });
-  it("is Ctrl+Shift+F elsewhere, leaving Ctrl+F to readline", () => {
-    expect(isTerminalFindCombo(key({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
+  it("is Ctrl+Alt+F elsewhere, leaving Ctrl+F to readline and Ctrl+Shift+F to find-in-files", () => {
+    expect(isTerminalFindCombo(key({ ctrlKey: true, altKey: true }), false)).toBe(true);
+    expect(isTerminalFindCombo(key({ ctrlKey: true, shiftKey: true }), false)).toBe(false);
     expect(isTerminalFindCombo(key({ ctrlKey: true }), false)).toBe(false);
+    // AltGr+F typing a character on its layout (Hungarian: "[") is typing.
+    expect(isTerminalFindCombo(key({ key: "[", ctrlKey: true, altKey: true }), false)).toBe(false);
   });
   it("close-tab from a terminal is Ctrl+Shift+W off macOS, and never plain Ctrl+W", () => {
     const w = (init: Partial<KeyboardEvent>) => key({ key: "w", ...init });

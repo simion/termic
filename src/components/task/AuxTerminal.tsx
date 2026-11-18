@@ -227,18 +227,20 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
         return false;
       }
-      // Off macOS, a chord with Shift or Alt on it is the app's, not the
-      // shell's (isAppChordInTerminal). After copy / paste and find above,
-      // which are this terminal's own.
-      if (e.type === "keydown" && isAppChordInTerminal(e, usePrefs.getState().shortcuts)) return false;
-      // Ctrl+Shift+W off macOS closes the tab; see isTerminalCloseCombo.
-      if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
+      // This terminal's find (isTerminalFindCombo): Ctrl+Alt+F off macOS, so
+      // BEFORE the Shift-or-Alt pass-through below.
       if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
         setSearchOpen(true);
         e.preventDefault();
         e.stopPropagation();
         return false;
       }
+      // Off macOS, a chord with Shift or Alt on it is the app's, not the
+      // shell's (isAppChordInTerminal). After copy / paste and find above,
+      // which are this terminal's own.
+      if (e.type === "keydown" && isAppChordInTerminal(e, usePrefs.getState().shortcuts)) return false;
+      // Ctrl+Shift+W off macOS closes the tab; see isTerminalCloseCombo.
+      if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
       // Cmd+Backspace → kill line to beginning (\x15, Ctrl+U). Mirrors TerminalPane.
       if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === "Backspace") {
         const pid = ptyRef.current;

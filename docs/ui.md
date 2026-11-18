@@ -1769,7 +1769,7 @@ menu's onSelect carries no user gesture in WKWebView.
 
 ## Find in terminal
 
-⌘F (Ctrl+Shift+F elsewhere) opens `TerminalFindBar` over any terminal: agent and shell tabs, and the footer shell. Every match gets a wash of the accent the moment the query changes; the current one gets a stronger wash and an accent outline (and xterm's selection colour, since the addon selects it), with a "3 of 12" count. Reopening on a kept query highlights again straight away.
+⌘F (Ctrl+Alt+F elsewhere) opens `TerminalFindBar` over any terminal: agent and shell tabs, and the footer shell. Every match gets a wash of the accent the moment the query changes; the current one gets a stronger wash and an accent outline (and xterm's selection colour, since the addon selects it), with a "3 of 12" count. Reopening on a kept query highlights again straight away.
 
 - The highlights are xterm decorations, which only take `#RRGGBB`. `lib/terminalFind.ts` resolves `--color-accent` and blends it into the terminal's background, so no hex lives outside the theme.
 - While a decorated query is live the addon re-searches 200ms after new output. Closing the bar clears the decorations, which also stops that, so a streaming agent does not keep paying for a search nobody is looking at.

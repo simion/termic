@@ -12,13 +12,17 @@ import type { ISearchDecorationOptions } from "@xterm/addon-search";
 type Rgb = [number, number, number];
 
 /** The key that opens find in a terminal. EXACTLY ⌘F on macOS (no Shift, so
- *  ⇧⌘F stays the app's find-in-files); Ctrl+Shift+F elsewhere, because plain
- *  Ctrl+F is readline's forward-char and hijacking it would break the shell. */
+ *  ⇧⌘F stays the app's find-in-files); Ctrl+Alt+F elsewhere. Not plain
+ *  Ctrl+F, which is readline's forward-char, and not Ctrl+Shift+F, which is
+ *  find-in-files as in VS Code: it used to be this terminal's find, and since
+ *  focus is nearly always in a terminal, find-in-files was unreachable from
+ *  its own key. An AltGr layout that types a character on F reports that
+ *  character as `key`, so it never matches and stays typeable. */
 export function isTerminalFindCombo(e: KeyboardEvent, isMac: boolean): boolean {
   const f = e.key.toLowerCase() === "f";
   return isMac
     ? f && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey
-    : f && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey;
+    : f && e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey;
 }
 
 /** Close-tab from INSIDE a terminal, off macOS: Ctrl+Shift+W.

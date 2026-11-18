@@ -722,7 +722,7 @@ export function eventCmd(e: KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey || superIsHeld();
 }
 
-const TERMINAL_OWN: ReadonlySet<ShortcutId> = new Set<ShortcutId>(["terminal-copy", "terminal-paste", "find-in-files"]);
+const TERMINAL_OWN: ReadonlySet<ShortcutId> = new Set<ShortcutId>(["terminal-copy", "terminal-paste"]);
 
 /** Off macOS: is this key one of the app's chords that a TERMINAL should let
  *  go? The rule is the one the terminals always stated: Ctrl is the app's
@@ -740,8 +740,7 @@ const TERMINAL_OWN: ReadonlySet<ShortcutId> = new Set<ShortcutId>(["terminal-cop
 export function isAppChordInTerminal(e: KeyboardEvent, binds: Partial<BindingMap>): boolean {
   if (IS_MAC) return false;
   for (const d of SHORTCUT_DEFS) {
-    // The terminal's OWN: copy, paste, and Ctrl+Shift+F, which inside a
-    // terminal is that terminal's find. Their handlers sit around the call
+    // The terminal's OWN: copy and paste. Their handlers sit around the call
     // sites in no fixed order, so they are excluded here, not by position.
     if (TERMINAL_OWN.has(d.id)) continue;
     const b = binds[d.id];

@@ -1452,9 +1452,8 @@ const captureArmedRef = useRef(false);
         return false;
       }
       // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
-      // BEFORE the pass-through below: off macOS the combo is Ctrl+Shift+F,
-      // which is also find-in-files (⇧⌘F with Ctrl for Cmd), and inside a
-      // terminal it means this terminal's find, as in Windows Terminal.
+      // BEFORE the pass-through below, which would hand a Ctrl+Alt chord to
+      // the app (off macOS the combo is Ctrl+Alt+F).
       if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
         setSearchOpen(true);
         e.preventDefault();
