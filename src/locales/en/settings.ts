@@ -522,6 +522,13 @@ export default {
       serversHint: "One per language, started only for a project you switch this on for. Where a language has more than one, pick the one you want; Automatic uses the order below. A copy inside the project (<1>node_modules</1>, a virtualenv) always wins over these.",
     },
     windowHeading: "Window",
+    theme: {
+      label: "Theme",
+      hint: "Colors for the whole app. The theme button in the sidebar footer lists the same themes with a live preview.",
+      system: "System",
+      dark: "Dark",
+      light: "Light",
+    },
     uiZoom: {
       label: "UI zoom",
       hint: "{{scale}}% of native. Scales the whole app (sidebar, tabs, files and git panels, terminals) like browser zoom.\nShortcuts: {{cmd}} +, {{cmd}} -, {{cmd}} 0.",

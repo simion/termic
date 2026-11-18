@@ -10,6 +10,9 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useThemeEntries } from "@/hooks/useThemeEntries";
+import { isCustomId } from "@/lib/customTheme";
+import { useUI } from "@/store/ui";
 import { codeIntelName } from "@/lib/lsp/featureName";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 import { Button } from "@/components/ui/Button";
@@ -419,6 +422,11 @@ export function AppearanceSection() {
       {subTab === "interface" && <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-6">
         <h2 className="text-[15px] font-medium">{t("appearance.windowHeading")}</h2>
+        <Field
+          label={t("appearance.theme.label")}
+          hint={t("appearance.theme.hint")}
+          control={<AppThemeSelect />}
+        />
         <Field
           label={t("appearance.uiZoom.label")}
           hint={t("appearance.uiZoom.hint", { scale: uiScale, cmd: CMD_LABEL })}
@@ -842,6 +850,45 @@ function RendererPicker({ value, onChange }: {
         >{label}</button>
       ))}
     </div>
+  );
+}
+
+/** The app theme, as a plain <select>. The palette's theme list (the sidebar
+ *  footer button, ⇧⌘P) is the richer picker, with live preview; this one is
+ *  the path that cannot be lost to a popup misbehaving on some platform, and
+ *  the place people look for it. Same list as the palette (useThemeEntries). */
+function AppThemeSelect() {
+  const { t } = useTranslation("settings");
+  const themeMode = usePrefs(s => s.themeMode);
+  const entries = useThemeEntries();
+  // A theme file not loaded yet would otherwise blank the <select>.
+  const list = entries.some(e => e.id === themeMode)
+    ? entries
+    : [...entries, { id: themeMode, label: themeMode.replace(/^custom:/, ""), scheme: "dark" as const }];
+  const pick = (id: string) => {
+    const entry = list.find(e => e.id === id);
+    if (!entry) return;
+    if (entry.imported && isCustomId(entry.id)) {
+      usePrefs.getState().pickImportedTheme(entry.id).catch(e =>
+        useUI.getState().pushToast(t("dialogs:commandPalette.themeImportFailed", { name: entry.label, error: String(e) }), "error"));
+    } else usePrefs.getState().setThemeMode(entry.id);
+  };
+  const groups = (["system", "dark", "light"] as const)
+    .map(scheme => ({ scheme, items: list.filter(e => e.scheme === scheme) }))
+    .filter(g => g.items.length);
+  return (
+    <select
+      data-testid="settings-app-theme"
+      value={themeMode}
+      onChange={(e) => pick(e.target.value)}
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
+    >
+      {groups.map(g => (
+        <optgroup key={g.scheme} label={t(`appearance.theme.${g.scheme}`)}>
+          {g.items.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}
+        </optgroup>
+      ))}
+    </select>
   );
 }
 

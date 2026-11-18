@@ -521,6 +521,13 @@ export default {
       serversHint: "每种语言一个，只为你开启此功能的项目启动。一种语言有多个可选时，挑你想用的那个；「自动」按下面的顺序选择。项目内部的副本（<1>node_modules</1>、virtualenv）总是优先于这些。",
     },
     windowHeading: "窗口",
+    theme: {
+      label: "主题",
+      hint: "整个应用的配色。侧边栏底部的主题按钮列出相同的主题，并可实时预览。",
+      system: "跟随系统",
+      dark: "深色",
+      light: "浅色",
+    },
     uiZoom: {
       label: "界面缩放",
       hint: "原生的 {{scale}}%。像浏览器缩放一样缩放整个应用（侧边栏、标签页、文件与 git 面板、终端）。\n快捷键：{{cmd}} +、{{cmd}} -、{{cmd}} 0。",

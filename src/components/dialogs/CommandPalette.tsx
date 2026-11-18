@@ -27,7 +27,8 @@ import {
   readRecents, recentIds, recordRecent, readThemeRecents, recordThemeRecent,
   readSchemeFilter, writeSchemeFilter, type SchemeFilter,
 } from "@/lib/paletteRecent";
-import { usePrefs, resolveTheme, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
+import { usePrefs, resolveTheme, type ThemeMode } from "@/store/prefs";
+import { useThemeEntries } from "@/hooks/useThemeEntries";
 import { useUpdate } from "@/store/update";
 import { useGuide } from "@/store/guide";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
@@ -99,22 +100,8 @@ interface Cmd {
   run: () => void;
 }
 
-// Theme display names. auto/light/dark are common words and translate
-// (commandPalette.themeAuto/themeLight/themeDark); the rest are proper-noun
-// theme names, the same in every language.
-type ThemeEntry = { id: ThemeMode; label: string; scheme: "system" | "dark" | "light"; imported?: boolean };
-const SCHEME_RANK: Record<ThemeEntry["scheme"], number> = { system: 0, dark: 1, light: 2 };
 const SCHEME_FILTERS: SchemeFilter[] = ["dark", "light", "all"];
 const SOURCE_LABEL = { ghostty: "Ghostty", warp: "Warp" } as const;
-
-const THEME_LABELS: Record<Exclude<BuiltinThemeMode, "auto" | "light" | "dark">, string> = {
-  claude: "Claude",
-  solarized: "Solarized",
-  cobalt: "Cobalt",
-  matrix: "Matrix",
-  rosepine: "Rosé Pine",
-};
-const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 
 export function CommandPalette() {
   const { t } = useTranslation("dialogs");
@@ -140,32 +127,7 @@ export function CommandPalette() {
   // Only whether there is one: the Clear row comes and goes with it.
   const sidebarFiltered = useUI(s => s.sidebarQuery.trim() !== "");
 
-  // Every theme with its scheme, in the submenu's order: System, then the
-  // dark themes, then the light ones, each run sorted by name. An import
-  // already saved as a copy is left out: the copy is listed under the same
-  // name. `t` is a dep so a language switch recomputes the built-in labels.
-  const themeEntries = useMemo<ThemeEntry[]>(
-    () => {
-      const builtinLabel = (m: BuiltinThemeMode) =>
-        m === "auto" ? t("commandPalette.themeAuto")
-        : m === "light" ? t("commandPalette.themeLight")
-        : m === "dark" ? t("commandPalette.themeDark")
-        : THEME_LABELS[m];
-      const entries: ThemeEntry[] = [
-        ...THEME_ORDER.map(m => ({
-          id: m as ThemeMode, label: builtinLabel(m),
-          scheme: m === "auto" ? "system" as const : m === "light" ? "light" as const : "dark" as const,
-        })),
-        ...customThemes.map(th => ({ id: th.id as ThemeMode, label: th.name, scheme: th.colorScheme })),
-        ...importedThemes
-          .filter(th => !customThemes.some(c => c.id === copyIdOf(th.id)))
-          .map(th => ({ id: th.id as ThemeMode, label: th.name, scheme: th.colorScheme, imported: true })),
-      ];
-      return entries.sort((a, b) =>
-        SCHEME_RANK[a.scheme] - SCHEME_RANK[b.scheme] || a.label.localeCompare(b.label));
-    },
-    [customThemes, importedThemes, t],
-  );
+  const themeEntries = useThemeEntries();
   // Which schemes the submenu lists: the saved toggle, else the current
   // theme's scheme, so arrowing through a dark list never flashes a light
   // theme. Tab or the toggle changes (and saves) it. System always lists.

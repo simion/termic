@@ -36,6 +36,12 @@ One list holds every theme: the built-ins, your theme files and the
 Ghostty / Warp imports. Three ways in: click the theme icon (sun/moon) in
 the sidebar footer, press ⌥⌘T, or ⇧⌘P then "Change theme…".
 
+Settings > Appearance > Interface & Sidebar carries the same list as a plain
+select (no preview), built from the same `useThemeEntries` hook so the two
+never disagree. It is there because the palette is a popup, and on Linux it
+was reported closing the instant it opened, which left no way to change the
+theme at all.
+
 - Sections: System, then Dark, then Light, each sorted by name. Each row is
   tagged with where it came from (Custom, Ghostty, Warp; built-ins carry
   none), and typing the tag filters to it.

@@ -131,6 +131,48 @@ describe("settings", () => {
   // a shell starts, so the only thing the UI owns is the pref and its switch.
   // This pins both, and restores the default so the rest of the run (and the
   // next one, since the profile is shared) sees an untouched profile.
+  // The app theme has a home in Settings, not only behind the sidebar footer's
+  // palette button: on Linux that palette was reported closing the instant it
+  // opened, which left no way to change the theme at all. A plain <select>
+  // has no popup to lose.
+  it("changes the app theme from Appearance > Interface", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("appearance"));
+    await waitVisible('[data-appearance-tab="interface"]');
+    await browser.execute(() =>
+      (document.querySelector('[data-appearance-tab="interface"]') as HTMLElement).click());
+    const SELECT = '[data-testid="settings-app-theme"]';
+    await waitVisible(SELECT);
+    await snap("settings-app-theme.png");
+
+    const original = await browser.execute(() => window.__termic!.usePrefs.getState().themeMode);
+    const target = original === "solarized" ? "cobalt" : "solarized";
+    // Every built-in is listed, grouped by scheme like the palette.
+    const options = await browser.execute((sel) =>
+      [...(document.querySelector(sel) as HTMLSelectElement).options].map(o => o.value), SELECT);
+    expect(options).toEqual(expect.arrayContaining(["auto", "light", "dark", "solarized", "cobalt"]));
+
+    try {
+      await browser.execute((sel, v) => {
+        const el = document.querySelector(sel) as HTMLSelectElement;
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, v);
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, SELECT, target);
+      await browser.waitUntil(
+        async () => (await browser.execute(() => window.__termic!.usePrefs.getState().themeMode)) === target,
+        { timeout: 8_000, timeoutMsg: "picking a theme in Appearance never changed the theme" },
+      );
+      // What the user sees: the theme's class on the document.
+      expect(await browser.execute((m) => document.documentElement.classList.contains(m), target)).toBe(true);
+      // The select follows the store, so it reads the pick back.
+      expect(await browser.execute((sel) =>
+        (document.querySelector(sel) as HTMLSelectElement).value, SELECT)).toBe(target);
+    } finally {
+      await browser.execute((m) => window.__termic!.usePrefs.getState().setThemeMode(m), original);
+    }
+  });
+
   it("shares shell history across terminals from Appearance", async () => {
     await waitForAppShell();
     await requireTermicApi();
