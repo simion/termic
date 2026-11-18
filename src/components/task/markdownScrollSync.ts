@@ -104,6 +104,10 @@ export function useScrollSync(
     shownRef.current = { visible, editorVisible };
     const scroller = scrollerRef.current, host = hostRef.current;
     if (!view || !scroller || !host || !visible) return;
+    // which panes show changed, so every block moved: anchors cached under
+    // the split read the alone preview's scrollTop as another line (section
+    // 5 for 10) if a scroll lands before the observer below first delivers.
+    anchorsRef.current = null;
     const anchors = () => (anchorsRef.current ??= previewAnchors(scroller, host, view.state.doc.lines + 1));
     if (!editorVisible) {
       const note = () => {
