@@ -2031,10 +2031,8 @@ export async function clickMenuItemUntilReady(
 
 
 /** Argv of every agent spawn in a task, oldest first, from the fixture's
- *  e2e-agent-argv.log. Only NEWLINE-TERMINATED lines count: Git Bash can land
- *  the fixture's append in more than one write, and a read between them saw
- *  "<task>\t" with nothing after it, which matched the task and read as an
- *  empty argv (Windows CI, "resume <id>" expected, "" received). */
+ *  e2e-agent-argv.log. Only NEWLINE-TERMINATED lines count, so a read that
+ *  races the fixture's append never returns a half-written line. */
 export function spawnArgvLog(taskId: string): string[] {
   const log = path.join(dataDir, "e2e-agent-argv.log");
   if (!fs.existsSync(log)) return [];

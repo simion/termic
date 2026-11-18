@@ -3106,6 +3106,13 @@ describe("closing the main agent tab while another tab is open", () => {
     taskId = await openTask("e2e-capture-stranded", true, "fakecapture");
     const id = taskId;
     await waitForAgentReady(id);
+    // Ready means ANY output, and on Windows ConPTY writes its own setup bytes
+    // before the fixture's script runs, so the first spawn's argv line can
+    // still be missing here. Counted then, `before` was 0, that late line (an
+    // empty argv) satisfied "a new spawn landed" below, and the case read ""
+    // where the resume should be. Seen twice on Windows CI.
+    await browser.waitUntil(() => Promise.resolve(argvFor(id).length >= 1),
+      { timeout: 20_000, timeoutMsg: "the first spawn never logged its argv" });
     const agentTab = await browser.execute(
       (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.id as string, id);
     await browser.execute((t, tb, sid) => {
