@@ -179,6 +179,10 @@ export const parseTerminalRenderer = (
 ): TerminalRendererKind =>
   v === "webgl" || v === "canvas" || v === "dom" ? v : fallback;
 
+/** Set by `with_software_gl_flag` (lib.rs) when WebGL is software-rendered. */
+const defaultTerminalRenderer = (): TerminalRendererKind =>
+  (globalThis as { __TERMIC_SOFTWARE_GL__?: boolean }).__TERMIC_SOFTWARE_GL__ === true ? "canvas" : "webgl";
+
 export type BuiltinThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine" | "monokai";
 /** The user's selection: a built-in mode, or a custom theme file id
  *  (`custom:<file-stem>`, see lib/customTheme.ts). */
@@ -1340,13 +1344,15 @@ function readStoredPrefs() {
   const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
   const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
   const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
+  const storedTerminalRenderer       = lsGet(LS_TERMINAL_RENDERER, "");
+  // Not stored: the backend decides again on each launch until the user picks.
+  const noTerminalRendererChoice     = storedTerminalRenderer === "" && lsGet(LS_TERMINAL_GPU, "") === "";
   const initialTerminalGpuEnabled    = lsGetBool(LS_TERMINAL_GPU, APPEARANCE_DEFAULTS.terminalGpuEnabled);
   // No stored renderer means this profile predates the three-way pref, so honour
   // whatever the old boolean said rather than snapping everyone back to WebGL.
-  const initialTerminalRenderer      = parseTerminalRenderer(
-    lsGet(LS_TERMINAL_RENDERER, ""),
-    initialTerminalGpuEnabled ? "webgl" : "dom",
-  );
+  const initialTerminalRenderer      = noTerminalRendererChoice
+    ? defaultTerminalRenderer()
+    : parseTerminalRenderer(storedTerminalRenderer, initialTerminalGpuEnabled ? "webgl" : "dom");
   const initialTerminalCopyOnSelect  = lsGetBool(LS_TERMINAL_COPY_ON_SELECT, true);
   const initialShareShellHistory     = lsGetBool(LS_SHARE_SHELL_HISTORY, APPEARANCE_DEFAULTS.shareShellHistory);
   const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
@@ -1515,7 +1521,7 @@ function readStoredPrefs() {
     terminalLetterSpacing: initialTerminalLetterSpacing,
     terminalScrollback: initialTerminalScrollback,
     terminalOptionAsMeta: initialTerminalOptionAsMeta,
-    terminalGpuEnabled: initialTerminalGpuEnabled,
+    terminalGpuEnabled: noTerminalRendererChoice ? initialTerminalRenderer === "webgl" : initialTerminalGpuEnabled,
     terminalRenderer: initialTerminalRenderer,
     terminalCopyOnSelect: initialTerminalCopyOnSelect,
     shareShellHistory: initialShareShellHistory,
