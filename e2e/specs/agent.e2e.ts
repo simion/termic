@@ -15,7 +15,7 @@ import { dataDir } from "../../wdio.conf.js";
 // from the store (`lastOutputAt`) — xterm paints to a WebGL canvas, so PTY
 // bytes are genuinely not in the DOM.
 
-import {
+import { spawnArgvLog,
   archiveTask,
   clickByText,
   clickWhenVisible,
@@ -2485,10 +2485,7 @@ describe("main-checkout resume for a capture-resume agent", () => {
    *  the store can hold a session id while the flag that would have used it
    *  never reaches the process, and that is exactly the bug shape here. */
   function spawnArgv(id: string): string[] {
-    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
-    return raw.split("\n")
-      .filter(l => l.startsWith(id + "\t"))
-      .map(l => l.slice(id.length + 1));
+    return spawnArgvLog(id);
   }
 
   after(async () => {
@@ -2574,10 +2571,7 @@ describe("a claude session that moves after /clear is the one resumed", () => {
   let tabIds: string[] = [];
 
   function spawnArgv(id: string): string[] {
-    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
-    return raw.split("\n")
-      .filter(l => l.startsWith(id + "\t"))
-      .map(l => l.slice(id.length + 1));
+    return spawnArgvLog(id);
   }
   const sessions = (id: string) => browser.execute((t, ids) => {
     const st = window.__termic!.useApp.getState();
@@ -2744,8 +2738,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
   before(() => writeFileSync(join(dataDir, "e2e-dead-sessions"), ""));
 
   function spawnArgv(id: string): string[] {
-    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
-    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+    return spawnArgvLog(id);
   }
   const stored = (id: string) => browser.execute(
     (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.sessionId ?? null, id);
@@ -2993,8 +2986,7 @@ describe("a secondary capture-resume tab in the main checkout", () => {
   let taskId: string | null = null;
 
   function argvFor(id: string): string[] {
-    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
-    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+    return spawnArgvLog(id);
   }
 
   after(async () => {
@@ -3103,8 +3095,7 @@ describe("closing the main agent tab while another tab is open", () => {
   let taskId: string | null = null;
 
   function argvFor(id: string): string[] {
-    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
-    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+    return spawnArgvLog(id);
   }
 
   after(async () => {

@@ -2029,3 +2029,17 @@ export async function clickMenuItemUntilReady(
   });
 }
 
+
+/** Argv of every agent spawn in a task, oldest first, from the fixture's
+ *  e2e-agent-argv.log. Only NEWLINE-TERMINATED lines count: Git Bash can land
+ *  the fixture's append in more than one write, and a read between them saw
+ *  "<task>\t" with nothing after it, which matched the task and read as an
+ *  empty argv (Windows CI, "resume <id>" expected, "" received). */
+export function spawnArgvLog(taskId: string): string[] {
+  const log = path.join(dataDir, "e2e-agent-argv.log");
+  if (!fs.existsSync(log)) return [];
+  const raw = fs.readFileSync(log, "utf8");
+  return raw.slice(0, raw.lastIndexOf("\n") + 1).split("\n")
+    .filter(l => l.startsWith(taskId + "\t"))
+    .map(l => l.slice(taskId.length + 1));
+}

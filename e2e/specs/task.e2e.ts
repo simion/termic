@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree, textOf, newTaskSection, settledSnap } from "../helpers";
+import { archiveTask, spawnArgvLog, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree, textOf, newTaskSection, settledSnap } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -253,13 +253,7 @@ describe("create task wizard", () => {
 
 /** Argv of every spawn a task has made, oldest first (the fixture logs it:
  *  terminal output is a canvas, so this is the only way to read it). */
-const spawnArgv = (id: string): string[] => {
-  const log = path.join(dataDir, "e2e-agent-argv.log");
-  if (!existsSync(log)) return [];
-  return readFileSync(log, "utf8").split("\n")
-    .filter((l) => l.startsWith(id + "\t"))
-    .map((l) => l.slice(id.length + 1));
-};
+const spawnArgv = spawnArgvLog;
 
 const firstSpawnArgv = async (id: string) => {
   await browser.waitUntil(async () => spawnArgv(id).length > 0, {
