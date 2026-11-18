@@ -112,6 +112,8 @@ jobs:
           cp /tmp/termic-debug.log .e2e/artifacts/ 2>/dev/null || true
           cp /tmp/termic-workstate-e2e.log .e2e/artifacts/ 2>/dev/null || true
           cp .e2e/profile/e2e-*.log .e2e/artifacts/ 2>/dev/null || true
+          # A startup panic (exit 101) only says "crashed" in the wdio output.
+          cp .e2e/profile/logs/panic.log* .e2e/artifacts/ 2>/dev/null || true
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -175,6 +177,8 @@ jobs:
           # A badge case that fails only here cannot be explained without them.
           cp "${TMPDIR%/}/termic-workstate-e2e.log" .e2e/artifacts/ 2>/dev/null || true
           cp .e2e/profile/e2e-*.log .e2e/artifacts/ 2>/dev/null || true
+          # A startup panic (exit 101) only says "crashed" in the wdio output.
+          cp .e2e/profile/logs/panic.log* .e2e/artifacts/ 2>/dev/null || true
           ls -la .e2e/artifacts || true
 
       - name: Upload artifacts on failure

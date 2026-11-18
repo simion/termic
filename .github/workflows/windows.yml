@@ -161,6 +161,8 @@ jobs:
           cp "$TEMP/termic-debug.log" .e2e/artifacts/ 2>/dev/null || true
           cp "$(cygpath -u "$LOCALAPPDATA")/Temp/termic-debug.log" .e2e/artifacts/localtemp-termic-debug.log 2>/dev/null || true
           cp .e2e/profile/e2e-*.log .e2e/artifacts/ 2>/dev/null || true
+          # A startup panic (exit 101) only says "crashed" in the wdio output.
+          cp .e2e/profile/logs/panic.log* .e2e/artifacts/ 2>/dev/null || true
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
