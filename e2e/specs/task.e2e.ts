@@ -555,7 +555,9 @@ describe("new task dialog: side rail", () => {
     expect(await pickerPlacement()).toBe("beside or below, by width");
     expect((await browser.execute(() =>
       document.querySelector('[data-testid="new-task-picker"]')!.getBoundingClientRect().width)) > 200).toBe(true);
-    expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Existing worktree/);
+    // Waited for, like the Branches heading: the column grows in from zero.
+    await browser.waitUntil(async () => /^Existing worktree/.test(await textOf('[data-testid="new-task-picker"]')),
+      { timeout: 10_000, timeoutMsg: "the import column never showed its Existing worktree heading" });
 
     // a pick fills Name and unblocks Create. The seeded `sbcheck` worktree
     // is only picked, never imported: other specs need it unopened.
@@ -728,7 +730,11 @@ describe("new task dialog: side rail", () => {
     await waitVisible(LIST);
     // Beside, not under: the same split as an issue or a PR.
     expect(await pickerPlacement()).toBe("beside or below, by width");
-    expect(await textOf('[data-testid="new-task-picker"]')).toMatch(/^Branches/);
+    // A condition, not a single read: in the wide layout the column grows in
+    // from flex-grow 0 (termic-column-grow), and Linux CI once read its
+    // heading as "" while the list inside was already up.
+    await browser.waitUntil(async () => /^Branches/.test(await textOf('[data-testid="new-task-picker"]')),
+      { timeout: 10_000, timeoutMsg: "the branch column never showed its Branches heading" });
 
     // main is the one branch every seed has.
     await clickWhenVisible(`${LIST} [data-branch-ref="main"]`);
