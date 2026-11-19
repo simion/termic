@@ -184,6 +184,8 @@ security-framework = { version = "3", features = ["OSX_10_15"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", features = ["blocking-api"] }
+# Already in the tree through wry; named here only to log a dead web process.
+webkit2gtk = { version = "2.0", features = ["v2_20"] }
 
 [dev-dependencies]
 tempfile = "3"

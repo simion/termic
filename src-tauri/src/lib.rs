@@ -11566,6 +11566,25 @@ fn on_main_thread<T: Send + 'static>(
     rx.recv().map_err(|e| e.to_string())?
 }
 
+/// Log when WebKitGTK's web process dies. The window goes blank while the
+/// app and its PTYs keep running, and nothing else records it: a Linux CI
+/// run lost every WebDriver call mid-spec with the debug log simply going
+/// quiet, and whether the page crashed or hung could not be told apart.
+fn log_web_process_exit(win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        let label = win.label().to_owned();
+        let _ = win.with_webview(move |wv| {
+            use webkit2gtk::WebViewExt;
+            wv.inner().connect_web_process_terminated(move |_, reason| {
+                dlog(&format!("[webview] {label}: web process terminated: {reason:?}"));
+            });
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = win;
+}
+
 /// Register `disable_browser_accelerators` for when the page has loaded, on
 /// the main thread, with the webview fully created.
 fn without_browser_accelerators<'a>(
@@ -11754,6 +11773,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(with_software_gl_flag(builder)))).build()?;
     dlog(&format!("[profile] build {label}: built"));
     caffeinate::configure_window(&win);
+    log_web_process_exit(&win);
     #[cfg(all(target_os = "macos", feature = "e2e"))]
     hide_window_from_user_in_e2e(&win);
 

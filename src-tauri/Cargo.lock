@@ -5666,6 +5666,7 @@ dependencies = [
  "termic-proto",
  "toml_edit 0.25.11+spec-1.1.0",
  "uuid",
+ "webkit2gtk",
  "webview2-com",
  "windows-core",
  "windows-sys 0.60.2",
