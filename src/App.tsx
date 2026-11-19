@@ -37,6 +37,7 @@ import { GuideLayer } from "@/components/guide/GuideLayer";
 import { useGuide } from "@/store/guide";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useShortcuts } from "@/hooks/useShortcuts";
+import { useWindowTitle } from "@/hooks/useWindowTitle";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
 import { useSeenWhenWatched } from "@/hooks/useSeenWhenWatched";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
@@ -76,6 +77,7 @@ export function App() {
   useShortcuts();
   useAttentionNotifier();
   useSeenWhenWatched();
+  useWindowTitle();
 
   useEffect(() => {
     // Before loadAll(): this marks when the shell is on screen, which is what

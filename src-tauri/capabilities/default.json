@@ -10,6 +10,7 @@
     "core:window:allow-start-resize-dragging",
     "core:window:allow-toggle-maximize",
     "core:window:allow-minimize",
+    "core:window:allow-set-title",
     "core:window:allow-close",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",

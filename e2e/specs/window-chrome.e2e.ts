@@ -16,7 +16,7 @@
 import { execFileSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
-import { controlConnect, requireTermicApi, snap, waitForAppShell, waitVisible } from "../helpers";
+import { archiveTask, controlConnect, openTask, requireTermicApi, snap, waitForAppShell, waitVisible } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 const isWindows = process.platform === "win32";
@@ -119,5 +119,35 @@ describe("window chrome", () => {
       timeout: 10_000, timeoutMsg: "raise did not restore the minimized window",
     });
     await waitVisible('[data-testid="window-controls"]');
+  });
+});
+
+// GH #462: the OS title follows the active task and tab, for time trackers
+// that read window titles. Read back from the window itself, since nothing in
+// the page renders it.
+describe("window title", () => {
+  const ids: string[] = [];
+  const title = () => browser.execute(async () => {
+    const w = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<string>; metadata: { currentWindow: { label: string } } };
+    };
+    return w.__TAURI_INTERNALS__.invoke("plugin:window|title", { label: w.__TAURI_INTERNALS__.metadata.currentWindow.label });
+  }) as unknown as Promise<string>;
+  const waitTitle = (pred: (t: string) => boolean, msg: string) =>
+    browser.waitUntil(async () => pred(await title()), { timeout: 8_000, timeoutMsg: msg });
+
+  after(async () => { for (const id of ids) await archiveTask(id); });
+
+  it("names the project, task and tab, and follows a task switch", async () => {
+    await waitForAppShell();
+    ids.push(await openTask("e2e-title-one"));
+    await waitTitle(t => t.startsWith("Termic - fixture-repo / e2e-title-one - "), "the title never named the first task");
+    ids.push(await openTask("e2e-title-two"));
+    await waitTitle(t => t.startsWith("Termic - fixture-repo / e2e-title-two - "), "the title did not follow the switch");
+  });
+
+  it("goes back to plain Termic with no task selected", async () => {
+    await browser.execute(() => window.__termic!.useApp.setState({ activeTaskId: null }));
+    await waitTitle(t => t === "Termic", "the title kept a task nobody has open");
   });
 });
