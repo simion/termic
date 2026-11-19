@@ -98,7 +98,12 @@ jobs:
         env:
           TERMIC_E2E_FAIL_CAPTURE: "1"
           TERMIC_E2E_TIMING: "1"
-        run: dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24" npm run test:e2e
+        # -noreset: Xvfb resets when its last client disconnects, which is
+        # every gap between spec files (each one quits the app and launches a
+        # fresh one). An app launched 0.36s after the previous quit panicked
+        # with "Failed to initialize GTK" (panic.log, code 101). Not
+        # reproduced, so this is the likely cause, not a proven one.
+        run: dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24 -noreset" npm run test:e2e
       # Reported, never gated: wall-clock on a shared runner flakes, and a
       # flaky gate gets muted (docs/perf-ci.md). The gate on fixed waits is
       # e2e/fixedWaits.test.ts, which counts instead of timing.

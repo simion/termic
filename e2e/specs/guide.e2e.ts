@@ -191,14 +191,16 @@ describe("welcome screen and guide", () => {
   });
 
   it("moves on to starting a task as soon as a project exists", async () => {
-    await browser.execute(async (pid) => {
+    // The projects come back in ONE store write, with no tasks and both
+    // projects already open (so two "New task" rows are on screen). Going
+    // through loadAll() put the tasks other spec files left in the profile on
+    // screen for a render, and the guide settled every task step for good.
+    await browser.execute(async (ids) => {
       const t = window.__termic!;
-      await t.useApp.getState().loadAll();
-      t.useApp.setState({ tasks: [], activeTaskId: null });
-      t.useApp.getState().setProjectCollapsed(pid, false);
-    }, projectId);
-    // Both projects open, so there are two "New task" rows on screen.
-    await browser.execute((id) => window.__termic!.useApp.getState().setProjectCollapsed(id, false), otherId);
+      for (const id of ids) t.useApp.getState().setProjectCollapsed(id, false);
+      const projects = await t.ipc.projectsList();
+      t.useApp.setState({ projects, tasks: [], activeTaskId: null });
+    }, [projectId, otherId]);
     await waitVisible(`[data-testid="project-empty-new-task-${otherId}"]`);
     await waitVisible(tip("newTask"));
     // Settled by the project existing, not by anyone pressing Next.
