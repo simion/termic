@@ -51,6 +51,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "uiLanguage", scoped: false, class: "sync" },
   { key: "uiScale", scoped: false, class: "local", reason: "display density, follows this machine's screen" },
   { key: "caffeinateHours", scoped: false, class: "local", reason: "last caffeinate duration started; caffeinate is machine-wide power state" },
+  { key: "caffeinateFlags", scoped: false, class: "local", reason: "last caffeinate display and closed-lid choice; caffeinate is machine-wide power state" },
   { key: "customThemeCache", scoped: false, class: "local", reason: "first-paint cache of a themes/ file; themeMode and the file itself are what sync" },
   { key: "editorFont", scoped: false, class: "sync" },
   { key: "editorFontSize", scoped: false, class: "sync" },
