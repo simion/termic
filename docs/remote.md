@@ -1,59 +1,100 @@
-# Servers: agents on a box you reach over SSH
+# Remote control: phones, other computers, servers
 
-**Status: reference, experimental.** This Termic driving agents on
-another machine, a Linux box, a cloud VM or a headless Mac, that keeps
-them running while the laptop sleeps or the network drops. The box runs
-`termic-server`, a small daemon ([termic-server/](../termic-server/)); the
-desktop reaches it with the user's own ssh. What is left before release,
-and what comes after (phones, Termic computers driving each other):
-`docs/plans/termic-server.md` and `docs/plans/remote-control.md`.
+**Status: reference, experimental.** A phone, another Termic, or this
+Termic itself driving agents on another machine, over one protocol: the
+stream. Pairing (how two Termics come to trust each other) is
+[peers.md](peers.md); what is left and what comes next is
+[plans/remote-control.md](plans/remote-control.md) and
+[plans/termic-server.md](plans/termic-server.md).
 
 ```
- Termic desktop ── ssh -T <box> termic-server bridge ──> termic-server (daemon on the box)
-                   (frames over the ssh session's stdio)     holds the agents' PTYs
+ phone app ──┐                                ┌── termic-server (a Linux box)
+             ├─ stream ─> Termic desktop ─ stream (ssh stdio) ─┘
+ other Termic┘  (WebSocket, sealed)     └─ stream (WebSocket) ─> other Termic
 ```
 
-- **Settings > Servers > Add a server**: a checklist that saves nothing
-  until it passes, and installs termic-server if it is missing.
-- **The server's tasks in the sidebar**, under its name; a task opens as
-  its terminal; **New task on <server>** starts one there.
-- **Agents** reach it with `termic --peer <server>` / MCP `peer_call`.
+- **A phone** pairs by scanning a QR code on the desktop and is a remote
+  control of it: tasks, transcript, answers, prompts, the live terminal.
+  It runs nothing. The phone app is not part of this repo.
+- **A paired computer's tasks** show in this Termic's sidebar under its
+  name; a task opens in the main area with its terminal drawn by the local
+  xterm.
+- **A server** (`ssh user@host`) runs `termic-server`, a small daemon that
+  holds agents so they keep working while the laptop sleeps. Its tasks
+  show in the sidebar like a paired computer's. Crate:
+  [termic-server/](../termic-server/).
+- **Agents** reach any of them with `termic --peer <name>` / MCP
+  `peer_call`, which now travel over the stream too.
 
-No network port on the box, no accounts, no relay: ssh is the only way in.
+No relay, no accounts: a phone reaches the desktop on the same network or
+over the user's own VPN (Tailscale).
 
 ## Code
 
-To run it on a real box and check it by hand: [remote-testing.md](remote-testing.md).
+To run it on real machines and check it by hand: [remote-testing.md](remote-testing.md).
+
 
 | Piece | Where |
 |---|---|
-| Messages, framing, the screen and transcript readers | `termic-remote/` (shared by the app and termic-server) |
-| The desktop as client: one link per server, calls, the terminal, server setup (probe, trust, install) | `src-tauri/src/remote_client.rs` |
-| `--peer <server>` | `src-tauri/src/peers.rs` `forward_to_server` (after no paired computer matched the name) |
+| Messages, session crypto, WebSocket and stdio framing, transcript and screen readers | `termic-remote/` (shared by the app and termic-server) |
+| The desktop as host: the `/stream` route, sessions, snapshots, terminal, answers | `src-tauri/src/remote_server.rs`, routed in `peers.rs` |
+| Phones and the QR pairing, live-connection registry, `--peer` over the stream | `src-tauri/src/peers.rs` |
+| The desktop as client: links to paired computers and servers, server setup (probe, trust, install) | `src-tauri/src/remote_client.rs` |
 | Desktop UI | `src/components/remote/*`, `src/components/settings/RemoteSection.tsx`, `src/lib/remote.ts` |
-| The daemon | `termic-server/` |
+| Headless host | `termic-server/` |
 
-## The wire
+## The stream
 
-One long-lived connection per server: `ssh -T <box> termic-server bridge`,
-u32 big-endian length-prefixed frames of JSON over the ssh session's
-stdio, not sealed again (ssh is the secure channel). The bridge copies
-bytes to the daemon's unix socket and parses nothing.
+One long-lived connection, client to host.
 
+- **Transport.** A WebSocket at `ws://<host>:<peer port>/termic-peer/v1/stream`
+  (React Native speaks it natively), or length-prefixed frames over the
+  stdio of `ssh -T <box> termic-server bridge`.
+- **Handshake** (WebSocket only; over ssh the channel is ssh's):
+
+  ```text
+  host   -> client  host salt (16 B, clear)
+  client -> host    client salt (16 B) || client id (16 B raw), clear
+  keys              HKDF-SHA256(ikm = pair key, salt = host salt || client salt,
+                                info = "termic-stream-v1|" dir "|" host id "|" client id)
+                    dir = c2s / s2c
+  frames            ChaCha20-Poly1305, nonce = 4 zero bytes || u64 counter per direction
+  client -> host    sealed hello   (opening it is the client's proof)
+  host   -> client  sealed welcome (opening it is the host's)
+  ```
+
+  Both sides add randomness, so a recorded connection replays nothing;
+  one key per direction, so nothing reflects; both ids in the keys; the
+  implicit counter makes a dropped, repeated or reordered frame fail the
+  next open, which ends the connection. Any failure closes with **4001**
+  and no detail.
 - **Messages** are JSON tagged by `t` (`termic-remote/src/wire.rs`, whose
   tests pin every shape). Client: `hello`, `call` (any termic-proto
-  Request), `term_open` / `term_input` / `term_close` / `resync`,
-  `term_size`, `keys`, `interrupt`, `transcript`, `ping`. Server:
-  `welcome`, `tasks`, `reply`, `term_reset` / `term_data` / `term_resize` /
-  `term_closed`, `ack`, `transcript`, `pong`, `error`.
-- **Versions.** Additive: unknown types and fields are ignored, and the
-  hello and welcome carry a version and capabilities (`tasks`, `call`,
-  `terminal`, `keys`, `transcript`, `resize`). A client uses only what the
-  welcome lists, so an older and a newer side work together.
+  Request, run through `dispatch_authenticated` like the CLI and MCP),
+  `term_open` / `term_input` / `term_close` / `resync`, `term_size` (to
+  a host offering `resize` only), `keys`,
+  `interrupt`, `transcript`, `ping`. Host: `welcome`, `tasks`, `reply`,
+  `term_reset` / `term_data` / `term_resize` / `term_closed`, `ack`,
+  `transcript`, `pong`, `error`.
+- **Versions.** Additive: unknown types and fields are ignored, the hello
+  and welcome carry a version and capabilities (`tasks`, `call`,
+  `terminal`, `keys`, `transcript`, and `resize` from a termic-server,
+  whose PTYs have no screen of their own so the viewing pane sizes
+  them), and fields added after v1 are
+  optional. A client uses only what the welcome lists.
+
+Three rules keep it cheap:
+
 - **Only what a client shows streams.** One terminal per connection; task
-  state is a snapshot, small. Past 1 MiB of terminal output queued for a
-  client, live output for it is dropped and it gets the PTY ring again
-  once its queue drains (behind means resync, never replay).
+  state is a snapshot, small. A client that does not ask for `tasks` in
+  its hello (a one-off `--peer` call) gets no snapshots and costs the host
+  no task list or git diffs.
+- **Behind means resync, never replay.** Past 1 MiB of terminal output
+  queued for a client, live output for it is dropped and it gets the PTY
+  ring again once its queue drains.
+- **No cost when nobody is connected.** Snapshots are driven by the
+  agent-state cache's own change signal while a client is connected;
+  diff stats are refreshed every 60 s and for a task whose state moved.
 
 ### What a task row carries
 
@@ -63,57 +104,154 @@ is_main_checkout`, plus `since_ms` (when the state last changed),
 waiting). The last two come from **reading the agent's screen**: the PTY
 ring replayed through a terminal emulator (`vt100`) at the PTY's size
 (`termic-remote/src/screen.rs`). A question is a numbered menu counting
-from 1, or a `❯` list with a confirm footer; anything else is not one.
-Pinned against the shapes Claude, Codex (0.154) and Antigravity (agy 1.5)
-draw: their command approvals and folder-trust prompts. A question on
-screen also makes the row `waiting`.
+from 1 (a permission prompt; or AskUserQuestion, whose options carry a
+description line each and may sit on both sides of a rule), or a `❯` list
+with a confirm footer; anything else is not one, and clients fall back to
+"look at the terminal". Pinned against the shapes Claude, Codex (0.154)
+and Antigravity (agy 1.5) draw: their command approvals and folder-trust
+prompts. The title is the dialog's question line (not a `Reason: ...?`
+field, and a question ending mid-line counts), and an option's trailing
+key hint (`(y)`, `(esc)`) is not part of its label. A question on screen
+also makes the row
+`waiting`, even when the state detector says idle (Claude at its folder
+trust prompt). Each option carries the keys
+that pick it (arrows from the highlighted option, then Enter).
 
-A row may also carry how a host's sidebar files the task (`group`,
-`project_group`, `pinned`, `project_order`, `order`, `pr`, tab `props`).
-All optional, and termic-server sends none: a server has no task groups
-or pins. The desktop lays rows out with `layoutRemote` (src/lib/remote.ts),
-which on a server's flat rows is the project list in its order.
+**Answers are bound to their question.** `keys` may carry the question's
+id; the host re-reads the screen and refuses (`ack` "stale") if that
+question is no longer there, so an answer never lands on whatever came
+next. `interrupt` lets the host pick the key per agent (Esc for claude and
+codex, Ctrl-C otherwise). The key never passes through the window's
+keyboard, so the host also emits `remote://interrupt` (by PTY) and the tab
+ends the turn as it would for a watched Escape
+(`src/lib/remoteInterrupt.ts`); without it a hooks agent stopped from a
+phone read "working" until its next prompt (docs/agent-hooks.md,
+"Interrupts").
 
-**Transcripts** come from each agent's own session log
-(`termic-remote/src/transcript.rs`): Claude's JSONL, Codex's rollout,
-Antigravity's SQLite. termic-server offers them (`transcript`); the
-desktop view does not show them (it shows the terminal).
+**Transcripts** (the phone's chat) come from each agent's own session
+log, read by `termic-remote/src/transcript.rs` into the same turns
+(prompt, reply, one line per tool call):
 
-## A server's tasks in the sidebar
+- Claude: its JSONL under `~/.claude/projects/<cwd as a dir name>/`.
+- Codex: its rollout under `~/.codex/sessions/YYYY/MM/DD/`. What Codex
+  adds to a prompt (`<environment_context>`, the AGENTS.md preamble) is
+  dropped; after 0.150 it no longer writes `user_message` events, so the
+  response items are read.
+- Antigravity: `~/.gemini/antigravity-cli/conversations/<id>.db`, SQLite
+  whose steps are protobuf with no published schema (field numbers in
+  the reader, read from agy 1.5). Its older `.pb` files are encrypted and
+  not read.
 
-This Termic keeps a link to every server, reconnecting with a 2 to 30 s
-backoff and pinging every 20 s (the server drops a client silent for
-75 s). Their tasks render below the local projects (`RemoteMachines.tsx`),
-from their own store slice: a remote update never re-renders a local row,
-and an unchanged machine list is never written.
+The file is the one named by the session id the task's tab recorded
+(agent_hooks.rs captures Codex's and agy's); without one, the newest
+session started in the task's folder, which a task sharing the project
+checkout cannot use, so it gets none. Account-relocated config dirs are
+not followed yet: the default home dirs are read.
 
-- **A task opens as its terminal** over the main area
-  (`RemoteTaskView.tsx`), focused, under one header that says where it
-  runs ("On <server>") and offers Archive. A server's PTYs have no screen,
-  so the server offers `resize`: the open terminal fills the pane and the
-  PTY follows it (debounced, 4x20 to 300x500), every watcher getting
-  `term_resize`. A server task has one tab, so there is no tab strip.
-- **The row menu is Rename** (inline, Enter saves, Esc cancels), the
-  server's own `rename` verb over `call`. Nothing else: termic-server has
-  no pins or task groups.
-- **Needs-you alerts.** When a snapshot shows a known task start waiting
-  (with its question as the body, when read) or go from working to done,
-  the desktop rings as for a local tab (`remoteAlerts`, then `notify`):
-  only with Desktop notifications on, never for the remote task open in a
-  focused window, once per task per 8 s. The first snapshot, a new task
-  and a reconnect say nothing. The store keeps the last 20
-  (`useRemote.alerts`).
-- **New task on <server>** (`NewRemoteTaskDialog.tsx`): pick one of the
-  server's projects, or add one by its path on the box; an agent the
-  server knows; a prompt.
+**The host owns the terminal size.** A client renders at the PTY's
+columns and rows and never resizes it; a resize on the desktop arrives as
+`term_resize`. The one exception is a host whose PTYs have no screen of
+their own (termic-server, which says so with `resize`): there the
+viewing pane sizes the PTY with `term_size` (see Servers). xterm's automatic answers to terminal queries are never
+forwarded from a viewer (the agent already has a terminal answering).
 
-`termic pin` (CLI protocol 26, MCP `task_pin`) is new with this work, for
-pinning a task by name from an agent or the CLI.
+## Pairing a phone
+
+Settings > Phones and servers > **Connect a phone** shows a QR code:
+
+```
+termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>&k=<256-bit key, base64url>
+```
+
+- One key, valid for 5 minutes and for **one** phone: the first that
+  connects with it is stored (`peers.json` `phones`, the key in hex, 0600
+  like pair keys) and the key is spent. "New code" replaces it; closing
+  the dialog withdraws it. The camera is the secure channel, so the phone
+  needs no code exchange.
+- `h` lists every address a phone might reach: private LAN first, then
+  Tailscale (100.64.0.0/10), then others. The phone tries them.
+- Opening the dialog turns sharing on (a phone has to reach the listener).
+- Every new phone raises a desktop notification ("A phone was paired:
+  ... Not you? Unpair it in Settings"): a photographed QR code is the
+  threat this makes visible.
+- A phone is a remote control of this desktop: Drive, minus the verbs no
+  paired machine gets (`quit`, `attach`, project add/remove, the peer
+  verbs).
+- **Unpairing a phone, unpairing a computer, or turning sharing off cuts
+  the live connection at once** (the session's socket is shut down), not
+  at its next request.
+
+## Paired computers in the sidebar
+
+While sharing is on, this Termic keeps a link (a stream with `tasks`) to
+every paired computer, reconnecting with a 2 to 30 s backoff and pinging
+every 20 s (the host drops a client silent for 75 s). Their tasks render
+below the local projects (`RemoteMachines.tsx`), from their own store
+slice: a remote update never re-renders a local row, and an unchanged
+machine list is never written. A remote task opens over the main area
+(`RemoteTaskView.tsx`) as its terminal, focused, under one header that
+says where it runs ("On <machine>") and offers Archive. Nothing else on
+purpose: the phone's question card, transcript and composer stand in
+for a keyboard, and a desktop has one, so here they would only repeat
+what the agent's own screen already shows. A Reply-only pair shows no
+tasks.
+
+**Filed like the host files them.** A row also carries how the host's
+own sidebar files and marks the task: its task group (`group`, named or
+after its lead task, with its accent KEY), its project's folder
+(`project_group`; folder colours live in the webview's localStorage, so
+the desktop pushes them to the host with `remote_set_folder_colors` on
+every change), `pinned`, the display order (`project_order`, `order`),
+the PR as last read (`pr`: number, state, title, url, provider; no live
+checks) and each tab's labels (`tabs[].props`, from `termic prop`). All
+optional: termic-server has none and sends none, and an older client
+ignores them. Clients lay them out the same way (`layoutRemote` in
+src/lib/remote.ts: folders at their first project, a group gathered at
+its first member), keep the host's order rather than re-sorting, and map
+the accent key to their own palette.
+
+**Every tab, not only the agent.** `tasks[].tabs` lists the task's whole
+strip as the host's webview reports it (`cliAgentState.ts`): each tab's
+`kind` (`agent`, `shell`, `terminal`, `run`) and whether a PTY is `live`
+(both absent from an older host, which sent agent tabs only: read as an
+agent, openable). The desktop's remote view shows a tab strip when there
+is more than one and opens the picked one with `term_open {task, tab}`;
+a tab that is not running cannot be picked. Only agent and run tabs can
+be opened from another machine: a plain shell or a custom terminal keeps
+no retained output and is not addressable by id (TerminalPane's `role`),
+on purpose, so the host marks it `viewable: false` and clients show it
+disabled ("Opens only on that computer"). A tab's strip is only known
+once that computer's window has loaded the task; before that a row has
+no tabs and clients open its default agent.
+
+**Acting on a remote task.** The row's context menu (only on a machine
+that is online and lets this one drive) renames it in place, pins or
+unpins it, moves it into another group in its project, founds a new
+group (the first accent no group in that project uses) or removes it
+from its group. Each is the host's own verb over `call`
+(`remoteTaskRequest`: `rename`, `pin`, `group --join/--color/--leave`),
+so the host applies it exactly as its sidebar would and the next
+`tasks` snapshot carries the result. A server's row offers Rename alone:
+termic-server has no pins or task groups. `pin` is a CLI verb for this
+(`termic pin [TASK] [--off]`, MCP `task_pin`, protocol v26).
+
+**Needs-you alerts.** When a snapshot shows a known task on an online
+machine start waiting (with its question as the body, when read) or go
+from working to done, the desktop rings as it does for a local tab
+(`remoteAlerts`, then `notify`): only with Desktop notifications on,
+never for the remote task open in a focused window, once per task per
+8 s. The first snapshot, a new task and a reconnect say nothing, so a
+machine coming online does not ring for everything already waiting.
+The store keeps the last 20 (`useRemote.alerts`).
+
+`--peer` calls use a fresh short stream connection each (as `/call`
+used to), with the same grant checks, signature rewriting, reply
+contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Servers > **Add a server** is a checklist; nothing is saved
-until it passes:
+Settings > Phones and servers > **Add a server** is a checklist; nothing
+is saved until it passes:
 
 1. **Reach** `ssh -T -o BatchMode=yes -- <dest> ...`: the user's own ssh,
    config and keys; Termic stores no credential and never prompts. Every
@@ -123,49 +261,55 @@ until it passes:
    CHANGED key is refused with no one-click fix, by design.
 2. **System** `uname -sm`.
 3. **Installed** `~/.termic/bin/termic-server version`, else **Install on
-   server**: the build for that system is piped through the same ssh into
-   a temp file, run once to verify, then renamed into place. No sudo,
-   nothing outside `~/.termic`, no internet on the box.
+   server**: the build for that system (a static musl build first) is
+   piped through the same ssh into a temp file, run once to verify, then
+   renamed into place. No sudo, nothing outside `~/.termic`, no internet on
+   the box.
 4. **Connect** and load tasks.
 
-Servers live in `<global data dir>/servers.json` (machine-wide). A
-destination starting with `-` or containing whitespace is refused, and
-`--` precedes it on every ssh command line.
+Servers live in `<global data dir>/servers.json` (machine-wide, like
+pairing). A destination starting with `-` or containing whitespace is
+refused, and `--` precedes it on every ssh command line.
 
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).
-It keeps tasks in `~/.termic-server/state.json`, listens only on a 0600
-unix socket in a 0700 directory, and starts agents through the user's
-login shell so their PATH matches an interactive login. Its session code
-takes any connected reader and writer (`session::serve_conn`), and its
-server id is 32 hex: both on purpose, so a phone can later pair with a
-server directly (docs/plans/remote-control.md).
-
-## Builds
-
-`scripts/build-termic-server.mjs` builds into
-`src-tauri/resources/termic-server/`, which `tauri.conf.json` bundles:
-static musl builds for Linux x86_64 and aarch64 (cargo-zigbuild), and
-macOS aarch64 and x86_64 (plain cargo, on a Mac). The release workflow's
-`server-bins` (Linux) and `server-bins-mac` jobs build them, every build
-job bundles all four, and `build-mac` signs the macOS ones with the
-Developer ID before bundling (notarization refuses an unsigned Mach-O in
-the bundle). A build installed over ssh keeps the linker's ad hoc
-signature, which is enough: a file copied over ssh carries no quarantine.
-Install looks in the bundle (and, in debug builds, in
-`TERMIC_SERVER_BIN_DIR`); a local build without builds still bundles the
-folder's README, and Install then says there is no build for that system.
+It answers the same messages, keeps tasks in `~/.termic-server/state.json`,
+listens only on a 0600 unix socket in a 0700 directory, and starts agents
+through the user's login shell so their PATH matches an interactive login.
+Its PTYs have no screen, so it offers `resize`: an open task's terminal
+fills the desktop pane and the PTY follows it (debounced, 4x20 to
+300x500), every watcher getting `term_resize`. A newer desktop talking
+to an older server sees no `resize` and draws at the server's 120x40.
+Its session takes any connected reader and writer
+(`session::serve_conn`) and its id is 32 hex, so a phone can later pair
+with a server directly (docs/plans/remote-control.md, step 3).
 
 ## Not done / known limits
 
-- Updating termic-server on a box, installing it from the box's own
-  shell, and uninstalling it: docs/plans/termic-server.md.
-- Windows: a Windows desktop adds servers with Windows' built-in OpenSSH;
-  servers themselves run Linux or macOS (`termic-server` is unix only).
-  Details in [windows.md](windows.md).
+- termic-server builds: `scripts/build-termic-server.mjs` builds static
+  musl binaries for Linux x86_64 and aarch64 (cargo-zigbuild) and, on a
+  Mac, macOS aarch64 and x86_64, into `src-tauri/resources/termic-server/`,
+  which `tauri.conf.json` bundles. The release workflow's `server-bins`
+  and `server-bins-mac` jobs build them, every build job bundles all four,
+  and `build-mac` signs the macOS ones with the Developer ID first
+  (notarization refuses an unsigned Mach-O in the bundle); one installed
+  over ssh keeps the linker's ad hoc signature, which is enough (no
+  quarantine on a file copied by ssh). Install looks in the bundle (and,
+  in debug builds, in `TERMIC_SERVER_BIN_DIR`). Updating termic-server on a
+  box: docs/plans/termic-server.md.
+- Windows: a Windows desktop is a host and a client like any other, using
+  Windows' built-in OpenSSH for servers; servers themselves run Linux or
+  macOS (`termic-server` is unix only). Details in
+  [windows.md](windows.md); compiled for Windows, not yet driven on one.
+- A phone reaches the desktop only; the desktop does not relay its
+  servers' or paired computers' tasks to the phone.
+- No push notifications (no server to hold the keys); the phone notices
+  changes while open.
 - Remote tasks have no file tree, editor or diff in the desktop view.
-- A server's agents have no `termic` CLI or MCP of their own, so they
-  cannot message the task that started them; an agent driving a server
-  waits (`task_wait`) and reads (`task_result`).
-- Test seams (debug builds only): `TERMIC_SERVER_BIN_DIR` (where Install
-  looks for builds) and `TERMIC_SSH_BIN` (the e2e suite's stand-in for
-  ssh, `e2e/fixtures/fake-ssh.sh`).
+- On the phone, the screen reader understands Claude's, Codex's and
+  Antigravity's prompts; other agents' fall back to Approve (Enter) /
+  Deny (Esc) with the terminal in view.
+- Test seams (debug builds only): `TERMIC_DEBUG_PHONE_PAIRING=<file>`
+  keeps a phone pairing on offer and writes its link there;
+  `TERMIC_SERVER_BIN_DIR` as above; `TERMIC_SSH_BIN`, the e2e suite's
+  stand-in for ssh (`e2e/fixtures/fake-ssh.sh`, a real termic-server on the
+  runner for the host `termic-e2e-local`).

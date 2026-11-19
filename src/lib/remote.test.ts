@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalReply, joinableGroups, layoutRemote, nameFromPrompt, remoteAlerts, remoteProps, remoteTaskRequest, type RemoteTask } from "@/lib/remote";
+import { addressKind, countdown, isTerminalReply, joinableGroups, layoutRemote, nameFromPrompt, remoteAlerts, remoteProps, remoteTaskRequest, type RemoteTask } from "@/lib/remote";
 
 describe("isTerminalReply", () => {
   it("drops xterm's automatic answers to terminal queries", () => {
@@ -11,6 +11,25 @@ describe("isTerminalReply", () => {
     for (const s of ["a", "\r", "\x1b", "\x1b[A", "\x1b[B", "\x03", "\x1b[200~pasted\x1b[201~", "hello"]) {
       expect(isTerminalReply(s)).toBe(false);
     }
+  });
+});
+
+describe("addressKind", () => {
+  it("labels LAN, Tailscale and everything else", () => {
+    expect(addressKind("192.168.1.20:23620")).toBe("lan");
+    expect(addressKind("10.0.0.5:23620")).toBe("lan");
+    expect(addressKind("172.20.1.1:23620")).toBe("lan");
+    expect(addressKind("100.101.102.103:23620")).toBe("tailscale");
+    expect(addressKind("100.200.1.1:23620")).toBe("other");
+    expect(addressKind("8.8.8.8:23620")).toBe("other");
+  });
+});
+
+describe("countdown", () => {
+  it("reads minutes and seconds, never negative", () => {
+    expect(countdown(292_000)).toBe("4:52");
+    expect(countdown(59_001)).toBe("1:00");
+    expect(countdown(-5)).toBe("0:00");
   });
 });
 

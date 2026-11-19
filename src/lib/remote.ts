@@ -1,5 +1,6 @@
-// Remote control, the desktop's half (docs/remote.md): the SSH servers
-// this computer is connected to, and their tasks.
+// Remote control, the desktop's half (docs/remote.md): phones paired with
+// this computer, other machines this computer is connected to (paired
+// computers and SSH servers), and their tasks.
 //
 // The Rust side (remote_client.rs) sends the machine list on
 // `remote://machines` only when it changed. The store below keeps it in
@@ -113,9 +114,27 @@ export type TermEvent =
   | { t: "term_resize"; cols: number; rows: number }
   | { t: "term_closed"; reason: string };
 
+/** Phones paired with this computer (peer_status.phones). */
+export interface PhoneView {
+  id: string;
+  name: string;
+  paired_at_ms: number;
+  last_seen_ms: number | null;
+  connected: boolean;
+}
+
+/** The QR code on offer (peer_status.phone_pairing). */
+export interface PhonePairingView {
+  link: string;
+  svg: string;
+  expires_at_ms: number;
+  addresses: string[];
+}
+
 // ───────────────────────── ipc ────────────────────────────────────────
 
 export const REMOTE_MACHINES_EVENT = "remote://machines";
+export const PHONE_PAIRED_EVENT = "peer://phone-paired";
 
 export const remoteMachines = () => invoke<MachineView[]>("remote_machines");
 /** Run a termic-proto Request on a machine. Resolves to its Reply. */
@@ -153,6 +172,11 @@ export const serverTrust = (ssh: string) => invoke<ServerProbe>("server_trust", 
 /** Upload termic-server over ssh; resolves to the installed version. */
 export const serverInstall = (ssh: string) => invoke<string>("server_install", { ssh });
 
+export const phonePairStart = () => invoke<PhonePairingView>("phone_pair_start");
+export const phonePairCancel = () => invoke<void>("phone_pair_cancel");
+export const phoneUnpair = (id: string) => invoke<void>("phone_unpair", { id });
+export const phoneRename = (id: string, name: string) => invoke<void>("phone_rename", { id, name });
+
 // ───────────────────────── helpers ────────────────────────────────────
 
 export function b64encode(s: string): string {
@@ -181,6 +205,21 @@ export function isTerminalReply(data: string): boolean {
     || /^\x1b\[[IO]$/.test(data)
     || /^\x1b\][\d;]+;[^\x07\x1b]*(\x07|\x1b\\)$/.test(data)
     || /^\x1bP[\s\S]*\x1b\\$/.test(data);
+}
+
+/** Which kind of network an address is on, for the reachability list. */
+export function addressKind(addr: string): "lan" | "tailscale" | "other" {
+  const ip = addr.replace(/:\d+$/, "");
+  const [a, b] = ip.split(".").map(Number);
+  if (a === 10 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || a === 127) return "lan";
+  if (a === 100 && b >= 64 && b < 128) return "tailscale";
+  return "other";
+}
+
+/** "4:52" */
+export function countdown(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 /** A task name from a prompt: its first words, as a branch-safe slug. */
@@ -261,11 +300,13 @@ export interface OpenRemote {
 
 interface RemoteStore {
   machines: MachineView[];
+  /** The Connect a phone dialog is up. */
+  phoneDialog: boolean;
   /** The Add a server dialog is up. */
   serverDialog: boolean;
   /** The machine whose New task dialog is up. */
   newTaskOn: string | null;
-  setDialog(d: Partial<Pick<RemoteStore, "serverDialog" | "newTaskOn">>): void;
+  setDialog(d: Partial<Pick<RemoteStore, "phoneDialog" | "serverDialog" | "newTaskOn">>): void;
   /** The remote task shown in the main area, or null. */
   open: OpenRemote | null;
   /** Machines whose sidebar section is folded. */
@@ -291,6 +332,7 @@ function loadFolds(): Record<string, boolean> {
 
 export const useRemote = create<RemoteStore>((set, get) => ({
   machines: [],
+  phoneDialog: false,
   serverDialog: false,
   newTaskOn: null,
   setDialog(d) { set(d); },
@@ -326,6 +368,13 @@ export function startRemote() {
   if (started) return;
   started = true;
   remoteMachines().then(l => useRemote.getState().setMachines(l)).catch(() => {});
+  // Project folder colours live in the webview (localStorage), so the
+  // rows this computer serves get them from here: once, then on change.
+  void import("@/store/app").then(({ useApp }) => {
+    const push = (colors: Record<string, string>) => { void invoke("remote_set_folder_colors", { colors }).catch(() => {}); };
+    push(useApp.getState().groupColors);
+    useApp.subscribe((s, prev) => { if (s.groupColors !== prev.groupColors) push(s.groupColors); });
+  });
   void listen<MachineView[]>(REMOTE_MACHINES_EVENT, e => useRemote.getState().setMachines(e.payload)).catch(() => {});
 }
 

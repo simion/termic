@@ -1,17 +1,76 @@
-// Remote control (docs/remote.md): Settings > Servers and a server's tasks
-// in the sidebar, end to end.
+// Remote control (docs/remote.md): Settings > Phones and servers, end to end
+// against the REAL stream listener. The phone is a fake in this process: it
+// speaks the stream with node:crypto (HKDF-SHA256, ChaCha20-Poly1305), so
+// every pairing here is also a cross-implementation check of termic-remote's
+// seal.rs.
 //
-// Two kinds of server. A LOCAL one runs everywhere, CI included: the host
-// termic-e2e-local, which wdio.conf.ts's stand-in for ssh
-// (e2e/fixtures/fake-ssh.sh) serves from a real termic-server built into
-// the debug target, under a scratch HOME. A REAL box is reached over the
-// user's own ssh when TERMIC_E2E_TEST_BOX names one (see below).
+// wdio.conf.ts sets TERMIC_PEER_LOOPBACK=1, so the listener binds 127.0.0.1
+// and the QR code carries that address.
+//
+// Servers come in two kinds here. A LOCAL one runs everywhere, CI
+// included: the host termic-e2e-local, which wdio.conf.ts's stand-in for
+// ssh (e2e/fixtures/fake-ssh.sh) serves from a real termic-server built
+// into the debug target. A REAL box is reached over the user's own ssh
+// when TERMIC_E2E_TEST_BOX names one.
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
-describe("Servers", () => {
+const nonce = (n: number) => { const b = Buffer.alloc(12); b.writeBigUInt64BE(BigInt(n), 4); return b; };
+const key = (pair: Buffer, salt: Buffer, dir: string, host: string, client: string) =>
+  Buffer.from(crypto.hkdfSync("sha256", pair, salt, Buffer.from(`termic-stream-v1|${dir}|${host}|${client}`), 32));
+function seal(k: Buffer, n: number, m: unknown) {
+  const c = crypto.createCipheriv("chacha20-poly1305", k, nonce(n), { authTagLength: 16 });
+  return Buffer.concat([c.update(Buffer.from(JSON.stringify(m))), c.final(), c.getAuthTag()]);
+}
+function open(k: Buffer, n: number, f: Buffer) {
+  const d = crypto.createDecipheriv("chacha20-poly1305", k, nonce(n), { authTagLength: 16 });
+  d.setAuthTag(f.subarray(f.length - 16));
+  return JSON.parse(Buffer.concat([d.update(f.subarray(0, f.length - 16)), d.final()]).toString());
+}
+
+function parseLink(link: string) {
+  const q = new URLSearchParams(link.slice(link.indexOf("?") + 1));
+  return { hosts: q.get("h")!.split(","), id: q.get("id")!, key: Buffer.from(q.get("k")!, "base64url") };
+}
+
+/** A fake phone connecting with a pairing link. Resolves once welcomed,
+ *  with a promise that settles when the app closes the connection. */
+function phone(link: string, id: string, name: string) {
+  const l = parseLink(link);
+  return new Promise<{ welcome: any; closed: Promise<number>; close(): void }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://${l.hosts[0]}/termic-peer/v1/stream`);
+    ws.binaryType = "arraybuffer";
+    let tx: Buffer | null = null, rx: Buffer | null = null, rn = 0, welcomed = false;
+    let onClose: (c: number) => void = () => {};
+    const closed = new Promise<number>(r => (onClose = r));
+    ws.onmessage = (ev) => {
+      const f = Buffer.from(ev.data as ArrayBuffer);
+      if (!tx) {
+        const salt = crypto.randomBytes(16);
+        const s = Buffer.concat([f, salt]);
+        tx = key(l.key, s, "c2s", l.id, id);
+        rx = key(l.key, s, "s2c", l.id, id);
+        ws.send(Buffer.concat([salt, Buffer.from(id, "hex")]));
+        ws.send(seal(tx, 0, { t: "hello", v: 1, name, kind: "phone", caps: [] }));
+        return;
+      }
+      const m = open(rx!, rn++, f);
+      if (!welcomed && m.t === "welcome") { welcomed = true; resolve({ welcome: m, closed, close: () => ws.close() }); }
+    };
+    ws.onclose = (ev) => { onClose(ev.code); if (!welcomed) reject(new Error(`closed ${ev.code}`)); };
+    ws.onerror = () => {};
+  });
+}
+
+const status = () => browser.execute(() => window.__termic!.invoke("peer_status")) as Promise<any>;
+
+describe("Phones and servers", () => {
+  const phoneId = crypto.randomBytes(16).toString("hex");
+  let link = "";
+
   before(async () => {
     await waitForAppShell();
     await requireTermicApi();
@@ -19,13 +78,79 @@ describe("Servers", () => {
   });
 
   after(async () => {
-    await browser.execute(() => window.__termic!.useApp.getState().closeSettings()).catch(() => {});
+    // Leave the profile as it was: no phones, sharing off, settings closed.
+    const s = await status().catch(() => null);
+    for (const p of s?.phones ?? []) {
+      await browser.execute((id) => window.__termic!.invoke("phone_unpair", { id }), p.id).catch(() => {});
+    }
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      await t.ipc.settingsSave({ ...s, lan_sharing_enabled: false });
+      t.useApp.getState().closeSettings();
+    }).catch(() => {});
   });
 
-  it("opens with no server", async () => {
+  it("opens with no phone and no server", async () => {
     await waitVisible('[data-testid="remote-section"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
     await snap("remote-settings-empty.png");
+  });
+
+  it("shows a QR code with a countdown, turning sharing on to do it", async () => {
+    await clickPresent('[data-testid="remote-connect-phone"]');
+    await waitVisible('[data-testid="phone-qr"]');
+    await waitVisible('[data-testid="phone-qr-countdown"]');
+    link = await browser.execute(() => document.querySelector('[data-testid="phone-qr"]')!.getAttribute("data-link") ?? "");
+    expect(link).toMatch(/^termic-remote:\/\/pair\?v=1&h=127%2E0%2E0%2E1%3A\d+&id=[0-9a-f]{32}&m=.+&k=[A-Za-z0-9_-]{43}$/);
+    const s = await status();
+    expect(s.enabled).toBe(true);
+    expect(s.phone_pairing).not.toBeNull();
+    // The page behind the dialog says so too (it read a stale copy once).
+    await waitForAttr('[data-testid="remote-sharing"]', "data-enabled", "true");
+    // And the switch DRAWS on: the attribute alone once said true while the
+    // knob sat at off.
+    await browser.waitUntil(async () => (await browser.execute(() => {
+      const b = document.querySelector('[data-testid="remote-sharing"] [role="switch"]') as HTMLElement;
+      return b.getAttribute("aria-checked") === "true" && getComputedStyle(b.firstElementChild!).left === "18px";
+    })), { timeout: 3000, timeoutMsg: "the sharing switch is not drawn on" });
+    await snap("remote-qr.png");
+  });
+
+  it("pairs the phone that scans it, and says so", async () => {
+    const p = await phone(link, phoneId, "Test iPhone");
+    expect(p.welcome.kind).toBe("desktop");
+    expect(p.welcome.grant).toBe("drive");
+    await waitVisible('[data-testid="phone-paired"]');
+    await setInputValue('[data-testid="phone-paired-name"]', "My iPhone");
+    await snap("remote-phone-paired.png");
+    await clickPresent('[data-testid="phone-paired-done"]');
+    await waitGone('[data-testid="phone-paired"]');
+    await waitForAttr(`[data-testid="phone-row-${phoneId}"]`, "data-connected", "true");
+    const s = await status();
+    expect(s.phones.map((x: any) => x.name)).toEqual(["My iPhone"]);
+    expect(s.phone_pairing).toBeNull();
+    await snap("remote-phone-listed.png");
+    p.close();
+    await waitForAttr(`[data-testid="phone-row-${phoneId}"]`, "data-connected", "false");
+  });
+
+  it("lets no second phone in with a code already used", async () => {
+    await expect(phone(link, crypto.randomBytes(16).toString("hex"), "Intruder")).rejects.toThrow("closed 4001");
+    expect((await status()).phones.length).toBe(1);
+  });
+
+  it("unpairs a phone after a confirmation, cutting its live connection", async () => {
+    const p = await phone(link, phoneId, "My iPhone");
+    await waitForAttr(`[data-testid="phone-row-${phoneId}"]`, "data-connected", "true");
+    await clickPresent(`[data-testid="phone-unpair-${phoneId}"]`);
+    await clickPresent('[data-testid="confirm-ok"]');
+    // The app shut the socket: the phone sees the close, not a timeout.
+    const code = await Promise.race([p.closed, new Promise<number>(r => setTimeout(() => r(-1), 10_000))]);
+    expect(code).not.toBe(-1);
+    await waitGone(`[data-testid="phone-row-${phoneId}"]`);
+    await expect(phone(link, phoneId, "My iPhone")).rejects.toThrow("closed 4001");
   });
 
   it("checks a server before saving it, and explains a failure in one sentence", async () => {
@@ -187,7 +312,6 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     expect(err).toContain("after `ssh`");
   });
 });
-
 
 // A real termic-server on this machine, behind the ssh stand-in. Not on
 // Windows, where termic-server does not run (and wdio.conf.ts sets no

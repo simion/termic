@@ -79,6 +79,7 @@ import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
+import { clearRemoteInterrupt, remoteInterruptAt } from "@/lib/remoteInterrupt";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
@@ -1895,6 +1896,7 @@ const captureArmedRef = useRef(false);
       cancelSettle(reason);
       localBusy = false;
       escAtRef.current = 0;
+      clearRemoteInterrupt(ptyRef.current);
       wdlog(`→ interrupted (${reason})`);
       interruptWork(reason);
     };
@@ -2146,8 +2148,10 @@ const captureArmedRef = useRef(false);
         // to stop the spinner, not to notify. The cost of being wrong the
         // other way is a tab that reads "working" until the next prompt, which
         // is the direction to fail in.
-        const interrupted = Date.now() - escAtRef.current < ESC_INTERRUPT_WINDOW_MS
-          && isUserWatching(task.id, tab.id);
+        // A Stop from a phone counts as a watched Escape (lib/remoteInterrupt).
+        const interrupted = (Date.now() - escAtRef.current < ESC_INTERRUPT_WINDOW_MS
+          && isUserWatching(task.id, tab.id))
+          || Date.now() - remoteInterruptAt(ptyRef.current) < ESC_INTERRUPT_WINDOW_MS;
         if (hooksOwnStateRef.current && hookSeenRef.current) {
           if (interrupted) goInterrupted("title idle after interrupt");
           else wdlog("title idle ignored (hooks own done for this agent)");
@@ -3878,15 +3882,18 @@ const captureArmedRef = useRef(false);
       // corroborated by the terminal going quiet, and it calls
       // `interruptWork` rather than `fireDone`: an interrupt is not a
       // completion, so it earns no badge and spends no done token.
+      const remoteAt = remoteInterruptAt(ptyRef.current);
       const interruptPending = hooksOwn
-        && escAtRef.current > 0
-        && Date.now() - escAtRef.current < INTERRUPT_QUIET_GRACE_MS
-        && isUserWatching(task.id, tab.id);
+        && ((escAtRef.current > 0
+          && Date.now() - escAtRef.current < INTERRUPT_QUIET_GRACE_MS
+          && isUserWatching(task.id, tab.id))
+          || (remoteAt > 0 && Date.now() - remoteAt < INTERRUPT_QUIET_GRACE_MS));
       if (interruptPending
           && cur && cur.type === "terminal" && cur.workState === "working"
           && lastDataAtRef.current > 0
           && Date.now() - lastDataAtRef.current >= QUIET_MS) {
         escAtRef.current = 0;
+        clearRemoteInterrupt(ptyRef.current);
         interruptWork(`interrupt then quiet (quietMs=${Date.now() - lastDataAtRef.current})`);
         return;
       }

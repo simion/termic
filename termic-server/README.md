@@ -14,7 +14,7 @@ bytes to the daemon's unix socket.
 
 ## Install
 
-The desktop's Settings > Servers > Add a server installs it for you (the
+The desktop's Settings > Remote > Add a server installs it for you (the
 build for the box's system, bundled in the app, piped over the same ssh).
 By hand, copy the build to the box and make it executable. No root,
 nothing outside your home directory:

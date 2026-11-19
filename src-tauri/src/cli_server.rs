@@ -692,6 +692,15 @@ pub(crate) trait CliHost: Send + Sync {
     fn pty_subscribe(&self, pty_id: &str) -> Result<crate::PtyAttachment, String>;
     /// Type bytes into a PTY (the attach `in` path).
     fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String>;
+    /// A remote client (phone, other computer) interrupted this PTY. Its
+    /// key bypassed the window's keyboard, so the window is told, and ends
+    /// the turn as it would for a watched Escape (lib/remoteInterrupt.ts).
+    fn note_remote_interrupt(&self, _task_id: &str, _pty_id: &str) {}
+    /// A PTY's current size as (rows, cols): what a remote terminal view
+    /// draws at (the host owns the size; docs/remote.md). None when gone.
+    fn pty_size(&self, _pty_id: &str) -> Option<(u16, u16)> {
+        None
+    }
     /// Resize a PTY (the attach `resize` path, opt-in client-side).
     fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String>;
     /// Tell live attach sessions on this task why they are ending,
@@ -2620,33 +2629,24 @@ fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-fn handle_result(
-    id: &str,
-    host: &dyn CliHost,
-    task: Option<&str>,
-    project: Option<&str>,
-    cwd: Option<&str>,
-) -> Reply {
-    let (projects, tasks) = host.projects_tasks();
-    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
-        Ok(t) => t.clone(),
-        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
-    };
+/// The claude session transcript of `t`, or why there is none. Shared by
+/// `result` (the last message) and the remote transcript (every turn).
+fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto::ErrorBody> {
+    let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
     // Transcript layout is agent-specific; claude's JSONL is the one
     // reader shipped (docs/plans/cli.md: the RESULT.md file drop stays
     // the agent-agnostic floor).
     if t.cli != "claude" {
-        return Reply::err(
-            id,
+        return Err(err(
             ErrorCode::Unsupported,
             format!(
                 "result reads claude session transcripts and this task's agent is \"{}\". Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.",
                 t.cli
             ),
-        );
+        ));
     }
     let Some(home) = host.home_dir() else {
-        return Reply::err(id, ErrorCode::Internal, "no home directory");
+        return Err(err(ErrorCode::Internal, "no home directory".into()));
     };
     let dir = home.join(".claude").join("projects").join(claude_project_dir_name(&t.path));
     // A stored per-tab session id pins the transcript (repo-root tasks);
@@ -2665,18 +2665,53 @@ fn handle_result(
     // happily serve someone else's conversation as this task's result.
     // Worktree cwds are exclusive to the task, so newest is safe there.
     if pinned.is_none() && t.is_main_checkout {
-        return Reply::err(
-            id,
+        return Err(err(
             ErrorCode::Unsupported,
-            "this task shares the project checkout, so its transcript cannot be identified. Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.",
-        );
+            "this task shares the project checkout, so its transcript cannot be identified. Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.".into(),
+        ));
     }
-    let Some(file) = pinned.or_else(|| newest_jsonl(&dir)) else {
-        return Reply::err(
-            id,
-            ErrorCode::NotFound,
-            "no claude session transcript found for this task (has the agent replied yet?)",
-        );
+    pinned.or_else(|| newest_jsonl(&dir)).ok_or_else(|| {
+        err(ErrorCode::NotFound, "no claude session transcript found for this task (has the agent replied yet?)".into())
+    })
+}
+
+pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String, Vec<termic_remote::wire::Turn>), String> {
+    let (projects, tasks) = host.projects_tasks();
+    let t = resolve_by_name(&projects, &tasks, task, None).map_err(|e| e.message)?.clone();
+    if matches!(t.cli.as_str(), "codex" | "agy" | "antigravity") {
+        let home = host.home_dir().ok_or("no home directory")?;
+        // The id the agent reported for the task's tab (agent_hooks.rs):
+        // Codex's session, agy's conversation.
+        let sid = t.persisted_tabs.iter().filter(|p| p.cli == t.cli).max_by_key(|p| p.is_default).and_then(|p| p.session_id.clone());
+        // Without it, the folder decides, and a shared checkout's folder
+        // is also the user's own sessions' and any sibling task's.
+        if sid.is_none() && t.is_main_checkout {
+            return Err("this task shares the project checkout, so its conversation cannot be told apart from others there".into());
+        }
+        let turns = termic_remote::transcript::other_agent(&t.cli, &home, &t.path, sid.as_deref())?;
+        return Ok((t.id, turns));
+    }
+    let file = claude_transcript_file(host, &t).map_err(|e| e.message)?;
+    let jsonl = std::fs::read_to_string(&file).map_err(|e| format!("could not read the transcript ({e})"))?;
+    Ok((t.id, termic_remote::transcript::parse_claude_jsonl(&jsonl)))
+}
+
+
+fn handle_result(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let file = match claude_transcript_file(host, &t) {
+        Ok(f) => f,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
     let jsonl = match std::fs::read_to_string(&file) {
         Ok(s) => s,
@@ -4611,6 +4646,12 @@ impl CliHost for TauriHost {
     fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String> {
         crate::pty_write_inner(&self.app.state::<crate::PtyManager>(), pty_id, data)
     }
+    fn note_remote_interrupt(&self, task_id: &str, pty_id: &str) {
+        crate::emit_scoped_by_id(&self.app, task_id, "remote://interrupt", serde_json::json!({ "pty": pty_id }));
+    }
+    fn pty_size(&self, pty_id: &str) -> Option<(u16, u16)> {
+        crate::pty_size_inner(&self.app.state::<crate::PtyManager>(), pty_id)
+    }
     fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String> {
         crate::pty_resize_inner(&self.app.state::<crate::PtyManager>(), pty_id, rows, cols)
     }
@@ -6386,6 +6427,8 @@ pub(crate) mod test_support {
         pub(crate) pty_rings: Mutex<HashMap<String, (Vec<u8>, bool)>>,
         /// Bytes the attach path typed into PTYs.
         pub(crate) pty_inputs: Mutex<Vec<(String, Vec<u8>)>>,
+        /// (task, pty) for each remote interrupt the window was told about.
+        pub(crate) remote_interrupts: Mutex<Vec<(String, String)>>,
         /// Live attach tap senders per pty id, so tests can drive (and
         /// end) an attach session.
         pub(crate) taps: Mutex<HashMap<String, Vec<std::sync::mpsc::SyncSender<crate::PtyTapMsg>>>>,
@@ -6436,6 +6479,7 @@ pub(crate) mod test_support {
                 tab_ptys: Mutex::new(HashMap::new()),
                 pty_rings: Mutex::new(HashMap::new()),
                 pty_inputs: Mutex::new(Vec::new()),
+                remote_interrupts: Mutex::new(Vec::new()),
                 taps: Mutex::new(HashMap::new()),
                 resizes: Mutex::new(Vec::new()),
                 home: None,
@@ -6634,9 +6678,15 @@ pub(crate) mod test_support {
                 tx,
             })
         }
+        fn pty_size(&self, pty_id: &str) -> Option<(u16, u16)> {
+            self.pty_rings.lock().unwrap().contains_key(pty_id).then_some((24, 80))
+        }
         fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String> {
             self.pty_inputs.lock().unwrap().push((pty_id.to_string(), data.to_vec()));
             Ok(())
+        }
+        fn note_remote_interrupt(&self, task_id: &str, pty_id: &str) {
+            self.remote_interrupts.lock().unwrap().push((task_id.to_string(), pty_id.to_string()));
         }
         fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String> {
             self.resizes.lock().unwrap().push((pty_id.to_string(), rows, cols));
@@ -12018,6 +12068,42 @@ mod tests {
         let host = StubHost { home: Some(home.path().to_path_buf()), ..Default::default() };
         let err = handle(&req(cmd(), Some("tok")), &host).error.expect("error");
         assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    /// A remote client's chat for a Codex task: the rollout named by the
+    /// session id its tab recorded, read into turns. A shared checkout
+    /// without that id is refused rather than guessed at.
+    #[test]
+    fn a_codex_tasks_transcript_is_its_recorded_session() {
+        let home = tempfile::tempdir().unwrap();
+        let mut host = StubHost { home: Some(home.path().to_path_buf()), ..Default::default() };
+        host.tasks[2].cli = "codex".into();
+        host.tasks[2].persisted_tabs = vec![crate::PersistedTab {
+            id: "tab1".into(),
+            cli: "codex".into(),
+            is_default: true,
+            session_id: Some("019a0000-0000-7000-8000-000000000001".into()),
+            ..Default::default()
+        }];
+        let day = home.path().join(".codex/sessions/2026/01/02");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-01-02T09-00-00-019a0000-0000-7000-8000-000000000001.jsonl"),
+            concat!(
+                r#"{"type":"session_meta","payload":{"cwd":"/tasks/web/solo"}}"#, "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix it"}]}}"#, "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixed"}]}}"#,
+            ),
+        )
+        .unwrap();
+        let (id, turns) = transcript_turns(&host, "solo").unwrap();
+        assert_eq!(id, host.tasks[2].id);
+        assert_eq!(turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["fix it", "fixed"]);
+        // The same task on the shared checkout, with no recorded id.
+        host.tasks[2].persisted_tabs.clear();
+        host.tasks[2].is_main_checkout = true;
+        let err = transcript_turns(&host, "solo").unwrap_err();
+        assert!(err.contains("shares the project checkout"), "{err}");
     }
 
     // ── attach ───────────────────────────────────────────────────────

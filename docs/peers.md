@@ -8,11 +8,10 @@ It replaces the manual setup of binding the MCP endpoint to `0.0.0.0` and
 copying the one master token across, which never rotated and could do
 everything.
 
-**Where this is going** (not decided): pairing becoming a live stream
-that a phone app (#165) and other computers use to drive this one, and
-later headless boxes (#82). That design is
-[ideas/remote-control.md](ideas/remote-control.md). Everything below is
-what ships today.
+**The stream.** Calls between paired computers, phones, other Termics'
+sidebars and SSH servers all travel over one sealed connection, the
+stream: [remote.md](remote.md). This page covers discovery, pairing two
+computers, the credential and the grants.
 
 **Off by default.** Nothing listens, nothing is advertised, until the
 user turns on Settings > Agent access > Other computers > "Share on this
@@ -29,7 +28,7 @@ tested), `src-tauri/src/mdns.rs` (discovery). UI:
 ## The shape
 
 ```
- Mac agent --termic --peer laptop new ...--> Mac Termic ==sealed HTTP==> Laptop Termic --> dispatch --> task
+ Mac agent --termic --peer laptop new ...--> Mac Termic ==sealed stream==> Laptop Termic --> dispatch --> task
               (local socket or MCP)           (holds the pair key)  LAN   (checks the grant)
  Laptop agent --termic --peer mac send <id>--> Laptop Termic ==sealed==> Mac Termic --> agent's inbox
 ```
@@ -82,7 +81,7 @@ re-read per request, so a switch-off also refuses connections racing the
 unbind.
 
 HTTP/1.1, one request per connection, everything under
-`/termic-peer/v1`:
+`/termic-peer/v1`, plus one WebSocket route for the stream:
 
 | Method + path | Auth | What |
 |---|---|---|
@@ -90,7 +89,7 @@ HTTP/1.1, one request per connection, everything under
 | `POST /pair/request` | none, rate-limited per address | opens pairing mode here, naming the asker |
 | `POST /pair/start` | none, and only in pairing mode | step 1 of pairing (below) |
 | `POST /pair/confirm` | sealed with the new key | step 2 |
-| `POST /call` | sealed | run one verb |
+| `GET /stream` (WebSocket upgrade) | sealed handshake | the stream: verbs, task snapshots, terminals ([remote.md](remote.md)) |
 | `POST /unpair` | sealed | forget the sender |
 
 Pre-auth caps match the MCP endpoint: 16 KB head, 4 MB body grown from
@@ -98,7 +97,11 @@ bytes that arrive (never from the declared length), chunked encoding
 refused, 10 s read and 30 s write timeouts, 32 connections at once. Any
 request carrying an `Origin` header is refused with 403 before routing,
 so a web page on any machine of the network cannot so much as open a
-pairing dialog, and no response carries a CORS header.
+pairing dialog, and no response carries a CORS header. The one exception
+is `/stream`: a phone's WebSocket sends an Origin of its own, and nothing
+on that route is reachable without completing the sealed handshake, which
+needs a pair key. A stream connection is long-lived (idle timeout 75 s,
+clients ping) and counts toward the 32.
 
 ## Pairing
 
@@ -203,7 +206,10 @@ required), so this needed no protocol bump.
   never truncates it. Never in any environment, never sent to the
   webview, never shown. An unreadable file is moved aside to
   `peers.json.unreadable` rather than overwritten.
-- Every call is sealed with ChaCha20-Poly1305 under a key per DIRECTION,
+- Calls travel over the stream, which derives fresh keys per connection
+  from the pair key ([remote.md](remote.md), "The stream"). The sealed
+  envelope below still carries pairing's confirm and `unpair`.
+- Every envelope is sealed with ChaCha20-Poly1305 under a key per DIRECTION,
   `HKDF(pair key, "termic-dir-v1", sender "->" receiver)`, so a message
   cannot be reflected back at its sender. 96-bit random nonce. The AAD is
   `termic-peer-v1|<path>|<sender>|<receiver>`, so a sealed body moved to
@@ -264,18 +270,15 @@ keeps a dead key that opens nothing here; its next call gets 401, it
 marks the pair `revoked_by_peer`, and Settings tells that person "No
 longer paired on the other computer. Unpair here too."
 
-Every call is stamped with the sender's clock and refused outside 5
-minutes of the receiver's. Pairing has no such check, so two machines
-whose clocks disagree (a Windows laptop with a wrong time zone, say)
-would pair fine and then have every call refused. So pairing checks it
-too: the confirm is stamped, and a machine showing the code refuses one
-outside the window with a sealed 409 carrying its clock, stores nothing,
-and closes pairing mode; the typing side says "<machine>'s clock is 7 h
-57 min ahead of this machine's" and pairs nothing. A paired sender with a stale
-stamp gets a sealed 409 carrying the receiver's clock, not the bare 401,
-so the caller reports "<machine>'s clock is 7 h 57 min ahead of this
-machine's" and does not mark the pair revoked. Older versions answer it
-with the 401.
+Sealed envelopes (pairing's confirm, `unpair`) are stamped with the
+sender's clock and refused outside 5 minutes of the receiver's. Calls are
+not: they ride the stream, whose per-connection salts stop a replay
+without a clock. Pairing still checks it, so two machines whose clocks
+disagree (a Windows laptop with a wrong time zone, say) are told at
+pairing time: a machine showing the code refuses a confirm outside the
+window with a sealed 409 carrying its clock, stores nothing, and closes
+pairing mode; the typing side says "<machine>'s clock is 7 h 57 min
+ahead of this machine's" and pairs nothing.
 
 Renaming is local: it sets this machine's name for the peer, the other
 machine is not told, and either name or the id (a prefix of 6+
@@ -461,12 +464,11 @@ off.
 
 ## Not done / known limits
 
-- Agents on one machine drive the other; a person cannot. A task made
-  on a pair shows in that machine's window only, its terminal cannot be
-  watched or typed into from here, and `attach` is refused. What comes
-  back is text (`task_log`, `task_result`). One request per connection
-  cannot carry a terminal stream.
-- Both ends run the full app. A headless server cannot be a pair.
+- `attach` across machines is still refused for agents; a PERSON watches
+  and types into a paired computer's tasks from the sidebar instead
+  ([remote.md](remote.md)).
+- A headless box is not a pair: it is a server, reached over ssh
+  ([remote.md](remote.md), "Servers").
 - IPv4 only, for discovery and the listener.
 - No TLS, by design (above).
 - The pairing protocol and every call path are covered by Rust tests

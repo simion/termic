@@ -56,6 +56,7 @@ mod mdns;
 mod peer_crypto;
 mod peers;
 mod remote_client;
+mod remote_server;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
 pub mod customizations;
@@ -4094,6 +4095,14 @@ pub(crate) fn pty_write_inner(manager: &PtyManager, pty_id: &str, data: &[u8]) -
     w.flush().map_err(|e| e.to_string())?;
     caffeinate::input(pty_id, data);
     Ok(())
+}
+
+/// A PTY's size as (rows, cols), for a remote terminal view that must
+/// draw at the desktop's size (remote_server.rs). None for a dead id.
+pub(crate) fn pty_size_inner(manager: &PtyManager, pty_id: &str) -> Option<(u16, u16)> {
+    let map = manager.inner.lock();
+    let size = map.get(pty_id)?.master.get_size().ok()?;
+    Some((size.rows, size.cols))
 }
 
 /// Resize a PTY by id; same sharing rationale as `pty_write_inner`.
@@ -28808,11 +28817,16 @@ pub fn run() {
             peers::peer_set_note,
             peers::peer_unpair,
             peers::peer_refresh,
+            peers::phone_pair_start,
+            peers::phone_pair_cancel,
+            peers::phone_unpair,
+            peers::phone_rename,
             remote_client::remote_machines,
             remote_client::remote_call,
             remote_client::remote_term_open,
             remote_client::remote_term_close,
             remote_client::remote_term_input,
+            remote_client::remote_set_folder_colors,
             remote_client::remote_term_size,
             remote_client::remote_reconnect,
             remote_client::server_add,
