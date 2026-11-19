@@ -38,19 +38,42 @@ describe("terminal Shift+Enter", () => {
   for (const base of ["opencode", "claude"]) {
     describe(`${base}-derived agent`, () => {
       let taskId: string;
-      before(async () => {
-        taskId = await openTask(`e2e-terminal-newline-${base}`, true, `e2e-newline-${base}`);
-        await waitForAgentReady(taskId);
-      });
-
       const state = () => browser.execute(id => {
         const title = window.__termic!.useApp.getState().tabs[id]?.[0]?.liveTitle ?? "";
         return title.startsWith("newline:") ? JSON.parse(title.slice(8)) : null;
       }, taskId) as Promise<InputState | null>;
 
+      before(async () => {
+        taskId = await openTask(`e2e-terminal-newline-${base}`, true, `e2e-newline-${base}`);
+        await waitForAgentReady(taskId);
+        // any PTY byte satisfies waitForAgentReady; the fixture's own first
+        // title is its ready signal, so the cases start from a known state.
+        await browser.waitUntil(async () => (await state()) !== null,
+          { timeout: 20_000, timeoutMsg: "the newline fixture never reported its first state" });
+      });
+
       it("inserts a newline without submitting or losing the draft", async () => {
         await typeIntoAgent(taskId, "first");
-        await browser.waitUntil(async () => (await state())?.draft === "first");
+        await browser.waitUntil(async () => (await state())?.draft === "first", {
+          timeout: 15_000,
+          // Lost once on macOS CI with the fixture alive and bytes:[]; typing
+          // before node is up does not lose input locally. `composing` says
+          // whether xterm's onData saw the text, which splits "never left the
+          // webview" from "lost between ptyWrite and the fixture".
+          timeoutMsg: "the fixture never saw the typed draft",
+        }).catch(async (e: Error) => {
+          const where = await browser.execute(id => {
+            const tab = window.__termic!.useApp.getState().tabs[id]?.[0];
+            const tas = [...document.querySelectorAll(`[data-task-id="${id}"] .xterm-helper-textarea`)];
+            return {
+              composing: tab?.composing ?? null, ptyId: tab?.ptyId ?? null, title: tab?.liveTitle ?? null,
+              terminals: tas.length, focusedIsTerminal: tas.includes(document.activeElement!),
+              focusedTab: document.activeElement?.closest("[data-tab-id]")?.getAttribute("data-tab-id") ?? null,
+              agentTab: tab?.id ?? null,
+            };
+          }, taskId);
+          throw new Error(`${e.message}: ${JSON.stringify(where)}`);
+        });
 
         const prevented = await browser.execute(id => {
           const ta = document.querySelector<HTMLTextAreaElement>(
