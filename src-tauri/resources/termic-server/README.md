@@ -3,7 +3,7 @@
 `scripts/build-termic-server.mjs` puts the `termic-server` builds here
 (`termic-server-<target triple>`: Linux musl x86_64 and aarch64, macOS
 aarch64 and x86_64), and the release workflow fetches them before `tauri
-build`, which bundles this folder. Settings > Servers > Add a server
+build`, which bundles this folder. Settings > Remote > Add a server
 installs the one matching the server (`remote_client::find_binary`).
 
 The builds are not committed. This file keeps the folder, so a local build

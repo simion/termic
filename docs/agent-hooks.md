@@ -1007,6 +1007,13 @@ title going idle (3s) or the terminal falling quiet (15s), and only while the
 user is watching. It calls `interruptWork`, not `fireDone`: an interrupt is not
 a completion, so it earns no badge and spends no done token.
 
+A Stop from a phone or another computer (docs/remote.md) writes the key
+straight to the PTY, so the window never sees it and nobody is watching.
+The host emits `remote://interrupt` for that PTY instead, and it licenses
+both corroborations exactly like a watched Escape
+(`src/lib/remoteInterrupt.ts`). Without it the agent stopped and the task
+kept reading "working" on every screen until its next prompt.
+
 ## Config shapes, and the grok guard
 
 Three shapes: claude-compatible JSON (claude, grok), Antigravity's named-block

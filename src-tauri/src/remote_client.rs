@@ -1,10 +1,15 @@
-//! THIS Termic connected to servers (docs/remote.md): headless boxes in
-//! `servers.json`, reached as `ssh -T <host> termic-server bridge` with the
-//! system's ssh and the user's own config and keys (Termic stores no
-//! credential). The box's `termic-server` daemon holds the agents, so they
-//! keep running while this laptop sleeps. It speaks the remote-control
-//! messages (termic-remote), which the sidebar, the remote task view and
-//! `--peer <server>` use.
+//! The client side of the remote-control stream (docs/remote.md): THIS
+//! Termic connected to other machines.
+//!
+//! - **Paired computers** (peers.rs): a WebSocket to their peer listener,
+//!   sealed with the pair key. Their tasks show in the sidebar.
+//! - **Servers** (`servers.json`): `ssh -T <host> termic-server bridge`,
+//!   the system's ssh with the user's own config and keys; Termic stores
+//!   no credential. A headless box whose `termic-server` daemon holds the
+//!   agents, so they keep running while this laptop sleeps.
+//!
+//! Both speak the same messages (termic-remote), so the sidebar, the
+//! remote task view and `--peer` treat them alike.
 //!
 //! One supervised **link** per machine keeps a connection up while the
 //! machine is configured: reconnecting with a capped backoff, pinging so
@@ -14,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcCommand, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,14 +28,16 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use termic_remote::conn::{MsgReader, MsgWriter};
+use termic_remote::conn::{self, MsgReader, MsgWriter};
 use termic_remote::framed::{FramedReader, FramedWriter};
 use termic_remote::wire::{self, ClientKind, ClientMsg, ServerMsg, TaskRow};
+use termic_remote::ws;
 
 use crate::dlog;
 
 /// Ping cadence: well inside the host's 75 s idle timeout.
 const PING_EVERY: Duration = Duration::from_secs(20);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// Reconnect backoff, doubling from the first to the cap.
 const BACKOFF_FIRST: Duration = Duration::from_secs(2);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -46,6 +54,7 @@ pub(crate) const SERVER_BIN: &str = "~/.termic/bin/termic-server";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MachineKind {
+    Computer,
     Server,
 }
 
@@ -117,6 +126,7 @@ fn bridge_command(rec: &ServerRecord) -> String {
 
 #[derive(Clone)]
 enum Endpoint {
+    Peer { id: String },
     Server(ServerRecord),
 }
 
@@ -148,6 +158,8 @@ struct Link {
     wake: (Mutex<bool>, Condvar),
     /// The running connection's ssh child, killed on stop.
     child: Mutex<Option<Child>>,
+    /// The running connection's socket, shut down on stop.
+    sock: Mutex<Option<TcpStream>>,
 }
 
 fn next_id() -> String {
@@ -158,8 +170,10 @@ fn next_id() -> String {
 impl Link {
     fn view(&self) -> MachineView {
         let st = self.st.lock().unwrap();
-        let Endpoint::Server(rec) = &*self.endpoint.lock().unwrap();
-        let ssh = Some(rec.ssh.clone());
+        let ssh = match &*self.endpoint.lock().unwrap() {
+            Endpoint::Server(r) => Some(r.ssh.clone()),
+            Endpoint::Peer { .. } => None,
+        };
         MachineView {
             id: self.id.clone(),
             kind: self.kind,
@@ -230,6 +244,9 @@ impl Link {
         self.stop.store(true, Ordering::SeqCst);
         *self.wake.0.lock().unwrap() = true;
         self.wake.1.notify_all();
+        if let Some(s) = self.sock.lock().unwrap().take() {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
         if let Some(mut c) = self.child.lock().unwrap().take() {
             let _ = c.kill();
             let _ = c.wait();
@@ -292,10 +309,18 @@ pub(crate) fn forget(id: &str) {
     }
 }
 
-/// Bring the links in line with what is configured: every server.
-/// Idempotent; called at start and whenever the list changes.
+/// Bring the links in line with what is configured: every paired computer
+/// (while sharing is on, which is what makes pairs reachable at all) and
+/// every server. Idempotent; called at start and whenever either changes.
 pub(crate) fn supervise() {
     let mut want: Vec<(String, MachineKind, String, Endpoint)> = Vec::new();
+    if let Some(node) = crate::peers::node() {
+        if node.sharing_on() {
+            for (id, name) in node.paired_computers() {
+                want.push((id.clone(), MachineKind::Computer, name, Endpoint::Peer { id }));
+            }
+        }
+    }
     for s in load_servers() {
         want.push((s.id.clone(), MachineKind::Server, s.name.clone(), Endpoint::Server(s)));
     }
@@ -324,6 +349,7 @@ pub(crate) fn supervise() {
             stop: AtomicBool::new(false),
             wake: (Mutex::new(false), Condvar::new()),
             child: Mutex::new(None),
+            sock: Mutex::new(None),
         });
         map.insert(id, l.clone());
         std::thread::spawn(move || run_link(l));
@@ -385,12 +411,72 @@ type Connection = (ServerMsg, MsgReader, MsgWriter);
 
 fn connect(l: &Link, endpoint: &Endpoint) -> Result<Connection, String> {
     match endpoint {
+        Endpoint::Peer { id } => {
+            let node = crate::peers::node().ok_or("pairing is not running")?;
+            let (c, sock) = connect_peer(&node, id, true)?;
+            *l.sock.lock().unwrap() = Some(sock);
+            Ok(c)
+        }
         Endpoint::Server(rec) => {
             let (c, child) = connect_server(rec)?;
             *l.child.lock().unwrap() = Some(child);
             Ok(c)
         }
     }
+}
+
+/// A sealed WebSocket to a paired computer. Returns the socket too, so the
+/// caller can cut it.
+pub(crate) fn connect_peer(node: &crate::peers::Node, peer_id: &str, wants_tasks: bool) -> Result<(Connection, TcpStream), String> {
+    let ep = node.peer_endpoint(peer_id)?;
+    let mut last = String::from("no known address");
+    for addr in ep.addrs.iter() {
+        match connect_addr(*addr, &ep, wants_tasks) {
+            Ok(c) => return Ok(c),
+            Err(e) => last = e,
+        }
+    }
+    // A machine that moved (a new DHCP lease) is not gone: ask the network.
+    if let Some(addr) = node.rediscover_addr(peer_id) {
+        if !ep.addrs.contains(&addr) {
+            return connect_addr(addr, &ep, wants_tasks);
+        }
+    }
+    Err(last)
+}
+
+fn connect_addr(addr: SocketAddr, ep: &crate::peers::PeerEndpoint, wants_tasks: bool) -> Result<(Connection, TcpStream), String> {
+    let mut s = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| format!("Could not reach {} ({e}). Check that it is awake and has sharing on.", ep.name))?;
+    let _ = s.set_nodelay(true);
+    let _ = s.set_read_timeout(Some(Duration::from_secs(90)));
+    ws::client_handshake(&mut s, &addr.to_string(), crate::peers::STREAM_PATH).map_err(|e| {
+        if e.to_string().contains("refused (403)") {
+            format!("{} has sharing turned off.", ep.name)
+        } else if e.to_string().contains("refused (404)") {
+            format!("{} runs an older Termic without remote control. Update it.", ep.name)
+        } else {
+            format!("Could not reach {} ({e}).", ep.name)
+        }
+    })?;
+    let kill = s.try_clone().map_err(|e| e.to_string())?;
+    let (r, w) = ws::split_tcp(s, ws::End::Client).map_err(|e| e.to_string())?;
+    let hello = ClientMsg::Hello {
+        v: wire::VERSION,
+        name: ep.self_name.clone(),
+        kind: ClientKind::Computer,
+        caps: if wants_tasks { vec![wire::caps::TASKS.to_string()] } else { Vec::new() },
+        app_version: Some(env!("CARGO_PKG_VERSION").into()),
+        grant: Some(ep.grant.clone()),
+        port: ep.port,
+    };
+    let c = conn::client_handshake(Box::new(r), Box::new(w), &ep.peer_id, &ep.self_id, &ep.key, &hello).map_err(|e| {
+        if e.kind() == io::ErrorKind::PermissionDenied {
+            format!("{} no longer accepts this computer. It may have unpaired it: unpair here and pair again.", ep.name)
+        } else {
+            format!("Could not reach {} ({e}).", ep.name)
+        }
+    })?;
+    Ok(((c.welcome, c.reader, c.writer), kill))
 }
 
 /// `ssh -T <host> <bridge>`: frames over the child's stdin/stdout. ssh's
@@ -544,6 +630,7 @@ fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
         let _ = c.kill();
         let _ = c.wait();
     }
+    l.sock.lock().unwrap().take();
 }
 
 fn dispatch(l: &Link, m: ServerMsg) {
@@ -590,7 +677,8 @@ pub(crate) fn call(machine: &str, mut req: Value, timeout: Option<Duration>) -> 
         o.remove("peer");
         o.remove("token");
     }
-    match l.request(&id, ClientMsg::Call { id: id.clone(), req, proto: None }, timeout.unwrap_or(CALL_TIMEOUT))? {
+    let proto = Some(termic_proto::PROTOCOL_VERSION).filter(|_| l.kind == MachineKind::Computer);
+    match l.request(&id, ClientMsg::Call { id: id.clone(), req, proto }, timeout.unwrap_or(CALL_TIMEOUT))? {
         ServerMsg::Reply { reply, .. } => Ok(reply),
         _ => Err("unexpected answer".into()),
     }
@@ -720,6 +808,13 @@ pub(crate) fn remote_term_open(machine: String, task: String, tab: Option<String
 #[tauri::command]
 pub(crate) fn remote_term_close(machine: String) -> Result<(), String> {
     term_close(&machine)
+}
+
+/// The webview's project folder colours (localStorage `groupColors`), so
+/// the rows this computer serves carry them (remote_server.rs).
+#[tauri::command]
+pub(crate) fn remote_set_folder_colors(colors: std::collections::HashMap<String, String>) {
+    crate::remote_server::set_project_folder_colors(colors);
 }
 
 #[tauri::command]
@@ -1003,6 +1098,7 @@ mod tests {
             stop: AtomicBool::new(false),
             wake: (Mutex::new(false), Condvar::new()),
             child: Mutex::new(None),
+            sock: Mutex::new(None),
         });
         let runner = l.clone();
         std::thread::spawn(move || run_link(runner));

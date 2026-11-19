@@ -8,7 +8,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Server } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Smartphone } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -107,10 +107,11 @@ export function Settings() {
             for it; under the sandbox pages it read as a security setting. */}
         <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} hint={t("rail.cliHint")} tabId="cli"
           active={tab === "cli" || tab === "mcp" || tab === "peers"} onClick={() => openSettings("mcp")} />
-        {/* Agents running on servers over SSH (docs/remote.md). Its own
-            page, not a tab of Agent access: it is about machines, not
-            agents' tools. */}
-        <RailItem icon={<Server className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} badge={t("rail.badgeExp")} tabId="remote"
+        {/* A person reaching this computer from a phone, and agents running
+            on servers: remote control (docs/remote.md). Its own page, not a
+            tab of Agent access: it is about people and machines, not agents'
+            tools. */}
+        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} badge={t("rail.badgeExp")} tabId="remote"
           active={tab === "remote"} onClick={() => openSettings("remote")} />
 
         <RailDivider />

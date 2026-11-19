@@ -491,16 +491,27 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
-### `transition-opacity` froze a state-driven fade too
+### The settings Toggle froze too, on `left` and `background-color`
 
-The project filter icon (`ProjectTaskFilter.tsx`) switches `opacity-0` to
-`opacity-100` when a filter pins it, and with `transition-opacity` on it
-computed opacity stayed `0`: a pinned filter's icon was invisible
-(`projects.e2e.ts` "pins the bar"). Removing the transition fixed it,
-restoring it broke it. The fade now applies only while unpinned (the hover
-reveal). So `transition-[color,background-color]` above is not a complete
-defence: when React state flips a property that carries a CSS transition,
-assert the computed value in a spec.
+Settings > Remote: Connect a phone turns sharing on from its dialog, the
+page reads the new value from `peer_status`, and the "Allow paired phones"
+switch got `aria-checked="true"` and an inline `left: 18px` while
+`getComputedStyle` kept `left: 2px` and the off track colour, permanently
+(still off after the dialog closed). Removing the Toggle's two
+`transition` declarations fixed it; putting them back reproduced it
+(`e2e/specs/remote.e2e.ts`, the QR case asserts the computed knob
+position). So `transition-[color,background-color]` above is not a
+complete defence. What makes this case freeze when a direct click does not
+is NOT established. The fix is local: `RemoteSection` remounts the Toggle
+when its value arrives from outside, which draws it with no transition.
+
+Same again with `transition-opacity`: the project filter icon
+(`ProjectTaskFilter.tsx`) switches `opacity-0` to `opacity-100` when a
+filter pins it, and computed opacity stayed `0`, so a pinned filter's icon
+was invisible (`projects.e2e.ts` "pins the bar"). Removing the transition
+fixed it, restoring it broke it. The fade now applies only while unpinned
+(the hover reveal). Rule of thumb: when React state flips a property that
+carries a CSS transition, assert the computed value in a spec.
 
 ## An overhanging hit area is clipped out of existence
 

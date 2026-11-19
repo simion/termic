@@ -132,7 +132,8 @@ export default {
       linkShortcuts: "Keyboard shortcuts settings",
       linkSandbox: "Sandbox settings",
       linkCli: "Agent access settings",
-      linkRemote: "Servers settings",
+      linkRemote: "Phones and servers settings",
+      connectPhone: "Connect a phone",
     },
   },
   createPr: {
