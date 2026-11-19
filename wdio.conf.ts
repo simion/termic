@@ -286,6 +286,15 @@ export const config: WebdriverIO.Config = {
     const vp = await browser.execute(() => `${window.innerWidth}x${window.innerHeight} on ${screen.width}x${screen.height}`);
     console.log(`[e2e] viewport ${vp}`);
   },
+  // Windows only: a page whose window is not the foreground one gets no
+  // focus/blur events from el.focus()/el.blur(), so every blur-commit case
+  // fails. Seen once late in a CI run (four specs, cases passing between);
+  // what took the foreground is not established, so say when it happens.
+  async beforeTest(test) {
+    if (process.platform !== "win32") return;
+    const focused = await browser.execute(() => document.hasFocus()).catch(() => null);
+    if (focused === false) console.log(`[e2e] page lost focus before "${test.title}": ${foregroundWindow()}`);
+  },
   async afterTest(test, _context, result) {
     // Opt-in failure capture (`TERMIC_E2E_FAIL_CAPTURE=1`, set by the Windows
     // workflow): a screenshot and the visible text of the window at the
@@ -302,6 +311,10 @@ export const config: WebdriverIO.Config = {
       // after it from answering the driver.
       if (process.platform === "darwin") {
         try { execFileSync("screencapture", ["-x", path.join(artifactsDir, `FAIL-${slug}-screen.png`)], { timeout: 10_000 }); } catch { /* no permission */ }
+      }
+      if (process.platform === "win32") {
+        const focused = await browser.execute(() => document.hasFocus()).catch(() => null);
+        writeFileSync(path.join(artifactsDir, `FAIL-${slug}-focus.txt`), `hasFocus=${focused}\nforeground=${foregroundWindow()}\n`);
       }
       if (!frozen) {
         try {
@@ -334,6 +347,24 @@ export const config: WebdriverIO.Config = {
     appendFileSync(timingLog, `${String(ms).padStart(7)}  ${test.parent} > ${test.title}\n`);
   },
 };
+
+/** Title and process of the Windows foreground window, for a lost-focus report. */
+function foregroundWindow(): string {
+  const ps = `Add-Type @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public class Fg {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+}
+'@
+$h = [Fg]::GetForegroundWindow(); $s = New-Object Text.StringBuilder 512
+[void][Fg]::GetWindowText($h, $s, 512); $p = 0; [void][Fg]::GetWindowThreadProcessId($h, [ref]$p)
+"$s | pid $p $((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName)"`;
+  try {
+    return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 15_000, encoding: "utf8" }).trim();
+  } catch (e) { return `unknown (${String(e).slice(0, 200)})`; }
+}
 
 /** Pay the cold-start cost of `cmd.exe` + `node` before anything is timed.
  *
