@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.24.4",
+      "date": "2026-11-19",
+      "summary": "Monokai theme, window titles that name your task, idle tasks free their build folders."
+    },
+    {
       "version": "1.24.3",
       "date": "2026-11-17",
       "summary": "One Run button for every run command, agents start your dev server, pinned tasks."

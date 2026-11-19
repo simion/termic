@@ -4,6 +4,23 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.24.4] - 2026-11-19
+
+Monokai theme, window titles that name your task, idle tasks free their build folders.
+
+### Features
+- Themes: a built-in classic Monokai ([#377](https://github.com/simion/termic/issues/377)).
+- The window title names the active project, task and tab ("Termic - project / task - tab"), so a time tracker that reads window titles, such as ActivityWatch, can tell your projects apart ([#462](https://github.com/simion/termic/issues/462)).
+- Settings, Appearance: pick the app theme from a list, beside the command palette's theme picker.
+- Open tasks you have not opened for 14 days give back the disk their build folders take (node_modules, target, .next and the like). Only folders git ignores and that a build recreates; the task's own files are never touched. Change the days or turn it off in Settings, Tasks.
+- Caffeinate remembers whether you last kept the display on and stayed awake with the lid closed.
+
+### Bug fixes
+- Linux: typing in a terminal no longer lags a second behind on a machine without a GPU (WSL, most VMs). Terminals there now default to the canvas renderer ([#461](https://github.com/simion/termic/pull/461)). Thanks to [@reinies](https://github.com/reinies).
+- Windows and Linux: Ctrl+Shift+F opens find in files from a terminal too. A terminal's own find moves to Ctrl+Alt+F.
+- Agents: an agent that started a new turn right as the last one ended no longer shows as done while it works.
+- Markdown: switching a file from preview to split no longer scrolls both panes to the wrong section.
+
 ## [1.24.3] - 2026-11-17
 
 One Run button for every run command, agents start your dev server, pinned tasks.
