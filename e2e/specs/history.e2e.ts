@@ -21,7 +21,10 @@ describe("history project filter", () => {
   const OTHER = "e2e-hist-other-1";
 
   before(() => {
-    dir = mkdtempSync(path.join(os.tmpdir(), "e2e-hist-"));
+    // Not "e2e-hist-": the search matches project names case-insensitively,
+    // and a random suffix starting "fX" turned the project into a match for
+    // the "e2e-hist-fx" search that must find nothing.
+    dir = mkdtempSync(path.join(os.tmpdir(), "e2e-histproj-"));
     execSync(
       `git -C "${dir}" init -q && git -C "${dir}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
     );
