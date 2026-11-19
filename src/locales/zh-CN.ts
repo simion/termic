@@ -7,5 +7,6 @@ import panels from "./zh-CN/panels";
 import chrome from "./zh-CN/chrome";
 import backend from "./zh-CN/backend";
 import secrets from "./zh-CN/secrets";
+import remote from "./zh-CN/remote";
 
-export default { common, sidebar, settings, dialogs, task, panels, chrome, backend, secrets };
+export default { common, sidebar, settings, dialogs, task, panels, chrome, backend, secrets, remote };

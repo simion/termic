@@ -131,6 +131,7 @@ export default {
       linkShortcuts: "键盘快捷键设置",
       linkSandbox: "沙箱设置",
       linkCli: "智能体访问设置",
+      linkRemote: "服务器设置",
     },
   },
   createPr: {

@@ -243,6 +243,14 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **AltGr** never fires a Ctrl+Alt shortcut.
 - **Closing the window quits**, as Windows users expect. The macOS
   close-to-menu-bar behaviour is macOS-only.
+- **Servers** ([remote.md](remote.md)). A Windows desktop adds servers
+  with Windows' built-in OpenSSH (`ssh.exe`, `ssh-keyscan`, `ssh-keygen`),
+  every call without a console window (`remote_client::tool`). A missing
+  OpenSSH Client is one sentence naming the Optional features switch.
+  `termic-server` itself is unix only (Linux and macOS servers); its crate
+  builds on Windows as a stub so the workspace does, and the e2e suite's
+  local-server cases skip there. Checked with `cargo check --workspace --all-targets
+  --target x86_64-pc-windows-gnu`; not yet driven on a real Windows machine.
 
 ## Releases and updates
 

@@ -1535,6 +1535,13 @@ impl Node {
         if matches!(req.cmd, Command::Attach { .. }) {
             return Reply::err(&req.id, ErrorCode::Unsupported, "attach does not reach across machines");
         }
+        // A server (remote_client.rs, reached over ssh) when no paired
+        // computer answers to the name. It needs no sharing: ssh goes out.
+        if self.find(sel).is_err() {
+            if let Some(server) = crate::remote_client::find_server(sel) {
+                return forward_to_server(&server, req, sink);
+            }
+        }
         if !(self.enabled)() || self.port().is_none() {
             return Reply::err(
                 &req.id,
@@ -1735,6 +1742,41 @@ impl Node {
                 })
                 .collect(),
         }
+    }
+}
+
+/// `--peer <server>`: the verb runs on a headless box over its link
+/// (remote_client.rs), heartbeating a streaming CLI meanwhile.
+fn forward_to_server(server: &str, req: &Request, sink: &mut dyn EventSink) -> Reply {
+    let cmd = sanitize(&req.cmd);
+    let budget = call_budget(&cmd);
+    let streaming = streamed(&cmd);
+    let inner = Request { id: req.id.clone(), token: None, profile: None, peer: None, from_task: None, cmd };
+    let Ok(value) = serde_json::to_value(&inner) else {
+        return Reply::err(&req.id, ErrorCode::Internal, "could not encode the request");
+    };
+    let (tx, rx) = mpsc::channel();
+    let server_id = server.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::remote_client::call(&server_id, value, Some(budget)));
+    });
+    let result = loop {
+        match rx.recv_timeout(HEARTBEAT_EVERY) {
+            Ok(r) => break r,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if streaming {
+                    let _ = sink.emit(&StreamEvent::heartbeat(&req.id));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break Err("the call thread ended without an answer".into()),
+        }
+    };
+    match result.and_then(|v| serde_json::from_value::<Reply>(v).map_err(|e| e.to_string())) {
+        Ok(mut reply) => {
+            reply.id = req.id.clone();
+            reply
+        }
+        Err(e) => Reply::err(&req.id, ErrorCode::PeerUnreachable, e),
     }
 }
 

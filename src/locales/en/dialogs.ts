@@ -132,6 +132,7 @@ export default {
       linkShortcuts: "Keyboard shortcuts settings",
       linkSandbox: "Sandbox settings",
       linkCli: "Agent access settings",
+      linkRemote: "Servers settings",
     },
   },
   createPr: {

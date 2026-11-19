@@ -55,6 +55,7 @@ mod mcp_server;
 mod mdns;
 mod peer_crypto;
 mod peers;
+mod remote_client;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
 pub mod customizations;
@@ -28653,6 +28654,7 @@ pub fn run() {
             cli_server::start(app.handle().clone());
             mcp_server::start_if_enabled(app.handle().clone());
             peers::start_if_enabled(app.handle().clone());
+            remote_client::init(app.handle().clone());
             // E2E: show the window, never take focus. `set_focus()` on macOS
             // ACTIVATES the app, which yanks the user to whichever Space the
             // window opened on — seventeen times a suite run, since each spec
@@ -28779,6 +28781,20 @@ pub fn run() {
             peers::peer_set_note,
             peers::peer_unpair,
             peers::peer_refresh,
+            remote_client::remote_machines,
+            remote_client::remote_call,
+            remote_client::remote_term_open,
+            remote_client::remote_term_close,
+            remote_client::remote_term_input,
+            remote_client::remote_term_size,
+            remote_client::remote_reconnect,
+            remote_client::server_add,
+            remote_client::server_remove,
+            remote_client::server_rename,
+            remote_client::server_list,
+            remote_client::server_probe,
+            remote_client::server_trust,
+            remote_client::server_install,
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,
             list_monospace_fonts, list_font_families,

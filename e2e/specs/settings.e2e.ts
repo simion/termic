@@ -291,6 +291,8 @@ describe("settings rail", () => {
     // (LAN pairing, docs/peers.md) on one page. Its marker is the MCP
     // master toggle, the tab it opens on.
     ["cli", "Agent access", "Enable MCP endpoint"],
+    // Servers over SSH (docs/remote.md), their own page.
+    ["remote", "Servers", "Add a server"],
     ["tasks", "Tasks", "Branch prefix"],
     ["notifications", "Notifications", "Desktop notifications"],
     ["prompts", "Prompts", "Prompts"],

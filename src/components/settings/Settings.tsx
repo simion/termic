@@ -8,7 +8,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -22,6 +22,7 @@ import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
 import { DockerSection } from "./DockerSection";
+import { RemoteSection } from "./RemoteSection";
 
 // Lazy: it pulls in the prefs registry and the sync module, neither of which
 // belongs on the app-start path (Settings itself is imported by App).
@@ -32,6 +33,7 @@ const SecretsSection = lazy(() => import("./secretsSettings/SecretsSection").the
 
 export function Settings() {
   const { t } = useTranslation("settings");
+  const { t: tr } = useTranslation("remote");
   const view = useApp(s => s.view);
   const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
@@ -105,6 +107,11 @@ export function Settings() {
             for it; under the sandbox pages it read as a security setting. */}
         <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} hint={t("rail.cliHint")} tabId="cli"
           active={tab === "cli" || tab === "mcp" || tab === "peers"} onClick={() => openSettings("mcp")} />
+        {/* Agents running on servers over SSH (docs/remote.md). Its own
+            page, not a tab of Agent access: it is about machines, not
+            agents' tools. */}
+        <RailItem icon={<Server className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} badge={t("rail.badgeExp")} tabId="remote"
+          active={tab === "remote"} onClick={() => openSettings("remote")} />
 
         <RailDivider />
 
@@ -179,6 +186,7 @@ export function Settings() {
           {tab === "sandbox"     && <SandboxSection />}
           {tab === "secrets"     && <Suspense fallback={null}><SecretsSection /></Suspense>}
           {tab === "docker"      && <DockerSection />}
+          {tab === "remote"      && <RemoteSection />}
           {/* Agent access: the CLI and MCP are two presentations of the
               same verbs (docs/ideas/mcp.md), and other computers are a
               third, reached through either (docs/peers.md). */}
