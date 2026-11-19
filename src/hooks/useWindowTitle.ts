@@ -36,7 +36,18 @@ export function useWindowTitle() {
   });
   useEffect(() => {
     if (title === null) return;
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
-      getCurrentWindow().setTitle(title)).catch(() => { /* no window: tests */ });
+    latest = title;
+    // One at a time, newest wins: a task switch changes the title two or
+    // three times in a burst, and independent async calls can land out of
+    // order. Seen once on Windows CI as a title stuck on the old task;
+    // that ordering was the cause is not established.
+    queue = queue.then(async () => {
+      if (title !== latest) return;
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().setTitle(title);
+    }).catch(() => { /* no window: tests */ });
   }, [title]);
 }
+
+let queue: Promise<void> = Promise.resolve();
+let latest = "";

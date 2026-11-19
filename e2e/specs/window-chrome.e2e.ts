@@ -133,8 +133,11 @@ describe("window title", () => {
     };
     return w.__TAURI_INTERNALS__.invoke("plugin:window|title", { label: w.__TAURI_INTERNALS__.metadata.currentWindow.label });
   }) as unknown as Promise<string>;
-  const waitTitle = (pred: (t: string) => boolean, msg: string) =>
-    browser.waitUntil(async () => pred(await title()), { timeout: 8_000, timeoutMsg: msg });
+  const waitTitle = async (pred: (t: string) => boolean, msg: string) => {
+    let last = "";
+    await browser.waitUntil(async () => pred(last = await title()), { timeout: 8_000 })
+      .catch(() => { throw new Error(`${msg}: ${JSON.stringify(last)}`); });
+  };
 
   after(async () => { for (const id of ids) await archiveTask(id); });
 
