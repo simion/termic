@@ -92,6 +92,28 @@ async function openTaskWith(agent: string, name: string): Promise<string> {
   }, agent, name);
 }
 
+/** Wait for the footer chip of the task on screen. Lost once on Windows CI
+ *  for about a minute (three cases, then fine), with the task spawned on the
+ *  right login. The message says which half was missing: the account read
+ *  (`accounts`), the active task, or a chip that rendered somewhere else. */
+async function waitChip(taskId: string, agent: string): Promise<void> {
+  try {
+    await waitVisible('[data-testid="usage-chip"]');
+  } catch (e) {
+    const where = await browser.execute(async (id, a) => {
+      const t = window.__termic!;
+      const chips = [...document.querySelectorAll<HTMLElement>('[data-testid="usage-chip"]')].map(c => {
+        const r = c.getBoundingClientRect();
+        return { task: c.closest("[data-task-id]")?.getAttribute("data-task-id") ?? null, w: r.width, h: r.height, account: c.getAttribute("data-account") };
+      });
+      let accounts: unknown;
+      try { accounts = await t.invoke("agent_accounts", { agentId: a, docker: false }); } catch (err) { accounts = String(err); }
+      return { taskId: id, active: t.useApp.getState().activeTaskId ?? null, chips, accounts };
+    }, taskId, agent);
+    throw new Error(`${(e as Error).message}: ${JSON.stringify(where)}`);
+  }
+}
+
 async function removeTask(id: string | null): Promise<void> {
   if (!id) return;
   await browser.execute(async (i) => {
@@ -416,7 +438,7 @@ describe("agent credentials", () => {
     await addAccounts(FAKE_CLAUDE);
     const taskId = await openTaskWith(FAKE_CLAUDE, "acct-pill");
     try {
-      await waitVisible('[data-testid="usage-chip"]');
+      await waitChip(taskId, FAKE_CLAUDE);
       await snap("credentials-05-footer-pill.png");
       expect(await pillAccount()).toBe("Work");
 
@@ -456,6 +478,7 @@ describe("agent credentials", () => {
     const taskId = await openTaskWith(FAKE_CLAUDE, "acct-default");
     try {
       expect(await browser.execute(() => !!document.querySelector('[role="alertdialog"], [role="dialog"]'))).toBe(false);
+      await waitChip(taskId, FAKE_CLAUDE);
       await clickWhenVisible('[data-testid="usage-chip"]');
       await waitVisible('[data-testid="account-pick-Personal"]');
       const star = (n: string) => browser.execute(name =>
@@ -598,7 +621,7 @@ describe("agent credentials", () => {
           weekly: { usedPercent: 41, resetsAt: Math.floor(Date.now() / 1000) + 86400 },
         }, "statusline");
       }, FAKE_CLAUDE);
-      await waitVisible('[data-testid="usage-chip"]');
+      await waitChip(taskId, FAKE_CLAUDE);
       await clickWhenVisible('[data-testid="usage-chip"]');
       await waitVisible('[data-testid="usage-add-credentials"]');
       await snap("credentials-10-usage-popover.png");
