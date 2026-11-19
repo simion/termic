@@ -39,6 +39,7 @@ import {
   taskImportWorktree,
   taskOpenRepo,
   taskRename,
+  taskSetPinned,
   taskSetAccount,
   taskSetYolo,
   tasksList,
@@ -841,6 +842,23 @@ async function renameTaskHandler(params: unknown): Promise<null> {
   return null;
 }
 
+/** `termic pin` (and MCP `task_pin`, and a remote client's Pin): the row's
+ *  Pin, store first so the row moves at once, then the file. */
+async function pinTaskHandler(params: unknown): Promise<null> {
+  const p = params as { taskId?: unknown; pinned?: unknown };
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("pin_task requires a taskId");
+  if (typeof p?.pinned !== "boolean") throw new Error("pin_task requires pinned");
+  const { taskId, pinned } = p as { taskId: string; pinned: boolean };
+  useApp.getState().setTaskPinned(taskId, pinned);
+  try {
+    await taskSetPinned(taskId, pinned);
+  } catch (e) {
+    useApp.getState().setTaskPinned(taskId, !pinned);
+    throw e;
+  }
+  return null;
+}
+
 /** `termic group --name/--color` (and MCP `task_group`). A key that is ABSENT
  *  leaves that property as it is; `name: ""` returns the group to following
  *  its lead's name. A task in no group founds a group of one around itself
@@ -1467,6 +1485,7 @@ const handlers: Record<string, Handler> = {
   send_prompt: sendPromptHandler,
   archive_task: archiveTaskHandler,
   rename_task: renameTaskHandler,
+  pin_task: pinTaskHandler,
   set_task_group: setTaskGroupHandler,
   pad: padHandler,
   schedule: scheduleHandler,
