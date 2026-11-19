@@ -21,8 +21,9 @@ const THEME_LABELS: Record<Exclude<BuiltinThemeMode, "auto" | "light" | "dark">,
   cobalt: "Cobalt",
   matrix: "Matrix",
   rosepine: "Rosé Pine",
+  monokai: "Monokai",
 };
-const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
+const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine", "monokai"];
 
 export function useThemeEntries(): ThemeEntry[] {
   const { t } = useTranslation("dialogs");

@@ -494,4 +494,25 @@ describe("theme import (Ghostty / Warp)", () => {
     expect(await browser.execute(() => JSON.parse(localStorage.getItem("commandPaletteThemeRecent") ?? "[]")[0]))
       .toBe("custom:ghostty-aaa-e2e-early");
   });
+
+  // GH #377: a built-in, so it needs no Ghostty install and no copy on disk.
+  it("lists a built-in Monokai under Dark and applies its own chrome", async () => {
+    await openList();
+    await filter("all");
+    const dark = (await sections()).find(g => g.labels.includes("Monokai"));
+    await closeList();
+    expect(dark?.title).toMatch(/dark/i);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setThemeMode("monokai"));
+    await browser.refresh();
+    await waitForAppShell();
+    await requireTermicApi();
+    await ensureActiveTask(taskId);
+    expect(await themeMode()).toBe("monokai");
+    expect(await browser.execute(() => document.documentElement.classList.contains("monokai"))).toBe(true);
+    await browser.waitUntil(async () => (await cssVar("--color-bg")) === "#272822");
+    // orange, not the pink that is Monokai's red: an accent in it reads as an error
+    expect(await cssVar("--color-accent")).toBe("#fd971f");
+    expect(await cssVar("--color-err")).toBe("#f92672");
+    await snap("theme-builtin-monokai.png");
+  });
 });

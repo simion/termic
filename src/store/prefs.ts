@@ -179,16 +179,16 @@ export const parseTerminalRenderer = (
 ): TerminalRendererKind =>
   v === "webgl" || v === "canvas" || v === "dom" ? v : fallback;
 
-export type BuiltinThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
+export type BuiltinThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine" | "monokai";
 /** The user's selection: a built-in mode, or a custom theme file id
  *  (`custom:<file-stem>`, see lib/customTheme.ts). */
 export type ThemeMode = BuiltinThemeMode | `custom:${string}`;
 /** What `applyTheme` resolves a BUILT-IN mode to: a concrete palette name.
  *  `auto` is never returned; it gets mapped to light/dark based on OS
  *  preference. Custom ids resolve to themselves (see resolveThemeFull). */
-export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
+export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine" | "monokai";
 
-const VALID_MODES: ReadonlyArray<BuiltinThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
+const VALID_MODES: ReadonlyArray<BuiltinThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine", "monokai"];
 /** Defensive parse: localStorage may hold a theme id that's been
  *  removed in a later version. Fall back to "claude" (the default
  *  theme) instead of letting the unknown string flow through and
@@ -301,6 +301,21 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     blue: "#9ccfd8",   magenta: "#c4a7e7", cyan: "#ebbcba",   white: "#e0def4",
     brightBlack: "#6e6a86", brightRed: "#eb6f92", brightGreen: "#31748f", brightYellow: "#f6c177",
     brightBlue: "#9ccfd8",  brightMagenta: "#c4a7e7", brightCyan: "#ebbcba", brightWhite: "#e0def4",
+  },
+  monokai: {
+    // Classic Monokai, ANSI mapped as Ghostty's "Monokai Classic" (blue is
+    // the orange, cyan the blue), so agent TUIs look the same in both.
+    // Brights equal normals except brightBlack. Orange cursor, matching the
+    // chrome accent.
+    background: "#272822",
+    foreground: "#f8f8f2",
+    cursor: "#fd971f",
+    cursorAccent: "#272822",
+    selectionBackground: "#49483e",
+    black: "#272822", red: "#f92672",     green: "#a6e22e", yellow: "#e6db74",
+    blue:  "#fd971f", magenta: "#ae81ff", cyan:  "#66d9ef", white:  "#fdfff1",
+    brightBlack: "#6e7066", brightRed: "#f92672", brightGreen: "#a6e22e", brightYellow: "#e6db74",
+    brightBlue:  "#fd971f", brightMagenta: "#ae81ff", brightCyan: "#66d9ef", brightWhite: "#fdfff1",
   },
 };
 
@@ -2254,6 +2269,7 @@ export function applyTheme(mode: ThemeMode) {
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");
   html.classList.toggle("rosepine",  resolved === "rosepine");
+  html.classList.toggle("monokai",   resolved === "monokai");
   if (custom) {
     applyCustomVars(html, custom.ui);
     // Color-scheme tells the browser to use light/dark form controls +

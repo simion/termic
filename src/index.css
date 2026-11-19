@@ -70,7 +70,7 @@
   /* Ink on a solid --color-ok fill (the AgentsSection toggle tracks).
      Deliberately NOT --color-accent-fg: a theme may pair a light accent
      with a dark ok, or the reverse, so the two inks cannot share a
-     token. rosepine is the only theme that recolors --color-ok. */
+     token. rosepine and monokai recolor --color-ok. */
   --color-ok-fg:     #ffffff;
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
@@ -496,6 +496,48 @@
     --color-palette-blue:   #5896b4;    /* pine, lifted a step for the dark base */
     --color-palette-purple: #c4a7e7;    /* iris */
     --color-palette-pink:   #d8a0c9;
+    color-scheme: dark;
+  }
+
+  /* Monokai (classic, Wimer Hazenberg's palette; not Monokai Pro). Chrome
+     ladder from the canon greys, lightening like every other theme: #272822
+     base, a step up for the sidebar and bars, then the #3e3d32 / #49483e
+     line and selection greys.
+     The accent is orange, NOT the signature pink: pink is Monokai's red, so
+     an accent in it would read every count badge and filled button as an
+     error. Orange is light, so ink on it is the base, ~6.8:1; white-text
+     button surfaces get a burnt orange instead. Green is light too, so
+     --color-ok-fg is dark here as well. */
+  html.monokai {
+    --color-bg:          #272822;       /* background */
+    --color-bg-1:        #2f302a;       /* sidebar / title bar / tabs */
+    --color-bg-2:        #3e3d32;       /* line highlight */
+    --color-bg-3:        #49483e;       /* selection: hover + active surfaces */
+    --color-fg:          #f8f8f2;       /* foreground */
+    --color-fg-dim:      #a59f85;
+    --color-fg-faint:    #75715e;       /* comment */
+    --color-border:      #57584f;
+    --color-border-soft: #34352d;
+    --color-hover:       rgba(248, 248, 242, 0.05);
+    --color-sel:         rgba(73, 72, 62, 0.75);
+    --color-accent:      #fd971f;       /* orange */
+    --color-accent-soft: rgba(253, 151, 31, 0.22);
+    --color-accent-deep: #a65c0e;       /* burnt orange, ~5:1 with white text */
+    --color-accent-fg:   #272822;
+    --color-ok:          #a6e22e;       /* green */
+    --color-ok-fg:       #272822;
+    --color-warn:        #e6db74;       /* yellow */
+    --color-err:         #f92672;       /* pink, Monokai's red */
+    /* Palette ramp: the canon six, plus a teal and a pink kept apart from
+       cyan and red. */
+    --color-palette-red:    #f92672;
+    --color-palette-orange: #fd971f;
+    --color-palette-yellow: #e6db74;
+    --color-palette-green:  #a6e22e;
+    --color-palette-teal:   #5fd7af;
+    --color-palette-blue:   #66d9ef;    /* cyan, Monokai's only blue */
+    --color-palette-purple: #ae81ff;
+    --color-palette-pink:   #ff79c6;
     color-scheme: dark;
   }
   ::-webkit-scrollbar { width: 10px; height: 10px; }

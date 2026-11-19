@@ -412,8 +412,8 @@ Keys are the macOS ones; every shortcut can be rebound.
   used, ⌥↑/↓ walks the sidebar, ⌥⌘↑/↓ hops task to task, ⌘D / ⇧⌘D split,
   ⌘T new tab, ⌘W close. Rebind anything in Settings, Shortcuts, including
   the mouse's back and forward buttons. See [docs/shortcuts.md](docs/shortcuts.md).
-- **Themes.** Eight built-in (System, Light, Dark, Claude, Solarized,
-  Cobalt, Matrix, Rosé Pine), each re-theming both the chrome and the
+- **Themes.** Nine built-in (System, Light, Dark, Claude, Solarized,
+  Cobalt, Matrix, Rosé Pine, Monokai), each re-theming both the chrome and the
   terminal. Your Ghostty and Warp themes show up in the list beside them,
   or drop a JSON file in the themes folder. See [docs/themes.md](docs/themes.md).
 - **Speaks your language.** English and a complete Simplified Chinese

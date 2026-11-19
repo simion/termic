@@ -383,7 +383,7 @@ describe("prefs: currentMinimumContrastRatio", () => {
 
   it("returns 1 (off) for dark-family themes", async () => {
     const { usePrefs, currentMinimumContrastRatio } = await import("./prefs");
-    for (const mode of ["dark", "claude", "solarized", "cobalt", "matrix", "rosepine"] as const) {
+    for (const mode of ["dark", "claude", "solarized", "cobalt", "matrix", "rosepine", "monokai"] as const) {
       usePrefs.getState().setThemeMode(mode);
       expect(currentMinimumContrastRatio()).toBe(1);
     }
