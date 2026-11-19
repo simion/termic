@@ -32,6 +32,7 @@ import { RightPanel } from "@/components/task/RightPanel";
 import { RaceBoard } from "@/components/task/RaceBoard";
 import { Settings } from "@/components/settings/Settings";
 import { Dialogs } from "@/components/dialogs/Dialogs";
+import { RemoteGlobal } from "@/components/remote/RemoteGlobal";
 import { Toaster } from "@/components/ui/Toaster";
 import { GuideLayer } from "@/components/guide/GuideLayer";
 import { useGuide } from "@/store/guide";
@@ -302,6 +303,7 @@ export function App() {
         </div>
       )}
       <Dialogs />
+      <RemoteGlobal />
       <GuideLayer />
       <Toaster />
     </>

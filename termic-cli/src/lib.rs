@@ -3277,6 +3277,22 @@ fn execute_peer(
     }
 }
 
+/// A path on ANOTHER machine (`--peer`), which this one cannot resolve:
+/// sent as typed, so it must be absolute or start at the home directory.
+fn remote_path(path: &str) -> Result<&str, CliError> {
+    // Judged by the OTHER machine's rules, which may be Windows: a drive
+    // path (C:\repo, C:/repo) or a UNC share (\\host\share) is as complete
+    // as /home/alice/repo, whatever this machine is. Home is ~/ everywhere:
+    // that is the form the receiving machine expands, Windows included.
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    if path.starts_with('/') || path.starts_with("~/") || path.starts_with("\\\\") || drive {
+        Ok(path)
+    } else {
+        Err(CliError::new(exit_code::ERROR, format!("with --peer, give the path on that machine in full (/home/alice/repo, ~/repo or C:\\repo), not {path}")))
+    }
+}
+
 fn execute_project(
     conn: &mut client::Conn,
     token: &str,
@@ -3294,10 +3310,16 @@ fn execute_project(
         }
         ProjectCmd::Add { path, non_git } => {
             // Canonicalize CLIENT-side: the server must never resolve a
-            // relative path against ITS cwd.
-            let abs = std::fs::canonicalize(path).map_err(|e| {
-                CliError::new(exit_code::ERROR, format!("cannot resolve {path} ({e})"))
-            })?;
+            // relative path against ITS cwd. Under --peer the path names a
+            // folder on THAT machine, which this one cannot see: it goes as
+            // typed, and must be absolute (or ~/...) for the same reason.
+            let abs = if client::peer().is_some() {
+                std::path::PathBuf::from(remote_path(path)?)
+            } else {
+                std::fs::canonicalize(path).map_err(|e| {
+                    CliError::new(exit_code::ERROR, format!("cannot resolve {path} ({e})"))
+                })?
+            };
             conn.set_read_timeout(client::PROJECT_ADD_READ_TIMEOUT);
             let data = client::request(
                 conn,
@@ -3978,6 +4000,21 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peer_project_path_goes_as_typed_and_must_be_absolute() {
+        assert_eq!(remote_path("/home/alice/repo").ok(), Some("/home/alice/repo"));
+        assert_eq!(remote_path("~/repo").ok(), Some("~/repo"));
+        assert!(remote_path("repo").is_err());
+        assert!(remote_path("./repo").is_err());
+        // The other machine may be Windows, whatever this one is.
+        for p in [r"C:\src\repo", "C:/src/repo", r"\\nas\share\repo"] {
+            assert_eq!(remote_path(p).ok(), Some(p), "{p}");
+        }
+        assert!(remote_path(r"src\repo").is_err());
+        assert!(remote_path("C:repo").is_err());
+        assert!(remote_path(r"~\repo").is_err(), "the host expands ~/ only");
+    }
 
     #[test]
     fn clap_definition_is_coherent() {

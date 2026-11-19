@@ -29,6 +29,7 @@ import { ScheduledView } from "@/components/views/Scheduled";
 import { TodosView } from "@/components/views/TodosView";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
+import { RemoteTaskOverlay } from "@/components/remote/RemoteTaskView";
 
 export function MainArea() {
   const task = useActiveTask();
@@ -98,6 +99,9 @@ export function MainArea() {
           {overlay}
         </div>
       )}
+      {/* A task on another machine, over everything local (which stays
+          mounted underneath, PTYs alive). */}
+      <RemoteTaskOverlay />
     </div>
   );
 }
