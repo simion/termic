@@ -85,6 +85,17 @@ export function lastCaffeinateHours(): string {
 export function rememberCaffeinateHours(hours: string): void {
   try { localStorage.setItem(LS_HOURS, hours.trim()); } catch { /* private mode */ }
 }
+const LS_FLAGS = "caffeinateFlags";
+/** The two checkboxes as last applied, offered again when nothing is running. */
+export function lastCaffeinateFlags(): { closedLid: boolean; display: boolean } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_FLAGS) ?? "{}");
+    return { closedLid: saved?.closedLid === true, display: saved?.display === true };
+  } catch { return { closedLid: false, display: false }; }
+}
+export function rememberCaffeinateFlags(closedLid: boolean, display: boolean): void {
+  try { localStorage.setItem(LS_FLAGS, JSON.stringify({ closedLid, display })); } catch { /* private mode */ }
+}
 export function localDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;

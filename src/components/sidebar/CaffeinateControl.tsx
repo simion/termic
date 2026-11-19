@@ -6,7 +6,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, lastCaffeinateHours, localDateTime, rememberCaffeinateHours, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
+import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, rememberCaffeinateFlags, rememberCaffeinateHours, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
 
 const PRESETS = ["1", "2", "4", "8", "16", "24", INDEFINITE];
 
@@ -18,8 +18,8 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
   const [mode, setMode] = useState<CaffeinateTab>("duration");
   const [hours, setHours] = useState(lastCaffeinateHours);
   const [until, setUntil] = useState(() => localDateTime(new Date(Date.now() + 7_200_000)));
-  const [closedLid, setClosedLid] = useState(false);
-  const [display, setDisplay] = useState(false);
+  const [closedLid, setClosedLid] = useState(() => lastCaffeinateFlags().closedLid);
+  const [display, setDisplay] = useState(() => lastCaffeinateFlags().display);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
@@ -63,8 +63,11 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
       if (!status || status.mode === "off") setHours(lastCaffeinateHours());
       if (status?.mode === "until" && status.deadline_ms != null) setUntil(localDateTime(new Date(status.deadline_ms)));
       else if (new Date(until).getTime() <= Date.now()) setUntil(localDateTime(new Date(Date.now() + 7_200_000)));
-      setClosedLid(status?.closed_lid ?? false);
-      setDisplay(status?.display ?? false);
+      // A running session shows its own settings; otherwise offer the last applied ones.
+      const last = lastCaffeinateFlags();
+      const idle = !status || status.mode === "off";
+      setClosedLid(idle ? last.closedLid && !!status?.lid_supported : status.closed_lid);
+      setDisplay(idle ? last.display : status.display);
       setError(null);
       void initCaffeinate();
     }
@@ -86,6 +89,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
     const request = requestFromDraft(mode, hours, until, closedLid, display);
     if (typeof request === "string") { setError(t(`caffeinate.${request}`)); return; }
     if (mode === "duration") rememberCaffeinateHours(hours);
+    rememberCaffeinateFlags(closedLid, display);
     void act(() => setCaffeinate(request));
   };
   const inputClass = "h-9 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 text-[13px] text-[var(--color-fg)]";

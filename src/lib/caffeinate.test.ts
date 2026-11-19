@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
-import { INDEFINITE, lastCaffeinateHours, localDateTime, matchesCaffeinateSettings, rememberCaffeinateHours, requestFromDraft, type CaffeinateStatus } from "./caffeinate";
+import { INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, matchesCaffeinateSettings, rememberCaffeinateFlags, rememberCaffeinateHours, requestFromDraft, type CaffeinateStatus } from "./caffeinate";
 
 describe("caffeinate draft validation", () => {
   it("rejects invalid durations without constructing an IPC request", () => {
@@ -31,6 +31,16 @@ describe("caffeinate draft validation", () => {
       localStorage.setItem("caffeinateHours", junk);
       expect(lastCaffeinateHours()).toBe("2");
     }
+  });
+  it("offers the checkboxes last applied, and both off on junk", () => {
+    localStorage.clear();
+    expect(lastCaffeinateFlags()).toEqual({ closedLid: false, display: false });
+    rememberCaffeinateFlags(true, true);
+    expect(lastCaffeinateFlags()).toEqual({ closedLid: true, display: true });
+    rememberCaffeinateFlags(false, true);
+    expect(lastCaffeinateFlags()).toEqual({ closedLid: false, display: true });
+    localStorage.setItem("caffeinateFlags", "{bad");
+    expect(lastCaffeinateFlags()).toEqual({ closedLid: false, display: false });
   });
   it("the ∞ preset asks for an indefinite session and matches it back", () => {
     const request = requestFromDraft("duration", INDEFINITE, "", false, true);

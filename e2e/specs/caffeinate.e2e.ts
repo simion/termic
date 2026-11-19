@@ -79,7 +79,7 @@ describe("caffeinate", () => {
   });
   after(async () => {
     rmSync(failureFile, { force: true });
-    await browser.execute(() => { try { localStorage.removeItem("caffeinateHours"); } catch { /* private mode */ } });
+    await browser.execute(() => { try { localStorage.removeItem("caffeinateHours"); localStorage.removeItem("caffeinateFlags"); } catch { /* private mode */ } });
     await browser.execute(async () => { await window.__termic!.invoke("caffeinate_set", { request: { mode: "off" } }); });
     if (sidebarBefore) await browser.execute(value => window.__termic!.useApp.setState(value), sidebarBefore);
     if (task) await archiveTask(task);
@@ -183,6 +183,14 @@ describe("caffeinate", () => {
     await browser.keys("Escape"); await waitGone(PANEL); await open();
     expect(await browser.execute(() => document.querySelector('[data-testid="caffeinate-preset-indefinite"]')!.getAttribute("aria-pressed"))).toBe("true");
     expect(await text(APPLY)).toBe("Keep awake until turned off");
+    // ...and the display checkbox last applied, not a reset to unchecked.
+    expect(await browser.execute(s => document.querySelector<HTMLInputElement>(s)!.checked, DISPLAY)).toBe(true);
+    // An unapplied untick is a draft: it is not remembered.
+    await clickWhenVisible(DISPLAY);
+    await browser.keys("Escape"); await waitGone(PANEL); await open();
+    expect(await browser.execute(s => document.querySelector<HTMLInputElement>(s)!.checked, DISPLAY)).toBe(true);
+    await browser.execute(() => { try { localStorage.removeItem("caffeinateFlags"); } catch { /* private mode */ } });
+    await browser.keys("Escape"); await waitGone(PANEL);
   });
 
   it("validates an until deadline and replaces an active session", async () => {
