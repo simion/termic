@@ -356,6 +356,19 @@ describe("prefs: terminalRenderer default on a software rasterizer", () => {
     expect(usePrefs.getState().terminalRenderer).toBe("dom");
   });
 
+  it("reset forgets an explicit pick and returns to the detected default", async () => {
+    localStorage.setItem("terminalRenderer", "webgl");
+    localStorage.setItem("terminalGpuEnabled", "1");
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().terminalRenderer).toBe("webgl");
+    usePrefs.getState().resetAppearance();
+    expect(usePrefs.getState().terminalRenderer).toBe("canvas");
+    expect(usePrefs.getState().terminalGpuEnabled).toBe(false);
+    // Nothing stored, so the next launch decides again.
+    expect(localStorage.getItem("terminalRenderer")).toBeNull();
+    expect(localStorage.getItem("terminalGpuEnabled")).toBeNull();
+  });
+
   it("stays on webgl when the backend did not set the flag", async () => {
     vi.stubGlobal("__TERMIC_SOFTWARE_GL__", undefined);
     const { usePrefs } = await import("./prefs");

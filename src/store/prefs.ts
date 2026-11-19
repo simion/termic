@@ -1770,7 +1770,16 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setTerminalLetterSpacing(d.terminalLetterSpacing);
     s.setTerminalScrollback(d.terminalScrollback);
     s.setTerminalOptionAsMeta(d.terminalOptionAsMeta);
-    s.setTerminalGpuEnabled(d.terminalGpuEnabled);
+    // Forget the renderer choice rather than writing webgl: with nothing
+    // stored, each launch takes the backend's default again (canvas where
+    // WebGL is software-rendered). Writing it would keep a WSL user on the
+    // laggy renderer for good.
+    try {
+      localStorage.removeItem(LS_TERMINAL_RENDERER);
+      localStorage.removeItem(LS_TERMINAL_GPU);
+    } catch {}
+    const renderer = defaultTerminalRenderer();
+    usePrefs.setState({ terminalRenderer: renderer, terminalGpuEnabled: renderer === "webgl" });
     s.setShareShellHistory(d.shareShellHistory);
     s.setEditorFontSize(d.editorFontSize);
     s.setUiScale(d.uiScale);
