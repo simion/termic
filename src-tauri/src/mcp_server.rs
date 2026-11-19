@@ -1353,6 +1353,24 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_pin",
+        cli_verb: "pin",
+        description: "Pin a task in the sidebar (stays listed whatever the filters), or unpin it.",
+        params: &[
+            P_TASK_SELF,
+            P_PROJECT,
+            ParamDef { name: "off", json_type: "boolean", required: false, description: "Unpin instead.", cli_flag: Some("--off") },
+        ],
+        destructive: false,
+        read_only: false,
+        build: |a| Ok(Command::Pin {
+            task: Some(need_str(a, "task")?),
+            project: arg_str(a, "project")?,
+            pinned: !arg_bool(a, "off")?,
+            cwd: None,
+        }),
+    },
+    ToolDef {
         name: "task_group",
         cli_verb: "group",
         description: "Show, name or recolour a task's sidebar group (tasks you create join yours), or move a task in or out. Name it for the batch of work. An ungrouped task founds its group.",
@@ -4043,7 +4061,9 @@ mod tests {
         // 29298: task_run, parity with `termic run`: start, stop or report
         // the task's run/setup script in its Run tab, and the one sentence
         // that steers an agent to it instead of its own dev server.
-        const RECORDED: usize = 29298;
+        // 29770: task_pin, parity with `termic pin`: pin or unpin a task in
+        // the sidebar, which a remote client's task menu needs too.
+        const RECORDED: usize = 29770;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

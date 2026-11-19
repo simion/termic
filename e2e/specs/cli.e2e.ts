@@ -733,6 +733,41 @@ describe("termic rename: label only, over the real socket (GH #153)", () => {
   });
 });
 
+describe("termic pin: the row's Pin, over the real socket", () => {
+  let taskId: string;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("cli-pin", false);
+  });
+
+  const pinnedInStore = () => browser.execute((i) => !!window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.pinned, taskId);
+  const markOnRow = () => browser.execute((i) => !!document.querySelector(`[data-sidebar-task-id="${i}"] [data-testid="task-pinned-mark"]`), taskId);
+
+  it("pins by default: the reply, the store and the row's mark agree", async () => {
+    const r = await rpc({ cmd: "pin", task: "cli-pin" });
+    expect(r.ok).toBe(true);
+    expect(r.data.kind).toBe("pin");
+    expect(r.data.pinned).toBe(true);
+    expect(r.data.task.id).toBe(taskId);
+    expect(await pinnedInStore()).toBe(true);
+    await browser.waitUntil(markOnRow, { timeout: 5000, timeoutMsg: "the row never showed its pin" });
+  });
+
+  it("unpins with pinned: false, and an unknown task changes nothing", async () => {
+    const r = await rpc({ cmd: "pin", task: "cli-pin", pinned: false });
+    expect(r.ok).toBe(true);
+    expect(r.data.pinned).toBe(false);
+    expect(await pinnedInStore()).toBe(false);
+    await browser.waitUntil(async () => !(await markOnRow()), { timeout: 5000, timeoutMsg: "the pin mark stayed" });
+    const bad = await rpc({ cmd: "pin", task: "no-such-task-xyz" });
+    expect(bad.ok).toBe(false);
+  });
+});
+
 // `termic new --from` / `--resume` (GH #169): adopt a worktree some outside
 // script created, over the real socket. The full server thread runs: project
 // resolution from the worktree's own repo (repo_worktrees), the import RPC

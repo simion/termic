@@ -974,6 +974,9 @@ pub(crate) fn dispatch_authenticated(
         Command::Rename { task, project, name, cwd } => {
             handle_rename(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), name)
         }
+        Command::Pin { task, project, pinned, cwd } => {
+            handle_pin(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), *pinned)
+        }
         Command::Group { task, project, name, color, cwd, caller_task, join, leave } => handle_group(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             name.as_deref(), color.as_deref(), caller_task.as_deref(), join.as_deref(), *leave,
@@ -3633,6 +3636,25 @@ fn handle_rename(
         id,
         ReplyData::Rename(proto::RenameData { task: renamed, old_name: t.name }),
     )
+}
+
+/// `pin`: pin or unpin a task, as the sidebar row's Pin does. Through the
+/// webview (`pin_task`) like rename, so the store the sidebar draws from
+/// changes with the file and the row moves at once.
+fn handle_pin(id: &str, host: &dyn CliHost, task: Option<&str>, project: Option<&str>, cwd: Option<&str>, pinned: bool) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    if let Err(e) = host.rpc("pin_task", serde_json::json!({ "taskId": t.id, "pinned": pinned }), PROJECT_RPC_TIMEOUT) {
+        return Reply::err(id, ErrorCode::Internal, format!("pin failed ({e})"));
+    }
+    let (projects, tasks) = host.projects_tasks();
+    match tasks.iter().find(|w| w.id == t.id) {
+        Some(w) => Reply::ok(id, ReplyData::Pin(proto::PinData { task: summarize(w, &projects, &tasks, None, None), pinned })),
+        None => Reply::err(id, ErrorCode::Internal, "task disappeared during pin"),
+    }
 }
 
 /// `group`: report, or rename / recolour, the task's sidebar task group. The
@@ -8349,6 +8371,34 @@ mod tests {
         // The server trims before sending; the webview must never see
         // padding it would have to re-trim.
         assert_eq!(calls[0].1["name"], "PR 9 - retitle");
+    }
+
+    #[test]
+    fn pin_routes_through_the_webview_and_defaults_to_pinning() {
+        let host = StubHost::default();
+        host.script_rpc("pin_task", Ok(serde_json::Value::Null));
+        // The wire form a remote client sends: no `pinned` means pin.
+        let cmd: Command = serde_json::from_value(serde_json::json!({ "cmd": "pin", "task": "solo" })).unwrap();
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Pin(p)) = reply.data else { panic!("expected pin, got {reply:?}") };
+        assert!(p.pinned);
+        assert_eq!(p.task.id, "w3");
+        let unpin = Command::Pin { task: Some("solo".into()), project: None, pinned: false, cwd: None };
+        assert!(handle(&req(unpin, Some("tok")), &host).ok);
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls.iter().map(|c| (c.0.as_str(), c.1["taskId"].clone(), c.1["pinned"].clone())).collect::<Vec<_>>(), vec![
+            ("pin_task", serde_json::json!("w3"), serde_json::json!(true)),
+            ("pin_task", serde_json::json!("w3"), serde_json::json!(false)),
+        ]);
+    }
+
+    #[test]
+    fn pin_names_an_unknown_task_and_writes_nothing() {
+        let host = StubHost::default();
+        let reply = handle(&req(Command::Pin { task: Some("nope".into()), project: None, pinned: true, cwd: None }, Some("tok")), &host);
+        assert!(!reply.ok);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
     }
 
     #[test]

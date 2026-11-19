@@ -1178,6 +1178,29 @@ disabled, 6 refused, 8 the app exited mid-command."
         #[arg(short, long)]
         yes: bool,
     },
+    /// Pin or unpin a task in the sidebar, so it stays listed whatever the filters say.
+    #[command(after_help = "Does what the sidebar row's Pin does: a pinned task stays listed whatever \
+the sidebar's search and project filter say, and its project and group stay with it. \
+It does not move the row.
+
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current directory.
+
+Prints the result on stdout. With --output-format json, one object: \
+{\"task\": {...}, \"pinned\"}.
+
+Exit codes: 0 done, 1 error (unknown or ambiguous task), 4 app not running, \
+5 CLI disabled, 6 refused, 8 connection lost.")]
+    Pin {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Unpin instead.
+        #[arg(long)]
+        off: bool,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
     /// Rename a task: the sidebar label only; branch and directory stay.
     #[command(
         allow_missing_positional = true,
@@ -2446,6 +2469,20 @@ outside.",
         Cmd::Quit { yes } => execute_quit(&mut conn, &token, format, *yes, &paths),
         Cmd::Archive { task, project, yes } => {
             execute_archive(&mut conn, &token, format, task, project.as_deref(), *yes, &paths)
+        }
+        Cmd::Pin { task, off, project } => {
+            let target = task.clone().or_else(|| own_env("TERMIC_TASK_ID"));
+            let data = client::request(
+                &mut conn,
+                proto::Command::Pin {
+                    task: target,
+                    project: project.clone(),
+                    pinned: !off,
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
         }
         Cmd::Rename { task, name, project } => {
             // Explicit task wins; otherwise the caller's own task
@@ -3914,6 +3951,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
         (Cmd::Status { .. }, _) => Err(unexpected("status")),
         (Cmd::Open { .. }, _) => Err(unexpected("open")),
         (Cmd::Rename { .. }, _) => Err(unexpected("rename")),
+        (Cmd::Pin { .. }, proto::ReplyData::Pin(p)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&p),
+            OutputFormat::Text => format!("{} {}/{}", if p.pinned { "pinned" } else { "unpinned" }, p.task.project, p.task.name),
+        }),
+        (Cmd::Pin { .. }, _) => Err(unexpected("pin")),
         (Cmd::Group { .. }, proto::ReplyData::Group(g)) => Ok(match format {
             OutputFormat::Json | OutputFormat::StreamJson => output::json(&g),
             OutputFormat::Text => output::group_text(&g),
@@ -4681,6 +4723,21 @@ mod tests {
         assert!(Cli::try_parse_from(["termic", "rename"]).is_err());
         // --project only disambiguates an explicit task name.
         assert!(Cli::try_parse_from(["termic", "rename", "new", "--project", "web"]).is_err());
+    }
+
+    #[test]
+    fn pin_parses_and_renders() {
+        let Cmd::Pin { task, off, project } = Cli::try_parse_from(["termic", "pin", "fix-login"]).unwrap().cmd else { panic!("not pin") };
+        assert_eq!((task.as_deref(), off, project), (Some("fix-login"), false, None));
+        let Cmd::Pin { task, off, .. } = Cli::try_parse_from(["termic", "pin", "--off"]).unwrap().cmd else { panic!("not pin") };
+        assert_eq!((task, off), (None, true));
+        assert!(Cli::try_parse_from(["termic", "pin", "--project", "web"]).is_err(), "--project needs a task");
+        let cmd = Cmd::Pin { task: None, off: false, project: None };
+        let data = proto::ReplyData::Pin(proto::PinData {
+            task: proto::TaskSummary { id: "w1".into(), name: "fix-login".into(), project: "web".into(), ..Default::default() },
+            pinned: true,
+        });
+        assert_eq!(render(&cmd, OutputFormat::Text, data).unwrap(), "pinned web/fix-login");
     }
 
     #[test]

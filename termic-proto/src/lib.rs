@@ -126,7 +126,11 @@ use std::io::{self, BufRead, Read, Write};
 /// script in its Run tab, the same tab the app's Run button drives. A v24
 /// server does not know the verb, and the version check says "restart the
 /// app" where the bare failure would read as a broken command.
-pub const PROTOCOL_VERSION: u32 = 25;
+///
+/// v26: the `pin` verb pins or unpins a task in the sidebar (a pinned task
+/// stays listed whatever the filters say), so a remote client or an agent
+/// can do what the row's Pin does. A v25 server does not know it.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -715,6 +719,19 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// v26: pin or unpin a task in the sidebar, as the row's Pin does: a
+    /// pinned task stays listed whatever the sidebar's filters say. Pins by
+    /// default; `pinned: false` unpins. cwd-aware when `task` absent.
+    Pin {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default = "pin_default")]
+        pinned: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// v15: show or change a task's sidebar TASK GROUP (the block a task an
     /// agent creates joins, led by that agent's task). With neither `name`
     /// nor `color` it only reports. Setting either on a task in no group
@@ -1161,6 +1178,7 @@ pub enum ReplyData {
     Quit(QuitData),
     Archive(ArchiveData),
     Rename(RenameData),
+    Pin(PinData),
     Group(GroupData),
     Run(RunData),
     Pad(PadData),
@@ -1482,6 +1500,17 @@ pub struct RenameData {
     pub task: TaskSummary,
     /// What the task was called before, for "renamed X to Y" output.
     pub old_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PinData {
+    /// The task after the change, re-read from disk.
+    pub task: TaskSummary,
+    pub pinned: bool,
+}
+
+fn pin_default() -> bool {
+    true
 }
 
 /// A task's sidebar task group, as `group` and task summaries report it.
@@ -2633,6 +2662,8 @@ mod tests {
                 name: "retitled".into(),
                 cwd: Some("/tasks/web/x".into()),
             },
+            Command::Pin { task: Some("fix-auth".into()), project: Some("web".into()), pinned: true, cwd: None },
+            Command::Pin { task: None, project: None, pinned: false, cwd: Some("/tasks/web/x".into()) },
             Command::PadList { task: None, project: None, scope: None, cwd: Some("/tasks/web/x".into()) },
             Command::PadNew {
                 task: Some("fix-auth".into()),
