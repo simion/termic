@@ -289,6 +289,36 @@ Its session takes any connected reader and writer
 (`session::serve_conn`) and its id is 32 hex, so a phone can later pair
 with a server directly (docs/plans/remote-control.md, step 3).
 
+## Push (prepared, not live)
+
+A phone in a pocket has no stream: iOS suspends the app seconds after it
+leaves the screen. Push is how "needs you" reaches it. Prepared end to end
+except the relay, so nothing is sent yet:
+
+- **The phone** asks for nothing on its own. "Notify me when away" in its
+  Settings is the one place that shows the system prompt; once allowed it
+  reads the device token (APNs on iOS, FCM on Android, through
+  `expo-notifications`, not Expo's push service) and sends
+  `push_token { platform, token }` over the sealed stream on every
+  connect. An empty token unregisters.
+- **The desktop** keeps it on the phone's pairing (`peers.json`, `push`),
+  and every OS notification it shows (`notify` in src/lib/ipc.ts) is
+  offered to `phones_push` (src-tauri/src/push.rs), which targets paired
+  phones that are not connected right now.
+- **The relay** is missing: `PUSH_RELAY` is `None`, so `phones_push` logs
+  and returns. Apple's push key (`.p8`) and an FCM service account cannot
+  ship inside the app, so a small sender on termic.dev (a Worker) will hold
+  them and forward `{ platform, token, title, body }`. termic.dev is
+  already the one host the app talks to.
+
+Left, in order: the Apple push key and the iOS `aps-environment`
+entitlement (the `expo-notifications` config plugin, plus the App ID's
+Push capability), a Firebase project and `google-services.json` for
+Android, the Worker, then `PUSH_RELAY`. What a push says is the desktop
+notification's own line ("project · task", "needs you"): Apple or
+Google, and the relay, see that much. Encrypting it to the phone's pair
+key (a Notification Service Extension decrypts it) would hide even that.
+
 ## Not done / known limits
 
 - termic-server builds: `scripts/build-termic-server.mjs` builds static

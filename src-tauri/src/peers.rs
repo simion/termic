@@ -316,6 +316,17 @@ struct PhoneRecord {
     paired_at_ms: i64,
     last_seen_ms: Option<i64>,
     addr: Option<String>,
+    /// Where to push to it while it is away (push.rs). Set by the phone.
+    push: Option<PushTarget>,
+}
+
+/// A phone's push token and the service it belongs to ("ios" = APNs,
+/// "android" = FCM).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct PushTarget {
+    pub platform: String,
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1839,6 +1850,25 @@ impl Node {
         Ok(())
     }
 
+    /// Keep (or, with `None`, drop) the push token a paired phone sent.
+    pub(crate) fn set_phone_push(&self, id: &str, target: Option<PushTarget>) {
+        let mut s = self.store.lock().unwrap();
+        let Some(p) = s.phones.iter_mut().find(|p| p.id == id) else { return };
+        if p.push == target {
+            return;
+        }
+        p.push = target;
+        self.save(&s);
+    }
+
+    /// The push targets of paired phones that are not connected now: a
+    /// phone looking at the app already sees the change.
+    pub(crate) fn away_push_targets(&self) -> Vec<PushTarget> {
+        let live = self.connected_ids();
+        let s = self.store.lock().unwrap();
+        s.phones.iter().filter(|p| !live.contains(&p.id)).filter_map(|p| p.push.clone()).collect()
+    }
+
     pub(crate) fn rename_phone(&self, id: &str, name: &str) -> Result<(), String> {
         {
             let mut s = self.store.lock().unwrap();
@@ -1945,6 +1975,8 @@ impl Node {
                 paired_at_ms: now_ms(),
                 last_seen_ms: Some(now_ms()),
                 addr: Some(src.to_string()),
+                // A fresh pairing: the phone sends its token again on connect.
+                push: None,
             });
             self.save(&s);
         }

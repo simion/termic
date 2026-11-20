@@ -308,6 +308,13 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                 send(&s, msg);
             });
         }
+        ClientMsg::PushToken { platform, token } => {
+            if s.client.kind == ClientKind::Phone {
+                let target = (!token.is_empty() && matches!(platform.as_str(), "ios" | "android"))
+                    .then_some(crate::peers::PushTarget { platform, token });
+                s.node.set_phone_push(&s.client.id, target);
+            }
+        }
         ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
     }
 }

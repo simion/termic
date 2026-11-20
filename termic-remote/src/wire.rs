@@ -137,6 +137,10 @@ pub enum ClientMsg {
     /// The agent's turns, once. The client asks again when the task's
     /// state changes; nothing is polled on the host.
     Transcript { id: String, task: String },
+    /// A phone's push token (APNs on iOS, FCM on Android), sent once the
+    /// person allowed notifications; an empty token unregisters. The host
+    /// pushes "needs you" and "finished" to it while the phone is away.
+    PushToken { platform: String, token: String },
     Ping {},
     #[serde(other)]
     Unknown,

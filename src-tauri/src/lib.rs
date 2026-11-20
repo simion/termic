@@ -55,6 +55,7 @@ mod mcp_server;
 mod mdns;
 mod peer_crypto;
 mod peers;
+mod push;
 mod remote_client;
 mod remote_server;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
@@ -28786,6 +28787,7 @@ pub fn run() {
             mcp_server::mcp_regenerate_token,
             mcp_server::mcp_install_client,
             peers::peer_status,
+            push::phones_push,
             peers::peer_set_name,
             peers::peer_pair,
             peers::peer_pair_mode,
