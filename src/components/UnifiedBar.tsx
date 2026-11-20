@@ -270,7 +270,26 @@ export function UnifiedBar() {
             palette's global commands (new task, project picker, settings)
             work with nothing selected. */}
         <CommandPaletteButton />
-        {task && proj && (
+        {task && proj && proj.server && (
+          <>
+            {/* A server project's task (docs/plans/server-projects.md): run,
+                prompts, send to main, sandbox and open-with act on this Mac
+                and land with their stages; archive works through the box. */}
+            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            <Tip content={t("unifiedBar.archiveTask")} side="bottom">
+              <Button size="icon" variant="icon" onClick={() => { void confirmAndArchive(task); }} data-testid="archive-task">
+                <Archive className="h-4 w-4" />
+              </Button>
+            </Tip>
+            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
+              <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
+                <PanelRight className="h-4 w-4" />
+              </Button>
+            </Tip>
+          </>
+        )}
+        {task && proj && !proj.server && (
           <>
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             {/* Popped-out run controls (GH #54): Setup + Run/Stop live up

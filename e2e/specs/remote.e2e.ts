@@ -507,6 +507,14 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
+    // Its top bar keeps what works on a box: archive and the panel toggle.
+    expect(await browser.execute(() => ({
+      archive: !!document.querySelector('[data-testid="archive-task"]'),
+      panel: !!document.querySelector('[data-testid="toggle-right-panel"]'),
+      prompts: !!document.querySelector('[data-testid="prompts-menu"]'),
+      run: !!document.querySelector('[data-testid="run-button"]'),
+      openWith: !!document.querySelector('[data-testid="open-with-launch"]'),
+    }))).toEqual({ archive: true, panel: true, prompts: false, run: false, openWith: false });
     // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
     // pty_open): what it runs lands in the box's worktree.
     await clickPresent('[data-testid="server-new-shell"]');
