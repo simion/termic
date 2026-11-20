@@ -373,7 +373,16 @@ export function startRemote() {
   void import("@/store/app").then(({ useApp }) => {
     const push = (colors: Record<string, string>) => { void invoke("remote_set_folder_colors", { colors }).catch(() => {}); };
     push(useApp.getState().groupColors);
-    useApp.subscribe((s, prev) => { if (s.groupColors !== prev.groupColors) push(s.groupColors); });
+    // And what this window's sidebar has folded, so a phone opens the same.
+    const on = (m: Record<string, boolean>) => Object.keys(m).filter(k => m[k]);
+    const pushFolds = (s: ReturnType<typeof useApp.getState>) => {
+      void invoke("remote_set_sidebar_folds", { folds: { projects: on(s.collapsedProjects), folders: on(s.collapsedGroups), taskGroups: on(s.collapsedTaskGroups) } }).catch(() => {});
+    };
+    pushFolds(useApp.getState());
+    useApp.subscribe((s, prev) => {
+      if (s.groupColors !== prev.groupColors) push(s.groupColors);
+      if (s.collapsedProjects !== prev.collapsedProjects || s.collapsedGroups !== prev.collapsedGroups || s.collapsedTaskGroups !== prev.collapsedTaskGroups) pushFolds(s);
+    });
   });
   void listen<MachineView[]>(REMOTE_MACHINES_EVENT, e => useRemote.getState().setMachines(e.payload)).catch(() => {});
 }

@@ -28807,6 +28807,7 @@ pub fn run() {
             remote_client::remote_term_close,
             remote_client::remote_term_input,
             remote_client::remote_set_folder_colors,
+            remote_client::remote_set_sidebar_folds,
             remote_client::remote_term_size,
             remote_client::remote_reconnect,
             remote_client::server_add,

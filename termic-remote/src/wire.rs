@@ -255,6 +255,9 @@ pub struct TaskRow {
     /// The task's pull or merge request, as the host last read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<RowPr>,
+    /// Its project is folded shut in the host's sidebar.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub project_collapsed: bool,
     /// The host profile its project belongs to. Absent on a host with no
     /// profiles (and on termic-server): one unnamed profile, nothing to pick.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +283,10 @@ pub struct RowGroup {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Folded shut in the host's sidebar, so a client can open in the same
+    /// shape.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -496,8 +503,8 @@ mod tests {
             agent: "claude".into(),
             state: "idle".into(),
             tabs: vec![TabRow { id: "t".into(), title: "claude".into(), agent: "claude".into(), state: "idle".into(), is_default: true, kind: "agent".into(), live: Some(true), viewable: None, props: vec![RowProp { key: "ticket".into(), value: "ABC-1".into() }] }],
-            group: Some(RowGroup { id: "g".into(), name: "Auth".into(), color: Some("teal".into()) }),
-            project_group: Some(RowGroup { id: "Backend".into(), name: "Backend".into(), color: None }),
+            group: Some(RowGroup { id: "g".into(), name: "Auth".into(), color: Some("teal".into()), ..Default::default() }),
+            project_group: Some(RowGroup { id: "Backend".into(), name: "Backend".into(), color: None, ..Default::default() }),
             pinned: true,
             project_order: Some(2),
             order: Some(0),

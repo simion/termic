@@ -487,6 +487,34 @@ pub(crate) fn set_project_folder_colors(colors: HashMap<String, String>) {
     *FOLDER_COLORS.lock().unwrap() = colors;
 }
 
+/// What each window's sidebar has folded shut (its localStorage maps),
+/// pushed on every change and keyed by window, since each profile's window
+/// keeps its own. Rows carry it so a phone opens in the same shape.
+#[derive(Clone, Default, Debug, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct Folds {
+    pub projects: Vec<String>,
+    pub folders: Vec<String>,
+    pub task_groups: Vec<String>,
+}
+
+static FOLDS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Folds>>> = std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn set_sidebar_folds(window: &str, folds: Folds) {
+    FOLDS.lock().unwrap().insert(window.to_string(), folds);
+}
+
+/// Every window's folds as one set (ids are unique across profiles).
+fn sidebar_folds() -> Folds {
+    let mut all = Folds::default();
+    for f in FOLDS.lock().unwrap().values() {
+        all.projects.extend(f.projects.iter().cloned());
+        all.folders.extend(f.folders.iter().cloned());
+        all.task_groups.extend(f.task_groups.iter().cloned());
+    }
+    all
+}
+
 fn project_folder_colors() -> HashMap<String, String> {
     FOLDER_COLORS.lock().unwrap().clone()
 }
@@ -494,7 +522,7 @@ fn project_folder_colors() -> HashMap<String, String> {
 /// How the host's sidebar files and marks a task: its group (named, or
 /// after its lead task as the sidebar does), its project's folder, pin,
 /// display order and pull request.
-fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::Task], folder_colors: &HashMap<String, String>, registry: &crate::profiles::Registry) -> TaskRow {
+fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::Task], folder_colors: &HashMap<String, String>, registry: &crate::profiles::Registry, folds: &Folds) -> TaskRow {
     let group = t.group.as_ref().map(|g| RowGroup {
         id: g.id.clone(),
         name: g
@@ -506,6 +534,7 @@ fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::
             .or_else(|| tasks.iter().find(|x| x.id == g.id).map(|x| x.name.clone()))
             .unwrap_or_else(|| "Task group".into()),
         color: g.color.clone(),
+        collapsed: folds.task_groups.contains(&g.id),
     });
     let project_pos = projects.iter().position(|p| p.id == t.project_id);
     // The folder's name as the sidebar shows and keys it: trimmed, ALL-CAPS
@@ -515,7 +544,7 @@ fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::
         .and_then(|i| projects[i].group.as_deref())
         .map(|g| g.trim().to_uppercase())
         .filter(|g| !g.is_empty())
-        .map(|g| RowGroup { color: folder_colors.get(&g).cloned(), id: g.clone(), name: g });
+        .map(|g| RowGroup { color: folder_colors.get(&g).cloned(), collapsed: folds.folders.contains(&g), id: g.clone(), name: g });
     // Position among the project's live tasks in store order, which is the
     // sidebar's order.
     let order = tasks.iter().filter(|x| !x.archived && x.project_id == t.project_id).position(|x| x.id == t.id);
@@ -533,6 +562,7 @@ fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::
         group,
         project_group,
         profile,
+        project_collapsed: folds.projects.contains(&t.project_id),
         pinned: t.pinned,
         project_order: project_pos.map(|i| i as u32),
         order: order.map(|i| i as u32),
@@ -562,6 +592,7 @@ fn state_loop(s: &Session) {
         let live: Vec<&crate::Task> = tasks.iter().filter(|t| !t.archived).collect();
         let folder_colors = project_folder_colors();
         let registry = crate::profile_registry();
+        let folds = sidebar_folds();
         let snap = cache.snapshot();
         let ids: Vec<String> = live.iter().map(|t| t.id.clone()).collect();
         let states = crate::cli_server::cached_work_states(&snap, &ids);
@@ -626,7 +657,7 @@ fn state_loop(s: &Session) {
                     diff: diffs.get(&t.id).cloned(),
                     created: (!t.created.is_empty()).then(|| t.created.clone()),
                     is_main_checkout: t.is_main_checkout,
-                    ..sidebar_fields(t, &projects, &tasks, &folder_colors, &registry)
+                    ..sidebar_fields(t, &projects, &tasks, &folder_colors, &registry, &folds)
                 }
             })
             .collect();
@@ -712,15 +743,26 @@ mod sidebar_tests {
         let tasks = vec![gone, lead, member.clone(), named.clone()];
         let colors: HashMap<String, String> = [("BACKEND".to_string(), "purple".to_string())].into();
 
-        let r = sidebar_fields(&member, &projects, &tasks, &colors, &Default::default());
-        assert_eq!(r.group, Some(RowGroup { id: "lead".into(), name: "orchestrate".into(), color: Some("teal".into()) }), "unnamed: after its lead");
-        assert_eq!(r.project_group, Some(RowGroup { id: "BACKEND".into(), name: "BACKEND".into(), color: Some("purple".into()) }), "named and keyed as groupOf normalizes it");
+        let r = sidebar_fields(&member, &projects, &tasks, &colors, &Default::default(), &Default::default());
+        assert_eq!(r.group, Some(RowGroup { id: "lead".into(), name: "orchestrate".into(), color: Some("teal".into()), ..Default::default() }), "unnamed: after its lead");
+        assert_eq!(r.project_group, Some(RowGroup { id: "BACKEND".into(), name: "BACKEND".into(), color: Some("purple".into()), ..Default::default() }), "named and keyed as groupOf normalizes it");
         assert!(r.pinned);
         assert_eq!((r.project_order, r.order), (Some(1), Some(1)), "the archived task takes no place");
         assert_eq!(r.pr.as_ref().map(|p| (p.number, p.state.as_deref(), p.title.as_deref())), Some((42, Some("open"), Some("Fix auth"))));
 
-        let n = sidebar_fields(&named, &projects, &tasks, &colors, &Default::default());
+        let n = sidebar_fields(&named, &projects, &tasks, &colors, &Default::default(), &Default::default());
         assert_eq!(n.group.map(|g| g.name), Some("Docs work".to_string()));
         assert_eq!((n.project_group, n.pinned, n.pr, n.project_order, n.order), (None, false, None, Some(0), Some(0)));
+    }
+
+    #[test]
+    fn rows_say_what_the_sidebar_has_folded() {
+        set_sidebar_folds("w1", Folds { projects: vec!["p1".into()], folders: vec![], task_groups: vec!["g1".into()] });
+        set_sidebar_folds("w2", Folds { projects: vec![], folders: vec!["BACKEND".into()], task_groups: vec![] });
+        let f = sidebar_folds();
+        assert_eq!((f.projects, f.folders, f.task_groups), (vec!["p1".to_string()], vec!["BACKEND".to_string()], vec!["g1".to_string()]), "every window's folds, merged");
+        set_sidebar_folds("w2", Folds::default());
+        assert!(sidebar_folds().folders.is_empty(), "a window's push replaces its own earlier one");
+        FOLDS.lock().unwrap().clear();
     }
 }

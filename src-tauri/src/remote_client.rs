@@ -817,6 +817,12 @@ pub(crate) fn remote_set_folder_colors(colors: std::collections::HashMap<String,
     crate::remote_server::set_project_folder_colors(colors);
 }
 
+/// One window's sidebar folds (see remote_server.rs `Folds`).
+#[tauri::command]
+pub(crate) fn remote_set_sidebar_folds(window: tauri::Window, folds: crate::remote_server::Folds) {
+    crate::remote_server::set_sidebar_folds(window.label(), folds);
+}
+
 #[tauri::command]
 pub(crate) fn remote_term_size(machine: String, cols: u16, rows: u16) -> Result<(), String> {
     term_size(&machine, cols, rows)
