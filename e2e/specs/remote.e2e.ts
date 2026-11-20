@@ -171,6 +171,13 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="server-ssh"]');
     await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
     await waitGone('[data-testid="server-ssh"]');
+    // And from Add project: the link closes it and opens the server dialog.
+    await clickPresent('[data-testid="sidebar-add-project"]');
+    await clickPresent('[data-testid="new-project-add-server"]');
+    await waitVisible('[data-testid="server-ssh"]');
+    await waitGone('[data-testid="project-mode-repo"]');
+    await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
+    await waitGone('[data-testid="server-ssh"]');
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
   });
 

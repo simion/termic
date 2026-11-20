@@ -62,7 +62,7 @@ a program in the task's folder. Instead of a verb per feature:
   editor read and save go to the box too. Left: setup and archive
   scripts, `.termic.yaml`, clone and add project, a file watcher (today
   Refresh rereads), and the full task menu for server tasks.
-- Stage 4, partly: a server records the window it was added in and its
+- Stage 4 in full: a server records the window it was added in and its
   projects mirror into that profile; the sidebar's projects header has an
   Add a server button. Left: adding one from the Add project dialog.
 

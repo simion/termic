@@ -318,6 +318,8 @@ export default {
     modeCloneHint: "Clone a remote repo, then add it.",
     modeMulti: "Multi-repo project",
     modeMultiHint: "Several repos in one task. Shared memory across them.",
+    onServer: "On a machine you reach over SSH?",
+    addServer: "Add a server",
     confirmProjectTitle: "Not a git repository",
     confirmProjectBody: "Add it as a plain folder: agents run at the folder root, with no worktrees or branches. Or make it a git repo: Termic runs git init and makes an empty first commit, so each task gets its own branch. Your files are left uncommitted.",
     confirmHostTitle: "Add a non-git host?",

@@ -317,6 +317,8 @@ export default {
     modeCloneHint: "克隆远程仓库，然后添加它。",
     modeMulti: "多仓库项目",
     modeMultiHint: "多个仓库共享一个任务。跨仓库共享记忆。",
+    onServer: "项目在通过 SSH 访问的机器上?",
+    addServer: "添加服务器",
     confirmProjectTitle: "不是 git 仓库",
     confirmProjectBody: "添加为普通文件夹：智能体在文件夹根部运行，没有工作树和分支。或者把它变成 git 仓库：Termic 会运行 git init 并创建一个空的首次提交，这样每个任务都有自己的分支。你的文件不会被提交。",
     confirmHostTitle: "添加非 git 宿主？",
