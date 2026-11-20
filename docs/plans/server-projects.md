@@ -60,8 +60,9 @@ a program in the task's folder. Instead of a verb per feature:
   shell tabs on the box that live on while you switch tasks; Run opens
   the run script (Settings or the box's `.termic.yaml`, read there) in
   one. Prompts go to the box's agent through termic-server `send`. Left:
-  setup scripts on the box, custom run commands, Stop, and Open with
-  (hidden for server tasks). Send to main runs on the box.
+  custom run commands, Stop, and Open with (hidden for server tasks).
+  Send to main runs on the box, and a task made from the server dialog
+  runs the setup script in a Setup tab there.
 - Stage 3, partly: termic-server `exec` (fenced to project roots and
   worktrees). `git_bytes` and `git_raw` (lib.rs) send a server folder's git
   there through an index of server paths in `server_projects.rs`, so the

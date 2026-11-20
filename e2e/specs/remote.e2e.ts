@@ -74,7 +74,9 @@ const status = () => browser.execute(() => window.__termic!.invoke("peer_status"
 async function typeInShellUntil(line: string, done: () => boolean | Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 10; i++) {
     await browser.execute((l) => {
-      const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
+      // The shell tab on screen: others (a Setup tab) stay mounted, hidden.
+      const host = [...document.querySelectorAll('[data-testid="aux-terminal"]')].find(e => e.getBoundingClientRect().width > 0)!;
+      const ta = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
       ta.focus();
       ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: l, bubbles: true }));
     }, line);
@@ -230,7 +232,7 @@ describe("Phones and servers", () => {
 
   onBox("adds a real server through the checklist and shows it connected", async () => {
     ssh(`set -e; rm -rf ~/${BOX_DIR}; mkdir -p ~/${BOX_DIR}/repo ~/.termic-server
-cd ~/${BOX_DIR}/repo && git init -q -b main && git -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init
+cd ~/${BOX_DIR}/repo && git init -q -b main && printf 'scripts:\n  setup: touch set-up-ran\n' > .termic.yaml && git add .termic.yaml && git -c user.email=e2e@termic.dev -c user.name=e2e commit -q -m init
 printf '%s\n' '#!/bin/sh' 'printf "fake agent ready\\r\\n> "' 'while IFS= read -r l; do printf "box says: %s\\r\\n> " "$l"; done' > ~/${BOX_DIR}/agent.sh
 chmod +x ~/${BOX_DIR}/agent.sh
 [ -e ~/.termic-server/agents.json ] && mv ~/.termic-server/agents.json ~/.termic-server/agents.json.e2e-bak || true
@@ -340,6 +342,11 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     // desktop lands there, and a commit made here is the box's newest.
     const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
     expect(wt).toContain(".termic-server/worktrees");
+    // The repo's setup script ran in a Setup tab on the box when the task
+    // was created from the dialog.
+    await browser.waitUntil(() => ssh(`test -e '${wt}/set-up-ran' && echo yes || true`).trim() === "yes",
+      { timeout: 30_000, timeoutMsg: "the setup script never ran on the box" });
+    expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Setup");
     await browser.execute((id) => window.__termic!.invoke("task_file_write", { id, path: "desk.txt", content: "written from the desk\n" }), task);
     expect(ssh(`cat '${wt}/desk.txt'`)).toBe("written from the desk\n");
     const list = await browser.execute((id) => window.__termic!.invoke("task_dir_list", { id, rel: "", heal: false }), task) as any[];

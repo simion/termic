@@ -331,9 +331,10 @@ funnels consult it:
 What that gives a server task: the right panel (files, editor, Git tab;
 no watcher on the box, so Refresh rereads), shell tabs in its view that
 outlive switching tasks, Run (the run script in a shell tab), Prompts
-(through `send`), Send to main (the diff applied and untracked files
-copied with a tar pipe, both on the box), and Archive. Run commands and
-setup scripts beyond the run script, Open with and the sandbox controls
+(through `send`), a Setup tab running the setup script when the task
+is made from the dialog, Send to main (the diff applied and untracked files
+copied with a tar pipe, both on the box), and Archive. Custom run
+commands, Open with and the sandbox controls
 are hidden for server tasks until they run on the box.
 
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).

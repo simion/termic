@@ -3,6 +3,9 @@
 // worktree and its agent are created THERE; this computer only asks.
 
 import { useApp } from "@/store/app";
+import { resolveSetupScript } from "@/lib/runTabs";
+import { useServerShells } from "./RemoteTaskView";
+import { i18n } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FolderPlus } from "lucide-react";
@@ -107,6 +110,11 @@ function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: stri
         }
         if (useApp.getState().tasks.some(t => t.id === id)) {
           useApp.getState().setActiveTask(id);
+          // The project's setup script (Settings or the box's .termic.yaml)
+          // runs in a shell tab on the box, as a local task's setup tab does.
+          void resolveSetupScript(id).then(script => {
+            if (script) useServerShells.getState().add(id, { label: i18n.t("backend:runTabs.setup"), input: `${script}\r` });
+          }).catch(() => {});
           return;
         }
       }
