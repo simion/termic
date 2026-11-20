@@ -2697,6 +2697,10 @@ fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto
     })
 }
 
+/// Why a task in the project's own checkout shows no chat (phones, the
+/// transcript view): its folder is shared with other sessions.
+const SHARED_CHECKOUT_CHAT: &str = "This task works in the project's own folder, which other sessions share, so its chat can't be told apart. The Terminal tab shows it.";
+
 pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String, Vec<termic_remote::wire::Turn>), String> {
     let (projects, tasks) = host.projects_tasks();
     let t = resolve_by_name(&projects, &tasks, task, None).map_err(|e| e.message)?.clone();
@@ -2708,12 +2712,14 @@ pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String
         // Without it, the folder decides, and a shared checkout's folder
         // is also the user's own sessions' and any sibling task's.
         if sid.is_none() && t.is_main_checkout {
-            return Err("this task shares the project checkout, so its conversation cannot be told apart from others there".into());
+            return Err(SHARED_CHECKOUT_CHAT.into());
         }
         let turns = termic_remote::transcript::other_agent(&t.cli, &home, &t.path, sid.as_deref())?;
         return Ok((t.id, turns));
     }
-    let file = claude_transcript_file(host, &t).map_err(|e| e.message)?;
+    // This answers a person on a phone, not an agent: the CLI's advice
+    // (write RESULT.md) is no use to them.
+    let file = claude_transcript_file(host, &t).map_err(|e| if t.is_main_checkout && e.code == ErrorCode::Unsupported { SHARED_CHECKOUT_CHAT.to_string() } else { e.message })?;
     let jsonl = std::fs::read_to_string(&file).map_err(|e| format!("could not read the transcript ({e})"))?;
     Ok((t.id, termic_remote::transcript::parse_claude_jsonl(&jsonl)))
 }
@@ -12189,7 +12195,13 @@ mod tests {
         host.tasks[2].persisted_tabs.clear();
         host.tasks[2].is_main_checkout = true;
         let err = transcript_turns(&host, "solo").unwrap_err();
-        assert!(err.contains("shares the project checkout"), "{err}");
+        assert_eq!(err, SHARED_CHECKOUT_CHAT);
+        // A claude task there gets the same words for a person, not the
+        // CLI's advice to an agent (write RESULT.md).
+        host.tasks[2].cli = "claude".into();
+        let err = transcript_turns(&host, "solo").unwrap_err();
+        assert_eq!(err, SHARED_CHECKOUT_CHAT);
+        assert!(!err.contains("RESULT.md"));
     }
 
     // ── attach ───────────────────────────────────────────────────────
