@@ -27,6 +27,7 @@ import { usePendingTasks } from "@/store/pendingTasks";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
 import { Expand } from "@/components/ui/Expand";
+import { useRemote } from "@/lib/remote";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { reportBug } from "@/lib/reportBug";
@@ -2989,7 +2990,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
   const spotlightAvailable = !w.is_main_checkout && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
-  const isActive = activeTaskId === w.id;
+  // A server task open in the main area is the active row then, not this
+  // one (it stayed highlighted underneath: two active rows).
+  const remoteOpen = useRemote(s => s.open !== null);
+  const isActive = activeTaskId === w.id && !remoteOpen;
   // Live this session = mounted (its TaskView is rendered and owns PTYs).
   // Gates the Stop menu item; a never-visited or already-stopped task has
   // nothing to stop.

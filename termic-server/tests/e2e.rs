@@ -429,4 +429,8 @@ fn an_interrupt_reaches_the_agents_foreground_command() {
     a.wait_for("term_closed", |m| matches!(m, ServerMsg::TermClosed { reason } if reason == "exited").then_some(()));
     assert!(started.elapsed() < Duration::from_secs(10), "the interrupt did not land");
     a.task_state("napper", |t| t.state == "inactive");
+    // Opening a stopped task starts its agent again (the desktop's Reopen).
+    a.send(&ClientMsg::TermOpen { task: "napper".into(), tab: None });
+    a.wait_for("term_reset after a restart", |m| matches!(m, ServerMsg::TermReset { .. }).then_some(()));
+    a.task_state("napper", |t| t.state != "inactive");
 }

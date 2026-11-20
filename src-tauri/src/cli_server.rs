@@ -4789,6 +4789,12 @@ pub struct TabAgentState {
 }
 
 struct AgentCacheInner {
+    /// Every window's own push (one window per profile, each with its own
+    /// webview), and when it came. `states` is their merge: before this,
+    /// each push replaced the map, so a task running in one window read
+    /// "inactive" whenever another window pushed, and flipped every few
+    /// seconds.
+    windows: HashMap<String, (Instant, HashMap<String, TaskAgentState>)>,
     states: HashMap<String, TaskAgentState>,
     /// Bumped on every push; waiters detect change by seq, never by
     /// polling field diffs.
@@ -4814,14 +4820,24 @@ pub(crate) struct AgentSnapshot {
 impl AgentCache {
     pub(crate) fn new() -> Self {
         AgentCache {
-            inner: Mutex::new(AgentCacheInner { states: HashMap::new(), seq: 0, last_push: None }),
+            inner: Mutex::new(AgentCacheInner { windows: HashMap::new(), states: HashMap::new(), seq: 0, last_push: None }),
             cv: Condvar::new(),
         }
     }
 
     pub(crate) fn update(&self, states: HashMap<String, TaskAgentState>) {
+        self.update_from("", states);
+    }
+
+    /// One window's full map. Windows that stopped pushing (closed) drop
+    /// out after the staleness cutoff; the rest merge, and for a task more
+    /// than one window reports, the one where it runs wins.
+    pub(crate) fn update_from(&self, window: &str, states: HashMap<String, TaskAgentState>) {
         let mut inner = self.inner.lock().unwrap();
-        inner.states = states;
+        let now = Instant::now();
+        inner.windows.insert(window.to_string(), (now, states));
+        inner.windows.retain(|_, (at, _)| now.duration_since(*at) <= CACHE_STALE_AFTER);
+        inner.states = merge_windows(inner.windows.values().map(|(_, m)| m));
         inner.seq += 1;
         inner.last_push = Some(Instant::now());
         drop(inner);
@@ -4859,6 +4875,24 @@ impl AgentCache {
     }
 }
 
+/// Several windows' maps as one: a task's entry from the window where it
+/// runs (any state but inactive/unknown) beats one where it does not.
+fn merge_windows<'a>(maps: impl Iterator<Item = &'a HashMap<String, TaskAgentState>>) -> HashMap<String, TaskAgentState> {
+    let running = |s: &TaskAgentState| !matches!(s.state.as_str(), "inactive" | "unknown");
+    let mut out: HashMap<String, TaskAgentState> = HashMap::new();
+    for m in maps {
+        for (id, st) in m {
+            match out.get(id) {
+                Some(have) if running(have) || !running(st) => {}
+                _ => {
+                    out.insert(id.clone(), st.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn global_agent_cache() -> &'static AgentCache {
     static CACHE: OnceLock<AgentCache> = OnceLock::new();
     CACHE.get_or_init(AgentCache::new)
@@ -4867,8 +4901,8 @@ pub(crate) fn global_agent_cache() -> &'static AgentCache {
 /// Webview push target: the FULL per-task state map (idempotent
 /// snapshot, not a delta - deltas would desync on a webview reload).
 #[tauri::command]
-pub fn cli_agent_states(states: HashMap<String, TaskAgentState>) {
-    global_agent_cache().update(states);
+pub fn cli_agent_states(window: tauri::Window, states: HashMap<String, TaskAgentState>) {
+    global_agent_cache().update_from(window.label(), states);
 }
 
 /// list/status rows from a cache snapshot. Phase 1 reads the
@@ -6983,6 +7017,23 @@ mod tests {
         // Tasks the webview did not report stay unknown, not "idle".
         let other = l.tasks.iter().find(|t| t.project == "api").unwrap();
         assert!(other.work_state.is_none());
+    }
+
+    #[test]
+    fn two_windows_merge_and_the_window_running_a_task_wins() {
+        let st = |s: &str| TaskAgentState { props: Default::default(), state: s.into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true };
+        let cache = AgentCache::new();
+        // The NextTech window runs t1; the Personal window knows t1 too but
+        // runs nothing for it, and has its own t2.
+        cache.update_from("nexttech", HashMap::from([("t1".to_string(), st("idle"))]));
+        cache.update_from("personal", HashMap::from([("t1".to_string(), st("inactive")), ("t2".to_string(), st("working"))]));
+        let snap = cache.snapshot();
+        assert_eq!(snap.states["t1"].state, "idle", "the running window's view, whichever pushed last");
+        assert_eq!(snap.states["t2"].state, "working");
+        // And again in the other order: no flipping.
+        cache.update_from("nexttech", HashMap::from([("t1".to_string(), st("idle"))]));
+        assert_eq!(cache.snapshot().states["t1"].state, "idle");
+        assert_eq!(cache.snapshot().states["t2"].state, "working", "the other window's tasks stay");
     }
 
     #[test]

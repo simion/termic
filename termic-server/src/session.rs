@@ -161,7 +161,12 @@ fn running(s: &Session, task: &str, tab: Option<&str>) -> Result<(String, Arc<Li
         return Err(format!("no tab \"{}\": termic-server tasks have one tab, \"agent\"", tab.unwrap_or_default()));
     }
     let t = verbs::resolve(&s.d, Some(task), None, None).map_err(|e| e.1)?;
-    let live = s.d.live_of(&t.id).filter(|l| !l.pty.exited()).ok_or_else(|| format!("{}'s agent is not running", t.name))?;
+    // Opening a stopped task starts its agent on its last session, as
+    // opening one does on the desktop (and what Reopen is for).
+    let live = match s.d.live_of(&t.id).filter(|l| !l.pty.exited()) {
+        Some(l) => l,
+        None => s.d.spawn_agent(&t, true, None).map_err(|e| format!("{}'s agent could not start: {e}", t.name))?,
+    };
     Ok((t.id, live))
 }
 
