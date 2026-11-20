@@ -257,7 +257,11 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                 if t.restore.is_none() {
                     t.restore = s.host.pty_size(&t.pty_id);
                 }
-                let _ = s.host.pty_set_size(&t.pty_id, rows, cols);
+                if s.host.pty_set_size(&t.pty_id, rows, cols).is_ok() {
+                    // Say so now: the forwarder notices a new size only on the
+                    // next output, and an idle agent prints none.
+                    send(s, ServerMsg::TermResize { cols, rows });
+                }
             }
         }
         ClientMsg::TermInput { data } => {
@@ -390,23 +394,36 @@ fn resolve_pty(s: &Session, task: &str, tab: Option<&str>) -> Result<(String, St
 }
 
 fn open_term(s: &Arc<Session>, task: &str, tab: Option<&str>) {
-    close_term(s);
     let (task_id, pty_id) = match resolve_pty(s, task, tab) {
         Ok(x) => x,
         Err(e) => {
+            close_term(s);
             send(s, ServerMsg::TermClosed { reason: e });
             return;
         }
     };
+    // Reopening the same terminal (the phone does after a resize to redraw)
+    // keeps the phone's size: only leaving it gives the desktop its own back.
+    let keep = {
+        let mut term = s.term.lock().unwrap();
+        match term.as_mut() {
+            Some(t) if t.pty_id == pty_id => t.restore.take(),
+            _ => None,
+        }
+    };
+    close_term(s);
     let att = match s.host.pty_subscribe(&pty_id) {
         Ok(a) => a,
         Err(e) => {
+            if let Some((rows, cols)) = keep {
+                let _ = s.host.pty_set_size(&pty_id, rows, cols);
+            }
             send(s, ServerMsg::TermClosed { reason: e });
             return;
         }
     };
     let (rows, cols) = s.host.pty_size(&pty_id).unwrap_or((24, 80));
-    *s.term.lock().unwrap() = Some(TermState { task_id: task_id.clone(), tab: tab.map(str::to_string), pty_id: pty_id.clone(), tx: att.tx.clone(), restore: None });
+    *s.term.lock().unwrap() = Some(TermState { task_id: task_id.clone(), tab: tab.map(str::to_string), pty_id: pty_id.clone(), tx: att.tx.clone(), restore: keep });
     s.behind.store(false, Ordering::SeqCst);
     send(s, ServerMsg::TermReset { task: task_id, tab: tab.map(str::to_string), cols, rows, data: termic_remote::b64(&att.backlog) });
     let s2 = s.clone();
