@@ -3,7 +3,8 @@
 //!
 //! The desktop reads agent hooks and its xterm screen; a headless box has
 //! neither, so this is the floor every agent gets: output within the quiet
-//! window is work, a quiet screen showing a question is waiting.
+//! window is work, a quiet screen showing a question is waiting (matched
+//! on the screen as rendered now, not the raw stream).
 
 use std::time::{Duration, Instant};
 
@@ -26,60 +27,12 @@ pub const QUESTION_PATTERNS: &[&str] = &[
     "Press Enter to continue",
 ];
 
-/// The tail of the ring the question patterns look at.
-pub const TAIL_BYTES: usize = 4096;
-
-/// Remove ANSI escape sequences (CSI, OSC, two-byte ESC) and other control
-/// bytes except newline and tab. Carriage returns become newlines, so a
-/// redraw does not glue a stale line onto a new one.
-pub fn strip_ansi(bytes: &[u8]) -> String {
-    let s = String::from_utf8_lossy(bytes);
-    let mut out = String::with_capacity(s.len());
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
-        match c {
-            '\x1b' => match it.next() {
-                Some('[') => {
-                    // CSI: parameters then one final byte in @..~.
-                    for n in it.by_ref() {
-                        if ('@'..='~').contains(&n) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') | Some('P') | Some('_') | Some('^') => {
-                    // OSC / DCS / APC / PM: up to BEL or ST (ESC \).
-                    while let Some(n) = it.next() {
-                        if n == '\x07' {
-                            break;
-                        }
-                        if n == '\x1b' {
-                            if it.peek() == Some(&'\\') {
-                                it.next();
-                            }
-                            break;
-                        }
-                    }
-                }
-                Some('(') | Some(')') | Some('#') => {
-                    it.next();
-                }
-                _ => {}
-            },
-            '\r' => out.push('\n'),
-            '\n' | '\t' => out.push(c),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// Whether the tail of a ring shows a question.
-pub fn shows_question(tail: &[u8]) -> bool {
-    let start = tail.len().saturating_sub(TAIL_BYTES);
-    let text = strip_ansi(&tail[start..]);
-    QUESTION_PATTERNS.iter().any(|p| text.contains(p))
+/// Whether the screen as it is drawn now shows a question. The rendered
+/// screen, not the raw stream: a menu Claude drew and then erased (its
+/// rewind picker, a trust prompt) stays in the last bytes of output, and
+/// matching those kept a finished task on Needs you.
+pub fn shows_question(screen: &[String]) -> bool {
+    QUESTION_PATTERNS.iter().any(|p| screen.iter().any(|l| l.contains(p)))
 }
 
 /// Everything the state depends on, captured at one instant.
@@ -121,12 +74,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strips_escapes_and_keeps_text() {
-        let raw = b"\x1b[2J\x1b[1;1H\x1b[38;5;208mHello\x1b[0m \x1b]0;title\x07world\r\n\x1b(Bok\x1b]8;;http://x\x1b\\link";
-        assert_eq!(strip_ansi(raw), "Hello world\n\noklink");
-    }
-
-    #[test]
     fn question_patterns_match_real_prompt_shapes() {
         let yes = [
             &b"\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m\xe2\x9d\xaf 1. Yes\r\n  2. No"[..],
@@ -137,19 +84,24 @@ mod tests {
             b"Would you like to run the following command?",
         ];
         for y in yes {
-            assert!(shows_question(y), "{:?}", String::from_utf8_lossy(y));
+            assert!(shows_question(&termic_remote::screen::render(y, 24, 80)), "{:?}", String::from_utf8_lossy(y));
         }
         let no = [&b"Fixed the bug in src/login.rs.\r\n> "[..], b"\x1b[2m? for shortcuts\x1b[0m", b"Running tests... 12 passed", b"allowed list updated"];
         for n in no {
-            assert!(!shows_question(n), "{:?}", String::from_utf8_lossy(n));
+            assert!(!shows_question(&termic_remote::screen::render(n, 24, 80)), "{:?}", String::from_utf8_lossy(n));
         }
     }
 
     #[test]
-    fn only_the_tail_is_read() {
-        let mut ring = b"Do you want to proceed?".to_vec();
-        ring.extend(std::iter::repeat_n(b'x', TAIL_BYTES + 10));
-        assert!(!shows_question(&ring));
+    fn an_erased_menu_is_not_a_question() {
+        // A picker drawn at the bottom, then erased line by line and the
+        // prompt box drawn in its place: the shape Claude leaves behind
+        // when its rewind menu is dismissed.
+        let menu = b"done\r\n  Rewind\r\n  Restore the conversation\r\n  Enter to continue \xc2\xb7 Esc to cancel";
+        let mut ring = menu.to_vec();
+        ring.extend_from_slice(b"\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\r\xe2\x9d\xaf \r\n  auto mode on");
+        assert!(shows_question(&termic_remote::screen::render(menu, 10, 60)));
+        assert!(!shows_question(&termic_remote::screen::render(&ring, 10, 60)));
     }
 
     #[test]
@@ -172,3 +124,4 @@ mod tests {
         assert_eq!(work_state(&gone, at(7), q), "inactive");
     }
 }
+

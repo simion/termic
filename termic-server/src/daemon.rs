@@ -260,7 +260,7 @@ impl Daemon {
         let mut asks = false;
         if !exited && !working {
             question = screen::question(&screen_lines());
-            asks = question.is_some() || detect::shows_question(&live.pty.tail(detect::TAIL_BYTES).0);
+            asks = question.is_some() || detect::shows_question(&screen_lines());
         }
         let a = detect::Activity { exited, last_activity: act, last_output: out, last_input: inp, question: asks };
         let state = detect::work_state(&a, now, self.quiet);
