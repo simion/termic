@@ -291,7 +291,49 @@ the server's rows (`data-remote-state`); New task on its project opens
 the server's dialog with the project picked; archive goes to the box.
 Server projects are not config-synced (another machine has its own
 servers). The separate per-server sidebar section is gone; paired
-computers keep theirs.
+computers keep theirs. A server belongs to the profile whose window
+added it (`ServerRecord.profile`, a window label); one added before that
+field keeps its projects where they are. Add a server is also on the
+sidebar's projects header and linked from Add project.
+
+**Running things on the box.** termic-server offers two general
+primitives, and the desktop sends its existing code through them rather
+than growing a verb per feature:
+
+- `exec { cwd, argv, env, stdin, timeout_ms }` -> `{ code, stdout (b64),
+  stderr }`: a program under the login shell's PATH, only inside a
+  registered project or one of its worktrees (canonicalized, so `..`
+  cannot leave), 120 s default timeout, output capped. The desktop host
+  answers it with Unsupported.
+- `pty_open { pid, cwd, argv, env, cols, rows }`, `pty_input`,
+  `pty_resize`, `pty_kill`, answered by `pty_data` and `pty_exit` (cap
+  `pty`): extra terminals beside the agent's, fenced the same way, no
+  argv being the box's login shell, 32 per connection, hung up when it
+  ends. The desktop host refuses `pty_open`.
+
+`server_projects.rs` keeps an index of the folders that live on a server
+(project roots and task worktrees), longest first, and the desktop's
+funnels consult it:
+
+- `git_bytes` / `git_raw` (lib.rs): the git panel, diff, stage, commit,
+  push, the finder's listing.
+- `task_dir_list`, `task_file_read`, `task_file_write`: the file tree and
+  the editor (a write goes to a temp file and is renamed over). A
+  relative path that could climb out of the task is refused before it
+  is sent.
+- `repo_config::load`: a server repo's `.termic.yaml`.
+- `pty_spawn` / `pty_write` / `pty_resize` / `pty_kill` / `pty_attached`:
+  a terminal in a server folder opens there and its output arrives as the
+  same `pty://` and `pty-exit://` events (held until the pane attaches,
+  as locally), so AuxTerminal has no remote branch. This Mac's bare login
+  shell becomes the box's own.
+
+What that gives a server task: the right panel (files, editor, Git tab;
+no watcher on the box, so Refresh rereads), shell tabs in its view that
+outlive switching tasks, Run (the run script in a shell tab), Prompts
+(through `send`), and Archive. Run commands and setup scripts beyond
+the run script, Send to main, Open with and the sandbox controls are
+hidden for server tasks until they run on the box.
 
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).
 It answers the same messages, keeps tasks in `~/.termic-server/state.json`,
@@ -352,11 +394,14 @@ key (a Notification Service Extension decrypts it) would hide even that.
   Windows' built-in OpenSSH for servers; servers themselves run Linux or
   macOS (`termic-server` is unix only). Details in
   [windows.md](windows.md); compiled for Windows, not yet driven on one.
-- A phone reaches the desktop only; the desktop does not relay its
-  servers' or paired computers' tasks to the phone.
+- A phone reaches the desktop only. The desktop relays a server
+  project's task to it (state, transcript, terminal, keys; the server's
+  connection carries one terminal at a time, so the phone and the desktop
+  opening different server tasks take turns), not a paired computer's.
 - No push notifications (no server to hold the keys); the phone notices
   changes while open.
-- Remote tasks have no file tree, editor or diff in the desktop view.
+- A paired computer's tasks have no file tree, editor or diff in the
+  desktop view (a server's do: see "Servers").
 - On the phone, the screen reader understands Claude's, Codex's and
   Antigravity's prompts; other agents' fall back to Approve (Enter) /
   Deny (Esc) with the terminal in view.
