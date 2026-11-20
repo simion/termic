@@ -300,6 +300,7 @@ export const config: WebdriverIO.Config = {
     // focus is testing the app, not the runner's desktop.
     const thief = foregroundWindow();
     const how = bringAppToFront();
+    if (how.includes("left alone")) { console.log(`[e2e] page lost focus before "${test.title}" to ${thief}; ${how}`); return; }
     const back = await browser.waitUntil(() => browser.execute(() => document.hasFocus()), { timeout: 3_000, interval: 100 })
       .then(() => true, () => false);
     console.log(`[e2e] page lost focus before "${test.title}" to ${thief}; ${how}; focus ${back ? "restored" : "NOT restored"}`);
@@ -387,11 +388,18 @@ public class Fr {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
 }
 '@
 $exe = '${exe}'
 $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.Path -eq $exe -or $_.Path -eq "$exe.exe") } | Select-Object -First 1
 if (-not $p) { "no app window"; exit }
+# Focus that went to one of the app's OWN windows (the Activity window a
+# spec opened) is the spec's business: leave it, and never tap Alt into it.
+$fp = 0; [void][Fr]::GetWindowThreadProcessId([Fr]::GetForegroundWindow(), [ref]$fp)
+$fg = Get-Process -Id $fp -ErrorAction SilentlyContinue
+if ($fg -and ($fg.Path -eq $exe -or $fg.Path -eq "$exe.exe")) { "foreground is the app's own window, left alone"; exit }
 [Fr]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [Fr]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
 [void][Fr]::ShowWindow($p.MainWindowHandle, 9)
 "SetForegroundWindow=$([Fr]::SetForegroundWindow($p.MainWindowHandle))"`;
