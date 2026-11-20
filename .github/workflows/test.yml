@@ -103,7 +103,33 @@ jobs:
         # fresh one). An app launched 0.36s after the previous quit panicked
         # with "Failed to initialize GTK" (panic.log, code 101). Not
         # reproduced, so this is the likely cause, not a proven one.
-        run: dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24 -noreset" npm run test:e2e
+        #
+        # Core dumps on: WebKitGTK's web process has crashed mid-spec (the
+        # debug log says "web process terminated: Crashed") and its stderr
+        # never reaches this log, so the core is the only stack we can get.
+        run: |
+          mkdir -p /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
+          ulimit -c unlimited
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24 -noreset" npm run test:e2e
+      - name: Backtrace any core dump
+        if: always()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          [ ${#cores[@]} -eq 0 ] && { echo "no core dumps"; exit 0; }
+          sudo apt-get install -y gdb >/dev/null
+          mkdir -p .e2e/artifacts
+          web=$(find /usr/lib -name WebKitWebProcess -path '*4.1*' | head -1)
+          app=src-tauri/target/debug/termic
+          for c in "${cores[@]}"; do
+            case "$c" in *WebKitWeb*) exe=$web ;; *) exe=$app ;; esac
+            echo "== $c ($exe)"
+            DEBUGINFOD_URLS=https://debuginfod.ubuntu.com timeout 600 gdb -batch -q \
+              -iex "set debuginfod enabled on" -ex "thread apply all bt 30" "$exe" "$c" \
+              > ".e2e/artifacts/bt-$(basename "$c").txt" 2>&1 || true
+            grep -m40 -E "^#|^Thread|signal" ".e2e/artifacts/bt-$(basename "$c").txt" || true
+          done
       # Reported, never gated: wall-clock on a shared runner flakes, and a
       # flaky gate gets muted (docs/perf-ci.md). The gate on fixed waits is
       # e2e/fixedWaits.test.ts, which counts instead of timing.
