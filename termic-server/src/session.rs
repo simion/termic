@@ -264,6 +264,13 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             let _ = s.out.send(Out::Resync);
         }
         ClientMsg::Transcript { id, task } => {
+            // Reading the chat is looking at the task: "done" is seen.
+            if let Ok(t) = verbs::resolve(&s.d, Some(&task), None, None) {
+                if let Some(live) = s.d.live_of(&t.id) {
+                    live.pty.mark_seen();
+                    s.d.poke();
+                }
+            }
             let s = s.clone();
             std::thread::spawn(move || {
                 let msg = match transcript(&s.d, &task) {

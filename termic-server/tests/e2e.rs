@@ -327,6 +327,24 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     a.task_state("Fix Login!", |t| t.state == "done");
     a.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
     a.task_state("Fix Login!", |t| t.state == "idle");
+    // Reading its chat (a phone's transcript) is looking at it too.
+    a.send(&ClientMsg::TermClose {});
+    a.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"unwatched again"}));
+    // Its reply landed and it settled: then "done" is the current state,
+    // not a snapshot from before the send.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let st = a.ok(json!({"cmd":"status","task":"Fix Login!"}));
+        let logs = a.ok(json!({"cmd":"logs","task":"Fix Login!"}));
+        if logs["data"].as_str().unwrap_or("").contains("echo: unwatched again") && st["task"]["work_state"] == "done" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never settled to done: {st}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    a.send(&ClientMsg::Transcript { id: "seen1".into(), task: "Fix Login!".into() });
+    a.task_state("Fix Login!", |t| t.state == "idle");
+    a.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
     // An answer bound to a question that is not on screen is refused.
     a.send(&ClientMsg::Keys { task: "Fix Login!".into(), tab: None, data: termic_remote::b64(b"1"), id: Some("k2".into()), question: Some("gone".into()) });
     a.wait_for("stale ack", |m| matches!(m, ServerMsg::Ack { id, ok: false, message } if id == "k2" && message.as_deref() == Some("stale")).then_some(()));

@@ -183,6 +183,12 @@ impl Pty {
         g.seen = Some(Instant::now());
     }
 
+    /// Someone looked at the task another way (read its chat): what it
+    /// finished is no longer news, as when a terminal is opened on it.
+    pub fn mark_seen(&self) {
+        self.inner.lock().unwrap().seen = Some(Instant::now());
+    }
+
     /// (someone has its terminal open, when one was last opened or closed)
     pub fn watched(&self) -> (bool, Option<Instant>) {
         let g = self.inner.lock().unwrap();
