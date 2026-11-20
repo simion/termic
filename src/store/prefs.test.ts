@@ -322,58 +322,23 @@ describe("prefs: terminalRenderer", () => {
   });
 });
 
-describe("prefs: terminalRenderer default on a software rasterizer", () => {
+describe("prefs: terminalRenderer reset", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", fakeLocalStorage());
-    vi.stubGlobal("__TERMIC_SOFTWARE_GL__", true);
     vi.resetModules();
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("starts on canvas when nothing is stored", async () => {
-    const { usePrefs } = await import("./prefs");
-    expect(usePrefs.getState().terminalRenderer).toBe("canvas");
-    expect(usePrefs.getState().terminalGpuEnabled).toBe(false);
-  });
-
-  it("does not persist the default", async () => {
-    await import("./prefs");
-    expect(localStorage.getItem("terminalRenderer")).toBeNull();
-    expect(localStorage.getItem("terminalGpuEnabled")).toBeNull();
-  });
-
-  it("keeps an explicit webgl pick", async () => {
-    localStorage.setItem("terminalRenderer", "webgl");
-    localStorage.setItem("terminalGpuEnabled", "1");
-    const { usePrefs } = await import("./prefs");
-    expect(usePrefs.getState().terminalRenderer).toBe("webgl");
-    expect(usePrefs.getState().terminalGpuEnabled).toBe(true);
-  });
-
-  it("keeps a legacy terminalGpuEnabled=0 profile on dom", async () => {
+  it("reset forgets an explicit pick and returns to webgl", async () => {
+    localStorage.setItem("terminalRenderer", "canvas");
     localStorage.setItem("terminalGpuEnabled", "0");
     const { usePrefs } = await import("./prefs");
-    expect(usePrefs.getState().terminalRenderer).toBe("dom");
-  });
-
-  it("reset forgets an explicit pick and returns to the detected default", async () => {
-    localStorage.setItem("terminalRenderer", "webgl");
-    localStorage.setItem("terminalGpuEnabled", "1");
-    const { usePrefs } = await import("./prefs");
-    expect(usePrefs.getState().terminalRenderer).toBe("webgl");
-    usePrefs.getState().resetAppearance();
     expect(usePrefs.getState().terminalRenderer).toBe("canvas");
-    expect(usePrefs.getState().terminalGpuEnabled).toBe(false);
-    // Nothing stored, so the next launch decides again.
-    expect(localStorage.getItem("terminalRenderer")).toBeNull();
-    expect(localStorage.getItem("terminalGpuEnabled")).toBeNull();
-  });
-
-  it("stays on webgl when the backend did not set the flag", async () => {
-    vi.stubGlobal("__TERMIC_SOFTWARE_GL__", undefined);
-    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().resetAppearance();
     expect(usePrefs.getState().terminalRenderer).toBe("webgl");
     expect(usePrefs.getState().terminalGpuEnabled).toBe(true);
+    expect(localStorage.getItem("terminalRenderer")).toBeNull();
+    expect(localStorage.getItem("terminalGpuEnabled")).toBeNull();
   });
 });
 

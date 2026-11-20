@@ -11668,53 +11668,6 @@ fn without_writing_tools<'a>(
     builder
 }
 
-/// WebKitGTK masks the WebGL renderer name, so the page cannot see that it runs
-/// on llvmpipe. Without a DRM render node it does, and xterm's WebGL renderer
-/// then paints the last keystroke about a second late (docs/gotchas.md).
-fn with_software_gl_flag<'a>(
-    builder: tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
-) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
-    #[cfg(target_os = "linux")]
-    if !has_drm_render_node(std::path::Path::new("/dev/dri")) {
-        dlog("[gpu] no DRM render node; WebGL is software-rendered, terminals default to canvas");
-        return builder.initialization_script("window.__TERMIC_SOFTWARE_GL__ = true;");
-    }
-    builder
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn has_drm_render_node(dri: &std::path::Path) -> bool {
-    std::fs::read_dir(dri).is_ok_and(|entries| {
-        entries.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
-    })
-}
-
-#[cfg(test)]
-mod drm_render_node_tests {
-    use super::has_drm_render_node;
-
-    #[test]
-    fn missing_dri_dir_has_no_render_node() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!has_drm_render_node(&dir.path().join("dri")));
-    }
-
-    #[test]
-    fn card_without_render_node_is_not_enough() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("card0"), "").unwrap();
-        assert!(!has_drm_render_node(dir.path()));
-    }
-
-    #[test]
-    fn render_node_is_found() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("card0"), "").unwrap();
-        std::fs::write(dir.path().join("renderD128"), "").unwrap();
-        assert!(has_drm_render_node(dir.path()));
-    }
-}
-
 fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri::WebviewWindow> {
     use tauri::Manager;
     let label = id.window_label();
@@ -11770,7 +11723,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     }
 
     dlog(&format!("[profile] build {label}: builder.build"));
-    let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(with_software_gl_flag(builder)))).build()?;
+    let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(builder))).build()?;
     dlog(&format!("[profile] build {label}: built"));
     caffeinate::configure_window(&win);
     log_web_process_exit(&win);
