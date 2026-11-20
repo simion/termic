@@ -1587,6 +1587,21 @@ describe("dashboard", () => {
     await waitVisible(card(grouped[0]));
   });
 
+  it("animates a sidebar folder shut and open, then leaves no wrapper behind", async () => {
+    const folder = `[data-group-name="${GROUP}"]`;
+    const animating = (cls: string) => browser.execute((c) => !!document.querySelector(`.${c}`), cls);
+    await clickWhenVisible(folder);
+    // Held for its exit animation, then unmounted as before.
+    await browser.waitUntil(() => animating("termic-expand-out"), { timeout: 2_000, interval: 20, timeoutMsg: "closing the folder did not animate" });
+    await browser.waitUntil(async () => !(await animating("termic-expand-out")), { timeout: 2_000, timeoutMsg: "the exit animation never ended" });
+    expect(await browser.execute((g) => document.querySelector(`[data-group-name="${g}"]`)?.getAttribute("aria-expanded"), GROUP)).toBe("false");
+    await clickWhenVisible(folder);
+    await browser.waitUntil(() => animating("termic-expand-in"), { timeout: 2_000, interval: 20, timeoutMsg: "opening the folder did not animate" });
+    await browser.waitUntil(async () => !(await animating("termic-expand-in")), { timeout: 2_000, timeoutMsg: "the open animation never ended" });
+    // At rest the wrapper is display: contents, so it adds no box.
+    expect(await browser.execute(() => !!document.querySelector(".termic-expand-in, .termic-expand-out"))).toBe(false);
+  });
+
   it("keys a MIXED-CASE group name the same way on both surfaces", async () => {
     // The sharing claim is that the dashboard and the sidebar agree on the
     // key for `collapsedGroups`. Every other fixture here uses a name that is

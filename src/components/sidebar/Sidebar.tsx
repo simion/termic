@@ -26,6 +26,7 @@ import { useUI } from "@/store/ui";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
+import { Expand } from "@/components/ui/Expand";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { reportBug } from "@/lib/reportBug";
@@ -1990,7 +1991,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     dragged still reads oldest-first, and new tasks append at
                     the bottom), and a live drag splices the same array — an
                     extra sort here would fight the drag. */}
-                {!collapsed && layoutTaskList(visibleTasks, groupFor).map(seg => {
+                <Expand open={!collapsed}>
+                {layoutTaskList(visibleTasks, groupFor).map(seg => {
                   const row = (w: Task) => (
                     <TaskRowSlot
                       key={w.id}
@@ -2052,11 +2054,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       dragTy={dragBlockTy}
                       onDragPointerDown={onBlockDragPointerDown}
                     >
-                      {shown.map(row)}
+                      {seg.tasks.map(w => <Expand key={w.id} open={shown.includes(w)}>{row(w)}</Expand>)}
                     </TaskGroupBlock>
                   );
                 })}
-                {!collapsed && noMatches && (
+                {noMatches && (
                   <div
                     data-testid={`project-filter-empty-${p.id}`}
                     className="ml-3 mr-1 mb-px flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
@@ -2080,14 +2082,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     Rendered after the real rows, compact mode excluded (same
                     as TaskRow's own compact branch: no room for a labeled
                     row on the icon rail). */}
-                {!collapsed && !compact && pendingForProject.map(t => (
+                {!compact && pendingForProject.map(t => (
                   <PendingTaskRow key={t.id} pending={t} />
                 ))}
                 {/* Inline name prompt renders at the BOTTOM — that's
                     where a newly-created repo-root task lands in
                     the sort order, so the row physically appears in
                     the spot it'll occupy after Enter. */}
-                {!collapsed && pendingRepoRoot?.projectId === p.id && (
+                {pendingRepoRoot?.projectId === p.id && (
                   <PendingRepoRootRow
                     mode={pendingRepoRoot.mode}
                     cli={pendingRepoRoot.cli}
@@ -2154,6 +2156,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     }}
                   />
                 )}
+                </Expand>
                 {/* "New task" under the project's tasks: the SAME dropdown
                     as the row's `+` icon, at the bottom where the new task
                     lands (the inline name row renders just above). Always on
@@ -2266,7 +2269,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       )}
                     </button>
                   </Tip>
-                  {!collapsed && members.map(renderProject)}
+                  <Expand open={!collapsed}>{members.map(renderProject)}</Expand>
                 </div>
               );
             }
@@ -2409,7 +2412,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 </ContextMenuRoot>
                 {/* Indented members with a tree guide line — reads as
                     "inside the folder" without stealing much width. */}
-                {!collapsed && (
+                <Expand open={!collapsed}>
                   <div
                     // Tint the guide line toward the group's accent so a
                     // long member list stays attributable mid-scroll. If
@@ -2420,7 +2423,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   >
                     {members.map(renderProject)}
                   </div>
-                )}
+                </Expand>
               </div>
             );
           };
