@@ -2730,6 +2730,10 @@ fn save_task(w: &Task) -> Result<()> {
     // The only writer of task records, so it is also what keeps a remembered
     // routing miss from outliving a task created after it (see TASK_WINDOW).
     note_task_window(&w.id, w.profile.window_label());
+    // A rename, pin or group move changes what a phone's list shows but not
+    // the agent cache its loop waits on: wake it now rather than on its 4 s
+    // fallback (remote_server.rs STATE_REFRESH).
+    cli_server::global_agent_cache().nudge();
     Ok(())
 }
 fn delete_task_file(id: &str) -> Result<()> {
