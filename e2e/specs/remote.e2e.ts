@@ -310,6 +310,17 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     }, { timeout: 30_000, timeoutMsg: "the follow-up typed into the terminal never reached the agent on the box" });
     expect(ssh(`ls ~/.termic-server/worktrees 2>/dev/null | wc -l`).trim()).not.toBe("0");
     await snap("remote-server-task.png");
+    // Its git and files are the box's (termic-server exec): a save from the
+    // desktop lands there, and a commit made here is the box's newest.
+    const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
+    expect(wt).toContain(".termic-server/worktrees");
+    await browser.execute((id) => window.__termic!.invoke("task_file_write", { id, path: "desk.txt", content: "written from the desk\n" }), task);
+    expect(ssh(`cat '${wt}/desk.txt'`)).toBe("written from the desk\n");
+    const list = await browser.execute((id) => window.__termic!.invoke("task_dir_list", { id, rel: "", heal: false }), task) as any[];
+    expect(list.map(e => e.name)).toContain("desk.txt");
+    await browser.execute((id) => window.__termic!.invoke("task_stage", { id, dirName: "", paths: ["desk.txt"] }), task);
+    await browser.execute((id) => window.__termic!.invoke("task_commit", { id, dirName: "", subject: "from the desk", body: "", amend: false, push: false }), task);
+    expect(ssh(`git -C '${wt}' log -1 --format=%s`).trim()).toBe("from the desk");
     // Archived from the desktop: the agent stops and its worktree goes, on the box.
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), task);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
