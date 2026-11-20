@@ -67,6 +67,25 @@ function phone(link: string, id: string, name: string) {
 
 const status = () => browser.execute(() => window.__termic!.invoke("peer_status")) as Promise<any>;
 
+
+/** Type `line` into the open shell tab until `done()` holds: the shell may
+ *  still be starting on the box when the first keystrokes arrive, and the
+ *  command is idempotent, so typing it again is safe. Polls, never sleeps. */
+async function typeInShellUntil(line: string, done: () => boolean | Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await browser.execute((l) => {
+      const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
+      ta.focus();
+      ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: l, bubbles: true }));
+    }, line);
+    try {
+      await browser.waitUntil(async () => !!(await done()), { timeout: 3_000, interval: 200 });
+      return;
+    } catch { /* not yet: type it again */ }
+  }
+  throw new Error(what);
+}
+
 describe("Phones and servers", () => {
   const phoneId = crypto.randomBytes(16).toString("hex");
   let link = "";
@@ -334,15 +353,7 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     await clickPresent('[data-testid="server-new-shell"]');
     await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
       { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
-    await browser.waitUntil(async () => {
-      await browser.execute(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
-        ta.focus();
-        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "uname -s > from-shell.txt\r", bubbles: true }));
-      });
-      await browser.pause(1500);
-      return ssh(`cat '${wt}/from-shell.txt' 2>/dev/null || true`).trim() === "Linux";
-    }, { timeout: 30_000, timeoutMsg: "the shell tab never ran on the box" });
+    await typeInShellUntil("uname -s > from-shell.txt\r", () => ssh(`cat '${wt}/from-shell.txt' 2>/dev/null || true`).trim() === "Linux", "the shell tab never ran on the box");
     await snap("remote-real-shell.png");
     // Archived from the desktop: the agent stops and its worktree goes, on the box.
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), task);
@@ -541,32 +552,19 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await clickPresent('[data-testid="server-new-shell"]');
     await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
       { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
-    await browser.waitUntil(async () => {
-      await browser.execute(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
-        ta.focus();
-        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "touch from-shell-$((6*7))\r", bubbles: true }));
-      });
-      await browser.pause(1500);
-      return existsSync(path.join(wt, "from-shell-42"));
-    }, { timeout: 20_000, timeoutMsg: "the shell tab never ran in the box's worktree" });
+    await typeInShellUntil("touch from-shell-$((6*7))\r", () => existsSync(path.join(wt, "from-shell-42")), "the shell tab never ran in the box's worktree");
     await snap("remote-server-shell.png");
     // Away and back: the same shell is still running (MainArea keeps a server
     // task with shells mounted), and still takes input.
     const shellTab = await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')!.getAttribute("data-tab-id"));
     await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
-    await browser.pause(800);
+    await browser.waitUntil(() => browser.execute(() => {
+      const v = document.querySelector('[data-testid="remote-task-view"]');
+      return !!v && v.getBoundingClientRect().width === 0;
+    }), { timeout: 10_000, timeoutMsg: "the server task's view never went into hiding" });
     expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
     await clickPresent(row());
-    await browser.waitUntil(async () => {
-      await browser.execute(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
-        ta.focus();
-        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "touch still-here\r", bubbles: true }));
-      });
-      await browser.pause(1000);
-      return existsSync(path.join(wt, "still-here"));
-    }, { timeout: 20_000, timeoutMsg: "the shell did not survive switching away from the task" });
+    await typeInShellUntil("touch still-here\r", () => existsSync(path.join(wt, "still-here")), "the shell did not survive switching away from the task");
     // Run: the box repo's `.termic.yaml` run script (read on the box) runs
     // in a new shell tab, in the task's worktree there.
     writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n");
@@ -602,6 +600,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Anything on the box changing makes the desktop resync it.
     expect((await call({ cmd: "send", task, prompt: "nudge" })).ok).toBe(true);
     await browser.waitUntil(async () => (await logs()).includes("box says: nudge"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
+    // Outlasts the resync the box's new task list starts (sync_soon: one
+    // project_list and list round trip on a local socket, then a reload),
+    // so the check below reads the store after it, not before.
     await browser.pause(1500);
     const t = await browser.execute((id) => {
       const x = window.__termic!.useApp.getState().tasks.find((y: any) => y.id === id) as any;

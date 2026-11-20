@@ -354,7 +354,8 @@ describe("new task dialog: side rail", () => {
       t.useApp.getState().closeSettings();
       await t.useApp.getState().loadAll();
     });
-    await browser.pause(300);
+    await browser.waitUntil(() => browser.execute(() => ((window.__termic as any).useSecrets.getState().roles as unknown[]).length === 0),
+      { timeout: 10_000, timeoutMsg: "the secrets store never dropped the cleared roles" });
     await open();
     // Focus starts on Name, not on the first (i): a focused (i) shows its
     // tooltip, which would then swallow the first Escape.
