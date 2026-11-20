@@ -47,7 +47,14 @@ struct Inner {
     bracketed: bool,
     /// (rows, cols) now: a client sizes it (there is no screen here).
     size: (u16, u16),
+    /// When a terminal was last opened or closed on it (detect.rs `seen`).
+    seen: Option<Instant>,
+    /// The last resize: the redraw that follows is not the agent's work.
+    resized: Option<Instant>,
 }
+
+/// How long after a resize output counts as the program redrawing.
+const REDRAW: std::time::Duration = std::time::Duration::from_millis(1000);
 
 pub struct Pty {
     pub pid: Option<u32>,
@@ -121,7 +128,11 @@ impl Pty {
                 let mut g = self.inner.lock().unwrap();
                 let now = Instant::now();
                 let prev = [g.last_output, g.last_prompt].into_iter().flatten().max();
-                g.last_output = Some(now);
+                // A full-screen program repaints on SIGWINCH: that is the
+                // terminal changing size, not the agent doing anything.
+                if !g.resized.is_some_and(|r| now.duration_since(r) < REDRAW) {
+                    g.last_output = Some(now);
+                }
                 if let Some(on) = bracketed_toggle(chunk) {
                     g.bracketed = on;
                 }
@@ -162,11 +173,20 @@ impl Pty {
         let (tx, rx) = mpsc::channel();
         let id = self.next_tap.fetch_add(1, Ordering::Relaxed);
         g.taps.push((id, tx));
+        g.seen = Some(Instant::now());
         Ok((id, g.ring.iter().copied().collect(), rx))
     }
 
     pub fn unsubscribe(&self, id: u64) {
-        self.inner.lock().unwrap().taps.retain(|(t, _)| *t != id);
+        let mut g = self.inner.lock().unwrap();
+        g.taps.retain(|(t, _)| *t != id);
+        g.seen = Some(Instant::now());
+    }
+
+    /// (someone has its terminal open, when one was last opened or closed)
+    pub fn watched(&self) -> (bool, Option<Instant>) {
+        let g = self.inner.lock().unwrap();
+        (!g.taps.is_empty(), g.seen)
     }
 
     /// The last `max` bytes of the ring, and whether older output is gone.
@@ -196,6 +216,7 @@ impl Pty {
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("could not resize the terminal: {e}"))?;
         g.size = (rows, cols);
+        g.resized = Some(Instant::now());
         g.taps.retain(|(_, tx)| tx.send(TapMsg::Resize(rows, cols)).is_ok());
         Ok(true)
     }

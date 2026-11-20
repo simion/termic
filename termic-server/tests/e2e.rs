@@ -185,8 +185,11 @@ impl Client {
 }
 
 fn short(m: &ServerMsg) -> String {
-    let s = serde_json::to_string(m).unwrap();
-    s.chars().take(160).collect()
+    match m {
+        ServerMsg::Tasks { tasks } => format!("TASKS[{}]", tasks.iter().map(|t| t.state.clone()).collect::<Vec<_>>().join(",")),
+        ServerMsg::TermData { data } => format!("TERM[{}]", String::from_utf8_lossy(&termic_remote::unb64(data).unwrap_or_default())),
+        _ => serde_json::to_string(m).unwrap().chars().take(60).collect(),
+    }
 }
 
 fn wait_path_gone(p: &Path) {
@@ -263,12 +266,13 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     assert!(reset.0.contains("fake agent ready"), "{:?}", reset.0);
     assert_eq!((reset.1, reset.2), (120, 40));
 
-    // A prompt: typed in, echoed, working, then done.
+    // A prompt: typed in, echoed, working, then finished. Its terminal is
+    // open here, so the finish is already seen: idle, not an unread done.
     let s = a.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"hello world"}));
     assert_eq!(s["mode"], "delivered");
     a.term_until("echo: hello world");
     a.task_state("Fix Login!", |t| t.state == "working");
-    a.task_state("Fix Login!", |t| t.state == "done");
+    a.task_state("Fix Login!", |t| t.state == "idle");
     let w = a.ok(json!({"cmd":"wait","task":"Fix Login!","timeout_ms":10000}));
     assert_eq!(w["outcome"], "done");
 
@@ -288,7 +292,13 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     a.send(&ClientMsg::Keys { task: "Fix Login!".into(), tab: None, data: termic_remote::b64(b"yes\r"), id: Some("k1".into()), question: None });
     a.wait_for("ack k1", |m| matches!(m, ServerMsg::Ack { id, ok: true, .. } if id == "k1").then_some(()));
     a.term_until("echo: yes");
+    a.task_state("Fix Login!", |t| t.state == "idle");
+    // Nobody watching: a finish is an unread done until someone looks.
+    a.send(&ClientMsg::TermClose {});
+    a.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"unwatched"}));
     a.task_state("Fix Login!", |t| t.state == "done");
+    a.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
+    a.task_state("Fix Login!", |t| t.state == "idle");
     // An answer bound to a question that is not on screen is refused.
     a.send(&ClientMsg::Keys { task: "Fix Login!".into(), tab: None, data: termic_remote::b64(b"1"), id: Some("k2".into()), question: Some("gone".into()) });
     a.wait_for("stale ack", |m| matches!(m, ServerMsg::Ack { id, ok: false, message } if id == "k2" && message.as_deref() == Some("stale")).then_some(()));

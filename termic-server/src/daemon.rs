@@ -245,7 +245,7 @@ impl Daemon {
         let blank = |s: &str| View { state: s.into(), since_ms: 0, activity: None, question: None };
         let Some(live) = live else { return (blank("inactive"), None) };
         let (exited, act, out, inp) = live.pty.activity();
-        let working = !exited && act.is_some_and(|t| now.saturating_duration_since(t) < self.quiet);
+        let working = !exited && inp.is_some() && act.is_some_and(|t| now.saturating_duration_since(t) < self.quiet);
         let mut lines: Option<Vec<String>> = None;
         let mut screen_lines = || -> Vec<String> {
             lines
@@ -262,7 +262,8 @@ impl Daemon {
             question = screen::question(&screen_lines());
             asks = question.is_some() || detect::shows_question(&screen_lines());
         }
-        let a = detect::Activity { exited, last_activity: act, last_output: out, last_input: inp, question: asks };
+        let (watched, seen) = live.pty.watched();
+        let a = detect::Activity { exited, last_activity: act, last_output: out, last_input: inp, question: asks, watched, seen };
         let state = detect::work_state(&a, now, self.quiet);
         let activity = if state == "working" { screen::activity(&screen_lines()) } else { None };
         let deadline = if working { act.map(|t| t + self.quiet) } else { None };

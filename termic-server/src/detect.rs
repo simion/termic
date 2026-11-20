@@ -32,8 +32,15 @@ pub const QUESTION_PATTERNS: &[&str] = &[
 /// rewind picker, a trust prompt) stays in the last bytes of output, and
 /// matching those kept a finished task on Needs you.
 pub fn shows_question(screen: &[String]) -> bool {
-    QUESTION_PATTERNS.iter().any(|p| screen.iter().any(|l| l.contains(p)))
+    // Only the bottom: a live question is the last thing drawn, and an
+    // answered one a line-printing agent leaves above its next output must
+    // not keep it on Needs you.
+    let bottom: Vec<&String> = screen.iter().rev().filter(|l| !l.trim().is_empty()).take(BOTTOM_LINES).collect();
+    QUESTION_PATTERNS.iter().any(|p| bottom.iter().any(|l| l.contains(p)))
 }
+
+/// How many non-empty lines from the bottom `shows_question` reads.
+const BOTTOM_LINES: usize = 3;
 
 /// Everything the state depends on, captured at one instant.
 #[derive(Debug, Clone, Copy)]
@@ -49,22 +56,31 @@ pub struct Activity {
     pub last_input: Option<Instant>,
     /// The quiet screen shows a question.
     pub question: bool,
+    /// Someone has its terminal open right now.
+    pub watched: bool,
+    /// When its terminal was last opened or closed: output from before
+    /// that has been seen.
+    pub seen: Option<Instant>,
 }
 
 pub fn work_state(a: &Activity, now: Instant, quiet: Duration) -> &'static str {
     if a.exited {
         return "inactive";
     }
-    if a.last_activity.is_some_and(|t| now.saturating_duration_since(t) < quiet) {
+    // Output is work only once the agent was given something. Before any
+    // input it is the agent starting up (or redrawing), which the desktop
+    // does not draw as work either.
+    if a.last_input.is_some() && a.last_activity.is_some_and(|t| now.saturating_duration_since(t) < quiet) {
         return "working";
     }
     if a.question {
         return "waiting";
     }
-    // Done: it answered something it was given. Idle: it only ever drew its
-    // own startup screen.
+    // Done: it answered something it was given, and nobody has looked
+    // since. Looking (its terminal open, or opened after the answer) makes
+    // it idle, as reading a finished task does on the desktop.
     match (a.last_input, a.last_output) {
-        (Some(i), Some(o)) if o >= i => "done",
+        (Some(i), Some(o)) if o >= i && !a.watched && a.seen.is_none_or(|s| o > s) => "done",
         _ => "idle",
     }
 }
@@ -93,6 +109,13 @@ mod tests {
     }
 
     #[test]
+    fn an_answered_question_above_newer_output_is_not_a_question() {
+        let raw = b"Do you want to proceed? (y/n) yes\r\necho: yes\r\nfinished\r\n> ";
+        assert!(!shows_question(&termic_remote::screen::render(raw, 10, 60)));
+        assert!(shows_question(&termic_remote::screen::render(b"echo: hi\r\nDo you want to proceed? (y/n) ", 10, 60)));
+    }
+
+    #[test]
     fn an_erased_menu_is_not_a_question() {
         // A picker drawn at the bottom, then erased line by line and the
         // prompt box drawn in its place: the shape Claude leaves behind
@@ -109,17 +132,22 @@ mod tests {
         let q = Duration::from_secs(2);
         let t0 = Instant::now();
         let at = |s: u64| t0 + Duration::from_secs(s);
-        let base = Activity { exited: false, last_activity: None, last_output: None, last_input: None, question: false };
+        let base = Activity { exited: false, last_activity: None, last_output: None, last_input: None, question: false, watched: false, seen: None };
         assert_eq!(work_state(&base, at(10), q), "idle");
+        // Starting up, given nothing yet: not work, whatever it prints.
         let booted = Activity { last_activity: Some(at(0)), last_output: Some(at(0)), ..base };
-        assert_eq!(work_state(&booted, at(1), q), "working");
-        assert_eq!(work_state(&booted, at(3), q), "idle");
+        assert_eq!(work_state(&booted, at(1), q), "idle");
         let answered = Activity { last_input: Some(at(5)), last_output: Some(at(6)), last_activity: Some(at(6)), ..base };
         assert_eq!(work_state(&answered, at(7), q), "working");
         assert_eq!(work_state(&answered, at(9), q), "done");
+        // Looked at: open now, or opened after the answer.
+        assert_eq!(work_state(&Activity { watched: true, ..answered }, at(9), q), "idle");
+        assert_eq!(work_state(&Activity { seen: Some(at(8)), ..answered }, at(9), q), "idle");
+        assert_eq!(work_state(&Activity { seen: Some(at(4)), ..answered }, at(9), q), "done", "seen before the answer");
         let asking = Activity { question: true, ..answered };
         assert_eq!(work_state(&asking, at(7), q), "working");
         assert_eq!(work_state(&asking, at(9), q), "waiting");
+        assert_eq!(work_state(&Activity { watched: true, ..asking }, at(9), q), "waiting", "looking does not answer it");
         let gone = Activity { exited: true, ..answered };
         assert_eq!(work_state(&gone, at(7), q), "inactive");
     }
