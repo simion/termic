@@ -60,12 +60,20 @@ pub(crate) fn server_for_path(dir: &std::path::Path) -> Option<String> {
 /// Run a program in a server folder through termic-server's `exec`:
 /// (exit code, stdout, stderr).
 pub(crate) fn exec_on(server: &str, cwd: &std::path::Path, argv: &[&str], env: &[(&str, &str)]) -> Result<(i32, Vec<u8>, String), String> {
-    let req = json!({
+    exec_with_stdin(server, cwd, argv, env, None)
+}
+
+/// `exec_on` with bytes for the program's stdin (a file write).
+pub(crate) fn exec_with_stdin(server: &str, cwd: &std::path::Path, argv: &[&str], env: &[(&str, &str)], stdin: Option<&[u8]>) -> Result<(i32, Vec<u8>, String), String> {
+    let mut req = json!({
         "cmd": "exec",
         "cwd": cwd.to_string_lossy(),
         "argv": argv,
         "env": env.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
     });
+    if let Some(b) = stdin {
+        req["stdin"] = Value::String(termic_remote::b64(b));
+    }
     let d = data(crate::remote_client::call(server, req, Some(std::time::Duration::from_secs(130)))?, "exec")?;
     let out = termic_remote::unb64(d.get("stdout").and_then(Value::as_str).unwrap_or_default()).unwrap_or_default();
     Ok((d.get("code").and_then(Value::as_i64).unwrap_or(-1) as i32, out, s(&d, "stderr")))

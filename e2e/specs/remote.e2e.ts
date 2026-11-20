@@ -14,7 +14,7 @@
 // when TERMIC_E2E_TEST_BOX names one.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
@@ -367,7 +367,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     rmSync(box, { recursive: true, force: true });
     mkdirSync(path.join(box, ".termic-server"), { recursive: true });
     mkdirSync(repo, { recursive: true });
-    for (const args of [["init", "-q", "-b", "main"], ["-c", "user.email=e2e@termic.dev", "-c", "user.name=e2e", "commit", "-q", "--allow-empty", "-m", "init"]]) {
+    for (const args of [["init", "-q", "-b", "main"], ["config", "user.email", "e2e@termic.dev"], ["config", "user.name", "e2e"], ["commit", "-q", "--allow-empty", "-m", "init"]]) {
       execFileSync("git", ["-C", repo, ...args]);
     }
     // A fake agent, the server's own way to add one (agents.json): it
@@ -446,6 +446,12 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect(await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "hello.txt" }), task)).toBe("hi from the box\n");
     const escape = await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "../../../etc/hosts" }).then(() => "read", (e: unknown) => String(e)), task);
     expect(escape).toContain("outside the task");
+    // Saving from the editor writes it on the box; stage and commit run there.
+    await browser.execute((id) => window.__termic!.invoke("task_file_write", { id, path: "hello.txt", content: "edited on the desk\n" }), task);
+    expect(readFileSync(path.join(wt, "hello.txt"), "utf8")).toBe("edited on the desk\n");
+    await browser.execute((id) => window.__termic!.invoke("task_stage", { id, dirName: "", paths: ["hello.txt"] }), task);
+    await browser.execute((id) => window.__termic!.invoke("task_commit", { id, dirName: "", subject: "from the desk", body: "", amend: false, push: false }), task);
+    expect(execFileSync("git", ["-C", wt, "log", "-1", "--format=%s"], { encoding: "utf8" }).trim()).toBe("from the desk");
     // And the right panel shows them: its Files tab lists the box's file.
     await clickPresent(row());
     await browser.execute(() => {

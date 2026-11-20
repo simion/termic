@@ -3248,6 +3248,19 @@ fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+/// git with any exit status accepted: (success, stdout). For the few
+/// callers that read output from a "failing" git (`diff --no-index` exits 1
+/// when files differ). A server project's folder runs it on the box.
+fn git_raw(args: &[&str], cwd: &Path) -> Option<(bool, Vec<u8>)> {
+    if let Some(server) = server_projects::server_for_path(cwd) {
+        let mut argv = vec!["git"];
+        argv.extend_from_slice(args);
+        return server_projects::exec_on(&server, cwd, &argv, &[("GIT_OPTIONAL_LOCKS", "0")]).ok().map(|(code, out, _)| (code == 0, out));
+    }
+    let out = git_command().args(args).current_dir(cwd).env("PATH", shell_env::resolved_path()).output().ok()?;
+    Some((out.status.success(), out.stdout))
+}
+
 pub(crate) fn git(args: &[&str], cwd: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&git_bytes(args, cwd)?).into_owned())
 }
@@ -13392,13 +13405,8 @@ pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
         // `git diff --no-index /dev/null <file>` renders the whole file as
         // added; it exits 1 whenever the files differ (always, here), so run it
         // directly and accept the non-zero status the git() helper would reject.
-        let out = git_command()
-            .args(["--no-pager", "diff", "--no-index", "--", "/dev/null", rel])
-            .current_dir(&wt)
-            .env("PATH", shell_env::resolved_path())
-            .output();
-        if let Ok(out) = out {
-            let text = String::from_utf8_lossy(&out.stdout);
+        if let Some((_, stdout)) = git_raw(&["--no-pager", "diff", "--no-index", "--", "/dev/null", rel], &wt) {
+            let text = String::from_utf8_lossy(&stdout);
             if !text.trim().is_empty() {
                 if !diff.is_empty() && !diff.ends_with('\n') { diff.push('\n'); }
                 diff.push_str(&text);
@@ -17657,6 +17665,19 @@ fn taskpdf_response(uri_path: &str) -> tauri::http::Response<Vec<u8>> {
 #[tauri::command]
 fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    // A server task: write it on the box (write to a temp file, then rename
+    // over, so a torn write never leaves half a file), fenced to the task.
+    if let Some(server) = server_projects::server_for_path(Path::new(&w.path)) {
+        let base = PathBuf::from(&w.path);
+        let file = server_rel(&base, &path)?;
+        let f = file.to_string_lossy();
+        let (code, _, err) = server_projects::exec_with_stdin(
+            &server, &base,
+            &["sh", "-c", "t=\"$1.termic-tmp.$$\" && cat > \"$t\" && mv -f \"$t\" \"$1\"", "sh", &f],
+            &[], Some(content.as_bytes()),
+        )?;
+        return if code == 0 { Ok(()) } else { Err(format!("write failed: {}", err.trim())) };
+    }
     let (cwd, rel) = resolve_task_git_path(&w, &path)?;
     let abs = safe_task_path(&cwd, &rel)?;
     // Atomic: uncommitted source is unrecoverable if a truncate-write tears.
@@ -18907,12 +18928,8 @@ async fn task_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
         // globs (same ones the file tree uses) so a hidden path doesn't leak
         // back in via ⌘P. A repo that won't list just contributes nothing.
         let ls = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| -> Vec<String> {
-            match git_command()
-                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
-                .current_dir(dir)
-                .output()
-            {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            match git_raw(&["ls-files", "--cached", "--others", "--exclude-standard"], Path::new(dir)) {
+                Some((true, stdout)) => String::from_utf8_lossy(&stdout)
                     .lines()
                     .filter(|l| !l.is_empty())
                     .filter(|l| !path_is_excluded(patterns, l))
