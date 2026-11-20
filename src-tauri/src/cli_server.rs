@@ -1436,6 +1436,25 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             },
         },
     };
+    // A server project's task is made on the box (docs/plans/server-projects.md):
+    // forward the request there, by the project's id (the box's own), and let
+    // the mirror bring the new task into the store.
+    if let Some(server) = proj.server.clone() {
+        let mut fwd = serde_json::to_value(req).unwrap_or_default();
+        if let Some(o) = fwd.as_object_mut() {
+            o.insert("project".into(), serde_json::Value::String(proj.id.clone()));
+            o.remove("cwd");
+            o.remove("profile");
+        }
+        let reply = match crate::remote_client::call(&server, fwd, Some(Duration::from_secs(330))) {
+            Ok(v) => v,
+            Err(e) => return fail(ErrorCode::Internal, format!("{}: {e}", crate::remote_client::server_name(&server))),
+        };
+        crate::server_projects::sync_soon(&server);
+        return serde_json::from_value::<Reply>(reply)
+            .map(|mut r| { r.id = id.clone(); r })
+            .unwrap_or_else(|e| fail(ErrorCode::Internal, format!("unreadable answer from the server: {e}")));
+    }
     if proj.non_git && from.is_some() {
         return fail(
             ErrorCode::BadRequest,
@@ -3989,6 +4008,7 @@ fn handle_schedule(
 fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
     let multi = p.project_type == crate::ProjectType::Multi;
     let profile = crate::profile_registry().profile_of(&p.profile).map(|x| x.slug.clone());
+    let server = p.server.as_ref().map(|id| crate::remote_client::server_name(id));
     proto::ProjectInfo {
         id: p.id.clone(),
         name: p.name.clone(),
@@ -4010,6 +4030,7 @@ fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
             Vec::new()
         },
         profile,
+        server,
     }
 }
 

@@ -97,6 +97,11 @@ fn servers_path() -> Option<PathBuf> {
     crate::global_dir().ok().map(|d| d.join(SERVERS_FILE))
 }
 
+/// A server's name for display, by its id (the id itself if unknown).
+pub(crate) fn server_name(id: &str) -> String {
+    load_servers().into_iter().find(|r| r.id == id).map(|r| r.name).unwrap_or_else(|| id.to_string())
+}
+
 pub(crate) fn load_servers() -> Vec<ServerRecord> {
     servers_path()
         .and_then(|p| std::fs::read_to_string(p).ok())

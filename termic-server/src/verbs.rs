@@ -517,6 +517,7 @@ fn project_info(p: &Project, tasks: &[TaskRec]) -> ProjectInfo {
         project_type: "single".into(),
         members: Vec::new(),
         profile: None,
+        server: None,
     }
 }
 

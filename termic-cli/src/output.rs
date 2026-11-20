@@ -991,6 +991,7 @@ api      longer-task-name  codex   -        -             b2";
             project_type: "multi".into(),
             members: vec![member("api", "/src/api", false, "origin/main"), member("handbook", "/src/docs", true, "")],
             profile: None,
+            server: None,
         }
     }
 
@@ -1005,6 +1006,7 @@ api      longer-task-name  codex   -        -             b2";
             project_type: "single".into(),
             members: Vec::new(),
             profile: None,
+            server: None,
         };
         let mut empty = shop();
         empty.name = "bare".into();
@@ -1306,6 +1308,7 @@ created web/fix-auth
             project_type: "single".into(),
             members: Vec::new(),
             profile: None,
+            server: None,
         };
         assert_eq!(project_add_text(&p), "added project web at /repo/web");
         let out = project_list_text(&[p]);

@@ -565,7 +565,7 @@ fn project_folder_colors() -> HashMap<String, String> {
 /// How the host's sidebar files and marks a task: its group (named, or
 /// after its lead task as the sidebar does), its project's folder, pin,
 /// display order and pull request.
-fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::Task], folder_colors: &HashMap<String, String>, registry: &crate::profiles::Registry, folds: &Folds) -> TaskRow {
+fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::Task], folder_colors: &HashMap<String, String>, registry: &crate::profiles::Registry, folds: &Folds, server_names: &HashMap<String, String>) -> TaskRow {
     let group = t.group.as_ref().map(|g| RowGroup {
         id: g.id.clone(),
         name: g
@@ -601,10 +601,13 @@ fn sidebar_fields(t: &crate::Task, projects: &[crate::Project], tasks: &[crate::
     let profile = project_pos
         .and_then(|i| registry.profile_of(&projects[i].profile))
         .map(|p| RowProfile { id: p.slug.clone(), name: p.name.clone(), accent: p.accent.clone() });
+    let server = project_pos.and_then(|i| projects[i].server.as_ref()).map(|id| server_names.get(id).cloned().unwrap_or_else(|| id.clone()));
     TaskRow {
         group,
         project_group,
         profile,
+        project_id: t.project_id.clone(),
+        server,
         project_collapsed: folds.projects.contains(&t.project_id),
         pinned: t.pinned,
         project_order: project_pos.map(|i| i as u32),
@@ -636,6 +639,8 @@ fn state_loop(s: &Session) {
         let folder_colors = project_folder_colors();
         let registry = crate::profile_registry();
         let folds = sidebar_folds();
+        // Once per tick, not per row: servers.json is a file read.
+        let server_names: HashMap<String, String> = crate::remote_client::load_servers().into_iter().map(|r| (r.id, r.name)).collect();
         let snap = cache.snapshot();
         let ids: Vec<String> = live.iter().map(|t| t.id.clone()).collect();
         let states = crate::cli_server::cached_work_states(&snap, &ids);
@@ -708,7 +713,7 @@ fn state_loop(s: &Session) {
                     diff: diffs.get(&t.id).cloned(),
                     created: (!t.created.is_empty()).then(|| t.created.clone()),
                     is_main_checkout: t.is_main_checkout,
-                    ..sidebar_fields(t, &projects, &tasks, &folder_colors, &registry, &folds)
+                    ..sidebar_fields(t, &projects, &tasks, &folder_colors, &registry, &folds, &server_names)
                 }
             })
             .collect();
@@ -794,14 +799,14 @@ mod sidebar_tests {
         let tasks = vec![gone, lead, member.clone(), named.clone()];
         let colors: HashMap<String, String> = [("BACKEND".to_string(), "purple".to_string())].into();
 
-        let r = sidebar_fields(&member, &projects, &tasks, &colors, &Default::default(), &Default::default());
+        let r = sidebar_fields(&member, &projects, &tasks, &colors, &Default::default(), &Default::default(), &Default::default());
         assert_eq!(r.group, Some(RowGroup { id: "lead".into(), name: "orchestrate".into(), color: Some("teal".into()), ..Default::default() }), "unnamed: after its lead");
         assert_eq!(r.project_group, Some(RowGroup { id: "BACKEND".into(), name: "BACKEND".into(), color: Some("purple".into()), ..Default::default() }), "named and keyed as groupOf normalizes it");
         assert!(r.pinned);
         assert_eq!((r.project_order, r.order), (Some(1), Some(1)), "the archived task takes no place");
         assert_eq!(r.pr.as_ref().map(|p| (p.number, p.state.as_deref(), p.title.as_deref())), Some((42, Some("open"), Some("Fix auth"))));
 
-        let n = sidebar_fields(&named, &projects, &tasks, &colors, &Default::default(), &Default::default());
+        let n = sidebar_fields(&named, &projects, &tasks, &colors, &Default::default(), &Default::default(), &Default::default());
         assert_eq!(n.group.map(|g| g.name), Some("Docs work".to_string()));
         assert_eq!((n.project_group, n.pinned, n.pr, n.project_order, n.order), (None, false, None, Some(0), Some(0)));
     }

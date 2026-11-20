@@ -255,6 +255,13 @@ pub struct TaskRow {
     /// The task's pull or merge request, as the host last read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<RowPr>,
+    /// Its project's id: two projects can share a name (one here, one on a
+    /// server), so a client groups by this when it is present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
+    /// The server its project lives on, by name (a server project).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
     /// Its project is folded shut in the host's sidebar.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub project_collapsed: bool,

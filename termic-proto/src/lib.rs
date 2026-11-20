@@ -1611,6 +1611,9 @@ pub struct ProjectInfo {
     /// The slug of the profile it belongs to. Absent with no profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// The server it lives on, by name. Absent for a project here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// One member repo of a multi-repo project (v24).
@@ -2822,6 +2825,7 @@ mod tests {
                 ProjectMemberInfo { name: "docs".into(), root_path: "/src/docs".into(), non_git: true, base_branch: String::new() },
             ],
             profile: None,
+            server: None,
         }
     }
 
@@ -3111,6 +3115,7 @@ mod tests {
                         project_type: "single".into(),
                         members: Vec::new(),
                         profile: None,
+                        server: None,
                     },
                     shop_project(),
                 ],

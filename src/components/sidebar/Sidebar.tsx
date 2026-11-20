@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { RemoteMachines } from "@/components/remote/RemoteMachines";
-import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -1701,6 +1701,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           ) : (
                             <span className="truncate">{p.name}</span>
                           )}
+                          {/* Lives on a server: which one, so a project with
+                              the same name here and there reads apart. */}
+                          {p.server && <ServerTag serverId={p.server} />}
                           {/* Multi-repo marker sits AFTER the name so
                               project names stay vertically aligned
                               regardless of type (no snake-indent). */}
@@ -4354,5 +4357,18 @@ function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
         );
       })}
     </div>
+  );
+}
+
+/** The server a project lives on, after its name in the project row
+ *  (docs/plans/server-projects.md), with its connection dot. */
+function ServerTag({ serverId }: { serverId: string }) {
+  const m = useRemote(s => s.machines.find(x => x.id === serverId));
+  return (
+    <span data-testid={`project-server-${serverId}`} className="flex min-w-0 shrink items-center gap-1 text-[11px] font-normal normal-case tracking-normal text-[var(--color-fg-faint)]">
+      <Server className="h-3 w-3 shrink-0" />
+      <span className="truncate">{m?.name ?? "server"}</span>
+      <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full", m?.state === "online" ? "bg-[var(--color-ok)]" : m?.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]")} />
+    </span>
   );
 }
