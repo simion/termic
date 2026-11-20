@@ -109,7 +109,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
 /// Text Claude records as a user line that is not the person's words: slash
 /// commands, local-command echoes, reminders, background-task notices.
 fn injected(text: &str) -> bool {
-    ["<command-", "<local-command", "<system-reminder>", "<task-notification>"].iter().any(|p| text.starts_with(p))
+    ["<command-", "<local-command", "<system-reminder>", "<task-notification>", "[Request interrupted by user"].iter().any(|p| text.starts_with(p))
 }
 
 /// One line saying what a tool call does: its command, path, pattern or
@@ -448,6 +448,7 @@ mod tests {
             r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>b1</task-id>"}"#,
             r#"{"type":"queue-operation","operation":"dequeue"}"#,
             r#"{"type":"user","message":{"content":"<task-notification>\n<task-id>b1</task-id>"}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#,
             r#"{"type":"queue-operation","operation":"enqueue","content":"still waiting"}"#,
         ]
         .join("\n");
