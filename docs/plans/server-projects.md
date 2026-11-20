@@ -68,9 +68,10 @@ a program in the task's folder. Instead of a verb per feature:
   worktrees). `git_bytes` and `git_raw` (lib.rs) send a server folder's git
   there through an index of server paths in `server_projects.rs`, so the
   git panel, diff, stage, commit and push work. The file tree listing,
-  editor read and save go to the box too. Left: setup and archive
-  clone and add project, and the full task menu for server tasks. The
-  file tree refreshes when the box's agent finishes a turn (no watcher).
+  editor read and save, `.termic.yaml` and Send to main run on the box
+  too; the tree refreshes when the box's agent finishes a turn (no
+  watcher). Left: archive scripts, clone and add project on the box, and
+  the full task menu for server tasks.
 - Stage 4 in full: a server records the window it was added in and its
   projects mirror into that profile; the sidebar's projects header has an
   Add a server button, and the Add project dialog links to it.
