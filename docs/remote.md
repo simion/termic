@@ -205,7 +205,11 @@ after its lead task, with its accent KEY), its project's folder
 the desktop pushes them to the host with `remote_set_folder_colors` on
 every change), `pinned`, the display order (`project_order`, `order`),
 the PR as last read (`pr`: number, state, title, url, provider; no live
-checks) and each tab's labels (`tabs[].props`, from `termic prop`). All
+checks), each tab's labels (`tabs[].props`, from `termic prop`) and the
+host profile its project belongs to (`profile`: slug, name, `#rrggbb`
+accent; absent on a host with no profiles). `project_list` names each
+project's profile slug the same way. The phone shows one profile at a
+time, picked from a row of coloured pills under its top bar. All
 optional: termic-server has none and sends none, and an older client
 ignores them. Clients lay them out the same way (`layoutRemote` in
 src/lib/remote.ts: folders at their first project, a group gathered at

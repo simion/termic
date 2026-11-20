@@ -1167,6 +1167,11 @@ pub(crate) fn profiles_registry() -> profiles::Registry {
 /// install that never made a second profile byte-identical to a pre-profiles
 /// one (docs/plans/profiles.md, "the default profile stays exactly where it
 /// is").
+/// The profiles registry, read now (empty with no profiles or no data dir).
+pub(crate) fn profile_registry() -> profiles::Registry {
+    global_dir().map(|g| profiles::load_registry(&g)).unwrap_or_default()
+}
+
 pub(crate) fn profile_dir(id: &ProfileId) -> Result<PathBuf> {
     let p = profiles::profile_dir(&global_dir()?, id);
     fs::create_dir_all(&p)?;

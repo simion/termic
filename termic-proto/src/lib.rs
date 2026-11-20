@@ -1608,6 +1608,9 @@ pub struct ProjectInfo {
     /// v24: a multi-repo project's member repos, in project order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<ProjectMemberInfo>,
+    /// The slug of the profile it belongs to. Absent with no profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// One member repo of a multi-repo project (v24).
@@ -2818,6 +2821,7 @@ mod tests {
                 },
                 ProjectMemberInfo { name: "docs".into(), root_path: "/src/docs".into(), non_git: true, base_branch: String::new() },
             ],
+            profile: None,
         }
     }
 
@@ -3106,6 +3110,7 @@ mod tests {
                         default_agent: "claude".into(),
                         project_type: "single".into(),
                         members: Vec::new(),
+                        profile: None,
                     },
                     shop_project(),
                 ],

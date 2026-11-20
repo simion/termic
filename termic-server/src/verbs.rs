@@ -516,6 +516,7 @@ fn project_info(p: &Project, tasks: &[TaskRec]) -> ProjectInfo {
         // A server project is always one repo.
         project_type: "single".into(),
         members: Vec::new(),
+        profile: None,
     }
 }
 

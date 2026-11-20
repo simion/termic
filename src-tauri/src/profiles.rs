@@ -144,6 +144,14 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// The profile a data dir id belongs to, or `None` with no profiles.
+    pub fn profile_of(&self, id: &ProfileId) -> Option<&Profile> {
+        match id {
+            ProfileId::Root => self.root_slug.as_deref().and_then(|s| self.get(s)),
+            ProfileId::Slug(s) => self.get(s),
+        }
+    }
+
     pub fn get(&self, slug: &str) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.slug == slug)
     }
@@ -391,6 +399,15 @@ mod tests {
         };
         assert_eq!(reg.ids(), vec![ProfileId::Slug("home".into())]);
         assert!(!reg.is_dormant());
+    }
+
+    #[test]
+    fn profile_of_resolves_root_and_slugs_and_nothing_without_profiles() {
+        let p = |slug: &str| Profile { slug: slug.into(), name: slug.to_uppercase(), accent: "#123456".into(), order: 0, last_focused_at: None, open_at_quit: false };
+        let reg = Registry { profiles: vec![p("work"), p("home")], root_slug: Some("work".into()) };
+        assert_eq!(reg.profile_of(&ProfileId::Root).map(|x| x.name.as_str()), Some("WORK"));
+        assert_eq!(reg.profile_of(&ProfileId::Slug("home".into())).map(|x| x.name.as_str()), Some("HOME"));
+        assert!(Registry::default().profile_of(&ProfileId::Root).is_none());
     }
 
     #[test]

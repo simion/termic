@@ -3988,6 +3988,7 @@ fn handle_schedule(
 
 fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
     let multi = p.project_type == crate::ProjectType::Multi;
+    let profile = crate::profile_registry().profile_of(&p.profile).map(|x| x.slug.clone());
     proto::ProjectInfo {
         id: p.id.clone(),
         name: p.name.clone(),
@@ -4008,6 +4009,7 @@ fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
         } else {
             Vec::new()
         },
+        profile,
     }
 }
 

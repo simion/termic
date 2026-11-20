@@ -251,6 +251,20 @@ pub struct TaskRow {
     /// The task's pull or merge request, as the host last read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<RowPr>,
+    /// The host profile its project belongs to. Absent on a host with no
+    /// profiles (and on termic-server): one unnamed profile, nothing to pick.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<RowProfile>,
+}
+
+/// A host profile (docs/profiles.md): `id` is its slug, `accent` its
+/// `#rrggbb` colour, as the host's own profile strip draws it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RowProfile {
+    pub id: String,
+    pub name: String,
+    pub accent: String,
 }
 
 /// A task group or a project folder. `color` is an accent KEY ("teal"),
