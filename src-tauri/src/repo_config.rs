@@ -118,6 +118,17 @@ where
 /// the file exists but is malformed; callers surface that to the user.
 pub fn load(repo_root: &Path) -> Result<Option<RepoConfig>> {
     let path = repo_root.join(FILE_NAME);
+    // A server project's repo: read the file on the box (server_projects.rs).
+    if let Some(server) = crate::server_projects::server_for_path(repo_root) {
+        let (code, out, _) = crate::server_projects::exec_on(&server, repo_root, &["cat", "--", FILE_NAME], &[])
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if code != 0 {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&out);
+        let cfg: RepoConfig = serde_yml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+        return Ok(Some(cfg));
+    }
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

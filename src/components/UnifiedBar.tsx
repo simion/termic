@@ -18,7 +18,7 @@ import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Flower2,
-  MessageSquareText, Library, Palette,
+  MessageSquareText, Library, Palette, Play,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -32,6 +32,8 @@ import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
 import { remoteCall, req } from "@/lib/remote";
 import { i18n } from "@/lib/i18n";
+import { resolveRunTargets } from "@/lib/runTabs";
+import { useServerShells } from "@/components/remote/RemoteTaskView";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -278,6 +280,21 @@ export function UnifiedBar() {
                 prompts, send to main, sandbox and open-with act on this Mac
                 and land with their stages; archive works through the box. */}
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            {/* Run: the project's run script (Settings or the box's
+                `.termic.yaml`) in a new shell tab on the box. */}
+            <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={() => {
+              void resolveRunTargets(task.id).then(targets => {
+                const host = targets.find(x => x.member === "") ?? targets[0];
+                if (!host) {
+                  useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
+                  return;
+                }
+                useServerShells.getState().add(task.id, { label: t("panels:runControls.run"), input: `${host.script}\r` });
+              });
+            }}>
+              <Play className="h-4 w-4" />
+              <span>{t("panels:runControls.run")}</span>
+            </Button>
             {/* Prompts go to the agent on the box through termic-server's
                 `send` (what `termic send` uses). */}
             <DropdownRoot>

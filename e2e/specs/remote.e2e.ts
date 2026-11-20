@@ -533,8 +533,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       panel: !!document.querySelector('[data-testid="toggle-right-panel"]'),
       prompts: !!document.querySelector('[data-testid="prompts-menu"]'),
       run: !!document.querySelector('[data-testid="run-button"]'),
+      serverRun: !!document.querySelector('[data-testid="server-run"]'),
       openWith: !!document.querySelector('[data-testid="open-with-launch"]'),
-    }))).toEqual({ archive: true, panel: true, prompts: true, run: false, openWith: false });
+    }))).toEqual({ archive: true, panel: true, prompts: true, run: false, serverRun: true, openWith: false });
     // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
     // pty_open): what it runs lands in the box's worktree.
     await clickPresent('[data-testid="server-new-shell"]');
@@ -566,10 +567,28 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await browser.pause(1000);
       return existsSync(path.join(wt, "still-here"));
     }, { timeout: 20_000, timeoutMsg: "the shell did not survive switching away from the task" });
+    // Run: the box repo's `.termic.yaml` run script (read on the box) runs
+    // in a new shell tab, in the task's worktree there.
+    writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n");
+    try {
+      await clickPresent('[data-testid="server-run"]');
+      await browser.waitUntil(() => existsSync(path.join(wt, "ran-by-run")),
+        { timeout: 20_000, timeoutMsg: "Run never ran the box's run script in the worktree" });
+      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Run");
+    } finally {
+      rmSync(path.join(repo, ".termic.yaml"), { force: true });
+    }
     // Back to the agent: its terminal is still there; closing the shell ends it.
     await clickPresent('[data-testid="server-tab-agent"]');
     await waitVisible('[data-testid="remote-terminal"]');
-    await browser.execute(() => (document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement).click());
+    for (;;) {
+      const closed = await browser.execute(() => {
+        const x = document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement | null;
+        x?.click();
+        return !!x;
+      });
+      if (!closed) break;
+    }
     await waitGone('[data-testid="aux-terminal"]');
   });
 

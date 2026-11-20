@@ -49,15 +49,22 @@ export function RemoteTaskOverlay() {
 export const useServerShells = create<{
   shells: Record<string, string[]>;
   view: Record<string, string>;
-  add: (task: string) => void;
+  /** A shell started to run something (Run): its tab label and the line it types. */
+  meta: Record<string, { label?: string; input?: string }>;
+  add: (task: string, meta?: { label?: string; input?: string }) => void;
   close: (task: string, id: string) => void;
   show: (task: string, id: string) => void;
 }>((set) => ({
   shells: {},
   view: {},
-  add: (task) => set(s => {
+  meta: {},
+  add: (task, meta) => set(s => {
     const id = `shell-${Date.now()}`;
-    return { shells: { ...s.shells, [task]: [...(s.shells[task] ?? []), id] }, view: { ...s.view, [task]: id } };
+    return {
+      shells: { ...s.shells, [task]: [...(s.shells[task] ?? []), id] },
+      view: { ...s.view, [task]: id },
+      meta: meta ? { ...s.meta, [id]: meta } : s.meta,
+    };
   }),
   close: (task, id) => set(s => ({
     shells: { ...s.shells, [task]: (s.shells[task] ?? []).filter(x => x !== id) },
@@ -83,6 +90,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   const [picked, setPicked] = useState<string | null>(null);
   const shells = useServerShells(s => s.shells[taskId] ?? NO_SHELLS);
   const view = useServerShells(s => s.view[taskId] ?? "agent");
+  const meta = useServerShells(s => s.meta);
   const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
   if (!machine) {
@@ -178,7 +186,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               {id === "agent"
                 ? <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-3.5 w-3.5" /></span>
                 : <SquareTerminal className="h-3.5 w-3.5 shrink-0" />}
-              <span>{id === "agent" ? t("task.agentTab") : t("task.shellTab", { n: i })}</span>
+              <span>{id === "agent" ? t("task.agentTab") : meta[id]?.label ?? t("task.shellTab", { n: i })}</span>
               {id !== "agent" && (
                 <span
                   role="button"
@@ -207,7 +215,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
         </div>
         {taskPath && shells.map(id => (
           <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
-            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} />
+            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} initialInput={meta[id]?.input} />
           </div>
         ))}
       </div>

@@ -4643,6 +4643,9 @@ fn descendant_names(_root: u32) -> Vec<String> { Vec::new() }
 /// that exited before the ack).
 #[tauri::command]
 fn pty_attached(state: State<'_, PtyManager>, id: String) {
+    if remote_client::pty_attached(&id) {
+        return;
+    }
     let map = state.inner.lock();
     let Some(slot) = map.get(&id) else { return };
     // Under the buffer mutex, exactly like the reader's `done` store: a store

@@ -57,10 +57,11 @@ a program in the task's folder. Instead of a verb per feature:
 - Stage 1 in full.
 - Stage 2, partly: termic-server `pty_open` family (cap `pty`), and
   `pty_spawn` in a server folder opens there, so a server task's view has
-  shell tabs on the box that live on while you switch tasks. Left: run
-  and setup scripts there, and the top bar's Run, Send to main and Open
-  with (hidden for server tasks until then). Prompts go to the box's agent
-  through termic-server `send`.
+  shell tabs on the box that live on while you switch tasks; Run opens
+  the run script (Settings or the box's `.termic.yaml`, read there) in
+  one. Prompts go to the box's agent through termic-server `send`. Left:
+  setup scripts on the box, custom run commands, Stop, and the top bar's
+  Send to main and Open with (hidden for server tasks until then).
 - Stage 3, partly: termic-server `exec` (fenced to project roots and
   worktrees). `git_bytes` and `git_raw` (lib.rs) send a server folder's git
   there through an index of server paths in `server_projects.rs`, so the

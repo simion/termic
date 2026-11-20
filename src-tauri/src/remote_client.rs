@@ -635,7 +635,7 @@ fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
     // Every waiting call fails now rather than at its timeout.
     l.pending.lock().unwrap().clear();
     // The box hangs up a connection's PTYs when it ends: say so.
-    let gone: Vec<String> = ptys().lock().unwrap().iter().filter(|(_, m)| **m == l.id).map(|(p, _)| p.clone()).collect();
+    let gone: Vec<String> = ptys().lock().unwrap().iter().filter(|(_, p)| p.machine == l.id).map(|(id, _)| id.clone()).collect();
     for pid in gone {
         pty_event(&pid, PtyEvent::Exit("disconnected".into()));
     }
@@ -727,9 +727,21 @@ pub(crate) enum PtyEvent {
 
 type PtySink = Box<dyn Fn(&str, PtyEvent) + Send + Sync>;
 
-/// Which server each `pty_open` PTY runs on, by the desktop's pty id.
-fn ptys() -> &'static Mutex<HashMap<String, String>> {
-    static P: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+/// A server PTY, by the desktop's pty id. Output is held until the pane
+/// says it listens (`pty_attached`), as lib.rs does for a local PTY:
+/// a fast link could otherwise deliver the first prompt to nobody.
+struct RemotePty {
+    machine: String,
+    attached: bool,
+    held: Vec<u8>,
+    exit: Option<String>,
+}
+
+/// Held output kept per unattached PTY, at most.
+const HELD_MAX: usize = 1 << 20;
+
+fn ptys() -> &'static Mutex<HashMap<String, RemotePty>> {
+    static P: OnceLock<Mutex<HashMap<String, RemotePty>>> = OnceLock::new();
     P.get_or_init(Default::default)
 }
 
@@ -743,13 +755,52 @@ pub(crate) fn set_pty_sink(f: PtySink) {
     let _ = pty_sink().set(f);
 }
 
-fn pty_event(pid: &str, e: PtyEvent) {
-    if matches!(e, PtyEvent::Exit(_)) && ptys().lock().unwrap().remove(pid).is_none() {
-        return;
-    }
+fn emit_pty(pid: &str, e: PtyEvent) {
     if let Some(f) = pty_sink().get() {
         f(pid, e);
     }
+}
+
+fn pty_event(pid: &str, e: PtyEvent) {
+    let mut map = ptys().lock().unwrap();
+    let Some(p) = map.get_mut(pid) else { return };
+    if !p.attached {
+        match e {
+            PtyEvent::Data(d) => {
+                if p.held.len() + d.len() <= HELD_MAX {
+                    p.held.extend_from_slice(&d);
+                }
+            }
+            PtyEvent::Exit(r) => p.exit = Some(r),
+        }
+        return;
+    }
+    if matches!(e, PtyEvent::Exit(_)) {
+        map.remove(pid);
+    }
+    drop(map);
+    emit_pty(pid, e);
+}
+
+/// The pane listens now: deliver what was held. True if `pid` is a server PTY.
+pub(crate) fn pty_attached(pid: &str) -> bool {
+    let (held, exit) = {
+        let mut map = ptys().lock().unwrap();
+        let Some(p) = map.get_mut(pid) else { return false };
+        p.attached = true;
+        let out = (std::mem::take(&mut p.held), p.exit.take());
+        if out.1.is_some() {
+            map.remove(pid);
+        }
+        out
+    };
+    if !held.is_empty() {
+        emit_pty(pid, PtyEvent::Data(held));
+    }
+    if let Some(r) = exit {
+        emit_pty(pid, PtyEvent::Exit(r));
+    }
+    true
 }
 
 /// Start a program on a PTY on a server, `argv` empty for its login shell.
@@ -758,7 +809,7 @@ pub(crate) fn pty_open(machine: &str, pid: &str, cwd: &str, argv: Vec<String>, e
     if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY) {
         return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Remote", server_name(machine)));
     }
-    ptys().lock().unwrap().insert(pid.to_string(), machine.to_string());
+    ptys().lock().unwrap().insert(pid.to_string(), RemotePty { machine: machine.to_string(), attached: false, held: Vec::new(), exit: None });
     l.send(ClientMsg::PtyOpen { pid: pid.into(), cwd: cwd.into(), argv, env, cols, rows }).inspect_err(|_| {
         ptys().lock().unwrap().remove(pid);
     })
@@ -766,7 +817,7 @@ pub(crate) fn pty_open(machine: &str, pid: &str, cwd: &str, argv: Vec<String>, e
 
 /// The server a desktop pty id runs on, if it is a server PTY.
 pub(crate) fn pty_machine(pid: &str) -> Option<String> {
-    ptys().lock().unwrap().get(pid).cloned()
+    ptys().lock().unwrap().get(pid).map(|p| p.machine.clone())
 }
 
 pub(crate) fn pty_input(machine: &str, pid: &str, data: &[u8]) -> Result<(), String> {
@@ -823,6 +874,7 @@ pub(crate) fn find_server(sel: &str) -> Option<String> {
 
 // ───────────────────────────── servers ───────────────────────────────
 
+#[cfg(test)]
 pub(crate) fn add_server(ssh: &str, name: &str) -> Result<ServerRecord, String> {
     add_server_in(ssh, name, None)
 }
@@ -1168,6 +1220,31 @@ pub(crate) async fn server_install(app: tauri::AppHandle, ssh: String) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_pty_holds_its_output_until_the_pane_listens() {
+        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        set_pty_sink(Box::new(|pid, e| {
+            SEEN.lock().unwrap().push(match e {
+                PtyEvent::Data(d) => format!("{pid} data {}", String::from_utf8_lossy(&d)),
+                PtyEvent::Exit(r) => format!("{pid} exit {r}"),
+            });
+        }));
+        let mine = |p: &str| SEEN.lock().unwrap().iter().filter(|l| l.starts_with(p)).cloned().collect::<Vec<_>>();
+        ptys().lock().unwrap().insert("held-1".into(), RemotePty { machine: "m".into(), attached: false, held: Vec::new(), exit: None });
+        pty_event("held-1", PtyEvent::Data(b"$ ".to_vec()));
+        pty_event("held-1", PtyEvent::Data(b"hi".to_vec()));
+        pty_event("held-1", PtyEvent::Exit("exited".into()));
+        assert!(mine("held-1").is_empty(), "nothing goes out before the pane listens");
+        assert!(pty_attached("held-1"));
+        assert_eq!(mine("held-1"), ["held-1 data $ hi", "held-1 exit exited"]);
+        assert!(pty_machine("held-1").is_none(), "an exited PTY is forgotten");
+        // Attached: output flows straight through.
+        ptys().lock().unwrap().insert("live-1".into(), RemotePty { machine: "m".into(), attached: true, held: Vec::new(), exit: None });
+        pty_event("live-1", PtyEvent::Data(b"x".to_vec()));
+        assert_eq!(mine("live-1"), ["live-1 data x"]);
+        assert!(!pty_attached("not-a-server-pty"));
+    }
 
     #[test]
     fn ssh_failures_are_one_sentence_with_the_fix() {
