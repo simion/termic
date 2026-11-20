@@ -328,6 +328,22 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     await browser.execute((id) => window.__termic!.invoke("task_stage", { id, dirName: "", paths: ["desk.txt"] }), task);
     await browser.execute((id) => window.__termic!.invoke("task_commit", { id, dirName: "", subject: "from the desk", body: "", amend: false, push: false }), task);
     expect(ssh(`git -C '${wt}' log -1 --format=%s`).trim()).toBe("from the desk");
+    // A shell tab runs on the box: open the task from its sidebar row, add a
+    // shell, and what it runs shows up there (checked over ssh).
+    await clickPresent(`[data-sidebar-task-id="${task}"]`);
+    await clickPresent('[data-testid="server-new-shell"]');
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
+      { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
+    await browser.waitUntil(async () => {
+      await browser.execute(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
+        ta.focus();
+        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "uname -s > from-shell.txt\r", bubbles: true }));
+      });
+      await browser.pause(1500);
+      return ssh(`cat '${wt}/from-shell.txt' 2>/dev/null || true`).trim() === "Linux";
+    }, { timeout: 30_000, timeoutMsg: "the shell tab never ran on the box" });
+    await snap("remote-real-shell.png");
     // Archived from the desktop: the agent stops and its worktree goes, on the box.
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), task);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
