@@ -109,6 +109,25 @@ fn sync(server: &str) -> Result<bool, String> {
     Ok(projects_changed || !changed_tasks.is_empty())
 }
 
+/// A server was removed: drop its mirrored projects and their task records
+/// from this machine's store. Nothing on the box is touched.
+pub(crate) fn forget_server(server: &str) {
+    let mut projects = crate::load_projects_all();
+    let gone: std::collections::HashSet<String> = projects.iter().filter(|p| p.server.as_deref() == Some(server)).map(|p| p.id.clone()).collect();
+    if gone.is_empty() {
+        return;
+    }
+    projects.retain(|p| !gone.contains(&p.id));
+    if let Err(e) = crate::save_projects(&projects) {
+        crate::dlog(&format!("[server-projects] forget {server}: {e}"));
+        return;
+    }
+    for t in crate::load_tasks_all().into_iter().filter(|t| gone.contains(&t.project_id)) {
+        let _ = crate::delete_task_file(&t.id);
+    }
+    reload_windows();
+}
+
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }

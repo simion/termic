@@ -784,6 +784,9 @@ pub(crate) fn remove_server(id: &str) -> Result<(), String> {
     save_servers(&list)?;
     forget(id);
     supervise();
+    // Its projects and their task records leave this machine's store too
+    // (the box keeps its worktrees; adding the server back mirrors them).
+    crate::server_projects::forget_server(id);
     Ok(())
 }
 

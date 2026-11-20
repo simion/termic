@@ -3479,6 +3479,43 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               // the trigger highlighted with a focus ring is just noise.
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
+              {/* A server project's task (docs/plans/server-projects.md): what
+                  works on it today. Its files, scripts and terminals are on
+                  the box; the rest of the menu comes with stage 2 and 3. */}
+              {serverId ? (
+                <>
+                  <DropdownItem
+                    className="items-center [&>svg]:mt-0"
+                    data-testid="task-menu-pin"
+                    onSelect={() => {
+                      const next = !w.pinned;
+                      setTaskPinned(w.id, next);
+                      taskSetPinned(w.id, next).catch(e => {
+                        setTaskPinned(w.id, !next);
+                        useUI.getState().pushToast(String(e), "error");
+                      });
+                    }}
+                  >
+                    {w.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                    <span>{w.pinned ? t("unpinTask") : t("pinTask")}</span>
+                  </DropdownItem>
+                  <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => setTaskRenaming(w.name)}>
+                    <Pencil className="h-4 w-4" />
+                    <span>{t("rename", { ns: "common" })}</span>
+                  </DropdownItem>
+                  <DropdownSeparator />
+                  <DropdownItem
+                    className="items-center [&>svg]:mt-0"
+                    onSelect={async () => {
+                      if (taskRenaming !== null) return;
+                      await confirmAndArchive(w);
+                    }}
+                  >
+                    <Archive className="h-4 w-4" />
+                    <span>{t("archiveTask")}</span>
+                  </DropdownItem>
+                </>
+              ) : (<>
               {/* Leads the menu: "what else can I put in this task" is the
                   question people bring to a task row (GH #197). A submenu,
                   not a flat section, so the row's own actions stay one
@@ -3845,6 +3882,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Archive className="h-4 w-4" />
                 <span>{t("archiveTask")}</span>
               </DropdownItem>
+              </>)}
             </DropdownMenu>
           </DropdownRoot>
           {/* `translate3d(0,0,0)` pins it to its own compositing layer for

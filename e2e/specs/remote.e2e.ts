@@ -467,4 +467,12 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     await waitGone(row(), 20_000);
   });
+
+  it("removing the server takes its projects out of this machine's store", async () => {
+    await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId);
+    await browser.waitUntil(async () => browser.execute((sid) =>
+      !window.__termic!.useApp.getState().projects.some((p: any) => p.server === sid), serverId),
+    { timeout: 20_000, timeoutMsg: "the removed server's projects stayed" });
+    serverId = "";
+  });
 });
