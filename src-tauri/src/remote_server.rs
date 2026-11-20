@@ -437,6 +437,24 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
 /// from a paired computer always had (peers.rs `permitted`), plus a phone,
 /// which is the user's own remote control and drives.
 fn call(s: &Session, id: &str, req: serde_json::Value, proto: Option<u32>) -> Reply {
+    // A prompt for a server project's task goes to its agent on the box
+    // (termic-server `send`): this desktop has no tab or session for it.
+    // Only `send`: names, pins and groups are the desktop's own.
+    if req.get("cmd").and_then(|c| c.as_str()) == Some("send") {
+        if let Some((server, task_id)) = req.get("task").and_then(|t| t.as_str()).and_then(|t| server_task(s, t)) {
+            if !s.client.drives() {
+                return Reply::err(id, ErrorCode::Auth, "this computer only lets yours read its tasks");
+            }
+            let mut fwd = req.clone();
+            fwd["task"] = serde_json::Value::String(task_id);
+            let mut reply = match crate::remote_client::call(&server, fwd, Some(Duration::from_secs(330))) {
+                Ok(v) => serde_json::from_value::<Reply>(v).unwrap_or_else(|e| Reply::err(id, ErrorCode::Internal, format!("unexpected answer from the server: {e}"))),
+                Err(e) => Reply::err(id, ErrorCode::Internal, e),
+            };
+            reply.id = id.to_string();
+            return reply;
+        }
+    }
     let req: Request = match serde_json::from_value(req) {
         Ok(r) => r,
         Err(e) => return Reply::err(id, ErrorCode::BadRequest, format!("malformed request: {e}")),
