@@ -13688,6 +13688,44 @@ impl SendDiffError {
     }
 }
 
+/// Send to main for a server task: the same steps as the local path, run on
+/// the box (server_projects.rs `exec`). The checks and the diff go through
+/// the routed `git`; the patch is applied there with stdin, and untracked
+/// files are copied there with a tar pipe, never through this Mac.
+fn send_diff_to_main_on_server(server: &str, base: &str, worktree: &Path, main: &Path) -> Result<SendDiffResult, SendDiffError> {
+    let other = SendDiffError::Other;
+    let main_status = git(&["status", "--porcelain"], main).map_err(|e| other(e.to_string()))?;
+    if !main_status.trim().is_empty() {
+        return Err(SendDiffError::DirtyMain);
+    }
+    let patch = git_bytes(&["--no-pager", "diff", "--binary", base], worktree).map_err(|e| other(e.to_string()))?;
+    let tracked_files = patch.windows(11).filter(|w| w.starts_with(b"diff --git ")).count();
+    if !patch.is_empty() {
+        let (code, _, stderr) = server_projects::exec_with_stdin(
+            server, main, &["git", "apply", "--3way", "--whitespace=nowarn", "-"], &[("LC_ALL", "C")], Some(&patch),
+        ).map_err(other)?;
+        if code != 0 {
+            if stderr.lines().any(|l| l.trim_end().ends_with("with conflicts.")) {
+                return Err(SendDiffError::Conflict { main: main.display().to_string(), detail: stderr });
+            }
+            return Err(other(format!("git apply failed in {}: {stderr}", main.display())));
+        }
+    }
+    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"], worktree).map_err(|e| other(e.to_string()))?;
+    let untracked_files = untracked.split('\0').filter(|s| !s.is_empty()).count();
+    if untracked_files > 0 {
+        let (code, _, stderr) = server_projects::exec_on(
+            server, worktree,
+            &["sh", "-c", "git ls-files --others --exclude-standard -z | tar --null -T - -cf - | (cd \"$1\" && tar -xf -)", "sh", &main.to_string_lossy()],
+            &[],
+        ).map_err(other)?;
+        if code != 0 {
+            return Err(other(format!("copying untracked files to {} failed: {}", main.display(), stderr.trim())));
+        }
+    }
+    Ok(SendDiffResult { tracked_files, untracked_files })
+}
+
 pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, SendDiffError> {
     let other = SendDiffError::Other;
     {
@@ -13701,6 +13739,9 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         }
         let worktree = PathBuf::from(&w.path);
         let main = PathBuf::from(&p.root_path);
+        if let Some(server) = p.server.as_deref() {
+            return send_diff_to_main_on_server(server, &w.base_branch, &worktree, &main);
+        }
         if !main.is_dir() {
             return Err(other(format!("Project main checkout missing: {}", main.display())));
         }

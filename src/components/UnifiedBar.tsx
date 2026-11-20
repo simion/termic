@@ -280,6 +280,7 @@ export function UnifiedBar() {
                 prompts, send to main, sandbox and open-with act on this Mac
                 and land with their stages; archive works through the box. */}
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
             {/* Run: the project's run script (Settings or the box's
                 `.termic.yaml`) in a new shell tab on the box. */}
             <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={() => {
@@ -382,41 +383,7 @@ export function UnifiedBar() {
                 nothing to send). Hard-blocks on a dirty main checkout
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
-            {!task.is_main_checkout && (
-              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
-                <Button size="sm" variant="ghost" className="gap-1.5"
-                  onClick={async () => {
-                    const ok = await useUI.getState().askConfirm({
-                      title: t("unifiedBar.sendToMainTitle", { name: taskCrumb }),
-                      message: t("unifiedBar.sendToMainMessage", { path: proj.root_path }),
-                      confirmLabel: t("unifiedBar.sendToMain"),
-                    });
-                    if (!ok) return;
-                    try {
-                      const r = await taskSendDiffToMain(task.id);
-                      // Build a compact, human-readable summary. Quietly
-                      // omit the zero halves so it reads as a result, not
-                      // a checklist of nothings-happened.
-                      const parts: string[] = [];
-                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
-                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
-                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
-                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
-                    } catch (e) {
-                      await useUI.getState().askConfirm({
-                        title: t("unifiedBar.sendToMainFailed"),
-                        message: String(e),
-                        confirmLabel: t("ok", { ns: "common" }),
-                        cancelLabel: "",
-                        destructive: true,
-                      });
-                    }
-                  }}>
-                  <ArrowUpToLine className="h-4 w-4" />
-                  <span>{t("unifiedBar.sendToMain")}</span>
-                </Button>
-              </Tip>
-            )}
+            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
             <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />
             {(() => {
               if (task.docker_sandbox_enabled) {
@@ -480,3 +447,43 @@ export function UnifiedBar() {
   );
 }
 
+/** Send to main: the task's diff into the project's main checkout. A server
+ *  task's runs on the box (lib.rs send_diff_to_main_on_server). */
+function SendToMainButton({ task, rootPath, crumb }: { task: { id: string }; rootPath: string; crumb: string }) {
+  const { t } = useTranslation("chrome");
+  return (
+              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
+                <Button size="sm" variant="ghost" className="gap-1.5" data-testid="send-to-main"
+                  onClick={async () => {
+                    const ok = await useUI.getState().askConfirm({
+                      title: t("unifiedBar.sendToMainTitle", { name: crumb }),
+                      message: t("unifiedBar.sendToMainMessage", { path: rootPath }),
+                      confirmLabel: t("unifiedBar.sendToMain"),
+                    });
+                    if (!ok) return;
+                    try {
+                      const r = await taskSendDiffToMain(task.id);
+                      // Build a compact, human-readable summary. Quietly
+                      // omit the zero halves so it reads as a result, not
+                      // a checklist of nothings-happened.
+                      const parts: string[] = [];
+                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
+                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
+                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
+                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
+                    } catch (e) {
+                      await useUI.getState().askConfirm({
+                        title: t("unifiedBar.sendToMainFailed"),
+                        message: String(e),
+                        confirmLabel: t("ok", { ns: "common" }),
+                        cancelLabel: "",
+                        destructive: true,
+                      });
+                    }
+                  }}>
+                  <ArrowUpToLine className="h-4 w-4" />
+                  <span>{t("unifiedBar.sendToMain")}</span>
+                </Button>
+              </Tip>
+  );
+}

@@ -355,6 +355,12 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
       { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
     await typeInShellUntil("uname -s > from-shell.txt\r", () => ssh(`cat '${wt}/from-shell.txt' 2>/dev/null || true`).trim() === "Linux", "the shell tab never ran on the box");
     await snap("remote-real-shell.png");
+    // Send to main on the real box: the commit and the untracked file land
+    // in the box repo's checkout (git apply and a tar pipe, there).
+    const sent = await browser.execute((id) => window.__termic!.invoke("task_send_diff_to_main", { id }), task) as any;
+    expect(sent.tracked_files).toBe(1);
+    expect(ssh(`cat ~/${BOX_DIR}/repo/desk.txt`)).toBe("written from the desk\n");
+    expect(ssh(`cat ~/${BOX_DIR}/repo/from-shell.txt`).trim()).toBe("Linux");
     // Archived from the desktop: the agent stops and its worktree goes, on the box.
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), task);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
@@ -588,6 +594,22 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       if (!closed) break;
     }
     await waitGone('[data-testid="aux-terminal"]');
+    // Send to main runs on the box: the task's committed edit and its
+    // untracked files land in the box repo's main checkout, uncommitted.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="send-to-main"]'))).toBe(true);
+    try {
+      const sent = await browser.execute((id) => window.__termic!.invoke("task_send_diff_to_main", { id }), task) as any;
+      expect(sent.tracked_files).toBe(1);
+      expect(sent.untracked_files).toBeGreaterThan(0);
+      expect(readFileSync(path.join(repo, "hello.txt"), "utf8")).toBe("edited on the desk\n");
+      expect(existsSync(path.join(repo, "still-here"))).toBe(true);
+      // A dirty main checkout is refused, as locally.
+      const again = await browser.execute((id) => window.__termic!.invoke("task_send_diff_to_main", { id }).then(() => "sent", (e: unknown) => JSON.stringify(e)), task);
+      expect(again).not.toBe("sent");
+    } finally {
+      execFileSync("git", ["-C", repo, "reset", "-q", "--hard"]);
+      execFileSync("git", ["-C", repo, "clean", "-qfd"]);
+    }
   });
 
   it("keeps the desktop's organisation: a pin and a name stay through a resync", async () => {
