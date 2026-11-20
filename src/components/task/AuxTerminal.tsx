@@ -492,7 +492,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
   }, [themeKey, customThemeRev]);
 
   return (
-    <div className="relative flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full flex-col" data-testid="aux-terminal" data-tab-id={tabId}>
       {secretsRole && taskId && tabId && <ShellRcBanner taskId={taskId} tabId={tabId} active={active} />}
       {sudoOffer && offerTouchIdForSudo && !exited && (
         <SudoTouchIdBanner taskId={taskId} onDismiss={() => setSudoOffer(false)} />

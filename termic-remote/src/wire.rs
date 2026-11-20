@@ -33,6 +33,9 @@ pub mod caps {
     /// desktop's PTY is sized by its own window, so a client follows that
     /// size instead. Its presence is how a client tells the two apart.
     pub const RESIZE: &str = "resize";
+    /// `pty_open` and friends: extra terminals (a shell, a script) in a
+    /// project's folder, several at once, apart from the agent's.
+    pub const PTY: &str = "pty";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +108,25 @@ pub enum ClientMsg {
     /// Size the open terminal's PTY (only to a host offering `resize`).
     /// Every client watching it gets `term_resize`.
     TermSize { cols: u16, rows: u16 },
+    /// Start a program on a fresh PTY in `cwd` (a project's folder or one
+    /// of its worktrees), `argv` empty for the login shell. `pid` is the
+    /// client's name for it; output comes back as `pty_data` with it.
+    /// It ends with the connection.
+    PtyOpen {
+        pid: String,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env: Vec<(String, String)>,
+        cols: u16,
+        rows: u16,
+    },
+    /// Keystrokes into a `pty_open` PTY, base64.
+    PtyInput { pid: String, data: String },
+    PtyResize { pid: String, cols: u16, rows: u16 },
+    /// End it (SIGHUP, then kill).
+    PtyKill { pid: String },
     /// Keystrokes into a task's agent without watching it (an answer
     /// from a list or the chat), base64.
     Keys {
@@ -181,6 +203,10 @@ pub enum ServerMsg {
     TermResize { cols: u16, rows: u16 },
     /// The terminal ended: "exited", "archived", "closed".
     TermClosed { reason: String },
+    /// Output of a `pty_open` PTY, base64.
+    PtyData { pid: String, data: String },
+    /// A `pty_open` PTY ended, or never started (`reason` says why).
+    PtyExit { pid: String, reason: String },
     Transcript {
         id: String,
         task: String,
@@ -432,6 +458,8 @@ mod tests {
             ),
             (ClientMsg::Call { id: "1".into(), req: json!({"cmd":"list"}), proto: None }, json!({"t":"call","id":"1","req":{"cmd":"list"}})),
             (ClientMsg::TermOpen { task: "x".into(), tab: None }, json!({"t":"term_open","task":"x"})),
+            (ClientMsg::PtyOpen { pid: "p1".into(), cwd: "/r".into(), argv: vec![], env: vec![], cols: 80, rows: 24 }, json!({"t":"pty_open","pid":"p1","cwd":"/r","cols":80,"rows":24})),
+            (ClientMsg::PtyKill { pid: "p1".into() }, json!({"t":"pty_kill","pid":"p1"})),
             (ClientMsg::TermClose {}, json!({"t":"term_close"})),
             (ClientMsg::TermInput { data: "DQ==".into() }, json!({"t":"term_input","data":"DQ=="})),
             (ClientMsg::TermSize { cols: 132, rows: 43 }, json!({"t":"term_size","cols":132,"rows":43})),
@@ -468,6 +496,8 @@ mod tests {
             (ServerMsg::TermResize { cols: 100, rows: 30 }, json!({"t":"term_resize","cols":100,"rows":30})),
             (ServerMsg::TermClosed { reason: "exited".into() }, json!({"t":"term_closed","reason":"exited"})),
             (ServerMsg::Pong {}, json!({"t":"pong"})),
+            (ServerMsg::PtyData { pid: "p1".into(), data: "eA==".into() }, json!({"t":"pty_data","pid":"p1","data":"eA=="})),
+            (ServerMsg::PtyExit { pid: "p1".into(), reason: "exited".into() }, json!({"t":"pty_exit","pid":"p1","reason":"exited"})),
             (ServerMsg::Ack { id: "k1".into(), ok: false, message: Some("stale".into()) }, json!({"t":"ack","id":"k1","ok":false,"message":"stale"})),
         ];
         for (msg, want) in cases {

@@ -396,6 +396,10 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
         ClientMsg::Resync {} => {
             let _ = s.out.send(Out::Resync);
         }
+        // Extra PTYs run on a termic-server; the desktop does not offer
+        // `pty` (a phone or a paired machine opens no shell here).
+        ClientMsg::PtyOpen { pid, .. } => send(s, ServerMsg::PtyExit { pid, reason: "terminals open on a termic-server, not on the desktop".into() }),
+        ClientMsg::PtyInput { .. } | ClientMsg::PtyResize { .. } | ClientMsg::PtyKill { .. } => {}
         ClientMsg::Transcript { id, task } => {
             if !s.client.drives() {
                 return error(s, "this computer only lets yours reply to its tasks");

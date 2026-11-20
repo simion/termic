@@ -797,7 +797,7 @@ function FTab({ label, icon, active, onClick, onClose }: {
       )}
       style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
     >
-      <button onClick={onClick} className="flex items-center gap-1 px-1.5 py-1">
+      <button onClick={onClick} data-testid="foot-tab" data-tab={label} className="flex items-center gap-1 px-1.5 py-1">
         {icon}{label}
       </button>
       {onClose && (

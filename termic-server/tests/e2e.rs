@@ -236,6 +236,26 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     assert_eq!(outside["ok"], false, "exec ran outside every project: {outside}");
     let dotdot = a.call(json!({"cmd":"exec","cwd": format!("{}/..", e.repo().display()),"argv":["ls"]}));
     assert_eq!(dotdot["ok"], false, "a .. path escaped the project: {dotdot}");
+    // pty_open: a shell in the project, several apart from the agent's.
+    let repo = e.repo().canonicalize().unwrap();
+    a.send(&ClientMsg::PtyOpen { pid: "sh1".into(), cwd: repo.display().to_string(), argv: vec![], env: vec![], cols: 90, rows: 20 });
+    a.send(&ClientMsg::PtyInput { pid: "sh1".into(), data: termic_remote::b64(b"echo marker-$((40+2)); stty size\r") });
+    let mut seen = String::new();
+    a.wait_for("the shell's output", |m| match m {
+        ServerMsg::PtyData { pid, data } if pid == "sh1" => {
+            seen.push_str(&String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()));
+            (seen.contains("marker-42") && seen.contains("20 90")).then_some(())
+        }
+        _ => None,
+    });
+    a.send(&ClientMsg::PtyKill { pid: "sh1".into() });
+    a.wait_for("the shell's exit", |m| matches!(m, ServerMsg::PtyExit { pid, .. } if pid == "sh1").then_some(()));
+    a.send(&ClientMsg::PtyOpen { pid: "sh2".into(), cwd: "/".into(), argv: vec!["ls".into()], env: vec![], cols: 80, rows: 24 });
+    let why = a.wait_for("a refusal outside the project", |m| match m {
+        ServerMsg::PtyExit { pid, reason } if pid == "sh2" => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(why.contains("not inside a project"), "{why}");
     assert_eq!(again["project"]["id"], p["project"]["id"], "adding twice is idempotent");
     let bad = a.call(json!({"cmd":"project_add","path": e.root.join("home")}));
     assert_eq!(bad["ok"], json!(false), "a non-git dir needs non_git");

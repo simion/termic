@@ -614,7 +614,7 @@ const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 /// Whether `dir` is inside a registered project or one of this server's
 /// worktrees: the only places `exec` runs (docs/plans/server-projects.md).
-fn exec_allowed(d: &Daemon, dir: &std::path::Path) -> bool {
+pub(crate) fn exec_allowed(d: &Daemon, dir: &std::path::Path) -> bool {
     let Ok(dir) = dir.canonicalize() else { return false };
     let mut roots: Vec<std::path::PathBuf> = d.st.lock().unwrap().projects.iter().map(|p| std::path::PathBuf::from(&p.path)).collect();
     roots.push(d.worktrees_dir());

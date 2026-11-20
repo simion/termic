@@ -4163,10 +4163,10 @@ pub struct PtyManager {
 }
 
 #[derive(Clone, Serialize)]
-struct PtyChunk { data: Vec<u8> }
+pub(crate) struct PtyChunk { pub(crate) data: Vec<u8> }
 
 #[derive(Clone, Serialize)]
-struct PtyExit { code: Option<i32> }
+pub(crate) struct PtyExit { pub(crate) code: Option<i32> }
 
 /// Truth about how the agent actually got spawned - not just whether
 /// the task WANTED to be sandboxed but whether the cage actually
@@ -4690,12 +4690,30 @@ fn agent_tab_id(args: &SpawnArgs) -> Option<&str> {
     args.role.as_ref().filter(|r| r.kind == "agent").and_then(|r| r.tab_id.as_deref())
 }
 
+/// A terminal in a server project's folder runs on the box (termic-server
+/// `pty_open`); its output arrives as the same `pty://` events, so the panes
+/// need no remote branch. A bare login shell becomes the box's own login
+/// shell: this Mac's `/bin/zsh` may not exist there.
+fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, String> {
+    let shell_only = Path::new(&args.cmd).file_name().and_then(|n| n.to_str())
+        .is_some_and(|n| matches!(n, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh"))
+        && args.args.iter().all(|a| matches!(a.as_str(), "-l" | "-i" | "--login" | "-il" | "-li"));
+    let argv = if shell_only { Vec::new() } else { std::iter::once(args.cmd.clone()).chain(args.args.iter().cloned()).collect() };
+    let id = Uuid::new_v4().to_string();
+    let env: Vec<(String, String)> = args.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    remote_client::pty_open(server, &id, &args.cwd, argv, env, args.cols, args.rows)?;
+    Ok(SpawnResult { id, sandbox: SandboxStatus { active: false, proxy_active: false, warning: String::new() }, account: None })
+}
+
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
     state: State<'_, PtyManager>,
     args: SpawnArgs,
 ) -> Result<SpawnResult, String> {
+    if let Some(server) = server_projects::server_for_path(Path::new(&args.cwd)) {
+        return server_pty_spawn(&server, &args);
+    }
     // a shell running a Secrets role (docs/sandbox.md "Shells"). None for
     // every other spawn, and nothing below changes for those.
     let shell_bundle = match plan_shell_secrets(&args, sandbox::available(), |tid| {
@@ -5575,6 +5593,9 @@ fn pty_spawn(
 
 #[tauri::command]
 fn pty_write(state: State<'_, PtyManager>, pty_id: String, data: Vec<u8>) -> Result<(), String> {
+    if let Some(m) = remote_client::pty_machine(&pty_id) {
+        return remote_client::pty_input(&m, &pty_id, &data);
+    }
     pty_write_inner(&state, &pty_id, &data)
 }
 
@@ -5585,11 +5606,17 @@ fn pty_resize(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    if let Some(m) = remote_client::pty_machine(&pty_id) {
+        return remote_client::pty_resize(&m, &pty_id, cols, rows);
+    }
     pty_resize_inner(&state, &pty_id, rows, cols)
 }
 
 #[tauri::command]
 fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> {
+    if let Some(m) = remote_client::pty_machine(&pty_id) {
+        return remote_client::pty_kill(&m, &pty_id);
+    }
     let slot = state.inner.lock().remove(&pty_id);
     if let Some(mut slot) = slot {
         caffeinate::exited(&pty_id);

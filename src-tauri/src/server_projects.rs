@@ -21,6 +21,22 @@ fn app() -> &'static Mutex<Option<tauri::AppHandle>> {
 }
 
 pub(crate) fn init(handle: tauri::AppHandle) {
+    {
+        use tauri::Emitter;
+        let h = handle.clone();
+        crate::remote_client::set_pty_sink(Box::new(move |pid, e| match e {
+            crate::remote_client::PtyEvent::Data(data) => {
+                let _ = h.emit(&format!("pty://{pid}"), crate::PtyChunk { data });
+            }
+            crate::remote_client::PtyEvent::Exit(reason) => {
+                // A refusal or a dropped link reads in the pane before it ends.
+                if reason != "exited" {
+                    let _ = h.emit(&format!("pty://{pid}"), crate::PtyChunk { data: format!("\r\n[{reason}]\r\n").into_bytes() });
+                }
+                let _ = h.emit(&format!("pty-exit://{pid}"), crate::PtyExit { code: None });
+            }
+        }));
+    }
     *app().lock().unwrap() = Some(handle);
     refresh_paths();
 }

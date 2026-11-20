@@ -634,6 +634,11 @@ fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
     l.tx.lock().unwrap().take();
     // Every waiting call fails now rather than at its timeout.
     l.pending.lock().unwrap().clear();
+    // The box hangs up a connection's PTYs when it ends: say so.
+    let gone: Vec<String> = ptys().lock().unwrap().iter().filter(|(_, m)| **m == l.id).map(|(p, _)| p.clone()).collect();
+    for pid in gone {
+        pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+    }
     if let Some(sink) = l.term.lock().unwrap().as_ref() {
         sink(serde_json::json!({ "t": "term_closed", "reason": "disconnected" }));
     }
@@ -677,6 +682,12 @@ fn dispatch(l: &Link, m: ServerMsg) {
                 sink(serde_json::to_value(&m).unwrap_or_default());
             }
         }
+        ServerMsg::PtyData { pid, data } => {
+            if let Some(bytes) = termic_remote::unb64(&data) {
+                pty_event(&pid, PtyEvent::Data(bytes));
+            }
+        }
+        ServerMsg::PtyExit { pid, reason } => pty_event(&pid, PtyEvent::Exit(reason)),
         ServerMsg::Error { message } => dlog(&format!("[remote] {}: {message}", l.id)),
         _ => {}
     }
@@ -705,6 +716,70 @@ pub(crate) fn term_open(machine: &str, task: &str, tab: Option<String>, sink: Te
     let l = link(machine)?;
     *l.term.lock().unwrap() = Some(sink);
     l.send(ClientMsg::TermOpen { task: task.into(), tab })
+}
+
+// ─────────────── extra PTYs on a server (shells, scripts) ───────────────
+
+pub(crate) enum PtyEvent {
+    Data(Vec<u8>),
+    Exit(String),
+}
+
+type PtySink = Box<dyn Fn(&str, PtyEvent) + Send + Sync>;
+
+/// Which server each `pty_open` PTY runs on, by the desktop's pty id.
+fn ptys() -> &'static Mutex<HashMap<String, String>> {
+    static P: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn pty_sink() -> &'static OnceLock<PtySink> {
+    static S: OnceLock<PtySink> = OnceLock::new();
+    &S
+}
+
+/// Where a server PTY's output and exit go (lib.rs: the `pty://` events).
+pub(crate) fn set_pty_sink(f: PtySink) {
+    let _ = pty_sink().set(f);
+}
+
+fn pty_event(pid: &str, e: PtyEvent) {
+    if matches!(e, PtyEvent::Exit(_)) && ptys().lock().unwrap().remove(pid).is_none() {
+        return;
+    }
+    if let Some(f) = pty_sink().get() {
+        f(pid, e);
+    }
+}
+
+/// Start a program on a PTY on a server, `argv` empty for its login shell.
+pub(crate) fn pty_open(machine: &str, pid: &str, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16) -> Result<(), String> {
+    let l = link(machine)?;
+    if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY) {
+        return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Remote", server_name(machine)));
+    }
+    ptys().lock().unwrap().insert(pid.to_string(), machine.to_string());
+    l.send(ClientMsg::PtyOpen { pid: pid.into(), cwd: cwd.into(), argv, env, cols, rows }).inspect_err(|_| {
+        ptys().lock().unwrap().remove(pid);
+    })
+}
+
+/// The server a desktop pty id runs on, if it is a server PTY.
+pub(crate) fn pty_machine(pid: &str) -> Option<String> {
+    ptys().lock().unwrap().get(pid).cloned()
+}
+
+pub(crate) fn pty_input(machine: &str, pid: &str, data: &[u8]) -> Result<(), String> {
+    link(machine)?.send(ClientMsg::PtyInput { pid: pid.into(), data: termic_remote::b64(data) })
+}
+
+pub(crate) fn pty_resize(machine: &str, pid: &str, cols: u16, rows: u16) -> Result<(), String> {
+    link(machine)?.send(ClientMsg::PtyResize { pid: pid.into(), cols, rows })
+}
+
+pub(crate) fn pty_kill(machine: &str, pid: &str) -> Result<(), String> {
+    ptys().lock().unwrap().remove(pid);
+    link(machine)?.send(ClientMsg::PtyKill { pid: pid.into() })
 }
 
 /// A message that answers by id (a transcript, keys or an interrupt with an

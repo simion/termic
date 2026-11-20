@@ -98,7 +98,7 @@ export function MainArea() {
             // active one is mounted; there are no local PTYs to keep alive.
             const server = projects.find(p => p.id === w.project_id)?.server;
             if (!server) return <TaskView task={w} />;
-            return w.id === activeId ? <RemoteTaskView key={w.id} machineId={server} taskId={w.id} /> : null;
+            return w.id === activeId ? <RemoteTaskView key={w.id} machineId={server} taskId={w.id} taskPath={w.path} /> : null;
           })()}
         </div>
       ))}

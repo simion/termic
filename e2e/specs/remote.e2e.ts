@@ -14,7 +14,7 @@
 // when TERMIC_E2E_TEST_BOX names one.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
@@ -491,6 +491,26 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
+    // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
+    // pty_open): what it runs lands in the box's worktree.
+    await clickPresent('[data-testid="server-new-shell"]');
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
+      { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
+    await browser.waitUntil(async () => {
+      await browser.execute(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
+        ta.focus();
+        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "touch from-shell-$((6*7))\r", bubbles: true }));
+      });
+      await browser.pause(1500);
+      return existsSync(path.join(wt, "from-shell-42"));
+    }, { timeout: 20_000, timeoutMsg: "the shell tab never ran in the box's worktree" });
+    await snap("remote-server-shell.png");
+    // Back to the agent: its terminal is still there; closing the shell ends it.
+    await clickPresent('[data-testid="server-tab-agent"]');
+    await waitVisible('[data-testid="remote-terminal"]');
+    await browser.execute(() => (document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement).click());
+    await waitGone('[data-testid="aux-terminal"]');
   });
 
   it("keeps the desktop's organisation: a pin and a name stay through a resync", async () => {

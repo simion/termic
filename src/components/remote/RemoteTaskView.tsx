@@ -15,7 +15,8 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Archive, Monitor, Play, Server, SquareTerminal, X } from "lucide-react";
+import { Archive, Monitor, Play, Plus, Server, SquareTerminal, X } from "lucide-react";
+import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Button } from "@/components/ui/Button";
 import { useUI } from "@/store/ui";
@@ -41,7 +42,10 @@ export function RemoteTaskOverlay() {
   );
 }
 
-export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskId: string }) {
+/** `taskPath`: a server project's task (its worktree on the box). Its view
+ *  gets shell tabs beside the agent: each is an AuxTerminal, whose PTY
+ *  runs on the box (termic-server pty_open via lib.rs `pty_spawn`). */
+export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: string; taskId: string; taskPath?: string }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const task = machine?.tasks.find(x => x.id === taskId);
@@ -51,6 +55,10 @@ export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskI
   // The tab whose terminal is open: picked in the strip, else the task's
   // default agent tab (null asks the host for that one).
   const [picked, setPicked] = useState<string | null>(null);
+  // shortcut: shells live while this view is mounted (the active task);
+  // switching tasks ends them. Keep them per task if that bites.
+  const [shells, setShells] = useState<string[]>([]);
+  const [view, setView] = useState<string>("agent");
 
   if (!machine) {
     return <Gone message={t("task.gone", { machine: "" })} onClose={close} />;
@@ -127,8 +135,56 @@ export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskI
         </div>
       )}
 
+      {taskPath && (
+        <div role="tablist" data-testid="server-task-tabs" className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border-soft)] px-2">
+          {["agent", ...shells].map((id, i) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={view === id}
+              data-testid={`server-tab-${id === "agent" ? "agent" : "shell"}`}
+              onClick={() => setView(id)}
+              className={cn(
+                "group flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px]",
+                view === id ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+              )}
+            >
+              {id === "agent"
+                ? <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-3.5 w-3.5" /></span>
+                : <SquareTerminal className="h-3.5 w-3.5 shrink-0" />}
+              <span>{id === "agent" ? t("task.agentTab") : t("task.shellTab", { n: i })}</span>
+              {id !== "agent" && (
+                <span
+                  role="button"
+                  aria-label={t("task.closeShell")}
+                  onClick={(e) => { e.stopPropagation(); setShells(xs => xs.filter(x => x !== id)); if (view === id) setView("agent"); }}
+                  className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+                ><X className="h-3 w-3" /></span>
+              )}
+            </button>
+          ))}
+          <button
+            type="button"
+            data-testid="server-new-shell"
+            aria-label={t("task.newShell")}
+            title={t("task.newShell")}
+            disabled={!online}
+            onClick={() => { const id = `shell-${Date.now()}`; setShells(xs => [...xs, id]); setView(id); }}
+            className="rounded p-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
+          ><Plus className="h-3.5 w-3.5" /></button>
+        </div>
+      )}
+
       <div className="relative min-h-0 flex-1">
-        {online && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
+        <div className="absolute inset-0" style={{ display: view === "agent" ? undefined : "none" }}>
+          {online && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
+        </div>
+        {taskPath && shells.map(id => (
+          <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
+            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={view === id} />
+          </div>
+        ))}
       </div>
     </div>
   );
