@@ -41,7 +41,7 @@ export function RemoteTaskOverlay() {
   );
 }
 
-function RemoteTaskView({ machineId, taskId }: { machineId: string; taskId: string }) {
+export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskId: string }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const task = machine?.tasks.find(x => x.id === taskId);

@@ -203,6 +203,10 @@ export interface Project {
    *  list. No effect on paths, git, or workspaces. Missing/empty =
    *  ungrouped. */
   group?: string;
+  /** The server (servers.json id) it lives on, over SSH through
+   *  termic-server; `root_path` is then a path on that box. Absent for a
+   *  project on this machine (docs/plans/server-projects.md). */
+  server?: string;
   /** Personal (local, projects.json) extra run commands surfaced in the
    *  RunControls dropdown and launched as terminal tabs (GH #124). Separate
    *  from the single primary `run_script` (the Run button). The committed,

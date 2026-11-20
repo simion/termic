@@ -58,6 +58,7 @@ mod peers;
 mod push;
 mod remote_client;
 mod remote_server;
+mod server_projects;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
 pub mod customizations;
@@ -109,6 +110,11 @@ use sandbox::SandboxBundle;
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// The server (`servers.json` id) this project lives on, reached over
+    /// SSH through termic-server; `root_path` is then a path on that box.
+    /// None for a project on this machine (docs/plans/server-projects.md).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
     /// Filesystem path to the project's git repo. For
     /// `ProjectType::Single` this is the only repo in play. For
     /// `ProjectType::Multi` it's the HOST repo — the one that owns
@@ -6710,6 +6716,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
     let remote = if non_git { String::new() } else { detect_default_remote(&canon) };
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let p = Project {
+        server: None,
         default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
@@ -6931,6 +6938,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let name = trimmed_name.to_string();
     let p = Project {
+        server: None,
         default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
@@ -12757,6 +12765,18 @@ fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Res
 
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("task not found")?;
+
+    // A server project's task lives on the box: termic-server removes its
+    // worktree and stops its agent there; this side only marks the record
+    // (docs/plans/server-projects.md). Nothing on this machine to tear down.
+    if let Some(server) = load_projects_all().into_iter().find(|p| p.id == w.project_id).and_then(|p| p.server) {
+        let reply = remote_client::call(&server, serde_json::json!({"cmd": "archive", "task": w.id}), Some(std::time::Duration::from_secs(300)))?;
+        if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not archive it").to_string());
+        }
+        w.archived = true;
+        return save_task(w).map_err(|e| e.to_string());
+    }
 
     // Remove any Docker containers for this task (non-fatal). `--rm`
     // handles the clean-exit case; this covers crashes / kills where it
@@ -28670,6 +28690,7 @@ pub fn run() {
             mcp_server::start_if_enabled(app.handle().clone());
             peers::start_if_enabled(app.handle().clone());
             remote_client::init(app.handle().clone());
+            server_projects::init(app.handle().clone());
             // E2E: show the window, never take focus. `set_focus()` on macOS
             // ACTIVATES the app, which yanks the user to whichever Space the
             // window opened on — seventeen times a suite run, since each spec

@@ -25,7 +25,10 @@ import { openPath } from "@/lib/ipc";
 import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteTaskRequest, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
 
 export function RemoteMachines() {
-  const machines = useRemote(s => s.machines);
+  const all = useRemote(s => s.machines);
+  // Servers are ordinary projects in the sidebar now (server_projects.rs);
+  // this section is for paired computers.
+  const machines = useMemo(() => all.filter(m => m.kind !== "server"), [all]);
   if (machines.length === 0) return null;
   return (
     <div data-testid="remote-machines" className="mt-3 flex flex-col gap-2">

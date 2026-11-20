@@ -306,7 +306,9 @@ interface RemoteStore {
   serverDialog: boolean;
   /** The machine whose New task dialog is up. */
   newTaskOn: string | null;
-  setDialog(d: Partial<Pick<RemoteStore, "phoneDialog" | "serverDialog" | "newTaskOn">>): void;
+  /** The project New task opens with (a server project's own +). */
+  newTaskProject: string | null;
+  setDialog(d: Partial<Pick<RemoteStore, "phoneDialog" | "serverDialog" | "newTaskOn" | "newTaskProject">>): void;
   /** The remote task shown in the main area, or null. */
   open: OpenRemote | null;
   /** Machines whose sidebar section is folded. */
@@ -335,6 +337,7 @@ export const useRemote = create<RemoteStore>((set, get) => ({
   phoneDialog: false,
   serverDialog: false,
   newTaskOn: null,
+  newTaskProject: null,
   setDialog(d) { set(d); },
   open: null,
   folded: loadFolds(),

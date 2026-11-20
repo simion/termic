@@ -238,7 +238,9 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     await dropBoxProjects();
     // From the sidebar, as a user would: settings closed.
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    await clickPresent(`[data-testid="remote-new-task-${serverId}"]`);
+    // New task on the server (a server project's + opens this dialog; a box
+    // with no projects yet has no row to start from, so open it directly).
+    await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id }), serverId);
     // A fresh box has no projects: add one by its path on the box.
     await clickPresent('[data-testid="remote-add-project"]');
     await setInputValue('[data-testid="remote-project-path"]', `~/${BOX_DIR}/repo`);
@@ -275,7 +277,8 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
       // By its name (from the prompt): a real box may already have tasks.
       (window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id)?.tasks ?? []).find((t: any) => String(t.name).includes("hello"))?.id as string | undefined, serverId),
     { timeout: 20_000, timeoutMsg: "the new task never showed under the server" });
-    await waitVisible(`[data-testid="remote-task-${task}"]`);
+    // Listed as an ordinary sidebar row (server_projects.rs).
+    await waitVisible(`[data-sidebar-task-id="${task}"]`, 30_000);
     // The prompt reached the agent ON THE BOX, which is the whole point.
     const out = await browser.waitUntil(async () => {
       const r = await browser.execute((m, t) => window.__termic!.invoke("remote_call", { machine: m, request: { id: "", cmd: "logs", task: t } }), serverId, task) as any;
@@ -298,12 +301,10 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     }, { timeout: 30_000, timeoutMsg: "the follow-up typed into the terminal never reached the agent on the box" });
     expect(ssh(`ls ~/.termic-server/worktrees 2>/dev/null | wc -l`).trim()).not.toBe("0");
     await snap("remote-server-task.png");
-    await clickPresent('[data-testid="remote-task-close"]');
-    await waitGone('[data-testid="remote-task-view"]');
-    // Archived from here: the agent stops and its worktree goes, on the box.
-    const r = await browser.execute((m, t) => window.__termic!.invoke("remote_call", { machine: m, request: { id: "", cmd: "archive", task: t } }), serverId, task) as any;
-    expect(r.ok).toBe(true);
-    await waitGone(`[data-testid="remote-task-${task}"]`, 20_000);
+    // Archived from the desktop: the agent stops and its worktree goes, on the box.
+    await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), task);
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    await waitGone(`[data-sidebar-task-id="${task}"]`, 20_000);
   });
 
   onBox("removes the server", async () => {
@@ -345,7 +346,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
   const call = (request: Record<string, unknown>) => browser.execute((m, r) =>
     window.__termic!.invoke("remote_call", { machine: m, request: { id: "", ...r } }), serverId, request) as Promise<any>;
   const logs = async () => String((await call({ cmd: "logs", task }))?.data?.data ?? "");
-  const row = () => `[data-testid="remote-task-${task}"]`;
+  const row = () => `[data-sidebar-task-id="${task}"]`;
   const openMenu = async () => {
     await browser.execute((sel) => {
       const el = document.querySelector(sel)!;
@@ -395,10 +396,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     rmSync(box, { recursive: true, force: true });
   });
 
-  it("connects, and lists a task started on it under the server", async () => {
+  it("connects, and lists the server's project and task in the normal sidebar", async () => {
     const rec = await browser.execute((h) => window.__termic!.invoke("server_add", { ssh: h, name: "Local box" }), HOST) as any;
     serverId = rec.id;
-    await waitVisible(`[data-testid="remote-machine-${serverId}"]`, 30_000);
     await browser.waitUntil(async () => browser.execute((id) =>
       window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id)?.state === "online", serverId),
     { timeout: 30_000, timeoutMsg: "the local server never came online" });
@@ -406,62 +406,65 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect(added.ok).toBe(true);
     const r = await call({ cmd: "new", name: "box-task", project: "repo", agent: "fake", prompt: "hello" });
     expect(r.ok).toBe(true);
-    task = await browser.waitUntil(async () => browser.execute((id) =>
-      (window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id)?.tasks ?? []).find((t: any) => t.name === "box-task")?.id as string | undefined, serverId),
-    { timeout: 20_000, timeoutMsg: "the new task never showed under the server" });
+    task = r.data.task.id;
+    // Mirrored into the desktop's own store (server_projects.rs): an
+    // ordinary project tagged with the server, and its task an ordinary row.
+    await browser.waitUntil(async () => browser.execute((id, sid) => {
+      const s = window.__termic!.useApp.getState();
+      const t = s.tasks.find((x: any) => x.id === id);
+      return !!t && s.projects.find((p: any) => p.id === t.project_id)?.server === sid;
+    }, task, serverId), { timeout: 30_000, timeoutMsg: "the server's task never reached the store" });
     await waitVisible(row());
     await browser.waitUntil(async () => (await logs()).includes("box says: hello"), { timeout: 20_000, timeoutMsg: "the agent never answered" });
+    // The old per-server section is gone for servers.
+    expect(await browser.execute((id) => !!document.querySelector(`[data-testid="remote-machine-${id}"]`), serverId)).toBe(false);
     await snap("remote-local-server-row.png");
   });
 
-  it("opens the task as its terminal, with no tab strip for a single tab, and typing reaches the agent", async () => {
+  it("opens the task as its terminal from its row, and typing reaches the agent", async () => {
     await clickPresent(row());
     await waitVisible('[data-testid="remote-task-view"]', 20_000);
     await waitVisible('[data-testid="remote-terminal"]');
-    // A server task has one tab: no strip to pick from.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-tabs"]'))).toBe(false);
-    // The server's PTY follows this pane's size.
     expect(await browser.execute(() => document.querySelector('[data-testid="remote-terminal"]')!.getAttribute("data-owns-size"))).toBe("true");
     await typeIntoRemoteTerminal("typed here\r");
     await browser.waitUntil(async () => (await logs()).includes("box says: typed here"), { timeout: 20_000, timeoutMsg: "keys typed into the terminal never reached the agent" });
     await snap("remote-local-server-task.png");
-    await clickPresent('[data-testid="remote-task-close"]');
-    await waitGone('[data-testid="remote-task-view"]');
   });
 
-  it("offers Rename alone on a server task's menu, and renames it on the server", async () => {
-    await openMenu();
-    // No pin, no task groups on a server: termic-server answers neither verb.
-    expect(await menuItems()).toEqual(["Rename"]);
-    await clickMenuItem("Rename");
-    const input = `[data-testid="remote-task-rename-${task}"]`;
-    await waitVisible(input);
-    await setInputValue(input, "renamed-on-box");
-    await browser.execute((sel) => document.querySelector(sel)!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })), input);
-    await browser.waitUntil(async () => {
-      const list = await call({ cmd: "list" });
-      return (list?.data?.tasks ?? []).some((t: any) => t.id === task && t.name === "renamed-on-box");
-    }, { timeout: 10_000, timeoutMsg: "the server never got the new name" });
-    await browser.waitUntil(async () => browser.execute((sel) => document.querySelector(sel)?.textContent?.includes("renamed-on-box") ?? false, row()),
-      { timeout: 10_000, timeoutMsg: "the row never showed the new name" });
-    await closeMenu();
+  it("keeps the desktop's organisation: a pin and a name stay through a resync", async () => {
+    await browser.execute(async (id) => {
+      const t = window.__termic!;
+      await t.invoke("task_set_pinned", { id, pinned: true });
+      await t.invoke("task_rename", { id, name: "renamed-here" });
+      await t.useApp.getState().loadAll();
+    }, task);
+    // Anything on the box changing makes the desktop resync it.
+    expect((await call({ cmd: "send", task, prompt: "nudge" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await logs()).includes("box says: nudge"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
+    await browser.pause(1500);
+    const t = await browser.execute((id) => {
+      const x = window.__termic!.useApp.getState().tasks.find((y: any) => y.id === id) as any;
+      return { name: x?.name, pinned: x?.pinned };
+    }, task) as any;
+    expect(t).toEqual({ name: "renamed-here", pinned: true });
   });
 
-  it("raises a needs-you alert when the server's agent asks something", async () => {
+  it("shows the server's agent waiting on its row, and raises the alert", async () => {
     const alerts = () => browser.execute(() => (window.__termic!.useRemote.getState().alerts as any[]).map(a => [a.task, a.kind, a.machineName] as string[])) as Promise<string[][]>;
     const before = (await alerts()).length;
     expect((await call({ cmd: "send", task, prompt: "please ask" })).ok).toBe(true);
-    await browser.waitUntil(async () => browser.execute((sel) => document.querySelector(sel)?.getAttribute("data-state") === "waiting", row()),
-      { timeout: 20_000, timeoutMsg: "the row never showed the agent waiting" });
-    // Look for it among the new alerts rather than first: the turn typed in
-    // the case before may finish meanwhile, which rightly rings "done".
+    await waitForAttr(row(), "data-remote-state", "waiting", 20_000);
     const waiting = () => alerts().then(a => a.slice(before).find(x => x[1] === "waiting"));
     await browser.waitUntil(async () => !!(await waiting()), { timeout: 10_000, timeoutMsg: "no alert for the task that started waiting" });
-    expect(await waiting()).toEqual([task, "waiting", "Local box"]);
+    expect((await waiting())![0]).toBe(task);
   });
 
-  it("archives the task from here, and it leaves the sidebar", async () => {
-    expect((await call({ cmd: "archive", task })).ok).toBe(true);
+  it("archives from the desktop: the box removes its worktree, the row goes", async () => {
+    await browser.execute((id) => window.__termic!.invoke("task_archive", { id }), task);
+    await browser.waitUntil(async () => !((await call({ cmd: "list" }))?.data?.tasks ?? []).some((t: any) => t.id === task),
+      { timeout: 20_000, timeoutMsg: "the box still has the task" });
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     await waitGone(row(), 20_000);
   });
 });

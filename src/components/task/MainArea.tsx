@@ -29,7 +29,7 @@ import { ScheduledView } from "@/components/views/Scheduled";
 import { TodosView } from "@/components/views/TodosView";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
-import { RemoteTaskOverlay } from "@/components/remote/RemoteTaskView";
+import { RemoteTaskOverlay, RemoteTaskView } from "@/components/remote/RemoteTaskView";
 
 export function MainArea() {
   const task = useActiveTask();
@@ -41,6 +41,7 @@ export function MainArea() {
   const pending = usePendingTask(!task ? activeTaskId : null);
   const view = useApp(s => s.view.page);
   const tasks = useApp(s => s.tasks);
+  const projects = useApp(s => s.projects);
   const mounted = useApp(s => s.mountedTasks);
   // Windowless mode (window closed to the menu bar / `--headless` CLI launch):
   // the ACTIVE pane loses its display exemption too, so every mounted terminal
@@ -91,7 +92,14 @@ export function MainArea() {
             zIndex:  w.id === activeId ? 1 : 0,
           }}
         >
-          <TaskView task={w} />
+          {(() => {
+            // A server project's task runs on the box: its terminal comes
+            // over the server's connection (one at a time), so only the
+            // active one is mounted; there are no local PTYs to keep alive.
+            const server = projects.find(p => p.id === w.project_id)?.server;
+            if (!server) return <TaskView task={w} />;
+            return w.id === activeId ? <RemoteTaskView key={w.id} machineId={server} taskId={w.id} /> : null;
+          })()}
         </div>
       ))}
       {overlay && (

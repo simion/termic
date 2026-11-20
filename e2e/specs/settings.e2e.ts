@@ -292,7 +292,7 @@ describe("settings rail", () => {
     // master toggle, the tab it opens on.
     ["cli", "Agent access", "Enable MCP endpoint"],
     // Remote control (docs/remote.md): phones and servers, under Agent access.
-    ["remote", "Remote", "Connect a phone"],
+    ["remote", "Remote", "Add a server"],
     ["tasks", "Tasks", "Branch prefix"],
     ["notifications", "Notifications", "Desktop notifications"],
     ["prompts", "Prompts", "Prompts"],

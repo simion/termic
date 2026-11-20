@@ -678,7 +678,15 @@ fn state_loop(s: &Session) {
                     state = "waiting".into();
                 }
                 let now = chrono::Utc::now().timestamp_millis();
-                let entry = since.entry(t.id.clone()).or_insert_with(|| (state.clone(), now));
+                // First sighting of a task at rest: when it was last opened
+                // (or made), not now; after a restart every row said "now".
+                let first = || {
+                    let at_rest = matches!(state.as_str(), "inactive" | "idle" | "unknown");
+                    let when = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_millis());
+                    let rested = t.last_active_at.as_deref().and_then(when).into_iter().chain(when(&t.created)).max();
+                    if at_rest { rested.unwrap_or(now).min(now) } else { now }
+                };
+                let entry = since.entry(t.id.clone()).or_insert_with(|| (state.clone(), first()));
                 if entry.0 != state {
                     *entry = (state.clone(), now);
                 }

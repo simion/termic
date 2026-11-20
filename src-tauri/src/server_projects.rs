@@ -1,0 +1,242 @@
+// Server projects as ordinary desktop projects (docs/plans/server-projects.md,
+// stage 1). A server's projects and tasks are mirrored into the desktop's own
+// store, tagged `Project.server`, so the normal sidebar and task view draw
+// them and the desktop's order, pins, groups and names apply. The box stays
+// the authority on what EXISTS (a project registered, a worktree made or
+// removed); the desktop owns everything about how it is organised.
+//
+// Ids are the box's own, so a repeat sync updates the same records. A task
+// that left the box is marked archived (it stays in History), never deleted.
+
+use std::sync::{Mutex, OnceLock};
+
+use serde_json::{json, Value};
+
+use crate::profiles::ProfileId;
+use crate::{Project, Task};
+
+fn app() -> &'static Mutex<Option<tauri::AppHandle>> {
+    static A: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+    A.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn init(handle: tauri::AppHandle) {
+    *app().lock().unwrap() = Some(handle);
+}
+
+/// Every window reloads its store (`store://reload`, src/App.tsx).
+fn reload_windows() {
+    use tauri::Emitter;
+    if let Some(a) = app().lock().unwrap().as_ref() {
+        let _ = a.emit("store://reload", ());
+    }
+}
+
+/// One sync at a time per server; a change during one runs it again after.
+fn busy() -> &'static Mutex<std::collections::HashMap<String, bool>> {
+    static B: OnceLock<Mutex<std::collections::HashMap<String, bool>>> = OnceLock::new();
+    B.get_or_init(Default::default)
+}
+
+/// Sync a server's projects and tasks into the store, off the caller's thread.
+pub(crate) fn sync_soon(server: &str) {
+    {
+        let mut b = busy().lock().unwrap();
+        match b.get_mut(server) {
+            Some(again) => {
+                *again = true;
+                return;
+            }
+            None => {
+                b.insert(server.to_string(), false);
+            }
+        }
+    }
+    let server = server.to_string();
+    std::thread::spawn(move || loop {
+        match sync(&server) {
+            Ok(true) => reload_windows(),
+            Ok(false) => {}
+            Err(e) => crate::dlog(&format!("[server-projects] {server}: {e}")),
+        }
+        let mut b = busy().lock().unwrap();
+        if b.get(&server).copied() == Some(true) {
+            b.insert(server.clone(), false);
+            continue;
+        }
+        b.remove(&server);
+        break;
+    });
+}
+
+/// The profile a server's projects live in: where earlier syncs put them,
+/// else the root profile (servers per profile is stage 4).
+fn profile_for(server: &str, projects: &[Project]) -> ProfileId {
+    if let Some(p) = projects.iter().find(|p| p.server.as_deref() == Some(server)) {
+        return p.profile.clone();
+    }
+    let reg = crate::profile_registry();
+    let ids = reg.ids();
+    if ids.contains(&ProfileId::Root) {
+        ProfileId::Root
+    } else {
+        ids.into_iter().next().unwrap_or(ProfileId::Root)
+    }
+}
+
+fn data(reply: Value, what: &str) -> Result<Value, String> {
+    if reply.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(format!("{what}: {}", reply.pointer("/error/message").and_then(Value::as_str).unwrap_or("no answer")));
+    }
+    Ok(reply.get("data").cloned().unwrap_or(Value::Null))
+}
+
+/// Mirror one server. Ok(true) when the store changed.
+fn sync(server: &str) -> Result<bool, String> {
+    let boxed_projects = data(crate::remote_client::call(server, json!({"cmd": "project_list"}), None)?, "project_list")?;
+    let boxed_tasks = data(crate::remote_client::call(server, json!({"cmd": "list"}), None)?, "list")?;
+    let box_projects: Vec<Value> = boxed_projects.get("projects").and_then(Value::as_array).cloned().unwrap_or_default();
+    let box_tasks: Vec<Value> = boxed_tasks.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut projects = crate::load_projects_all();
+    let tasks = crate::load_tasks_all();
+    let (projects_changed, changed_tasks) = mirror(server, &box_projects, &box_tasks, &mut projects, &tasks);
+    if projects_changed {
+        crate::save_projects(&projects).map_err(|e| e.to_string())?;
+    }
+    for t in &changed_tasks {
+        crate::save_task(t).map_err(|e| e.to_string())?;
+    }
+    Ok(projects_changed || !changed_tasks.is_empty())
+}
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// The pure part of a sync: what to change in `projects` (in place) and
+/// which task records to write. Returns (projects changed, tasks to save).
+fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &mut Vec<Project>, tasks: &[Task]) -> (bool, Vec<Task>) {
+    let profile = profile_for(server, projects);
+    let mut projects_changed = false;
+    for bp in box_projects {
+        let (id, name, root) = (s(bp, "id"), s(bp, "name"), s(bp, "root_path"));
+        if id.is_empty() {
+            continue;
+        }
+        match projects.iter_mut().find(|p| p.id == id) {
+            Some(p) => {
+                // The box decides where it is; the desktop keeps its name.
+                if p.root_path != root || p.server.as_deref() != Some(server) {
+                    p.root_path = root;
+                    p.server = Some(server.to_string());
+                    projects_changed = true;
+                }
+            }
+            None => {
+                projects.push(Project {
+                    id,
+                    name,
+                    root_path: root,
+                    server: Some(server.to_string()),
+                    default_cli: s(bp, "default_agent"),
+                    profile: profile.clone(),
+                    ..Default::default()
+                });
+                projects_changed = true;
+            }
+        }
+    }
+    // A project the box no longer has goes (its tasks are archived below).
+    let on_box: std::collections::HashSet<String> = box_projects.iter().map(|p| s(p, "id")).collect();
+    let before = projects.len();
+    projects.retain(|p| p.server.as_deref() != Some(server) || on_box.contains(&p.id));
+    projects_changed |= projects.len() != before;
+
+    let project_of = |name: &str| projects.iter().find(|p| p.server.as_deref() == Some(server) && p.name == name).map(|p| p.id.clone());
+    let mut out: Vec<Task> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for bt in box_tasks {
+        let id = s(bt, "id");
+        let Some(project_id) = project_of(&s(bt, "project")) else { continue };
+        seen.insert(id.clone());
+        match tasks.iter().find(|t| t.id == id) {
+            Some(t) => {
+                let mut n = t.clone();
+                n.path = s(bt, "path");
+                n.branch = s(bt, "branch");
+                n.project_id = project_id;
+                n.archived = false;
+                if n.path != t.path || n.branch != t.branch || n.project_id != t.project_id || t.archived {
+                    out.push(n);
+                }
+            }
+            None => out.push(Task {
+                id,
+                name: s(bt, "name"),
+                project_id,
+                path: s(bt, "path"),
+                branch: s(bt, "branch"),
+                base_branch: s(bt, "base_branch"),
+                cli: s(bt, "agent"),
+                created: s(bt, "created"),
+                is_main_checkout: bt.get("is_main_checkout").and_then(Value::as_bool).unwrap_or(false),
+                profile: profile.clone(),
+                ..Default::default()
+            }),
+        }
+    }
+    // Tasks of this server's projects that left the box: archived, kept.
+    let mine: std::collections::HashSet<&str> = projects.iter().filter(|p| p.server.as_deref() == Some(server)).map(|p| p.id.as_str()).collect();
+    for t in tasks {
+        if !t.archived && mine.contains(t.project_id.as_str()) && !seen.contains(&t.id) {
+            let mut n = t.clone();
+            n.archived = true;
+            out.push(n);
+        }
+    }
+    (projects_changed, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bp(id: &str, name: &str, root: &str) -> Value {
+        json!({"id": id, "name": name, "root_path": root, "default_agent": "claude"})
+    }
+    fn bt(id: &str, project: &str, path: &str) -> Value {
+        json!({"id": id, "name": id, "project": project, "path": path, "branch": id, "base_branch": "main", "agent": "claude", "created": "2026-11-20T10:00:00Z", "is_main_checkout": false})
+    }
+
+    #[test]
+    fn mirrors_projects_and_tasks_keeping_what_the_desktop_owns() {
+        let mut projects = vec![];
+        let (pc, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[bt("t1", "bot", "/home/u/.termic-server/worktrees/bot/t1")], &mut projects, &[]);
+        assert!(pc);
+        assert_eq!(projects[0].server.as_deref(), Some("box"));
+        assert_eq!((out[0].id.as_str(), out[0].project_id.as_str()), ("t1", "p1"));
+
+        // The desktop renamed and pinned it; a resync keeps both.
+        let mut kept = out[0].clone();
+        kept.name = "my name".into();
+        kept.pinned = true;
+        let (pc, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[bt("t1", "bot", "/home/u/.termic-server/worktrees/bot/t1")], &mut projects, &[kept.clone()]);
+        assert!(!pc, "nothing changed");
+        assert!(out.is_empty(), "an unchanged task is not rewritten");
+
+        // It left the box: archived, not deleted.
+        let (_, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[], &mut projects, &[kept]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].archived && out[0].name == "my name" && out[0].pinned);
+    }
+
+    #[test]
+    fn another_servers_and_local_projects_are_left_alone() {
+        let mut projects = vec![
+            Project { id: "local".into(), name: "app".into(), root_path: "/Users/u/app".into(), ..Default::default() },
+            Project { id: "other".into(), name: "x".into(), server: Some("other-box".into()), ..Default::default() },
+        ];
+        let (_, _) = mirror("box", &[], &[], &mut projects, &[]);
+        assert_eq!(projects.len(), 2);
+    }
+}

@@ -2,6 +2,7 @@
 // and agents, fetched live from it, a prompt, and Start. The task, its
 // worktree and its agent are created THERE; this computer only asks.
 
+import { useApp } from "@/store/app";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FolderPlus } from "lucide-react";
@@ -20,10 +21,11 @@ interface Agent { id: string; kind: string; enabled: boolean; installed?: boolea
 export function NewRemoteTaskDialog() {
   const machineId = useRemote(s => s.newTaskOn);
   const setDialog = useRemote(s => s.setDialog);
-  return machineId ? <Body machineId={machineId} onClose={() => setDialog({ newTaskOn: null })} /> : null;
+  const wanted = useRemote(s => s.newTaskProject);
+  return machineId ? <Body machineId={machineId} wanted={wanted} onClose={() => setDialog({ newTaskOn: null, newTaskProject: null })} /> : null;
 }
 
-function Body({ machineId, onClose }: { machineId: string; onClose: () => void }) {
+function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: string | null; onClose: () => void }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const openTask = useRemote(s => s.openTask);
@@ -45,7 +47,7 @@ function Body({ machineId, onClose }: { machineId: string; onClose: () => void }
       const [p, a] = await Promise.all([remoteCall(machineId, req("project_list")), remoteCall(machineId, req("agents"))]);
       const list: Project[] = p.ok ? p.data?.projects ?? [] : [];
       setProjects(list);
-      setProject(cur => cur || list[0]?.name || "");
+      setProject(cur => cur || (wanted && list.some(p => p.name === wanted) ? wanted : list[0]?.name) || "");
       const usable: Agent[] = a.ok ? (a.data?.agents ?? []).filter((x: Agent) => x.kind === "agent" && x.enabled) : [];
       setAgents(usable);
       const def = list[0]?.default_agent;
@@ -94,7 +96,21 @@ function Body({ machineId, onClose }: { machineId: string; onClose: () => void }
       if (!r.ok) throw new Error(r.error?.message ?? "could not start the task");
       onClose();
       const id = r.data?.task?.id;
-      if (id) openTask({ machine: machineId, task: id });
+      if (!id) return;
+      // A server project's task lands in the store (server_projects.rs):
+      // open it as the active task in the sidebar, like a local one.
+      if (useApp.getState().projects.some(p => p.server === machineId)) {
+        for (let i = 0; i < 40 && !useApp.getState().tasks.some(t => t.id === id); i++) {
+          await useApp.getState().loadAll();
+          if (useApp.getState().tasks.some(t => t.id === id)) break;
+          await new Promise(res => setTimeout(res, 250));
+        }
+        if (useApp.getState().tasks.some(t => t.id === id)) {
+          useApp.getState().setActiveTask(id);
+          return;
+        }
+      }
+      openTask({ machine: machineId, task: id });
     } catch (e) {
       setError(String(e));
     } finally {

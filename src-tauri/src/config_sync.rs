@@ -1198,7 +1198,9 @@ pub(crate) fn export_profile(
 ) -> Result<(), String> {
     let dir = clone.join("profiles").join(sync_id);
     let settings = crate::load_settings_in(id);
-    let projects = crate::load_projects_in(id);
+    // A server project is this machine's view of a box it reaches; another
+    // machine has its own servers.json, so it is not synced.
+    let projects: Vec<crate::Project> = crate::load_projects_in(id).into_iter().filter(|p| p.server.is_none()).collect();
     let sl = &settings.sync;
 
     // Tombstones: the outbox first, then Keep answers.
@@ -1490,7 +1492,7 @@ fn export_project_scratchpads(
     sync_id: &str,
     sl: &SyncLocal,
 ) -> Result<(), String> {
-    let projects = crate::load_projects_in(id);
+    let projects: Vec<crate::Project> = crate::load_projects_in(id).into_iter().filter(|p| p.server.is_none()).collect();
     let dst_parent = clone.join("profiles").join(sync_id).join("scratch").join("projects");
     let mut active_stems = BTreeSet::new();
 
@@ -3625,6 +3627,7 @@ mod tests {
 
     fn full_project() -> Project {
         Project {
+            server: None,
             default_role: None,
             id: "p1".into(),
             name: "app".into(),

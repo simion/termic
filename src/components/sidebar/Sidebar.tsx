@@ -3005,7 +3005,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // on the joined id string, never the array: see the hook.
   const tabDrag = useSidebarTabDrag(w.id, terminalTabs.map(t => t.id).join(" "));
   const collectedProps = collectTaskProps(tabs);
-  const isLoaded = terminalTabs.some(t => t.ptyId);
+  // A server project's task runs on the box: its state comes from the
+  // server's own rows (server_projects.rs), there is no local PTY.
+  const serverId = project?.server;
+  const remoteState = useRemote(s => serverId ? s.machines.find(m => m.id === serverId)?.tasks.find(t => t.id === w.id)?.state : undefined);
+  const isLoaded = serverId ? !!remoteState && remoteState !== "inactive" && remoteState !== "unknown" : terminalTabs.some(t => t.ptyId);
   // The run controls the COLLAPSED header row carries, mirroring the child rows
   // that are not rendered while collapsed: one button per run tab, each with
   // the same Stop-while-live / Play-once-finished pair its own row would have
@@ -3095,15 +3099,15 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Shared with the dashboard (src/lib/taskWorkState.ts) so the two surfaces
   // showing one task can never disagree about its badge.
   const workPrefs = { settledHighlight, workingIndicator, attentionIndicator };
-  const hasAttention = taskNeedsAttention(tabs, workPrefs);
-  const hasDone = !hasAttention && taskWorkDone(tabs, workPrefs);
+  const hasAttention = remoteState === "waiting" || taskNeedsAttention(tabs, workPrefs);
+  const hasDone = !hasAttention && (remoteState === "done" || taskWorkDone(tabs, workPrefs));
   // Working aggregate is independent of settledHighlight (it's its own
   // opt-in pref) but yields to attention/done — a finished or blocked agent
   // is more actionable than one still chugging.
   // A tab the user marked unread by hand: under done, over working (the
   // precedence in taskWorkBadge).
   const hasMarked = !hasAttention && !hasDone && taskMarkedUnread(tabs);
-  const hasWorking = !hasAttention && !hasDone && !hasMarked && taskWorking(tabs, workPrefs);
+  const hasWorking = !hasAttention && !hasDone && !hasMarked && (remoteState === "working" || taskWorking(tabs, workPrefs));
   // Lowest rung: something the agent started is still running, and nothing
   // else wanted the slot. `rowDelegated` is the report itself, for the
   // tooltip; the first tab that has one speaks for the row, which matches how
@@ -3238,6 +3242,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
       <div
         data-sidebar-task-id={w.id}
         data-sidebar-task-project-id={w.project_id}
+        data-remote-state={remoteState}
         data-guide={isActive ? "active-task-row" : undefined}
         style={dragging ? { transform: `translateY(${dragTy}px)`, position: "relative", zIndex: 20 } : undefined}
         onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, w) : undefined}

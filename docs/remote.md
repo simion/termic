@@ -277,6 +277,22 @@ Servers live in `<global data dir>/servers.json` (machine-wide, like
 pairing). A destination starting with `-` or containing whitespace is
 refused, and `--` precedes it on every ssh command line.
 
+**A server's projects are ordinary projects** (stage 1 of
+[plans/server-projects.md](plans/server-projects.md)). On connect and on
+every change to its task list, `server_projects.rs` mirrors the box's
+projects and tasks into the desktop's store, keyed by the box's own ids:
+a project gets `server` (the servers.json id) and its `root_path` is the
+path on the box. The normal sidebar draws them; the desktop owns order,
+pins, task groups, folders and names (a resync keeps them), the box owns
+what exists. A task that left the box is marked archived, never deleted.
+Opening one shows the server's terminal in the main area (one at a time:
+a connection carries one terminal); its row's state and fade come from
+the server's rows (`data-remote-state`); New task on its project opens
+the server's dialog with the project picked; archive goes to the box.
+Server projects are not config-synced (another machine has its own
+servers). The separate per-server sidebar section is gone; paired
+computers keep theirs.
+
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).
 It answers the same messages, keeps tasks in `~/.termic-server/state.json`,
 listens only on a 0600 unix socket in a 0700 directory, and starts agents

@@ -647,6 +647,11 @@ fn dispatch(l: &Link, m: ServerMsg) {
             };
             if differs {
                 changed();
+                // A server's projects and tasks live in the desktop's store
+                // (server_projects.rs): bring it up to date.
+                if l.kind == MachineKind::Server {
+                    crate::server_projects::sync_soon(&l.id);
+                }
             }
         }
         ServerMsg::Reply { ref id, .. } | ServerMsg::Transcript { ref id, .. } | ServerMsg::Ack { ref id, .. } => {
