@@ -228,6 +228,14 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     let p = a.ok(json!({"cmd":"project_add","path": e.repo()}));
     assert_eq!(p["project"]["name"], "repo");
     let again = a.ok(json!({"cmd":"project_add","path": e.repo()}));
+    // exec: the desktop's git and file reads, only inside a project.
+    let x = a.ok(json!({"cmd":"exec","cwd": e.repo(),"argv":["git","rev-parse","--is-inside-work-tree"]}));
+    assert_eq!(x["code"], 0);
+    assert_eq!(String::from_utf8(termic_remote::unb64(x["stdout"].as_str().unwrap()).unwrap()).unwrap().trim(), "true");
+    let outside = a.call(json!({"cmd":"exec","cwd":"/","argv":["ls"]}));
+    assert_eq!(outside["ok"], false, "exec ran outside every project: {outside}");
+    let dotdot = a.call(json!({"cmd":"exec","cwd": format!("{}/..", e.repo().display()),"argv":["ls"]}));
+    assert_eq!(dotdot["ok"], false, "a .. path escaped the project: {dotdot}");
     assert_eq!(again["project"]["id"], p["project"]["id"], "adding twice is idempotent");
     let bad = a.call(json!({"cmd":"project_add","path": e.root.join("home")}));
     assert_eq!(bad["ok"], json!(false), "a non-git dir needs non_git");

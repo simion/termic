@@ -3203,6 +3203,17 @@ fn git_command() -> std::process::Command {
 }
 
 fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
+    // A server project's folder: git runs on the box, through termic-server's
+    // `exec` (docs/plans/server-projects.md, stage 3).
+    if let Some(server) = server_projects::server_for_path(cwd) {
+        let mut argv = vec!["git"];
+        argv.extend_from_slice(args);
+        let (code, out, err) = server_projects::exec_on(&server, cwd, &argv, &[("GIT_OPTIONAL_LOCKS", "0")]).map_err(|e| anyhow!(e))?;
+        if code != 0 {
+            return Err(anyhow!("git {} failed: {err}", args.join(" ")));
+        }
+        return Ok(out);
+    }
     let mut cmd = git_command();
     // Windows: worktrees live under `%USERPROFILE%\termic\tasks\<project>\<task>`
     // and routinely hold `node_modules` / `target`, past the 260-character
@@ -17349,6 +17360,19 @@ fn read_external_file(path: &str) -> Result<String, String> {
 #[tauri::command]
 fn task_file_read(id: String, path: String) -> Result<String, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    // A server task: read the file on the box, same cap, text only.
+    if let Some(server) = server_projects::server_for_path(Path::new(&w.path)) {
+        let base = PathBuf::from(&w.path);
+        let file = server_rel(&base, &path)?;
+        let (code, out, err) = server_projects::exec_on(&server, &base, &["head", "-c", "2000001", "--", &file.to_string_lossy()], &[])?;
+        if code != 0 {
+            return Err(err.trim().to_string());
+        }
+        if out.len() > 2_000_000 {
+            return Err(format!("{path} is larger than 2 MB"));
+        }
+        return String::from_utf8(out).map_err(|_| format!("{path} is not valid UTF-8 text"));
+    }
     // Member-aware: a `<dir_name>/…` path resolves inside that member's repo
     // (which may live outside the wrapper for repo_root members), matching
     // the diff/finder/grep path scheme.
@@ -18715,9 +18739,35 @@ async fn task_dir_list(id: String, rel: String, heal: bool) -> Result<Vec<FileEn
         .map_err(|e| e.to_string())?
 }
 
+/// A relative path inside a server task, refused if it could climb out
+/// (`..`, absolute): the box checks its project fence, this keeps the
+/// request inside the task too.
+fn server_rel(base: &Path, rel: &str) -> Result<PathBuf, String> {
+    let p = Path::new(rel);
+    if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{rel}: outside the task"));
+    }
+    Ok(if rel.is_empty() { base.to_path_buf() } else { base.join(p) })
+}
+
 fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let base = PathBuf::from(&w.path);
+    // A server task: list the folder on the box (server_projects.rs).
+    if let Some(server) = server_projects::server_for_path(&base) {
+        let dir = server_rel(&base, &rel)?;
+        let (code, out, err) = server_projects::exec_on(&server, &base, &["ls", "-1Ap", "--", &dir.to_string_lossy()], &[])?;
+        if code != 0 {
+            return Err(err.trim().to_string());
+        }
+        let mut entries: Vec<FileEntry> = String::from_utf8_lossy(&out)
+            .lines()
+            .filter(|l| !l.is_empty() && *l != ".git/" && *l != ".DS_Store")
+            .map(|l| FileEntry { is_dir: l.ends_with('/'), name: l.trim_end_matches('/').to_string() })
+            .collect();
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        return Ok(entries);
+    }
     // Multi-repo: when the relative path enters a composition member
     // (e.g. "pydpf" or "pydpf/src"), resolve under that member's real
     // path instead of going through safe_task_path — which would

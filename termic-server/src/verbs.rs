@@ -119,6 +119,7 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             Ok(ReplyData::ProjectList(ProjectListData { projects }))
         }
         Command::ProjectRemove { name } => project_remove(d, &name),
+        Command::Exec { cwd, argv, env, stdin, timeout_ms } => exec(d, &cwd, &argv, &env, stdin.as_deref(), timeout_ms),
         other => Err(fail(ErrorCode::Unsupported, format!("termic-server does not support {} yet", verb_name(&other)))),
     }
 }
@@ -605,4 +606,77 @@ mod tests {
         assert!(safe_ref("a b").is_err());
         assert!(safe_ref("").is_err());
     }
+}
+
+/// Most `exec` returns: a git log or a file read, never a stream.
+const EXEC_MAX_OUT: usize = 64 * 1024 * 1024;
+const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+
+/// Whether `dir` is inside a registered project or one of this server's
+/// worktrees: the only places `exec` runs (docs/plans/server-projects.md).
+fn exec_allowed(d: &Daemon, dir: &std::path::Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else { return false };
+    let mut roots: Vec<std::path::PathBuf> = d.st.lock().unwrap().projects.iter().map(|p| std::path::PathBuf::from(&p.path)).collect();
+    roots.push(d.worktrees_dir());
+    roots.into_iter().filter_map(|r| r.canonicalize().ok()).any(|r| dir.starts_with(r))
+}
+
+/// Run a program in a folder for the desktop (its git, its file reads), with
+/// the login shell's PATH, a timeout, and capped output.
+fn exec(d: &Arc<Daemon>, cwd: &str, argv: &[String], env: &[(String, String)], stdin: Option<&str>, timeout_ms: Option<u64>) -> Result<ReplyData, Fail> {
+    use std::io::{Read, Write};
+    use std::process::{Command as Proc, Stdio};
+    if argv.is_empty() {
+        return Err(fail(ErrorCode::BadRequest, "exec needs a program"));
+    }
+    let dir = std::path::PathBuf::from(cwd);
+    if !exec_allowed(d, &dir) {
+        return Err(fail(ErrorCode::BadRequest, format!("{cwd} is not inside a project or worktree on this server")));
+    }
+    let input = match stdin {
+        Some(b) => Some(termic_remote::unb64(b).ok_or_else(|| fail(ErrorCode::BadRequest, "stdin is not base64"))?),
+        None => None,
+    };
+    // `exec "$0" "$@"` under a login shell: the PATH the user's own shell has.
+    let mut cmd = Proc::new("/bin/sh");
+    cmd.arg("-lc").arg("exec \"$0\" \"$@\"").args(argv).current_dir(&dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| fail(ErrorCode::Internal, format!("could not start {}: {e}", argv[0])))?;
+    if let (Some(bytes), Some(mut w)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || { let _ = w.write_all(&bytes); });
+    }
+    let mut out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    let reader = std::thread::spawn(move || {
+        let mut o = Vec::new();
+        let _ = (&mut out).take(EXEC_MAX_OUT as u64).read_to_end(&mut o);
+        o
+    });
+    let ereader = std::thread::spawn(move || {
+        let mut e = Vec::new();
+        let _ = (&mut err).take(1024 * 1024).read_to_end(&mut e);
+        e
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap_or(EXEC_DEFAULT_TIMEOUT_MS));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(fail(ErrorCode::Internal, format!("{} did not finish in time", argv[0])));
+            }
+        }
+    };
+    let stdout = reader.join().unwrap_or_default();
+    let stderr = ereader.join().unwrap_or_default();
+    Ok(ReplyData::Exec(termic_proto::ExecData {
+        code: status.code().unwrap_or(-1),
+        stdout: termic_remote::b64(&stdout),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    }))
 }

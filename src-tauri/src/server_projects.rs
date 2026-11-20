@@ -22,6 +22,53 @@ fn app() -> &'static Mutex<Option<tauri::AppHandle>> {
 
 pub(crate) fn init(handle: tauri::AppHandle) {
     *app().lock().unwrap() = Some(handle);
+    refresh_paths();
+}
+
+/// Folders that live on a server, longest first: each server project's
+/// root and each of its tasks' worktrees, with the server's id. `git_bytes`
+/// (lib.rs) runs git there through termic-server's `exec`.
+fn paths() -> &'static std::sync::RwLock<Vec<(String, String)>> {
+    static P: OnceLock<std::sync::RwLock<Vec<(String, String)>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn refresh_paths() {
+    let projects = crate::load_projects_all();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for p in projects.iter().filter(|p| p.server.is_some()) {
+        out.push((p.root_path.clone(), p.server.clone().unwrap_or_default()));
+    }
+    for t in crate::load_tasks_all() {
+        if let Some(p) = projects.iter().find(|p| p.id == t.project_id && p.server.is_some()) {
+            if !t.path.is_empty() {
+                out.push((t.path.clone(), p.server.clone().unwrap_or_default()));
+            }
+        }
+    }
+    out.retain(|(p, _)| !p.is_empty());
+    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    *paths().write().unwrap() = out;
+}
+
+/// The server a folder lives on, if it is one of a server project's.
+pub(crate) fn server_for_path(dir: &std::path::Path) -> Option<String> {
+    let dir = dir.to_string_lossy();
+    paths().read().unwrap().iter().find(|(p, _)| dir == p.as_str() || dir.starts_with(&format!("{p}/"))).map(|(_, s)| s.clone())
+}
+
+/// Run a program in a server folder through termic-server's `exec`:
+/// (exit code, stdout, stderr).
+pub(crate) fn exec_on(server: &str, cwd: &std::path::Path, argv: &[&str], env: &[(&str, &str)]) -> Result<(i32, Vec<u8>, String), String> {
+    let req = json!({
+        "cmd": "exec",
+        "cwd": cwd.to_string_lossy(),
+        "argv": argv,
+        "env": env.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+    });
+    let d = data(crate::remote_client::call(server, req, Some(std::time::Duration::from_secs(130)))?, "exec")?;
+    let out = termic_remote::unb64(d.get("stdout").and_then(Value::as_str).unwrap_or_default()).unwrap_or_default();
+    Ok((d.get("code").and_then(Value::as_i64).unwrap_or(-1) as i32, out, s(&d, "stderr")))
 }
 
 /// Every window reloads its store (`store://reload`, src/App.tsx).
@@ -55,7 +102,10 @@ pub(crate) fn sync_soon(server: &str) {
     let server = server.to_string();
     std::thread::spawn(move || loop {
         match sync(&server) {
-            Ok(true) => reload_windows(),
+            Ok(true) => {
+                refresh_paths();
+                reload_windows();
+            }
             Ok(false) => {}
             Err(e) => crate::dlog(&format!("[server-projects] {server}: {e}")),
         }
@@ -125,6 +175,7 @@ pub(crate) fn forget_server(server: &str) {
     for t in crate::load_tasks_all().into_iter().filter(|t| gone.contains(&t.project_id)) {
         let _ = crate::delete_task_file(&t.id);
     }
+    refresh_paths();
     reload_windows();
 }
 

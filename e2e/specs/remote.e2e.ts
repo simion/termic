@@ -432,6 +432,22 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await snap("remote-local-server-task.png");
   });
 
+  it("runs the task's git on the box: branches come from its worktree there", async () => {
+    // git_bytes (lib.rs) sends a server folder's git through termic-server's exec.
+    const branches = await browser.execute((id) => window.__termic!.invoke("task_git_branches", { id, dirName: "" }), task) as string[];
+    expect(branches).toContain("box-task");
+    const st = await browser.execute((id) => window.__termic!.invoke("task_git_status", { id }), task) as any;
+    expect(JSON.stringify(st)).toContain("box-task");
+    // The file tree and the editor's read come from the box too, fenced in.
+    const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path, task) as string;
+    writeFileSync(path.join(wt, "hello.txt"), "hi from the box\n");
+    const list = await browser.execute((id) => window.__termic!.invoke("task_dir_list", { id, rel: "", heal: false }), task) as any[];
+    expect(list.map(e => e.name)).toContain("hello.txt");
+    expect(await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "hello.txt" }), task)).toBe("hi from the box\n");
+    const escape = await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "../../../etc/hosts" }).then(() => "read", (e: unknown) => String(e)), task);
+    expect(escape).toContain("outside the task");
+  });
+
   it("keeps the desktop's organisation: a pin and a name stay through a resync", async () => {
     await browser.execute(async (id) => {
       const t = window.__termic!;

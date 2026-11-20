@@ -1023,6 +1023,9 @@ pub(crate) fn dispatch_authenticated(
         }
         Command::ProjectList => handle_project_list(&req.id, host),
         Command::ProjectRemove { name } => handle_project_remove(&req.id, host, name),
+        // termic-server only: an agent or a paired machine never runs
+        // arbitrary commands on this machine through the CLI.
+        Command::Exec { .. } => Reply::err(&req.id, ErrorCode::Unsupported, "exec runs on a termic-server, not on the desktop"),
         Command::ScheduleList { project } => handle_schedule(
             &req.id, host, None, project.as_deref(), None,
             serde_json::json!({ "op": "list" }),

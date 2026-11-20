@@ -881,6 +881,22 @@ pub enum Command {
     /// Unregister a project. Archives and deletes ALL its tasks; the
     /// CLI confirms before sending.
     ProjectRemove { name: String },
+    /// Run a program in a folder and return what it printed: termic-server
+    /// only (docs/plans/server-projects.md), reached through the desktop's
+    /// own ssh bridge, and only inside a registered project or one of its
+    /// worktrees. The desktop answers it with Unsupported: an agent or a
+    /// paired machine must never run arbitrary commands through it.
+    Exec {
+        cwd: String,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env: Vec<(String, String)>,
+        /// Bytes for the program's stdin, base64.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
     /// This machine, the machines paired with it, and the unpaired ones in
     /// sight on the LAN (v22, docs/peers.md).
     PeerList,
@@ -1184,6 +1200,7 @@ pub enum ReplyData {
     Pad(PadData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
+    Exec(ExecData),
     ProjectRemove(ProjectRemoveData),
     Send(SendData),
     Apply(ApplyData),
@@ -1592,6 +1609,14 @@ pub struct PadData {
     /// `content` was clipped to fit the reply line.
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
+}
+
+/// What `exec` printed: stdout base64 (it may be binary), stderr as text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ExecData {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
