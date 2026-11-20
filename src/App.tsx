@@ -187,6 +187,9 @@ export function App() {
     // A server's projects and tasks were mirrored into the store
     // (src-tauri/src/server_projects.rs): show them.
     const unlistenStoreReload = listen("store://reload", () => { void loadAll(); });
+    // A phone opened a task's chat or terminal (remote_server.rs
+    // seen_by_phone): what it finished is read, as a visit here reads it.
+    const unlistenRemoteSeen = listen<string>("remote://seen", (e) => useApp.getState().markSeenRemotely(e.payload));
     // Push per-task agent state down to the Rust cache the CLI's
     // list/status/wait verbs read (lib/cliAgentState.ts).
     const stopAgentPush = initAgentStatePush();
@@ -228,6 +231,7 @@ export function App() {
       unlistenCliRpc.then(u => u());
       unlistenRemoteInterrupt.then(u => u()).catch(() => {});
       unlistenStoreReload.then(u => u()).catch(() => {});
+      unlistenRemoteSeen.then(u => u()).catch(() => {});
       deepLinks.then(u => u());
       stopAgentPush();
       stopTrayAttention();

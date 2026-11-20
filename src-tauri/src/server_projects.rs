@@ -96,6 +96,14 @@ pub(crate) fn exec_with_stdin(server: &str, cwd: &std::path::Path, argv: &[&str]
 }
 
 /// Every window reloads its store (`store://reload`, src/App.tsx).
+/// Emit to every window (remote_server.rs: a phone looked at a task).
+pub(crate) fn emit_all<S: serde::Serialize + Clone>(topic: &str, payload: S) {
+    use tauri::Emitter;
+    if let Some(a) = app().lock().unwrap().as_ref() {
+        let _ = a.emit(topic, payload);
+    }
+}
+
 fn reload_windows() {
     use tauri::Emitter;
     if let Some(a) = app().lock().unwrap().as_ref() {

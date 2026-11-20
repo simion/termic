@@ -227,6 +227,19 @@ fn server_task(s: &Session, task: &str) -> Option<(String, String)> {
     Some((server, t.id.clone()))
 }
 
+/// A phone opened a local task's chat or terminal: its windows read what
+/// its agents finished, as a desktop visit does (App.tsx `remote://seen`).
+/// A server task's "done" is the box's (termic-server marks it seen).
+fn seen_by_phone(s: &Session, task: &str) {
+    if s.client.kind != ClientKind::Phone {
+        return;
+    }
+    let (projects, tasks) = s.host.projects_tasks();
+    if let Ok(t) = crate::cli_server::resolve_by_name(&projects, &tasks, task, None) {
+        crate::server_projects::emit_all("remote://seen", t.id.clone());
+    }
+}
+
 /// Stop relaying a server terminal, if one is open.
 fn close_relay(s: &Session) {
     if let Some(server) = s.relay.lock().unwrap().take() {
@@ -277,6 +290,7 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                 return;
             }
             close_relay(s);
+            seen_by_phone(s, &task);
             open_term(s, &task, tab.as_deref());
         }
         ClientMsg::TermClose {} => {
@@ -416,7 +430,10 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                     return send(&s, msg);
                 }
                 let msg = match crate::cli_server::transcript_turns(s.host.as_ref(), &task) {
-                    Ok((task_id, turns)) => ServerMsg::Transcript { id, task: task_id, turns, error: None },
+                    Ok((task_id, turns)) => {
+                        seen_by_phone(&s, &task_id);
+                        ServerMsg::Transcript { id, task: task_id, turns, error: None }
+                    }
                     Err(e) => ServerMsg::Transcript { id, task, turns: Vec::new(), error: Some(e) },
                 };
                 send(&s, msg);
