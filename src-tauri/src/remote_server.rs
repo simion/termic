@@ -96,6 +96,9 @@ struct TermState {
     pty_id: String,
     /// Posts `CLOSE_TAP` into the tap so the forwarder ends.
     tx: mpsc::SyncSender<crate::PtyTapMsg>,
+    /// The size the desktop had before a phone sized it for its screen,
+    /// put back when the phone closes the terminal or goes.
+    restore: Option<(u16, u16)>,
 }
 
 struct Session {
@@ -149,6 +152,11 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     let mut caps_list = vec![caps::CALL.to_string()];
     if client.drives() {
         caps_list.extend([caps::TASKS, caps::TERMINAL, caps::KEYS, caps::TRANSCRIPT].map(String::from));
+        // Only a phone sizes a terminal: a paired desktop has its own pane
+        // and two desktops would fight over the size.
+        if client.kind == ClientKind::Phone {
+            caps_list.push(caps::RESIZE.to_string());
+        }
     }
     let welcome = ServerMsg::Welcome {
         v: wire::VERSION,
@@ -236,7 +244,22 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
         ClientMsg::TermClose {} => close_term(s),
         // Not offered (no `resize` in welcome): this PTY is sized by its own
         // window here, and a phone or another computer only follows it.
-        ClientMsg::TermSize { .. } => {}
+        // A phone sizes the terminal for its own screen while it has it
+        // open (readable text, no zoom); close_term gives the desktop its
+        // size back. Only a client that drives, and only within sane bounds.
+        ClientMsg::TermSize { cols, rows } => {
+            if !s.client.drives() || s.client.kind != ClientKind::Phone {
+                return;
+            }
+            let (cols, rows) = (cols.clamp(20, 400), rows.clamp(5, 200));
+            let mut term = s.term.lock().unwrap();
+            if let Some(t) = term.as_mut() {
+                if t.restore.is_none() {
+                    t.restore = s.host.pty_size(&t.pty_id);
+                }
+                let _ = s.host.pty_set_size(&t.pty_id, rows, cols);
+            }
+        }
         ClientMsg::TermInput { data } => {
             let term = s.term.lock().unwrap().clone();
             if let (Some(t), Some(bytes)) = (term, termic_remote::unb64(&data)) {
@@ -383,7 +406,7 @@ fn open_term(s: &Arc<Session>, task: &str, tab: Option<&str>) {
         }
     };
     let (rows, cols) = s.host.pty_size(&pty_id).unwrap_or((24, 80));
-    *s.term.lock().unwrap() = Some(TermState { task_id: task_id.clone(), tab: tab.map(str::to_string), pty_id: pty_id.clone(), tx: att.tx.clone() });
+    *s.term.lock().unwrap() = Some(TermState { task_id: task_id.clone(), tab: tab.map(str::to_string), pty_id: pty_id.clone(), tx: att.tx.clone(), restore: None });
     s.behind.store(false, Ordering::SeqCst);
     send(s, ServerMsg::TermReset { task: task_id, tab: tab.map(str::to_string), cols, rows, data: termic_remote::b64(&att.backlog) });
     let s2 = s.clone();
@@ -393,6 +416,9 @@ fn open_term(s: &Arc<Session>, task: &str, tab: Option<&str>) {
 fn close_term(s: &Session) {
     if let Some(t) = s.term.lock().unwrap().take() {
         let _ = t.tx.try_send(crate::PtyTapMsg::Detach(CLOSE_TAP.into()));
+        if let Some((rows, cols)) = t.restore {
+            let _ = s.host.pty_set_size(&t.pty_id, rows, cols);
+        }
     }
 }
 
