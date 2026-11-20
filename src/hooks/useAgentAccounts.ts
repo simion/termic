@@ -15,7 +15,10 @@
 //
 // One fetch, one refresh, both chips.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+/** Back-off between re-reads after a failed accounts read. */
+export const RETRY_MS = [1_000, 3_000, 10_000];
 import * as ipc from "@/lib/ipc";
 import type { AgentAccountsView } from "@/lib/types";
 
@@ -54,12 +57,27 @@ export function useAgentAccounts(
   const [view, setView] = useState<AgentAccountsView | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
 
+  // A failed read keeps what was last known and tries again: it used to set
+  // the view to null, which hides the usage chip, and nothing re-read it
+  // until some unrelated accounts event came along. One transient failure
+  // (a login file mid-write, a scanner holding it on Windows) then cost the
+  // footer its chip for the rest of the session.
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refresh = useCallback(() => {
     if (!visible) return;
-    void ipc.agentAccounts(agentId, docker).then(setView).catch(() => setView(null));
+    if (retry.current) { clearTimeout(retry.current); retry.current = null; }
+    const read = (attempt: number) => {
+      void ipc.agentAccounts(agentId, docker).then(setView).catch(() => {
+        if (attempt < RETRY_MS.length) retry.current = setTimeout(() => read(attempt + 1), RETRY_MS[attempt]);
+      });
+    };
+    read(0);
     void ipc.taskAccount(taskId, agentId).then(setCurrent).catch(() => setCurrent(null));
   }, [agentId, docker, taskId, visible]);
-  useEffect(refresh, [refresh]);
+  useEffect(() => {
+    refresh();
+    return () => { if (retry.current) clearTimeout(retry.current); };
+  }, [refresh]);
 
   // Any window may add, remove or re-default an account, and the STORES are
   // global, so this listens rather than only fetching on its own actions: a

@@ -289,11 +289,20 @@ export const config: WebdriverIO.Config = {
   // Windows only: a page whose window is not the foreground one gets no
   // focus/blur events from el.focus()/el.blur(), so every blur-commit case
   // fails. Seen once late in a CI run (four specs, cases passing between);
-  // what took the foreground is not established, so say when it happens.
+  // what took the foreground is not established, so say when it happens,
+  // and take it back so the cases after it test the app, not the desktop.
   async beforeTest(test) {
     if (process.platform !== "win32") return;
     const focused = await browser.execute(() => document.hasFocus()).catch(() => null);
-    if (focused === false) console.log(`[e2e] page lost focus before "${test.title}": ${foregroundWindow()}`);
+    if (focused !== false) return;
+    // Take the foreground back rather than let every focus-dependent case
+    // after it fail: whatever stole it is not ours, and a case that needs
+    // focus is testing the app, not the runner's desktop.
+    const thief = foregroundWindow();
+    const how = bringAppToFront();
+    const back = await browser.waitUntil(() => browser.execute(() => document.hasFocus()), { timeout: 3_000, interval: 100 })
+      .then(() => true, () => false);
+    console.log(`[e2e] page lost focus before "${test.title}" to ${thief}; ${how}; focus ${back ? "restored" : "NOT restored"}`);
   },
   async afterTest(test, _context, result) {
     // Opt-in failure capture (`TERMIC_E2E_FAIL_CAPTURE=1`, set by the Windows
@@ -364,6 +373,31 @@ $h = [Fg]::GetForegroundWindow(); $s = New-Object Text.StringBuilder 512
   try {
     return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 15_000, encoding: "utf8" }).trim();
   } catch (e) { return `unknown (${String(e).slice(0, 200)})`; }
+}
+
+/** Put the app's window back in the foreground (Windows). The Alt tap is
+ *  what makes it work from a background process: Windows refuses
+ *  SetForegroundWindow to a process that did not receive the last input
+ *  event, and a synthetic key press counts as one. */
+function bringAppToFront(): string {
+  const exe = path.resolve(appBinary).replace(/'/g, "''");
+  const ps = `Add-Type @'
+using System; using System.Runtime.InteropServices;
+public class Fr {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+}
+'@
+$exe = '${exe}'
+$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.Path -eq $exe -or $_.Path -eq "$exe.exe") } | Select-Object -First 1
+if (-not $p) { "no app window"; exit }
+[Fr]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [Fr]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+[void][Fr]::ShowWindow($p.MainWindowHandle, 9)
+"SetForegroundWindow=$([Fr]::SetForegroundWindow($p.MainWindowHandle))"`;
+  try {
+    return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 15_000, encoding: "utf8" }).trim();
+  } catch (e) { return `bringAppToFront failed (${String(e).slice(0, 200)})`; }
 }
 
 /** Pay the cold-start cost of `cmd.exe` + `node` before anything is timed.
