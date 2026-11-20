@@ -329,7 +329,8 @@ funnels consult it:
   shell becomes the box's own.
 
 What that gives a server task: the right panel (files, editor, Git tab;
-no watcher on the box, so Refresh rereads), shell tabs in its view that
+no watcher on the box: the tree rereads when its agent finishes a turn,
+and Refresh rereads on demand), shell tabs in its view that
 outlive switching tasks, Run (the run script in a shell tab), Prompts
 (through `send`), a Setup tab running the setup script when the task
 is made from the dialog, Send to main (the diff applied and untracked files

@@ -69,8 +69,8 @@ a program in the task's folder. Instead of a verb per feature:
   there through an index of server paths in `server_projects.rs`, so the
   git panel, diff, stage, commit and push work. The file tree listing,
   editor read and save go to the box too. Left: setup and archive
-  scripts, `.termic.yaml`, clone and add project, a file watcher (today
-  Refresh rereads), and the full task menu for server tasks.
+  clone and add project, and the full task menu for server tasks. The
+  file tree refreshes when the box's agent finishes a turn (no watcher).
 - Stage 4 in full: a server records the window it was added in and its
   projects mirror into that profile; the sidebar's projects header has an
   Add a server button, and the Add project dialog links to it.

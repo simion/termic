@@ -551,6 +551,11 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
+    // No watcher on a box: the agent finishing a turn refreshes the tree
+    // instead (its row leaving "working"), with no Refresh clicked.
+    writeFileSync(path.join(wt, "after-turn.txt"), "x");
+    expect((await call({ cmd: "send", task, prompt: "a turn" })).ok).toBe(true);
+    await waitVisible('[data-path="after-turn.txt"]', 30_000);
     // Its top bar keeps what works on a box: prompts, archive, the panel toggle.
     expect(await browser.execute(() => ({
       archive: !!document.querySelector('[data-testid="archive-task"]'),

@@ -9,6 +9,7 @@
 // The tab was renamed "Commit" by #199 because two git surfaces made "Git"
 // ambiguous; folding them back together makes "Git" right again.
 
+import { useRemote } from "@/lib/remote";
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -246,6 +247,20 @@ export function RightPanel() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [task?.id, refreshGit]);
+
+  // A server task's agent runs on the box, so no local terminal settles to
+  // bump fsRevision: its row leaving "working" is the same signal.
+  const serverTaskState = useRemote(s => {
+    if (!task) return undefined;
+    const server = useApp.getState().projects.find(p => p.id === task.project_id)?.server;
+    return server ? s.machines.find(m => m.id === server)?.tasks.find(t => t.id === task.id)?.state : undefined;
+  });
+  const prevServerState = useRef(serverTaskState);
+  useEffect(() => {
+    const was = prevServerState.current;
+    prevServerState.current = serverTaskState;
+    if (task && was === "working" && serverTaskState !== "working") useApp.getState().bumpFsRevision(task.id);
+  }, [serverTaskState, task?.id]);
 
   // Agent terminal settled (fsRevision) or a git-only mutation happened
   // (gitRevision: editor save, tree rename/delete) → refresh git status in
