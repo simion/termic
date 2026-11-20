@@ -1,3 +1,5 @@
+import type { ComponentType } from "react";
+import { isNoticeMuted, type NoticeKey } from "@/lib/notices";
 // Transient UI-only store (separate from the main app store so re-renders
 // triggered by opening a dialog don't churn the task tree).
 
@@ -489,19 +491,43 @@ interface UIState {
   ptyRestartPending: (taskId: string, spawnedAt: number) => boolean;
   /** Push a transient toast. Returns its id (so callers can dismiss
    *  early if needed). Auto-dismiss is handled by <Toaster/>.
-   *  `opts.action` adds a button (e.g. "Undo") whose click runs the
-   *  callback AND dismisses the toast. */
-  pushToast: (msg: string, kind?: ToastKind, opts?: { action?: ToastAction; ttlMs?: number; sticky?: boolean }) => string;
+   *  `opts.action` / `opts.actions` add buttons (e.g. "Undo") whose click
+   *  runs the callback AND dismisses the toast; the first one is styled as
+   *  the primary. `opts.title` puts a bold heading above the message. */
+  pushToast: (msg: string, kind?: ToastKind, opts?: ToastOpts) => string;
   dismissToast: (id: string) => void;
 }
 
 export type ToastKind = "success" | "info" | "warning" | "error";
-export interface ToastAction { label: string; onClick: () => void; }
+export type ToastTone = "pr-merged" | "pr-open";
+export interface ToastAction { label: string; onClick: () => void; icon?: ComponentType<{ className?: string }>; }
+export interface ToastOpts {
+  title?: string;
+  /** Replaces the kind's default icon, e.g. a merge icon on a merge notice. */
+  icon?: ComponentType<{ className?: string }>;
+  /** Tints the icon tile with a colour other than the kind's: a PR's own
+   *  state colours, so a merge reads purple and an opened PR green. */
+  tone?: ToastTone;
+  /** Makes the notice mutable: Dismiss gets "Don't show this again", and a
+   *  muted key is never pushed (Settings > Notifications turns it back on). */
+  notice?: NoticeKey;
+  action?: ToastAction;
+  actions?: ToastAction[];
+  ttlMs?: number;
+  sticky?: boolean;
+}
 export interface Toast {
   id: string;
   msg: string;
   kind: ToastKind;
-  action?: ToastAction;
+  title?: string;
+  icon?: ComponentType<{ className?: string }>;
+  tone?: ToastTone;
+  notice?: NoticeKey;
+  /** Buttons in display order: `opts.action` first, then `opts.actions`. */
+  actions: ToastAction[];
+  /** ms epoch, shown as the card's clock time. */
+  createdAt: number;
   /** Override the global TTL for this toast (e.g. longer for undo). */
   ttlMs?: number;
   /** Never auto-dismiss - only a click (the action, or the X) removes it.
@@ -780,8 +806,12 @@ export const useUI = create<UIState>((set, get) => ({
   markPendingPtyRestart: (taskId) => set(s => ({ pendingPtyRestarts: { ...s.pendingPtyRestarts, [taskId]: Date.now() } })),
   ptyRestartPending: (taskId, spawnedAt): boolean => (get().pendingPtyRestarts[taskId] ?? 0) >= spawnedAt,
   pushToast: (msg, kind = "success", opts) => {
+    if (opts?.notice && isNoticeMuted(opts.notice)) return "";
     const id = crypto.randomUUID();
-    set(s => ({ toasts: [...s.toasts, { id, msg, kind, action: opts?.action, ttlMs: opts?.ttlMs, sticky: opts?.sticky }] }));
+    const actions = [...(opts?.action ? [opts.action] : []), ...(opts?.actions ?? [])];
+    set(s => ({ toasts: [...s.toasts, {
+      id, msg, kind, title: opts?.title, icon: opts?.icon, tone: opts?.tone, notice: opts?.notice, actions, createdAt: Date.now(), ttlMs: opts?.ttlMs, sticky: opts?.sticky,
+    }] }));
     return id;
   },
   dismissToast: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),

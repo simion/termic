@@ -47,6 +47,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
     why: "a settle window against IPC still in flight from the case before, plus "
       + "two 'the task did not change' negatives after a shortcut",
   },
+  "toasts.e2e.ts": {
+    count: 1,
+    why: "a negative: with the stack hovered, a card whose 4s timer has run out "
+      + "must NOT be dismissed. Nothing fires for a toast that stays",
+  },
   "secrets-task.e2e.ts": {
     count: 2,
     why: "two negatives: after Allow the blocked row must NOT come back, and a "

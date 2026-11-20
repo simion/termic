@@ -41,6 +41,11 @@ export default {
   skip: "跳过",
   next: "下一步",
   dismiss: "关闭",
+  toast: {
+    clearAll: "全部清除",
+    options: "更多选项",
+    mute: "不再显示",
+  },
   showMore: "展开更多",
   showLess: "收起",
   learnMore: "了解更多",

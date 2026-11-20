@@ -2,6 +2,7 @@
 // Persisted to localStorage so they survive launches. Currently just the mono
 // font, but built for future things (themes, terminal opacity, etc.).
 
+import { LS_MUTED_NOTICES } from "@/lib/notices";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
 import { parseLauncherVisibility, type LauncherVisibility } from "@/lib/launcherUsage";
 import { create } from "zustand";
@@ -565,6 +566,8 @@ interface PrefsState {
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
+  /** In-app notices turned off (lib/notices.ts keys). */
+  mutedNotices: string[];
   /** Play a selectable notification sound when an inactive agent finishes
    *  a turn. OFF by default. */
   completionSound: boolean;
@@ -1094,6 +1097,7 @@ interface PrefsState {
    *  when the save fails, leaving the theme mode untouched. */
   pickImportedTheme:  (id: `custom:${string}`) => Promise<void>;
   setDesktopNotifications: (v: boolean) => void;
+  setNoticeMuted: (key: string, muted: boolean) => void;
   setCompletionSound: (v: boolean) => void;
   setCompletionSoundId: (id: CompletionSoundId) => void;
   setSettledHighlight: (v: boolean) => void;
@@ -1364,6 +1368,10 @@ function readStoredPrefs() {
   const initialShowAllFonts = lsGetBool(LS_SHOW_ALL_FONTS, APPEARANCE_DEFAULTS.showAllInstalledFonts);
   const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
   const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
+  const initialMutedNotices = (() => {
+    try { const v = JSON.parse(lsGet(LS_MUTED_NOTICES, "[]")); return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : []; }
+    catch { return []; }
+  })();
   const initialCompletionSound = readCompletionSoundEnabled();
   const initialCompletionSoundId = readCompletionSoundId();
   // WIP feature - the "agent has settled" heuristic produces false
@@ -1484,6 +1492,7 @@ function readStoredPrefs() {
     language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
     themeMode: initialTheme,
     desktopNotifications: initialDesktopNotif,
+    mutedNotices: initialMutedNotices,
     completionSound: initialCompletionSound,
     completionSoundId: initialCompletionSoundId,
     settledHighlight: initialSettledHighlight,
@@ -1851,6 +1860,13 @@ export const usePrefs = create<PrefsState>(set => ({
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
+  },
+  setNoticeMuted: (key, muted) => {
+    const cur = usePrefs.getState().mutedNotices;
+    if (cur.includes(key) === muted) return;
+    const next = muted ? [...cur, key] : cur.filter((k: string) => k !== key);
+    try { localStorage.setItem(LS_MUTED_NOTICES, JSON.stringify(next)); } catch {}
+    set({ mutedNotices: next });
   },
   setCompletionSound: (v) => {
     try { localStorage.setItem(LS_COMPLETION_SOUND, v ? "1" : "0"); } catch {}

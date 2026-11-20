@@ -14,6 +14,10 @@ import { taskLabel } from "@/lib/taskLabel";
 import { COMPLETION_SOUND_OPTIONS, COMPLETION_SOUND_SUPPORTED } from "@/lib/notificationSounds";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import type { DelegatedWork } from "@/lib/delegatedWork";
+import { Archive, ExternalLink, GitMerge, GitPullRequest } from "lucide-react";
+import { ToastFrame } from "@/components/ui/Toaster";
+import { NOTICES, type NoticeKey } from "@/lib/notices";
+import type { Toast } from "@/store/ui";
 
 /** A stand-in report, so the rows can draw the marks that depend on one. */
 const HELD: DelegatedWork = { label: "subagent", count: 2, ids: [] };
@@ -39,7 +43,9 @@ export function NotificationsSection() {
     <div className="flex flex-col gap-7">
       <SectionTitle title={t("rail.notifications")} />
 
-      <Block first>
+      <NoticesBlock />
+
+      <Block>
         <Toggle
           label={t("notifications.desktop.label")}
           hint={t("notifications.desktop.hint")}
@@ -189,5 +195,59 @@ export function NotificationsSection() {
         />
       </p>
     </div>
+  );
+}
+
+/** Every notice that can be muted, each drawn as the real card it is, beside
+ *  its on/off switch: "which one is that" answers itself. */
+function NoticesBlock() {
+  const { t } = useTranslation("settings");
+  const muted = usePrefs(s => s.mutedNotices);
+  const setMuted = usePrefs(s => s.setNoticeMuted);
+  const label = "PR #42";
+  const name = t("notifications.notices.sampleTask");
+  const at = Date.now();
+  const samples: Record<NoticeKey, Omit<Toast, "id" | "ttlMs" | "sticky">> = {
+    prMergedAsk: {
+      kind: "info", icon: GitMerge, tone: "pr-merged", notice: "prMergedAsk", createdAt: at,
+      title: t("backend:pr.mergedTitle", { label }),
+      msg: t("backend:pr.mergedAskBody", { name }),
+      actions: [{ label: t("backend:pr.archiveAction"), icon: Archive, onClick: () => {} }],
+    },
+    prMergedAuto: {
+      kind: "success", icon: GitMerge, tone: "pr-merged", notice: "prMergedAuto", createdAt: at,
+      title: t("backend:pr.mergedTitle", { label }),
+      msg: t("backend:pr.mergedAutoBody", { name }),
+      actions: [],
+    },
+    prOpened: {
+      kind: "info", icon: GitPullRequest, tone: "pr-open", notice: "prOpened", createdAt: at,
+      title: `${label} opened`,
+      msg: name,
+      actions: [{ label: t("notifications.notices.sampleOpen"), icon: ExternalLink, onClick: () => {} }],
+    },
+  };
+  return (
+    <Block first id="notices">
+      <div className="text-[13px] font-medium text-[var(--color-fg)]">{t("notifications.notices.title")}</div>
+      <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{t("notifications.notices.hint")}</div>
+      {/* A grid, not a column: this list only grows. */}
+      <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-x-6 gap-y-5">
+        {NOTICES.map(key => {
+          const on = !muted.includes(key);
+          return (
+            <div key={key} className="flex min-w-0 flex-col gap-2" data-testid={`notice-${key}`}>
+              <Toggle label={t(`notifications.notices.${key}`)} value={on} onChange={v => setMuted(key, !v)} />
+              <div className={cn("transition-opacity", !on && "opacity-40")}>
+                <ToastFrame t={samples[key]} preview />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-4 text-[12px] text-[var(--color-fg-dim)]">
+        <Trans t={t} i18nKey="notifications.notices.mergeHint" components={{ b: <b className="font-medium text-[var(--color-fg)]" /> }} />
+      </div>
+    </Block>
   );
 }

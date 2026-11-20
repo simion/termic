@@ -243,7 +243,7 @@ describe("background sync toasts", () => {
       "Changed on both machines. This machine's copy was kept.",
       "Changed on both machines. This machine's copy was kept.",
     ]);
-    expect(useUI.getState().toasts[0].action?.label).toBe("Review");
+    expect(useUI.getState().toasts[0].actions[0]?.label).toBe("Review");
     expect(useUI.getState().toasts.map(t => t.msg).join("")).not.toContain("\u2014");
 
     surfaceSyncFailure("git fetch timed out");

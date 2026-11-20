@@ -92,6 +92,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
 
   // ── Notifications, indicators, confirm-before prompts ──
   { key: "desktopNotifications", scoped: false, class: "sync" },
+  { key: "mutedNotices", scoped: false, class: "sync" },
   { key: "completionSound", scoped: false, class: "sync" },
   { key: "completionSoundId", scoped: false, class: "sync" },
   { key: "settledHighlight", scoped: false, class: "sync" },

@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.24.5",
+      "version": "1.24.6",
       "date": "2026-11-20",
       "summary": "Monokai theme, window titles that name your task, idle tasks free their build folders."
     },

@@ -202,6 +202,16 @@ export default {
   },
 
   notifications: {
+    notices: {
+      title: "应用内通知",
+      hint: "在角落弹出的通知。可在此关闭，也可在通知右上角的 … 菜单中关闭。",
+      mergeHint: "是否处理合并按项目设置：见该项目设置中的<b>拉取请求合并时</b>。",
+      prMergedAsk: "拉取请求已合并，是否归档任务？",
+      prMergedAuto: "拉取请求已合并，任务已归档",
+      prOpened: "已创建拉取请求",
+      sampleTask: "fix-login",
+      sampleOpen: "打开",
+    },
     desktop: {
       label: "桌面通知",
       hint: "当非活跃的智能体完成工作或响铃时通知你。点击通知会跳转到对应标签页。",

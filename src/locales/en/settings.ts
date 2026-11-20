@@ -203,6 +203,16 @@ export default {
   },
 
   notifications: {
+    notices: {
+      title: "In-app notices",
+      hint: "Notices that pop up in the corner. Turn one off here, or from the … on the notice itself.",
+      mergeHint: "Whether a merge is acted on at all is per project: <b>When a pull request merges</b> in that project's settings.",
+      prMergedAsk: "Pull request merged, archive the task?",
+      prMergedAuto: "Pull request merged, task archived",
+      prOpened: "Pull request opened",
+      sampleTask: "fix-login",
+      sampleOpen: "Open",
+    },
     desktop: {
       label: "Desktop notifications",
       hint: "Notify when an inactive agent finishes or rings the bell. Clicking back in jumps to that tab.",

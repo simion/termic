@@ -3020,3 +3020,39 @@ installed and supported from the store (`agentHooksInstalled`,
 `agentHooksSupported`), the same read a live tab uses, so the block, the cards
 and the terminals cannot disagree. The link out of Notifications does not gate
 on which agents are supported; the cards are the authority on that.
+
+## Notifications (toasts)
+
+`useUI().pushToast(msg, kind, opts)` raises a card in the bottom-right stack
+(`src/components/ui/Toaster.tsx`). The card is `ToastFrame`: an icon tile and
+the text on the left, and on the right edge a column of buttons one under the
+other (Dismiss on top, then the actions), as macOS draws a notification with
+actions. `opts.title` puts a bold
+heading over the message, `opts.icon` replaces the kind's icon (a merge
+notice carries a merge icon, never the warning sign), and `opts.action` /
+`opts.actions` add buttons, the first in accent. A click runs the callback
+and dismisses the card. Dismiss heads every card's column; there is no X. `sticky` cards never time out; the rest go
+after `ttlMs` (3.2s by default), with the time left drawn as a faint fill
+draining out of the Dismiss cell (`termic-toast-countdown`, its
+`animation-play-state` paused whenever the card's timer is).
+
+**Muting.** A toast that passes `opts.notice` (a key from `lib/notices.ts`)
+gets a round "..." on its top-right corner (on hover) whose
+menu holds "Don't show this again", and a muted key
+is never pushed (`isNoticeMuted`, read from storage so the UI store does not
+import prefs). Settings > Notifications opens with **In-app notices**: every
+key, drawn as the real `ToastFrame` with sample text beside its switch. A new
+notice that should be mutable needs a key in `NOTICES`, a label and a sample
+in `NotificationsSection.tsx`, and `notice:` at its call site. Whether a PR
+merge is acted on at all stays per project (`on_pr_merge`).
+
+**Stack.** Collapsed, the newest card sits in front and two older ones peek
+out below it. Hovering the stack, or opening a card's menu (it renders
+outside the stack, so moving onto it is a mouseleave), fans it out, shows
+Clear all, and pauses every timer; each resumes with what it had left. Cards
+slide in from the right and back out: a dismissed card stays mounted for the
+220ms exit, so `toasts` in the store and the DOM disagree for that beat. Only
+`transform` and `opacity` animate. Covered by `e2e/specs/toasts.e2e.ts`,
+which hovers with synthetic `mouseover`/`mouseout` and opens the menu with a
+synthetic `pointerdown`, because the macOS e2e window is hidden and a real
+pointer never reaches it.

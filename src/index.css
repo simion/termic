@@ -702,6 +702,12 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
    before `transform` per spec), so the panel stays horizontally centered the
    whole time. (The first version animated `translate:` here too, which
    clobbered the centering → the panel flew in from the right.) */
+/* A self-dismissing toast's time left, drained behind its Dismiss button.
+   Paused with the toast's own timer (animation-play-state), so they agree. */
+@keyframes termic-toast-countdown {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
 @keyframes termic-pop-in {
   from { opacity: 0; transform: translateY(-16px); }
   to   { opacity: 1; transform: translateY(0); }

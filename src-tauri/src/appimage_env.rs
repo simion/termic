@@ -51,6 +51,7 @@ const NOT_FOR_CHILDREN: &[&str] = &["APPDIR", "APPIMAGE", "ARGV0", "OWD", "GDK_B
 const OWN_FONTCONFIG: &str = "appimage-fonts.conf";
 
 /// The system's config plus one rule: no COLRv1 font.
+#[cfg(any(target_os = "linux", test))]
 const FONTCONFIG: &str = r#"<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
@@ -70,9 +71,9 @@ const FONTCONFIG: &str = r#"<?xml version="1.0"?>
 /// window. The host's own WebKitGTK (a `.deb`, a dev build) is not affected,
 /// so only an AppImage does this, and never over a `FONTCONFIG_FILE` the
 /// user set. Call before GTK starts: the WebKit helpers inherit it.
+#[cfg(target_os = "linux")]
 pub fn hide_colrv1_fonts(dir: &Path) {
-    if !cfg!(target_os = "linux")
-        || std::env::var_os("APPDIR").is_none()
+    if std::env::var_os("APPDIR").is_none()
         || std::env::var_os("FONTCONFIG_FILE").is_some()
         || !Path::new("/etc/fonts/fonts.conf").exists()
     {

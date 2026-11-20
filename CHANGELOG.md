@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.24.5] - 2026-11-20
+## [1.24.6] - 2026-11-20
 
 Monokai theme, window titles that name your task, idle tasks free their build folders.
 
@@ -14,12 +14,15 @@ Monokai theme, window titles that name your task, idle tasks free their build fo
 - Settings, Appearance: pick the app theme from a list, beside the command palette's theme picker.
 - Open tasks you have not opened for 14 days give back the disk their build folders take (node_modules, target, .next and the like). Only folders git ignores and that a build recreates; the task's own files are never touched. Change the days or turn it off in Settings, Tasks.
 - Caffeinate remembers whether you last kept the display on and stayed awake with the lid closed.
+- Notifications: a new look. Cards stack in the corner and fan out on hover (which also pauses them), slide in and out, and carry their buttons in a column on the right. A notice that closes by itself shows its time left behind Dismiss, and a merged pull request shows in purple.
+- Notifications: turn off a notice you do not want from its own ... menu, "Don't show this again", or in Settings, Notifications, which shows every notice as it looks with a switch beside it.
 
 ### Bug fixes
 - Linux: on a machine without a GPU (WSL, most VMs), terminals stay on the WebGL renderer. 1.24.4 switched them to canvas, which could crash the window to a blank page. If typing lags a second behind there, pick the canvas renderer in Settings, Appearance ([#461](https://github.com/simion/termic/pull/461)).
 - Windows and Linux: Ctrl+Shift+F opens find in files from a terminal too. A terminal's own find moves to Ctrl+Alt+F.
 - Agents: an agent that started a new turn right as the last one ended no longer shows as done while it works.
 - Markdown: switching a file from preview to split no longer scrolls both panes to the wrong section.
+- A change saved while the task list was reloading no longer shows its old value afterwards.
 
 ## [1.24.3] - 2026-11-17
 

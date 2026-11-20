@@ -42,6 +42,11 @@ export default {
   skip: "Skip",
   next: "Next",
   dismiss: "Dismiss",
+  toast: {
+    clearAll: "Clear all",
+    options: "More options",
+    mute: "Don't show this again",
+  },
   showMore: "Show more",
   showLess: "Show less",
   learnMore: "Learn more",

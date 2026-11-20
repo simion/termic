@@ -42,6 +42,7 @@
 // for the one on screen right now (see maybeHandleOpened) - a popup for a
 // tab nobody is looking at isn't something anyone asked to see.
 
+import { Archive, ExternalLink, GitMerge, GitPullRequest } from "lucide-react";
 import { create } from "zustand";
 import type { ForgeCliStatus, ForgeProvider, MemberPrLookup, PrComment, PrLookup, PrStatus, QueueItem, TaskPrLookup, TerminalTab, Task } from "@/lib/types";
 import { scoped } from "@/lib/profileScope";
@@ -1138,7 +1139,9 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
     notify(taskLabel(task, usePrefs.getState().useBranchAsTaskName), body).catch(() => {});
   };
   if (mode === "auto") {
-    useUI.getState().pushToast(i18n.t("backend:pr.mergedAutoToast", { label, name: task.name }), "success");
+    useUI.getState().pushToast(i18n.t("backend:pr.mergedAutoBody", { name: task.name }), "success", {
+      title: i18n.t("backend:pr.mergedTitle", { label }), icon: GitMerge, tone: "pr-merged", notice: "prMergedAuto",
+    });
     notifyMerge(i18n.t("backend:pr.mergedAutoNotify", { label }));
     // Worktree + task entry only, NOT the branch: this runs unattended with
     // no confirmation, so it must be the reversible half of archiving. The
@@ -1152,16 +1155,20 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
   // Sticky (no auto-dismiss timer) - a merge notice is asking the user to
   // decide something, and a bottom-right toast that expires in seconds is
   // easy to miss entirely for a task that isn't the one on screen, which
-  // is the common case here. "warning", not "success" - it's a decision to
+  // is the common case here. "info", not "success" - it's a decision to
   // make, not a completed positive action (that's the "auto" toast above).
   // Goes through the SAME confirm flow as every other archive entry point
   // (sidebar row menu, unified bar button, command palette) - branch-delete
   // checkbox and all - not a bare archiveAndRefresh. This is "ask" mode:
   // the whole point is the user gets a real say, not just a single
   // one-click button skipping the branch-delete decision everywhere else.
-  useUI.getState().pushToast(i18n.t("backend:pr.mergedAskToast", { label, name: task.name }), "warning", {
+  useUI.getState().pushToast(i18n.t("backend:pr.mergedAskBody", { name: task.name }), "info", {
+    title: i18n.t("backend:pr.mergedTitle", { label }),
+    icon: GitMerge,
+    tone: "pr-merged",
+    notice: "prMergedAsk",
     sticky: true,
-    action: { label: i18n.t("backend:pr.archiveAction"), onClick: () => { void confirmAndArchive(task); } },
+    action: { label: i18n.t("backend:pr.archiveAction"), icon: Archive, onClick: () => { void confirmAndArchive(task); } },
   });
   notifyMerge(i18n.t("backend:pr.mergedAskNotify", { label, name: task.name }));
 }
@@ -1178,7 +1185,12 @@ function maybeHandleOpened(taskId: string, prev: PrLookup | null | undefined, ne
   if (prev == null || prev.pr != null) return;
   if (useApp.getState().activeTaskId !== taskId) return;
   const label = prLabelShort(next.pr.provider, next.pr.number);
-  useUI.getState().pushToast(`${label} opened`, "info", {
-    action: { label: "Open", onClick: () => { void openPath(next.pr!.url); } },
+  const task = useApp.getState().tasks.find(t => t.id === taskId);
+  useUI.getState().pushToast(task?.name ?? next.pr.url, "info", {
+    title: `${label} opened`,
+    icon: GitPullRequest,
+    tone: "pr-open",
+    notice: "prOpened",
+    action: { label: "Open", icon: ExternalLink, onClick: () => { void openPath(next.pr!.url); } },
   });
 }

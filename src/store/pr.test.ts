@@ -310,8 +310,8 @@ describe("merged-PR lifecycle (issue #21)", () => {
 
     const toasts = useUI.getState().toasts;
     expect(toasts).toHaveLength(1);
-    expect(toasts[0].msg).toContain("merged");
-    expect(toasts[0].action?.label).toBe("Archive");
+    expect(toasts[0].title).toContain("merged");
+    expect(toasts[0].actions[0]?.label).toBe("Archive");
     // Sticky: a merge notice is a decision to make, not a status update,
     // and it commonly lands on a task that isn't the one on screen - it
     // must not expire before anyone gets to read it.
@@ -320,7 +320,7 @@ describe("merged-PR lifecycle (issue #21)", () => {
     // The action goes through the SAME confirm dialog as every other
     // archive entry point (branch-delete checkbox and all), not a bare
     // archiveAndRefresh - "ask" mode means the user gets a real say.
-    toasts[0].action!.onClick();
+    toasts[0].actions[0].onClick();
     expect(confirmAndArchive).toHaveBeenCalledWith(expect.objectContaining({ id: "ws1" }));
   });
 
@@ -447,7 +447,7 @@ describe("new-PR-opened lifecycle", () => {
 
     const toasts = useUI.getState().toasts;
     expect(toasts).toHaveLength(1);
-    expect(toasts[0].msg).toContain("opened");
+    expect(toasts[0].title).toContain("opened");
   });
 
   it("background task: none → open stays silent, but the snapshot still updates", async () => {
