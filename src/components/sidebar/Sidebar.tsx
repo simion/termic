@@ -3233,6 +3233,87 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     );
   }
 
+  // Move to group: the project row's menu, for tasks (both a local and a
+  // server task's menu; groups are the desktop's). The group list is READ
+  // while the menu is open rather than subscribed: a subscription here
+  // would re-render every row on every task change, for a menu nobody has
+  // open.
+  const groupMenu = menuOpen ? (() => {
+                const all = useApp.getState().tasks;
+                const strays = crossProjectStrays(all);
+                const groups = liveGroups(all.filter(t => t.project_id === w.project_id && !strays.has(t.id)));
+                const run = (p: Promise<void>) => { void p.finally(() => loadAll()); };
+                return (
+                  <DropdownSub>
+                    <DropdownSubTrigger className="justify-between" data-testid={`task-move-to-group-${w.id}`}>
+                      <span className="flex items-center gap-2">
+                        <Folder className="h-4 w-4" />
+                        <span>{t("taskGroup.moveToGroup")}</span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                    </DropdownSubTrigger>
+                    <DropdownSubContent className="max-h-80 overflow-y-auto">
+                      {groups.map(g => {
+                        // Join through a live member, not the group id: that is
+                        // the lead's task id, and the lead may be archived.
+                        const via = all.find(t => !t.archived && t.id !== w.id && t.group?.id === g.id && t.project_id === w.project_id)?.id;
+                        const current = w.group?.id === g.id;
+                        return (
+                          <DropdownItem
+                            key={g.id}
+                            className="items-center [&>svg]:mt-0"
+                            data-testid={`task-move-to-group-${w.id}-${g.id}`}
+                            onSelect={() => {
+                              if (current || !via) return;
+                              // Open it so the moved task stays in view.
+                              setTreeFold("taskGroup", g.id, false, compact);
+                              run(taskGroupJoin(w.id, via));
+                            }}
+                          >
+                            {current
+                              ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                              : <span className="block h-2.5 w-2.5 shrink-0 rounded-full mx-0.5" style={{ backgroundColor: taskGroupColorCss(g) }} />}
+                            <span className="truncate">{groupLabel(g, all, t)}</span>
+                          </DropdownItem>
+                        );
+                      })}
+                      {groups.length > 0 && <DropdownSeparator />}
+                      <DropdownItem
+                        className="items-center [&>svg]:mt-0"
+                        data-testid={`task-new-group-${w.id}`}
+                        onSelect={() => {
+                          void taskGroupNew(w.id, nextGroupColor(all))
+                            .then(() => loadAll())
+                            .then(() => {
+                              // Offer the real name straight away, like a new
+                              // project folder. The id is read back because a
+                              // task already leading a group gets a fresh one.
+                              // The draft starts as the label the group shows:
+                              // the task's name either way (followed or stored).
+                              const gid = useApp.getState().tasks.find(t => t.id === w.id)?.group?.id;
+                              if (gid && !compact) useUI.setState({ groupRenaming: { groupId: gid, value: w.name } });
+                            })
+                            .catch(() => loadAll());
+                        }}
+                      >
+                        <FolderPlus className="h-4 w-4" />
+                        <span>{t("taskGroup.newGroup")}</span>
+                      </DropdownItem>
+                      {w.group && (
+                        <DropdownItem
+                          className="items-center [&>svg]:mt-0"
+                          data-testid={`task-leave-group-${w.id}`}
+                          onSelect={() => run(taskGroupLeave(w.id))}
+                        >
+                          <FolderMinus className="h-4 w-4" />
+                          <span>{t("taskGroup.removeFromGroup")}</span>
+                        </DropdownItem>
+                      )}
+                    </DropdownSubContent>
+                  </DropdownSub>
+                );
+              })() : null;
+
   return (
     // `data-sidebar-task-row` spans the header AND every expanded tab row, so
     // an e2e spec can scope "the work badge the sidebar shows for this task"
@@ -3484,8 +3565,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
               {/* A server project's task (docs/plans/server-projects.md): what
-                  works on it today. Its files, scripts and terminals are on
-                  the box; the rest of the menu comes with stage 2 and 3. */}
+                  works on it today. The rest acts on this Mac (agent, sandbox,
+                  resume, schedules, duplicate) and joins as it runs on the box. */}
               {serverId ? (
                 <>
                   <DropdownItem
@@ -3507,6 +3588,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     <Pencil className="h-4 w-4" />
                     <span>{t("rename", { ns: "common" })}</span>
                   </DropdownItem>
+                  {w.branch && (
+                    <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => copyToClipboard(w.branch, `"${w.branch}"`)}>
+                      <Copy className="h-4 w-4" />
+                      <span>{t("copyBranch")}</span>
+                    </DropdownItem>
+                  )}
+                  {groupMenu}
                   <DropdownSeparator />
                   <DropdownItem
                     className="items-center [&>svg]:mt-0"
@@ -3754,85 +3842,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   </span>
                 </DropdownItem>
               ))}
-              {/* Move to group: the project row's menu, for tasks. The group
-                  list is READ while the menu is open rather than subscribed:
-                  a subscription here would re-render every row on every task
-                  change, for a menu nobody has open. */}
-              {menuOpen && (() => {
-                const all = useApp.getState().tasks;
-                const strays = crossProjectStrays(all);
-                const groups = liveGroups(all.filter(t => t.project_id === w.project_id && !strays.has(t.id)));
-                const run = (p: Promise<void>) => { void p.finally(() => loadAll()); };
-                return (
-                  <DropdownSub>
-                    <DropdownSubTrigger className="justify-between" data-testid={`task-move-to-group-${w.id}`}>
-                      <span className="flex items-center gap-2">
-                        <Folder className="h-4 w-4" />
-                        <span>{t("taskGroup.moveToGroup")}</span>
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-                    </DropdownSubTrigger>
-                    <DropdownSubContent className="max-h-80 overflow-y-auto">
-                      {groups.map(g => {
-                        // Join through a live member, not the group id: that is
-                        // the lead's task id, and the lead may be archived.
-                        const via = all.find(t => !t.archived && t.id !== w.id && t.group?.id === g.id && t.project_id === w.project_id)?.id;
-                        const current = w.group?.id === g.id;
-                        return (
-                          <DropdownItem
-                            key={g.id}
-                            className="items-center [&>svg]:mt-0"
-                            data-testid={`task-move-to-group-${w.id}-${g.id}`}
-                            onSelect={() => {
-                              if (current || !via) return;
-                              // Open it so the moved task stays in view.
-                              setTreeFold("taskGroup", g.id, false, compact);
-                              run(taskGroupJoin(w.id, via));
-                            }}
-                          >
-                            {current
-                              ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
-                              : <span className="block h-2.5 w-2.5 shrink-0 rounded-full mx-0.5" style={{ backgroundColor: taskGroupColorCss(g) }} />}
-                            <span className="truncate">{groupLabel(g, all, t)}</span>
-                          </DropdownItem>
-                        );
-                      })}
-                      {groups.length > 0 && <DropdownSeparator />}
-                      <DropdownItem
-                        className="items-center [&>svg]:mt-0"
-                        data-testid={`task-new-group-${w.id}`}
-                        onSelect={() => {
-                          void taskGroupNew(w.id, nextGroupColor(all))
-                            .then(() => loadAll())
-                            .then(() => {
-                              // Offer the real name straight away, like a new
-                              // project folder. The id is read back because a
-                              // task already leading a group gets a fresh one.
-                              // The draft starts as the label the group shows:
-                              // the task's name either way (followed or stored).
-                              const gid = useApp.getState().tasks.find(t => t.id === w.id)?.group?.id;
-                              if (gid && !compact) useUI.setState({ groupRenaming: { groupId: gid, value: w.name } });
-                            })
-                            .catch(() => loadAll());
-                        }}
-                      >
-                        <FolderPlus className="h-4 w-4" />
-                        <span>{t("taskGroup.newGroup")}</span>
-                      </DropdownItem>
-                      {w.group && (
-                        <DropdownItem
-                          className="items-center [&>svg]:mt-0"
-                          data-testid={`task-leave-group-${w.id}`}
-                          onSelect={() => run(taskGroupLeave(w.id))}
-                        >
-                          <FolderMinus className="h-4 w-4" />
-                          <span>{t("taskGroup.removeFromGroup")}</span>
-                        </DropdownItem>
-                      )}
-                    </DropdownSubContent>
-                  </DropdownSub>
-                );
-              })()}
+              {groupMenu}
               {/* Duplicate: only for worktree tasks (the repo-root
                   entry IS the project's checkout, can't be branched
                   off cleanly). Pre-fills the New worktree dialog with

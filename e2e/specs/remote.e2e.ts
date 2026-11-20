@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
+import { clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
 const nonce = (n: number) => { const b = Buffer.alloc(12); b.writeBigUInt64BE(BigInt(n), 4); return b; };
 const key = (pair: Buffer, salt: Buffer, dir: string, host: string, client: string) =>
@@ -647,6 +647,26 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       return { name: x?.name, pinned: x?.pinned };
     }, task) as any;
     expect(t).toEqual({ name: "renamed-here", pinned: true });
+    // Its menu groups it like a local task (groups are the desktop's), and a
+    // resync keeps the group.
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      el.click();
+    }, `${row()} [data-testid="task-menu-trigger"]`);
+    await clickWhenVisible(`[data-testid="task-move-to-group-${task}"]`);
+    await clickWhenVisible(`[data-testid="task-new-group-${task}"]`);
+    const grouped = () => browser.execute((id) => !!(window.__termic!.useApp.getState().tasks.find((y: any) => y.id === id) as any)?.group, task);
+    await browser.waitUntil(grouped, { timeout: 10_000, timeoutMsg: "the server task never joined a new group" });
+    await browser.keys("Escape");
+    expect((await call({ cmd: "send", task, prompt: "nudge again" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await logs()).includes("box says: nudge again"), { timeout: 20_000, timeoutMsg: "the second nudge never landed" });
+    await browser.waitUntil(async () => {
+      await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+      return grouped();
+    }, { timeout: 5_000, timeoutMsg: "a resync dropped the server task's group" });
   });
 
   it("shows the server's agent waiting on its row, and raises the alert", async () => {
