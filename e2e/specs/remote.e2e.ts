@@ -74,6 +74,12 @@ describe("Phones and servers", () => {
   before(async () => {
     await waitForAppShell();
     await requireTermicApi();
+    // Start with no phones, whatever an earlier run (or a phone-host
+    // session) left paired in this profile: the first cases count them.
+    const s = await status().catch(() => null);
+    for (const p of s?.phones ?? []) {
+      await browser.execute((id) => window.__termic!.invoke("phone_unpair", { id }), p.id).catch(() => {});
+    }
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
   });
 
@@ -266,7 +272,8 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     // The task opens, and its row is listed under the server.
     await waitVisible('[data-testid="remote-task-view"]', 60_000);
     const task = await browser.waitUntil(async () => browser.execute((id) =>
-      (window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id)?.tasks ?? [])[0]?.id as string | undefined, serverId),
+      // By its name (from the prompt): a real box may already have tasks.
+      (window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id)?.tasks ?? []).find((t: any) => String(t.name).includes("hello"))?.id as string | undefined, serverId),
     { timeout: 20_000, timeoutMsg: "the new task never showed under the server" });
     await waitVisible(`[data-testid="remote-task-${task}"]`);
     // The prompt reached the agent ON THE BOX, which is the whole point.

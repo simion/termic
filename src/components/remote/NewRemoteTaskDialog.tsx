@@ -68,10 +68,12 @@ function Body({ machineId, onClose }: { machineId: string; onClose: () => void }
     try {
       const r = await remoteCall(machineId, req("project_add", { path }));
       if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
-      setAddingPath(null);
       await load();
       const added = r.data?.project?.name ?? r.data?.name;
       if (added) setProject(added);
+      // Close the path field only once the new project is picked: closing
+      // it first showed the old project selected until the list reloaded.
+      setAddingPath(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -122,7 +124,7 @@ function Body({ machineId, onClose }: { machineId: string; onClose: () => void }
               >
                 {projects.map(p => <option key={p.id} value={p.name}>{p.name}  ({p.root_path})</option>)}
               </select>
-              <Button size="md" variant="secondary" aria-label={t("newTask.addProject")} onClick={() => setAddingPath("")}><FolderPlus className="h-3.5 w-3.5" /></Button>
+              <Button size="md" variant="secondary" data-testid="remote-add-project" aria-label={t("newTask.addProject")} title={t("newTask.addProject")} onClick={() => setAddingPath("")}><FolderPlus className="h-3.5 w-3.5" /></Button>
             </div>
           </label>
         )}
