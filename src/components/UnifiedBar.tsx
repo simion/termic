@@ -30,6 +30,8 @@ import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
+import { remoteCall, req } from "@/lib/remote";
+import { i18n } from "@/lib/i18n";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -276,6 +278,36 @@ export function UnifiedBar() {
                 prompts, send to main, sandbox and open-with act on this Mac
                 and land with their stages; archive works through the box. */}
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            {/* Prompts go to the agent on the box through termic-server's
+                `send` (what `termic send` uses). */}
+            <DropdownRoot>
+              <Tip content={t("unifiedBar.prompts")} side="bottom">
+                <DropdownTrigger asChild>
+                  <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="prompts-menu">
+                    <MessageSquareText className="h-4 w-4" />
+                    <span>{t("unifiedBar.prompts")}</span>
+                  </Button>
+                </DropdownTrigger>
+              </Tip>
+              <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+                {enabledPrompts.length === 0 && (
+                  <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">{t("unifiedBar.promptsEmpty")}</div>
+                )}
+                {enabledPrompts.map(p => (
+                  <DropdownItem key={p.id} data-testid="server-prompt" onSelect={() => {
+                    const title = promptTitle(p, t);
+                    void remoteCall(proj.server!, req("send", { task: task.id, prompt: p.body }), 60_000)
+                      .then(r => {
+                        if (!r.ok) throw new Error(r.error?.message ?? "send failed");
+                        useUI.getState().pushToast(i18n.t("backend:runPrompt.sentTo", { title, label: task.name }), "success");
+                      })
+                      .catch(e => useUI.getState().pushToast(String(e), "error"));
+                  }}>
+                    <span className="min-w-0 flex-1 truncate">{promptTitle(p, t)}</span>
+                  </DropdownItem>
+                ))}
+              </DropdownMenu>
+            </DropdownRoot>
             <Tip content={t("unifiedBar.archiveTask")} side="bottom">
               <Button size="icon" variant="icon" onClick={() => { void confirmAndArchive(task); }} data-testid="archive-task">
                 <Archive className="h-4 w-4" />

@@ -473,6 +473,26 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await typeIntoRemoteTerminal("typed here\r");
     await browser.waitUntil(async () => (await logs()).includes("box says: typed here"), { timeout: 20_000, timeoutMsg: "keys typed into the terminal never reached the agent" });
     await snap("remote-local-server-task.png");
+    // The top bar's Prompts menu sends a prompt to the agent on the box.
+    const pid = await browser.execute(() => (window.__termic as any).usePromptLibrary.getState().addPrompt({ title: "Box prompt", body: "prompt from the menu", enabled: true }) as string);
+    try {
+      // Radix opens a menu on pointerdown, which el.click() skips.
+      await browser.execute(() => {
+        const el = document.querySelector('[data-testid="prompts-menu"]') as HTMLElement;
+        const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+      });
+      await browser.waitUntil(() => browser.execute(() => {
+        const item = [...document.querySelectorAll('[data-testid="server-prompt"]')].find(e => e.textContent?.includes("Box prompt")) as HTMLElement | undefined;
+        item?.click();
+        return !!item;
+      }), { timeout: 10_000, timeoutMsg: "the Prompts menu never listed the prompt" });
+      await browser.waitUntil(async () => (await logs()).includes("box says: prompt from the menu"),
+        { timeout: 20_000, timeoutMsg: "a prompt from the Prompts menu never reached the agent on the box" });
+    } finally {
+      await browser.execute((id) => (window.__termic as any).usePromptLibrary.getState().deletePrompt(id), pid);
+    }
   });
 
   it("runs the task's git on the box: branches come from its worktree there", async () => {
@@ -507,14 +527,14 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
-    // Its top bar keeps what works on a box: archive and the panel toggle.
+    // Its top bar keeps what works on a box: prompts, archive, the panel toggle.
     expect(await browser.execute(() => ({
       archive: !!document.querySelector('[data-testid="archive-task"]'),
       panel: !!document.querySelector('[data-testid="toggle-right-panel"]'),
       prompts: !!document.querySelector('[data-testid="prompts-menu"]'),
       run: !!document.querySelector('[data-testid="run-button"]'),
       openWith: !!document.querySelector('[data-testid="open-with-launch"]'),
-    }))).toEqual({ archive: true, panel: true, prompts: false, run: false, openWith: false });
+    }))).toEqual({ archive: true, panel: true, prompts: true, run: false, openWith: false });
     // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
     // pty_open): what it runs lands in the box's worktree.
     await clickPresent('[data-testid="server-new-shell"]');
