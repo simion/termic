@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.24.4] - 2026-11-19
+## [1.24.5] - 2026-11-20
 
 Monokai theme, window titles that name your task, idle tasks free their build folders.
 
@@ -16,7 +16,7 @@ Monokai theme, window titles that name your task, idle tasks free their build fo
 - Caffeinate remembers whether you last kept the display on and stayed awake with the lid closed.
 
 ### Bug fixes
-- Linux: typing in a terminal no longer lags a second behind on a machine without a GPU (WSL, most VMs). Terminals there now default to the canvas renderer ([#461](https://github.com/simion/termic/pull/461)). Thanks to [@reinies](https://github.com/reinies).
+- Linux: on a machine without a GPU (WSL, most VMs), terminals stay on the WebGL renderer. 1.24.4 switched them to canvas, which could crash the window to a blank page. If typing lags a second behind there, pick the canvas renderer in Settings, Appearance ([#461](https://github.com/simion/termic/pull/461)).
 - Windows and Linux: Ctrl+Shift+F opens find in files from a terminal too. A terminal's own find moves to Ctrl+Alt+F.
 - Agents: an agent that started a new turn right as the last one ended no longer shows as done while it works.
 - Markdown: switching a file from preview to split no longer scrolls both panes to the wrong section.
