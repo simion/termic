@@ -3,16 +3,19 @@
 export default {
   rail: {
     label: "Remote",
-    hint: "Phones, servers",
+    hint: "Servers",
   },
   section: {
-    title: "Phones and servers",
-    lead: "Control this computer's agents from your phone, and run agents on other machines you reach over SSH.",
+    title: "Remote",
+    lead: "Run agents on other machines you reach over SSH.",
     computersPointer: "Other Termic computers, for agents to work together, are paired in Agent access.",
     openAgentAccess: "Open Agent access",
   },
   phones: {
     title: "Phones",
+    preview: "Phone app",
+    soon: "Coming soon",
+    soonNote: "The Termic phone app is not out yet: it is not in the App Store or on Google Play. Pairing works for builds that already have it.",
     lead: "Answer your agents, send prompts and watch their terminals from your phone. The phone runs nothing; every action happens on this computer.",
     connect: "Connect a phone",
     connectAnother: "Connect another phone",

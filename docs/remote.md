@@ -157,7 +157,9 @@ forwarded from a viewer (the agent already has a terminal answering).
 
 ## Pairing a phone
 
-Settings > Phones and servers > **Connect a phone** shows a QR code:
+Settings > Remote > **Phone app** (a closed row marked Coming soon until
+the app ships; it opens by itself once a phone is paired) > **Connect a
+phone** shows a QR code:
 
 ```
 termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>&k=<256-bit key, base64url>
@@ -250,7 +252,7 @@ contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Phones and servers > **Add a server** is a checklist; nothing
+Settings > Remote > Servers > **Add a server** is a checklist; nothing
 is saved until it passes:
 
 1. **Reach** `ssh -T -o BatchMode=yes -- <dest> ...`: the user's own ssh,

@@ -2,16 +2,19 @@
 export default {
   rail: {
     label: "远程",
-    hint: "手机、服务器",
+    hint: "服务器",
   },
   section: {
-    title: "手机与服务器",
-    lead: "用手机控制这台电脑上的代理,并在通过 SSH 连接的其他机器上运行代理。",
+    title: "远程",
+    lead: "在通过 SSH 连接的其他机器上运行代理。",
     computersPointer: "让代理协同工作的其他 Termic 电脑,在「代理访问」中配对。",
     openAgentAccess: "打开代理访问",
   },
   phones: {
     title: "手机",
+    preview: "手机应用",
+    soon: "即将推出",
+    soonNote: "Termic 手机应用尚未发布:App Store 和 Google Play 上都还没有。已经装有它的版本可以配对。",
     lead: "在手机上回答代理的问题、发送提示词、查看它们的终端。手机本身不运行任何东西,所有操作都在这台电脑上完成。",
     connect: "连接手机",
     connectAnother: "再连接一部手机",

@@ -1,4 +1,4 @@
-// Remote control (docs/remote.md): Settings > Phones and servers, end to end
+// Remote control (docs/remote.md): Settings > Remote, end to end
 // against the REAL stream listener. The phone is a fake in this process: it
 // speaks the stream with node:crypto (HKDF-SHA256, ChaCha20-Poly1305), so
 // every pairing here is also a cross-implementation check of termic-remote's
@@ -95,10 +95,16 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
+    // The phone app is not out: one closed row, nothing to press yet.
+    expect(await browser.execute(() => document.querySelector('[data-testid="remote-phones-toggle"]')?.getAttribute("aria-expanded"))).toBe("false");
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-connect-phone"]'))).toBe(false);
     await snap("remote-settings-empty.png");
   });
 
   it("shows a QR code with a countdown, turning sharing on to do it", async () => {
+    await clickPresent('[data-testid="remote-phones-toggle"]');
+    await waitVisible('[data-testid="remote-connect-phone"]');
+    await snap("remote-phones-open.png");
     await clickPresent('[data-testid="remote-connect-phone"]');
     await waitVisible('[data-testid="phone-qr"]');
     await waitVisible('[data-testid="phone-qr-countdown"]');

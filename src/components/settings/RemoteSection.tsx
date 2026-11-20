@@ -1,5 +1,6 @@
-// Settings > Phones and servers (docs/remote.md): the phones paired with
-// this computer, and the servers this computer runs agents on over SSH.
+// Settings > Remote (docs/remote.md): the servers this computer runs agents
+// on over SSH, and, in a closed "Phone app" row until the app ships, the
+// phones paired with it.
 // Paired Termic computers stay in Agent access: pairing them is about
 // agents working together, which is where people look for it.
 //
@@ -9,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, RefreshCw, Server, Smartphone } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Smartphone } from "lucide-react";
 import { PEER_CHANGED_EVENT, peerStatus } from "@/lib/ipc";
 import type { PeerStatus } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -96,6 +97,10 @@ export function RemoteSection() {
     setDrawn(n => n + 1);
   }, [status]);
   const phones = status?.phones ?? [];
+  // Closed by default; open once a paired phone shows up, so its owner sees it.
+  const [phonesOpen, setPhonesOpen] = useState(false);
+  const hasPhones = phones.length > 0;
+  useEffect(() => { if (hasPhones) setPhonesOpen(true); }, [hasPhones]);
 
   async function saveSharing(v: boolean) {
     setSharing(v);
@@ -104,78 +109,149 @@ export function RemoteSection() {
   }
 
   return (
-    <div className="flex flex-col gap-7" data-testid="remote-section">
-      <SectionTitle title={t("section.title")} badge={ts("shared.experimental")} />
-      <p className="-mt-4 text-[13px] text-[var(--color-fg-dim)]">{t("section.lead")}</p>
+    <div className="flex flex-col gap-6" data-testid="remote-section">
+      <div className="flex flex-col gap-1.5">
+        <SectionTitle title={t("section.title")} badge={ts("shared.experimental")} />
+        <p className="text-[13px] text-[var(--color-fg-dim)]">{t("section.lead")}</p>
+      </div>
 
-      {/* Phones */}
-      <Block first>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[14px] font-medium">
-              <Smartphone className="h-4 w-4 text-[var(--color-fg-dim)]" />
-              {t("phones.title")}
-            </div>
-            <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("phones.lead")}</p>
-          </div>
-          <Button
-            variant={phones.length === 0 ? "primary" : "secondary"}
-            size="sm"
-            data-testid="remote-connect-phone"
-            className="shrink-0"
-            onClick={() => setDialog({ phoneDialog: true })}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
-          </Button>
-        </div>
-        {phones.length > 0 && (
-          <div className="mt-3 flex flex-col gap-2" data-testid="remote-phones">
-            {phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}
-          </div>
-        )}
-        <div className="mt-4" data-testid="remote-sharing" data-enabled={sharing ? "true" : "false"}>
-          <Toggle key={drawn} label={t("phones.allow")} hint={t("phones.allowHint")} value={sharing} onChange={v => void saveSharing(v)} />
-        </div>
-      </Block>
-
-      {/* Servers */}
-      <Block>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[14px] font-medium">
-              <Server className="h-4 w-4 text-[var(--color-fg-dim)]" />
-              {t("servers.title")}
-            </div>
-            <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("servers.lead")}</p>
-            <p className="mt-1 text-[12px] text-[var(--color-fg-faint)]">{t("servers.leadSsh")}</p>
-          </div>
-          <Button
-            variant={servers.length === 0 ? "primary" : "secondary"}
-            size="sm"
-            data-testid="remote-add-server"
-            className="shrink-0"
-            onClick={() => setDialog({ serverDialog: true })}
-          >
+      <Card
+        icon={<Server className="h-4 w-4" />}
+        title={t("servers.title")}
+        lead={<>{t("servers.lead")} <span className="text-[var(--color-fg-faint)]">{t("servers.leadSsh")}</span></>}
+        action={
+          <Button variant={servers.length === 0 ? "primary" : "secondary"} size="sm" data-testid="remote-add-server" className="shrink-0" onClick={() => setDialog({ serverDialog: true })}>
             <Plus className="h-3.5 w-3.5" />
             {t("servers.add")}
           </Button>
-        </div>
-        {servers.length > 0 && (
-          <div className="mt-3 flex flex-col gap-2" data-testid="remote-servers">
-            {servers.map(m => <ServerRow key={m.id} machine={m} />)}
+        }
+      >
+        {servers.length > 0 ? (
+          <div data-testid="remote-servers">{servers.map(m => <ServerRow key={m.id} machine={m} />)}</div>
+        ) : (
+          <Empty>{t("servers.empty")}</Empty>
+        )}
+      </Card>
+
+      {/* The phone app is not released: a small row, closed until a phone is
+          paired, that says so instead of selling it. */}
+      <div data-testid="remote-phones-preview">
+        <button
+          type="button"
+          data-testid="remote-phones-toggle"
+          aria-expanded={phonesOpen}
+          onClick={() => setPhonesOpen(o => !o)}
+          className="flex items-center gap-2 rounded-md px-1 py-1 text-[13px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+        >
+          {phonesOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <Smartphone className="h-3.5 w-3.5" />
+          {t("phones.preview")}
+          <span className="rounded bg-[var(--color-hover)] px-1.5 py-0.5 text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("phones.soon")}</span>
+        </button>
+        {phonesOpen && (
+          <div className="mt-2 flex flex-col gap-3">
+            <p className="text-[12.5px] text-[var(--color-fg-faint)]">{t("phones.soonNote")}</p>
+            <Card
+              icon={<Smartphone className="h-4 w-4" />}
+              title={t("phones.title")}
+              lead={t("phones.lead")}
+              action={
+                <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
+                  <Plus className="h-3.5 w-3.5" />
+                  {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
+                </Button>
+              }
+              footer={
+                <div data-testid="remote-sharing" data-enabled={sharing ? "true" : "false"}>
+                  <Toggle key={drawn} label={t("phones.allow")} hint={t("phones.allowHint")} value={sharing} onChange={v => void saveSharing(v)} />
+                </div>
+              }
+            >
+              {phones.length > 0 ? (
+                <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
+              ) : (
+                <Empty>{t("phones.empty")}</Empty>
+              )}
+            </Card>
           </div>
         )}
-      </Block>
+      </div>
 
-      <Block>
-        <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-          {t("section.computersPointer")}{" "}
-          <button type="button" onClick={() => openSettings("mcp")} className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]">
-            {t("section.openAgentAccess")}
-          </button>
-        </p>
-      </Block>
+      <p className="text-[12.5px] text-[var(--color-fg-faint)]">
+        {t("section.computersPointer")}{" "}
+        <button type="button" onClick={() => openSettings("mcp")} className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]">
+          {t("section.openAgentAccess")}
+        </button>
+      </p>
+    </div>
+  );
+}
+
+/** One area of the page: what it is and its action on top, its list, then
+ *  an optional footer (the switch that governs it). */
+function Card({ icon, title, lead, action, footer, children }: {
+  icon: React.ReactNode; title: string; lead: React.ReactNode; action: React.ReactNode; footer?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
+      <header className="flex items-start gap-3 px-4 pt-4 pb-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-hover)] text-[var(--color-fg-dim)]">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium leading-8">{title}</div>
+          <p className="text-[12.5px] text-[var(--color-fg-dim)]">{lead}</p>
+        </div>
+        <div className="pt-0.5">{action}</div>
+      </header>
+      <div className="px-2 pb-2">{children}</div>
+      {footer && <div className="border-t border-[var(--color-border-soft)] px-4 py-3">{footer}</div>}
+    </section>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mx-2 mb-2 rounded-lg border border-dashed border-[var(--color-border)] px-3 py-3 text-center text-[12.5px] text-[var(--color-fg-faint)]">
+      {children}
+    </div>
+  );
+}
+
+/** A device in a list: its icon with a status dot, a renameable name, the
+ *  status line under it, and its actions on the right. */
+function DeviceRow({ testId, dataState, icon, dot, name, onRename, renameLabel, status, detail, actions }: {
+  testId: string; dataState: Record<string, string>; icon: React.ReactNode; dot: string; name: string;
+  onRename: (next: string) => Promise<void>; renameLabel: string; status: React.ReactNode; detail?: React.ReactNode; actions: React.ReactNode;
+}) {
+  const [draft, setDraft] = useState(name);
+  useEffect(() => { setDraft(name); }, [name]);
+  async function save() {
+    const next = draft.trim();
+    if (!next || next === name) { setDraft(name); return; }
+    await onRename(next);
+  }
+  return (
+    <div data-testid={testId} {...dataState} className="group flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-[var(--color-hover)]">
+      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] text-[var(--color-fg-dim)]">
+        {icon}
+        <span aria-hidden className={cn("absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]", dot)} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <input
+          aria-label={renameLabel}
+          value={draft}
+          maxLength={60}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={() => void save()}
+          onKeyDown={e => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") { e.stopPropagation(); setDraft(name); }
+          }}
+          className={cn(inline, "w-full text-[14px] font-medium text-[var(--color-fg)]")}
+        />
+        <div className="truncate px-1.5 text-[12px] text-[var(--color-fg-faint)]">{status}</div>
+        {detail}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">{actions}</div>
     </div>
   );
 }
@@ -183,15 +259,6 @@ export function RemoteSection() {
 function PhoneRow({ phone, onChanged }: { phone: PhoneView; onChanged: () => void }) {
   const { t } = useTranslation("remote");
   const relative = useRelative();
-  const [draft, setDraft] = useState(phone.name);
-  useEffect(() => { setDraft(phone.name); }, [phone.name]);
-
-  async function save() {
-    const next = draft.trim();
-    if (!next || next === phone.name) { setDraft(phone.name); return; }
-    await phoneRename(phone.id, next).catch(e => useUI.getState().pushToast(String(e), "error"));
-    onChanged();
-  }
 
   async function unpair() {
     if (!(await confirmed(t("phones.unpairTitle", { name: phone.name }), t("phones.unpairMessage"), t("phones.unpair")))) return;
@@ -204,42 +271,26 @@ function PhoneRow({ phone, onChanged }: { phone: PhoneView; onChanged: () => voi
     : phone.last_seen_ms ? t("phones.lastSeen", { when: relative(phone.last_seen_ms) }) : t("phones.neverSeen");
 
   return (
-    <div
-      data-testid={`phone-row-${phone.id}`}
-      data-connected={phone.connected ? "true" : "false"}
-      className="flex items-center gap-2 rounded-lg border border-[var(--color-border-soft)] px-3 py-2"
-    >
-      <span aria-hidden className={cn("inline-block h-2 w-2 shrink-0 rounded-full", phone.connected ? "bg-[var(--color-ok)]" : "bg-[var(--color-fg-faint)]")} />
-      <input
-        aria-label={t("phones.renameLabel")}
-        value={draft}
-        maxLength={60}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={() => void save()}
-        onKeyDown={e => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") { e.stopPropagation(); setDraft(phone.name); }
-        }}
-        className={cn(inline, "min-w-0 flex-1 text-[14px] font-medium text-[var(--color-fg)]")}
-      />
-      <span className="shrink-0 text-[12px] text-[var(--color-fg-faint)]">{seen}</span>
-      <Button variant="ghost" size="sm" data-testid={`phone-unpair-${phone.id}`} onClick={() => void unpair()}>
-        {t("phones.unpair")}
-      </Button>
-    </div>
+    <DeviceRow
+      testId={`phone-row-${phone.id}`}
+      dataState={{ "data-connected": phone.connected ? "true" : "false" }}
+      icon={<Smartphone className="h-4 w-4" />}
+      dot={phone.connected ? "bg-[var(--color-ok)]" : "bg-[var(--color-fg-faint)]"}
+      name={phone.name}
+      renameLabel={t("phones.renameLabel")}
+      onRename={async next => { await phoneRename(phone.id, next).catch(e => useUI.getState().pushToast(String(e), "error")); onChanged(); }}
+      status={seen}
+      actions={
+        <Button variant="ghost" size="sm" data-testid={`phone-unpair-${phone.id}`} className="text-[var(--color-fg-dim)] hover:text-[var(--color-err)]" onClick={() => void unpair()}>
+          {t("phones.unpair")}
+        </Button>
+      }
+    />
   );
 }
 
 function ServerRow({ machine }: { machine: MachineView }) {
   const { t } = useTranslation("remote");
-  const [draft, setDraft] = useState(machine.name);
-  useEffect(() => { setDraft(machine.name); }, [machine.name]);
-
-  async function save() {
-    const next = draft.trim();
-    if (!next || next === machine.name) { setDraft(machine.name); return; }
-    await serverRename(machine.id, next).catch(e => useUI.getState().pushToast(String(e), "error"));
-  }
 
   async function remove() {
     if (!(await confirmed(t("servers.removeTitle", { name: machine.name }), t("servers.removeMessage", { name: machine.name }), t("servers.remove")))) return;
@@ -247,51 +298,34 @@ function ServerRow({ machine }: { machine: MachineView }) {
   }
 
   const n = machine.tasks.length;
-  const line = machine.state === "online"
+  const state = machine.state === "online"
     ? [t("servers.connected"), n === 1 ? t("servers.tasks_one", { count: n }) : t("servers.tasks_other", { count: n }), machine.version && t("servers.version", { version: machine.version })].filter(Boolean).join(" · ")
     : machine.state === "connecting" ? t("servers.connecting") : t("servers.offline");
 
   return (
-    <div
-      data-testid={`server-row-${machine.id}`}
-      data-state={machine.state}
-      className="flex flex-col gap-1 rounded-lg border border-[var(--color-border-soft)] px-3 py-2"
-    >
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden
-          className={cn(
-            "inline-block h-2 w-2 shrink-0 rounded-full",
-            machine.state === "online" ? "bg-[var(--color-ok)]" : machine.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]",
-          )}
-        />
-        <input
-          aria-label={t("servers.renameLabel")}
-          value={draft}
-          maxLength={60}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={() => void save()}
-          onKeyDown={e => {
-            if (e.key === "Enter") e.currentTarget.blur();
-            if (e.key === "Escape") { e.stopPropagation(); setDraft(machine.name); }
-          }}
-          className={cn(inline, "min-w-0 flex-1 text-[14px] font-medium text-[var(--color-fg)]")}
-        />
-        <span className="shrink-0 font-mono text-[12px] text-[var(--color-fg-faint)]">{machine.ssh}</span>
+    <DeviceRow
+      testId={`server-row-${machine.id}`}
+      dataState={{ "data-state": machine.state }}
+      icon={<Server className="h-4 w-4" />}
+      dot={machine.state === "online" ? "bg-[var(--color-ok)]" : machine.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]"}
+      name={machine.name}
+      renameLabel={t("servers.renameLabel")}
+      onRename={async next => { await serverRename(machine.id, next).catch(e => useUI.getState().pushToast(String(e), "error")); }}
+      status={<><span className="font-mono">{machine.ssh}</span> · {state}</>}
+      detail={machine.state !== "online" && machine.error
+        ? <div data-testid={`server-error-${machine.id}`} className="px-1.5 text-[12px] text-[var(--color-warn)]">{machine.error}</div>
+        : undefined}
+      actions={<>
         {machine.state !== "online" && (
           <Button variant="ghost" size="sm" onClick={() => void remoteReconnect()}>
             <RefreshCw className="h-3.5 w-3.5" />
             {t("servers.reconnect")}
           </Button>
         )}
-        <Button variant="ghost" size="sm" data-testid={`server-remove-${machine.id}`} onClick={() => void remove()}>
+        <Button variant="ghost" size="sm" data-testid={`server-remove-${machine.id}`} className="text-[var(--color-fg-dim)] hover:text-[var(--color-err)]" onClick={() => void remove()}>
           {t("servers.remove")}
         </Button>
-      </div>
-      <div className="pl-[16px] text-[12px] text-[var(--color-fg-faint)]">{line}</div>
-      {machine.state !== "online" && machine.error && (
-        <div data-testid={`server-error-${machine.id}`} className="pl-[16px] text-[12px] text-[var(--color-warn)]">{machine.error}</div>
-      )}
-    </div>
+      </>}
+    />
   );
 }
