@@ -109,6 +109,9 @@ struct Session {
     queued: Arc<AtomicUsize>,
     behind: Arc<AtomicBool>,
     term: Arc<Mutex<Option<TermState>>>,
+    /// The server whose terminal this client has open, when the task lives
+    /// on a server (server_projects.rs): input, size and close go there.
+    relay: Arc<Mutex<Option<String>>>,
     done: Arc<AtomicBool>,
 }
 
@@ -179,6 +182,7 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
         queued: Arc::new(AtomicUsize::new(0)),
         behind: Arc::new(AtomicBool::new(false)),
         term: Arc::new(Mutex::new(None)),
+        relay: Arc::new(Mutex::new(None)),
         done: Arc::new(AtomicBool::new(false)),
     });
 
@@ -205,11 +209,28 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     }
     s.done.store(true, Ordering::SeqCst);
     close_term(&s);
+    close_relay(&s);
     let _ = s.out.send(Out::Stop);
     drop(s);
     let _ = writer_thread.join();
     if let Some(t) = state_thread {
         let _ = t.join();
+    }
+}
+
+/// A task of a server project (docs/plans/server-projects.md): the server
+/// it runs on and its id. Everything about it on the box is relayed there.
+fn server_task(s: &Session, task: &str) -> Option<(String, String)> {
+    let (projects, tasks) = s.host.projects_tasks();
+    let t = tasks.iter().find(|t| !t.archived && (t.id == task || t.name == task))?;
+    let server = projects.iter().find(|p| p.id == t.project_id)?.server.clone()?;
+    Some((server, t.id.clone()))
+}
+
+/// Stop relaying a server terminal, if one is open.
+fn close_relay(s: &Session) {
+    if let Some(server) = s.relay.lock().unwrap().take() {
+        let _ = crate::remote_client::term_close(&server);
     }
 }
 
@@ -239,9 +260,29 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             if !s.client.drives() {
                 return error(s, "this computer only lets yours reply to its tasks");
             }
+            if let Some((server, task_id)) = server_task(s, &task) {
+                close_term(s);
+                close_relay(s);
+                *s.relay.lock().unwrap() = Some(server.clone());
+                let s2 = s.clone();
+                let sink: crate::remote_client::TermSink = Arc::new(move |v| {
+                    if let Ok(m) = serde_json::from_value::<ServerMsg>(v) {
+                        send(&s2, m);
+                    }
+                });
+                if let Err(e) = crate::remote_client::term_open(&server, &task_id, tab, sink) {
+                    s.relay.lock().unwrap().take();
+                    send(s, ServerMsg::TermClosed { reason: e });
+                }
+                return;
+            }
+            close_relay(s);
             open_term(s, &task, tab.as_deref());
         }
-        ClientMsg::TermClose {} => close_term(s),
+        ClientMsg::TermClose {} => {
+            close_relay(s);
+            close_term(s);
+        }
         // Not offered (no `resize` in welcome): this PTY is sized by its own
         // window here, and a phone or another computer only follows it.
         // A phone sizes the terminal for its own screen while it has it
@@ -252,6 +293,10 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                 return;
             }
             let (cols, rows) = (cols.clamp(20, 400), rows.clamp(5, 200));
+            if let Some(server) = s.relay.lock().unwrap().clone() {
+                let _ = crate::remote_client::term_size(&server, cols, rows);
+                return;
+            }
             let mut term = s.term.lock().unwrap();
             if let Some(t) = term.as_mut() {
                 if t.restore.is_none() {
@@ -265,6 +310,10 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
         }
         ClientMsg::TermInput { data } => {
+            if let Some(server) = s.relay.lock().unwrap().clone() {
+                let _ = crate::remote_client::term_input(&server, &data);
+                return;
+            }
             let term = s.term.lock().unwrap().clone();
             if let (Some(t), Some(bytes)) = (term, termic_remote::unb64(&data)) {
                 let _ = s.host.pty_input(&t.pty_id, &bytes);
@@ -281,6 +330,16 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                     error(s, m);
                 }
             };
+            if let Some((server, task_id)) = server_task(s, &task) {
+                // The box checks the question binding against its own screen.
+                let rid = crate::remote_client::fresh_id();
+                let msg = ClientMsg::Keys { task: task_id, tab, data, id: Some(rid.clone()), question };
+                return match crate::remote_client::ask(&server, &rid, msg, Duration::from_secs(10)) {
+                    Ok(ServerMsg::Ack { ok, message, .. }) => ack(ok, message),
+                    Ok(_) => ack(false, Some("unexpected answer from the server".into())),
+                    Err(e) => ack(false, Some(e)),
+                };
+            }
             let Some(bytes) = termic_remote::unb64(&data) else { return ack(false, Some("bad keys".into())) };
             match resolve_pty(s, &task, tab.as_deref()) {
                 Ok((_, pty)) => {
@@ -305,6 +364,21 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             if !s.client.drives() {
                 return error(s, "this computer only lets yours reply to its tasks");
             }
+            if let Some((server, task_id)) = server_task(s, &task) {
+                let rid = crate::remote_client::fresh_id();
+                let r = match crate::remote_client::ask(&server, &rid, ClientMsg::Interrupt { task: task_id, tab, id: Some(rid.clone()) }, Duration::from_secs(10)) {
+                    Ok(ServerMsg::Ack { ok: true, .. }) => Ok(()),
+                    Ok(ServerMsg::Ack { message, .. }) => Err(message.unwrap_or_else(|| "the server did not stop it".into())),
+                    Ok(_) => Err("unexpected answer from the server".to_string()),
+                    Err(e) => Err(e),
+                };
+                return match (id, r) {
+                    (Some(id), Ok(())) => send(s, ServerMsg::Ack { id, ok: true, message: None }),
+                    (Some(id), Err(e)) => send(s, ServerMsg::Ack { id, ok: false, message: Some(e) }),
+                    (None, Err(e)) => error(s, e),
+                    (None, Ok(())) => {}
+                };
+            }
             let r = resolve_pty(s, &task, tab.as_deref()).and_then(|(task_id, pty)| {
                 let (_, tasks) = s.host.projects_tasks();
                 let agent = tasks.iter().find(|t| t.id == task_id).map(|t| t.cli.clone()).unwrap_or_default();
@@ -328,6 +402,15 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
             let s = s.clone();
             std::thread::spawn(move || {
+                if let Some((server, task_id)) = server_task(&s, &task) {
+                    let rid = crate::remote_client::fresh_id();
+                    let msg = match crate::remote_client::ask(&server, &rid, ClientMsg::Transcript { id: rid.clone(), task: task_id.clone() }, Duration::from_secs(20)) {
+                        Ok(ServerMsg::Transcript { turns, error, .. }) => ServerMsg::Transcript { id, task: task_id, turns, error },
+                        Ok(_) => ServerMsg::Transcript { id, task: task_id, turns: Vec::new(), error: Some("unexpected answer from the server".into()) },
+                        Err(e) => ServerMsg::Transcript { id, task: task_id, turns: Vec::new(), error: Some(e) },
+                    };
+                    return send(&s, msg);
+                }
                 let msg = match crate::cli_server::transcript_turns(s.host.as_ref(), &task) {
                     Ok((task_id, turns)) => ServerMsg::Transcript { id, task: task_id, turns, error: None },
                     Err(e) => ServerMsg::Transcript { id, task, turns: Vec::new(), error: Some(e) },
@@ -641,6 +724,14 @@ fn state_loop(s: &Session) {
         let folds = sidebar_folds();
         // Once per tick, not per row: servers.json is a file read.
         let server_names: HashMap<String, String> = crate::remote_client::load_servers().into_iter().map(|r| (r.id, r.name)).collect();
+        // Every connected server's own rows, by task id: what a server
+        // project's task looks like comes from the box.
+        let box_rows: HashMap<String, TaskRow> = crate::remote_client::machines()
+            .into_iter()
+            .filter(|m| m.ssh.is_some())
+            .flat_map(|m| m.tasks)
+            .map(|r| (r.id.clone(), r))
+            .collect();
         let snap = cache.snapshot();
         let ids: Vec<String> = live.iter().map(|t| t.id.clone()).collect();
         let states = crate::cli_server::cached_work_states(&snap, &ids);
@@ -699,13 +790,19 @@ fn state_loop(s: &Session) {
                 if state != "waiting" {
                     question = None;
                 }
+                // A server task: the box knows its state, screen and tabs
+                // (server_projects.rs); this machine has no PTY for it.
+                let (state, activity, question, tabs, since) = match box_rows.get(&t.id) {
+                    Some(b) => (b.state.clone(), b.activity.clone(), b.question.clone(), b.tabs.clone(), b.since_ms.or(Some(entry.1))),
+                    None => (state, activity, question, tabs, Some(entry.1)),
+                };
                 TaskRow {
                     id: t.id.clone(),
                     name: t.name.clone(),
                     project,
                     agent: t.cli.clone(),
                     branch: (!t.branch.is_empty()).then(|| t.branch.clone()),
-                    since_ms: Some(entry.1),
+                    since_ms: since,
                     activity,
                     question,
                     state,

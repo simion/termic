@@ -290,6 +290,9 @@ fn changed() {
         }
         *last = list.clone();
     }
+    // A phone's rows for a server project's tasks come from these
+    // (remote_server.rs): wake its state loop now rather than on its timer.
+    crate::cli_server::global_agent_cache().nudge();
     if let Some(n) = notifier().lock().unwrap().as_ref() {
         n(list);
     }
@@ -698,6 +701,17 @@ pub(crate) fn term_open(machine: &str, task: &str, tab: Option<String>, sink: Te
     let l = link(machine)?;
     *l.term.lock().unwrap() = Some(sink);
     l.send(ClientMsg::TermOpen { task: task.into(), tab })
+}
+
+/// A message that answers by id (a transcript, keys or an interrupt with an
+/// id): its answer, or why there was none.
+pub(crate) fn ask(machine: &str, id: &str, msg: ClientMsg, timeout: Duration) -> Result<ServerMsg, String> {
+    link(machine)?.request(id, msg, timeout)
+}
+
+/// A fresh correlation id for `ask`.
+pub(crate) fn fresh_id() -> String {
+    next_id()
 }
 
 pub(crate) fn term_close(machine: &str) -> Result<(), String> {

@@ -4865,6 +4865,13 @@ impl AgentCache {
         self.cv.notify_all();
     }
 
+    /// Wake the waiters without changing anything: something they also read
+    /// changed elsewhere (a server's own task rows, remote_client.rs).
+    pub(crate) fn nudge(&self) {
+        self.inner.lock().unwrap().seq += 1;
+        self.cv.notify_all();
+    }
+
     pub(crate) fn snapshot(&self) -> AgentSnapshot {
         let inner = self.inner.lock().unwrap();
         AgentSnapshot {
