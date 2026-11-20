@@ -1879,6 +1879,22 @@ describe("recentTasks", () => {
     await useApp.getState().loadAll();
     expect(useApp.getState().recentTasks).toBe(before);
   });
+
+  it("an older loadAll that resolves last does not put stale tasks back", async () => {
+    const ipc = await import("@/lib/ipc");
+    let resolveOld!: (v: import("@/lib/types").Task[]) => void;
+    let resolveNew!: (v: import("@/lib/types").Task[]) => void;
+    vi.mocked(ipc.tasksList)
+      .mockReturnValueOnce(new Promise(r => { resolveOld = r; }))
+      .mockReturnValueOnce(new Promise(r => { resolveNew = r; }));
+    const older = useApp.getState().loadAll();
+    const newer = useApp.getState().loadAll();
+    resolveNew([task("fresh")]);
+    await newer;
+    resolveOld([task("stale")]);
+    await older;
+    expect(useApp.getState().tasks.map(t => t.id)).toEqual(["fresh"]);
+  });
 });
 
 // ── previewPlace (the ⌃⇥ walk) ────────────────────────────────────────

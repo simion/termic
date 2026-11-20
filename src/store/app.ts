@@ -811,6 +811,9 @@ function automaticTabTitle(t: TerminalTab, task: Task | undefined, agents: AppSt
   return agentDisplayName(t.cli, agents);
 }
 
+let loadAllSeq = 0;
+let loadAllLatest: Promise<void> = Promise.resolve();
+
 export const useApp = create<AppState>((set, get) => ({
   projects: [],
   tasks: [],
@@ -856,7 +859,9 @@ export const useApp = create<AppState>((set, get) => ({
         : Object.fromEntries(Object.entries(s.spotlightTaskId).filter(([k]) => k !== projectId)),
     })),
 
-  loadAll: async () => {
+  loadAll: () => {
+    const seq = ++loadAllSeq;
+    return (loadAllLatest = (async () => {
     // Pull projects + tasks + settings (for the agent registry).
     // Agents drive spawn args via spawnArgsForCli, so this list must be
     // fresh whenever the user edits Settings → Agents and immediately
@@ -866,6 +871,10 @@ export const useApp = create<AppState>((set, get) => ({
       ipc.tasksList(),
       ipc.settingsLoad().catch(() => ({ agents: [] } as Partial<import("@/lib/types").Settings>)),
     ]);
+    // Overlapping calls can resolve out of order. A newer one read the disk
+    // later, so landing this older read would put stale tasks back over it;
+    // wait for the newer one instead, so our caller still sees fresh state.
+    if (seq !== loadAllSeq) return loadAllLatest;
     // The disk copy of a main checkout's branch is only rewritten when the
     // task opens, so keep the live one refreshMainCheckoutBranches already
     // read, or every window focus repaints the stale branch for a beat.
@@ -953,6 +962,7 @@ export const useApp = create<AppState>((set, get) => ({
     void import("@/lib/lsp/autoStart")
       .then(m => m.syncAutoStart())
       .catch(() => {});
+    })());
   },
 
   // The hook set is versioned (`SCHEMA_VERSION` in agent_hooks.rs) and the
