@@ -12,6 +12,7 @@
 // typed garbage.
 
 import { useEffect, useRef, useState } from "react";
+import { create } from "zustand";
 import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -42,10 +43,35 @@ export function RemoteTaskOverlay() {
   );
 }
 
+/** A server task's open shell tabs and which tab shows, by task id: kept
+ *  here so they outlive switching to another task (MainArea keeps the view
+ *  mounted, hidden, while it has shells). */
+export const useServerShells = create<{
+  shells: Record<string, string[]>;
+  view: Record<string, string>;
+  add: (task: string) => void;
+  close: (task: string, id: string) => void;
+  show: (task: string, id: string) => void;
+}>((set) => ({
+  shells: {},
+  view: {},
+  add: (task) => set(s => {
+    const id = `shell-${Date.now()}`;
+    return { shells: { ...s.shells, [task]: [...(s.shells[task] ?? []), id] }, view: { ...s.view, [task]: id } };
+  }),
+  close: (task, id) => set(s => ({
+    shells: { ...s.shells, [task]: (s.shells[task] ?? []).filter(x => x !== id) },
+    view: s.view[task] === id ? { ...s.view, [task]: "agent" } : s.view,
+  })),
+  show: (task, id) => set(s => (s.view[task] === id ? s : { view: { ...s.view, [task]: id } })),
+}));
+
+const NO_SHELLS: string[] = [];
+
 /** `taskPath`: a server project's task (its worktree on the box). Its view
  *  gets shell tabs beside the agent: each is an AuxTerminal, whose PTY
  *  runs on the box (termic-server pty_open via lib.rs `pty_spawn`). */
-export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: string; taskId: string; taskPath?: string }) {
+export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: { machineId: string; taskId: string; taskPath?: string; active?: boolean }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const task = machine?.tasks.find(x => x.id === taskId);
@@ -55,10 +81,9 @@ export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: str
   // The tab whose terminal is open: picked in the strip, else the task's
   // default agent tab (null asks the host for that one).
   const [picked, setPicked] = useState<string | null>(null);
-  // shortcut: shells live while this view is mounted (the active task);
-  // switching tasks ends them. Keep them per task if that bites.
-  const [shells, setShells] = useState<string[]>([]);
-  const [view, setView] = useState<string>("agent");
+  const shells = useServerShells(s => s.shells[taskId] ?? NO_SHELLS);
+  const view = useServerShells(s => s.view[taskId] ?? "agent");
+  const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
   if (!machine) {
     return <Gone message={t("task.gone", { machine: "" })} onClose={close} />;
@@ -158,7 +183,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: str
                 <span
                   role="button"
                   aria-label={t("task.closeShell")}
-                  onClick={(e) => { e.stopPropagation(); setShells(xs => xs.filter(x => x !== id)); if (view === id) setView("agent"); }}
+                  onClick={(e) => { e.stopPropagation(); useServerShells.getState().close(taskId, id); }}
                   className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
                 ><X className="h-3 w-3" /></span>
               )}
@@ -170,7 +195,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: str
             aria-label={t("task.newShell")}
             title={t("task.newShell")}
             disabled={!online}
-            onClick={() => { const id = `shell-${Date.now()}`; setShells(xs => [...xs, id]); setView(id); }}
+            onClick={() => useServerShells.getState().add(taskId)}
             className="rounded p-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
           ><Plus className="h-3.5 w-3.5" /></button>
         </div>
@@ -178,11 +203,11 @@ export function RemoteTaskView({ machineId, taskId, taskPath }: { machineId: str
 
       <div className="relative min-h-0 flex-1">
         <div className="absolute inset-0" style={{ display: view === "agent" ? undefined : "none" }}>
-          {online && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
+          {online && active && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
         </div>
         {taskPath && shells.map(id => (
           <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
-            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={view === id} />
+            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} />
           </div>
         ))}
       </div>

@@ -530,6 +530,22 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       return existsSync(path.join(wt, "from-shell-42"));
     }, { timeout: 20_000, timeoutMsg: "the shell tab never ran in the box's worktree" });
     await snap("remote-server-shell.png");
+    // Away and back: the same shell is still running (MainArea keeps a server
+    // task with shells mounted), and still takes input.
+    const shellTab = await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')!.getAttribute("data-tab-id"));
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+    await browser.pause(800);
+    expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
+    await clickPresent(row());
+    await browser.waitUntil(async () => {
+      await browser.execute(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="aux-terminal"] .xterm-helper-textarea')!;
+        ta.focus();
+        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: "touch still-here\r", bubbles: true }));
+      });
+      await browser.pause(1000);
+      return existsSync(path.join(wt, "still-here"));
+    }, { timeout: 20_000, timeoutMsg: "the shell did not survive switching away from the task" });
     // Back to the agent: its terminal is still there; closing the shell ends it.
     await clickPresent('[data-testid="server-tab-agent"]');
     await waitVisible('[data-testid="remote-terminal"]');
