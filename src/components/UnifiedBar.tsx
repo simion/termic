@@ -18,7 +18,7 @@ import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Flower2,
-  MessageSquareText, Library, Palette, Play,
+  MessageSquareText, Library, Palette, Play, Square,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -73,6 +73,9 @@ export function UnifiedBar() {
   const proj = useApp(s => task ? s.projects.find(p => p.id === task.project_id) : null);
   const openSettings = useApp(s => s.openSettings);
   const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
+  // A server task's open Run tab (its shells are in useServerShells): Run
+  // turns into Stop, which closes the tab and so ends the script on the box.
+  const serverRunTab = useServerShells(s => (task ? (s.shells[task.id] ?? []).find(id => s.meta[id]?.kind === "run") : undefined));
   // Picking a prompt opens the shared destination modal (running agents +
   // new-agent CLIs) — a modal, not a submenu, which flipped to the wrong
   // side near the window edge. Shared (not local state) so the ⌥⌘P prompt
@@ -283,6 +286,13 @@ export function UnifiedBar() {
             {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
             {/* Run: the project's run script (Settings or the box's
                 `.termic.yaml`) in a new shell tab on the box. */}
+            {serverRunTab ? (
+              <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-stop"
+                onClick={() => useServerShells.getState().close(task.id, serverRunTab)}>
+                <Square className="h-3.5 w-3.5" />
+                <span>{t("panels:runControls.stop")}</span>
+              </Button>
+            ) : (
             <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={() => {
               void resolveRunTargets(task.id).then(targets => {
                 const host = targets.find(x => x.member === "") ?? targets[0];
@@ -290,12 +300,13 @@ export function UnifiedBar() {
                   useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
                   return;
                 }
-                useServerShells.getState().add(task.id, { label: t("panels:runControls.run"), input: `${host.script}\r` });
+                useServerShells.getState().add(task.id, { label: t("panels:runControls.run"), input: `${host.script}\r`, kind: "run" });
               });
             }}>
               <Play className="h-4 w-4" />
               <span>{t("panels:runControls.run")}</span>
             </Button>
+            )}
             {/* Prompts go to the agent on the box through termic-server's
                 `send` (what `termic send` uses). */}
             <DropdownRoot>

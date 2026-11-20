@@ -43,6 +43,10 @@ export function RemoteTaskOverlay() {
   );
 }
 
+/** A shell started to run something: its tab label, the line it types, and
+ *  "run" for the Run script (the bar's Stop closes that one). */
+type ShellMeta = { label?: string; input?: string; kind?: "run" | "setup" };
+
 /** A server task's open shell tabs and which tab shows, by task id: kept
  *  here so they outlive switching to another task (MainArea keeps the view
  *  mounted, hidden, while it has shells). */
@@ -50,8 +54,8 @@ export const useServerShells = create<{
   shells: Record<string, string[]>;
   view: Record<string, string>;
   /** A shell started to run something (Run): its tab label and the line it types. */
-  meta: Record<string, { label?: string; input?: string }>;
-  add: (task: string, meta?: { label?: string; input?: string }) => void;
+  meta: Record<string, ShellMeta>;
+  add: (task: string, meta?: ShellMeta) => void;
   close: (task: string, id: string) => void;
   show: (task: string, id: string) => void;
 }>((set) => ({

@@ -113,7 +113,7 @@ function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: stri
           // The project's setup script (Settings or the box's .termic.yaml)
           // runs in a shell tab on the box, as a local task's setup tab does.
           void resolveSetupScript(id).then(script => {
-            if (script) useServerShells.getState().add(id, { label: i18n.t("backend:runTabs.setup"), input: `${script}\r` });
+            if (script) useServerShells.getState().add(id, { label: i18n.t("backend:runTabs.setup"), input: `${script}\r`, kind: "setup" });
           }).catch(() => {});
           return;
         }

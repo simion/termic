@@ -586,6 +586,10 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await browser.waitUntil(() => existsSync(path.join(wt, "ran-by-run")),
         { timeout: 20_000, timeoutMsg: "Run never ran the box's run script in the worktree" });
       expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Run");
+      // While it runs, Run is Stop; Stop closes the Run tab (ending it on the box).
+      await clickPresent('[data-testid="server-stop"]');
+      await waitVisible('[data-testid="server-run"]');
+      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).not.toContain("Run");
     } finally {
       rmSync(path.join(repo, ".termic.yaml"), { force: true });
     }
