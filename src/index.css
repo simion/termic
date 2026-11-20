@@ -732,17 +732,19 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
 
 /* Sidebar projects, folders and task groups opening and shutting
    (components/ui/Expand.tsx): the block's height via grid rows 0fr <-> 1fr,
-   which reaches the content's natural height without measuring it. */
+   which reaches the content's natural height without measuring it. The
+   curve is iOS's own sheet curve, both ways, so it settles rather than
+   stops. */
 .termic-expand-in {
   display: grid;
   grid-template-rows: 1fr;
-  animation: termic-expand-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: termic-expand-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .termic-expand-out {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
-  animation: termic-expand-out 160ms cubic-bezier(0.4, 0, 1, 1);
+  animation: termic-expand-out 240ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 @keyframes termic-expand-in {
   from { grid-template-rows: 0fr; opacity: 0; }

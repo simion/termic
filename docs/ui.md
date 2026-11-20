@@ -699,7 +699,7 @@ draw, in the fixed order above (`groupBadgeKinds`, drawn by `WorkMarkList` in
 [src/components/sidebar/RollupMarks.tsx](../src/components/sidebar/RollupMarks.tsx)).
 Open, they carry none, because the rows show their own.
 
-Opening and shutting animates (160ms height and fade,
+Opening and shutting animates (240ms height and fade on the iOS curve,
 [src/components/ui/Expand.tsx](../src/components/ui/Expand.tsx)) for a
 project, a folder and each task group row. Shut content still unmounts:
 it is held only for the exit animation, the wrapper is `display:

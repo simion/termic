@@ -10,7 +10,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 
-export const EXPAND_MS = 160;
+export const EXPAND_MS = 240; // matches the CSS animations in index.css
 
 export function Expand({ open, children }: { open: boolean; children: React.ReactNode }) {
   const [held, setHeld] = useState(open);
