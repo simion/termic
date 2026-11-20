@@ -18,16 +18,51 @@ const TOOL_SUMMARY_CHARS: usize = 160;
 /// what the agent says about it next.
 pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
     let mut out: Vec<Turn> = Vec::new();
+    // Prompts typed while Claude works wait in its queue (enqueue, then a
+    // remove once Claude reads them): still waiting at the end = "queued".
+    let mut queue: Vec<(String, Option<String>)> = Vec::new();
     for line in jsonl.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) == Some("queue-operation") {
+            let text = v.get("content").and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
+            match v.get("operation").and_then(|o| o.as_str()) {
+                Some("enqueue") if !text.is_empty() => {
+                    queue.push((text, v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string)))
+                }
+                // A dequeue names nothing: it takes the oldest.
+                Some("dequeue") | Some("remove") => {
+                    let i = if text.is_empty() { Some(0) } else { queue.iter().position(|(q, _)| *q == text) };
+                    if let Some(i) = i.filter(|&i| i < queue.len()) {
+                        queue.remove(i);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
         if v.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
             continue;
         }
         let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let ts = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
+        // A prompt sent while Claude is still mid-turn is not a user line:
+        // Claude records it as a queued_command attachment and folds it into
+        // the next tool result. It is still the person's words.
+        if kind == "attachment" {
+            let a = v.get("attachment");
+            let queued = a.and_then(|a| a.get("type")).and_then(|t| t.as_str()) == Some("queued_command")
+                && a.and_then(|a| a.get("commandMode")).and_then(|m| m.as_str()) == Some("prompt");
+            if let Some(text) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()).filter(|_| queued) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    out.push(Turn { role: "user".into(), text: text.into(), tool: None, ts });
+                }
+            }
+            continue;
+        }
         if kind != "user" && kind != "assistant" {
             continue;
         }
-        let ts = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
         let Some(content) = v.pointer("/message/content") else { continue };
         let mut push = |role: &str, text: String, tool: Option<String>| {
             let text = text.trim().to_string();
@@ -39,7 +74,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             serde_json::Value::String(text) => {
                 // Claude records slash commands and local-command echoes as
                 // user lines wrapped in tags; they are not the person's words.
-                if kind == "user" && (text.starts_with("<command-") || text.starts_with("<local-command")) {
+                if kind == "user" && injected(text) {
                     continue;
                 }
                 push(kind, text.clone(), None);
@@ -49,7 +84,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                     match b.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                            if kind == "user" && (text.starts_with("<command-") || text.starts_with("<local-command") || text.starts_with("<system-reminder>")) {
+                            if kind == "user" && injected(&text) {
                                 continue;
                             }
                             push(kind, text, None);
@@ -65,9 +100,16 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             _ => {}
         }
     }
+    out.extend(queue.into_iter().filter(|(t, _)| !injected(t)).map(|(text, ts)| Turn { role: "queued".into(), text, tool: None, ts }));
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
+}
+
+/// Text Claude records as a user line that is not the person's words: slash
+/// commands, local-command echoes, reminders, background-task notices.
+fn injected(text: &str) -> bool {
+    ["<command-", "<local-command", "<system-reminder>", "<task-notification>"].iter().any(|p| text.starts_with(p))
 }
 
 /// One line saying what a tool call does: its command, path, pattern or
@@ -377,6 +419,43 @@ mod tests {
             ]
         );
         assert_eq!(turns[0].ts.as_deref(), Some("2026-10-18T10:00:00Z"));
+    }
+
+    #[test]
+    fn a_prompt_queued_mid_turn_is_a_user_turn() {
+        // Sent while Claude was still in a turn (here, answering its own
+        // question): recorded as an attachment, never as a user line.
+        let jsonl = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{}}]}}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"now say PING","commandMode":"prompt"},"timestamp":"2026-10-18T10:01:00Z"}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"/compact","commandMode":"bash"}}"#,
+            r#"{"type":"attachment","attachment":{"type":"file","prompt":"not a prompt"}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"answered"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"PING"}]}}"#,
+        ]
+        .join("\n");
+        let got: Vec<(String, String)> = parse_claude_jsonl(&jsonl).into_iter().skip(1).map(|t| (t.role, t.text)).collect();
+        assert_eq!(got, vec![("user".into(), "now say PING".into()), ("assistant".into(), "PING".into())]);
+    }
+
+    #[test]
+    fn a_prompt_still_waiting_in_the_queue_is_queued() {
+        let jsonl = [
+            r#"{"type":"user","message":{"content":"start"}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","content":"read by now"}"#,
+            r#"{"type":"queue-operation","operation":"remove","content":"read by now"}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"read by now","commandMode":"prompt"}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>b1</task-id>"}"#,
+            r#"{"type":"queue-operation","operation":"dequeue"}"#,
+            r#"{"type":"user","message":{"content":"<task-notification>\n<task-id>b1</task-id>"}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","content":"still waiting"}"#,
+        ]
+        .join("\n");
+        let got: Vec<(String, String)> = parse_claude_jsonl(&jsonl).into_iter().map(|t| (t.role, t.text)).collect();
+        assert_eq!(
+            got,
+            vec![("user".into(), "start".into()), ("user".into(), "read by now".into()), ("queued".into(), "still waiting".into())]
+        );
     }
 
     #[test]

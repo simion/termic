@@ -3196,6 +3196,10 @@ const captureArmedRef = useRef(false);
           // next spawn a --resume id that does not exist yet.
           if (decision.kind === "mint" && sessionUuid && !sessionReportedRef.current) {
             pendingSessionUuidRef.current = sessionUuid;
+            // A prompt seeded at launch (seedPromptWhenReady) can land inside
+            // this window, when there was nothing to persist yet: that submit
+            // already happened, so persist now instead of waiting for another.
+            if (submittedSinceSpawnRef.current) persistMintedSession();
           }
           // Cwd-resume agents (codex) + legacy worktree continue: keep the
           // has_resumable_history flag flow so the next worktree spawn (this
