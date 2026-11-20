@@ -1495,6 +1495,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 it belongs next to the list it acts on. */}
             <Tip content={t("addProjectTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-project" data-guide="add-project" onClick={openNewProject}>
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
+            {/* Projects on a machine you reach over SSH join this list too
+                (docs/plans/server-projects.md): add one right here. */}
+            <Tip content={t("addServerTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-server" onClick={() => useRemote.getState().setDialog({ serverDialog: true })}>
+              <Server className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
 

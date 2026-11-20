@@ -165,6 +165,15 @@ describe("Phones and servers", () => {
     await expect(phone(link, phoneId, "My iPhone")).rejects.toThrow("closed 4001");
   });
 
+  it("opens Add a server from the sidebar's projects header too", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await clickPresent('[data-testid="sidebar-add-server"]');
+    await waitVisible('[data-testid="server-ssh"]');
+    await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
+    await waitGone('[data-testid="server-ssh"]');
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+  });
+
   it("checks a server before saving it, and explains a failure in one sentence", async () => {
     await clickPresent('[data-testid="remote-add-server"]');
     await setInputValue('[data-testid="server-ssh"]', "nobody@no-such-host.invalid");

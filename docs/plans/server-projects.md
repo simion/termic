@@ -52,6 +52,20 @@ a program in the task's folder. Instead of a verb per feature:
 - Commands with no meaning on a box (reveal in Finder, open externally,
   the macOS sandbox) are hidden for server tasks.
 
+## Shipped so far
+
+- Stage 1 in full.
+- Stage 3, partly: termic-server `exec` (fenced to project roots and
+  worktrees). `git_bytes` and `git_raw` (lib.rs) send a server folder's git
+  there through an index of server paths in `server_projects.rs`, so the
+  git panel, diff, stage, commit and push work. The file tree listing,
+  editor read and save go to the box too. Left: setup and archive
+  scripts, `.termic.yaml`, clone and add project, a file watcher (today
+  Refresh rereads), and the full task menu for server tasks.
+- Stage 4, partly: a server records the window it was added in and its
+  projects mirror into that profile; the sidebar's projects header has an
+  Add a server button. Left: adding one from the Add project dialog.
+
 ## Stages
 
 1. Model + organization: `Project.server`, server projects listed in

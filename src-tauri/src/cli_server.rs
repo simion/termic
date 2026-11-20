@@ -4849,6 +4849,8 @@ impl AgentCache {
         }
     }
 
+    /// A single unnamed window's map (the tests' shorthand).
+    #[cfg(test)]
     pub(crate) fn update(&self, states: HashMap<String, TaskAgentState>) {
         self.update_from("", states);
     }

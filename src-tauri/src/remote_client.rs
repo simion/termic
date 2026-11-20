@@ -90,6 +90,10 @@ pub(crate) struct ServerRecord {
     /// binary, falling back to one on PATH.
     pub command: Option<String>,
     pub added_at_ms: i64,
+    /// The window (profile) it was added in: its projects go to that
+    /// profile (server_projects.rs). None for a server added before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 
@@ -745,6 +749,11 @@ pub(crate) fn find_server(sel: &str) -> Option<String> {
 // ───────────────────────────── servers ───────────────────────────────
 
 pub(crate) fn add_server(ssh: &str, name: &str) -> Result<ServerRecord, String> {
+    add_server_in(ssh, name, None)
+}
+
+/// `add_server`, remembering the window (profile) it was added from.
+pub(crate) fn add_server_in(ssh: &str, name: &str, profile: Option<String>) -> Result<ServerRecord, String> {
     let ssh = ssh.trim();
     if ssh.is_empty() || ssh.starts_with('-') || ssh.contains(char::is_whitespace) {
         return Err("Enter the server as you would after `ssh`, for example alice@192.168.1.20 or a name from ~/.ssh/config.".into());
@@ -767,6 +776,7 @@ pub(crate) fn add_server(ssh: &str, name: &str) -> Result<ServerRecord, String> 
         ssh: ssh.into(),
         command: None,
         added_at_ms: chrono::Utc::now().timestamp_millis(),
+        profile,
     };
     list.push(rec.clone());
     save_servers(&list)?;
@@ -866,8 +876,9 @@ pub(crate) fn remote_reconnect() {
 }
 
 #[tauri::command]
-pub(crate) async fn server_add(ssh: String, name: String) -> Result<ServerRecord, String> {
-    tauri::async_runtime::spawn_blocking(move || add_server(&ssh, &name)).await.map_err(|e| e.to_string())?
+pub(crate) async fn server_add(window: tauri::Window, ssh: String, name: String) -> Result<ServerRecord, String> {
+    let profile = Some(window.label().to_string());
+    tauri::async_runtime::spawn_blocking(move || add_server_in(&ssh, &name, profile)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1119,7 +1130,7 @@ mod tests {
     /// set_state once froze every reader of the machine list).
     #[test]
     fn an_unreachable_server_goes_offline_without_blocking_readers() {
-        let rec = ServerRecord { id: "x".into(), name: "nowhere".into(), ssh: "nobody@no-such-host.invalid".into(), command: None, added_at_ms: 0 };
+        let rec = ServerRecord { id: "x".into(), name: "nowhere".into(), ssh: "nobody@no-such-host.invalid".into(), command: None, added_at_ms: 0, profile: None };
         let l = Arc::new(Link {
             id: "x".into(),
             kind: MachineKind::Server,
@@ -1175,7 +1186,7 @@ mod tests {
         assert!(p.reached, "{:?} {}", p.error, p.details);
         let version = install(None, &dest).expect("install");
         assert_eq!(probe(&dest).installed.as_deref(), Some(version.as_str()));
-        let rec = ServerRecord { id: "t".into(), name: "box".into(), ssh: dest.clone(), command: None, added_at_ms: 0 };
+        let rec = ServerRecord { id: "t".into(), name: "box".into(), ssh: dest.clone(), command: None, added_at_ms: 0, profile: None };
         let ((welcome, mut reader, mut writer), mut child) = connect_server(&rec).expect("connect");
         assert!(matches!(welcome, ServerMsg::Welcome { kind: wire::HostKind::Server, .. }), "{welcome:?}");
         writer.send(&ClientMsg::Call { id: "1".into(), req: serde_json::json!({ "id": "1", "cmd": "project_list" }), proto: None }).unwrap();

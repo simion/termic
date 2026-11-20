@@ -97,6 +97,7 @@ export default {
   statusBucketCount_one: "{{count}} task",
   statusBucketCount_other: "{{count}} tasks",
   addProjectTip: "Add project (repo)",
+  addServerTip: "Add a server (a machine you reach over SSH)",
   multiRepoTip: "Multi-repo project",
   projectSettingsTip: "Project settings",
   projectMenuTip: "Project menu",

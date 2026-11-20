@@ -127,9 +127,17 @@ pub(crate) fn sync_soon(server: &str) {
     });
 }
 
-/// The profile a server's projects live in: where earlier syncs put them,
-/// else the root profile (servers per profile is stage 4).
+/// The profile a server's projects live in: the one whose window added it,
+/// else where earlier syncs put them, else the root profile.
 fn profile_for(server: &str, projects: &[Project]) -> ProfileId {
+    // The profile whose window added it.
+    if let Some(id) = crate::remote_client::load_servers().into_iter()
+        .find(|r| r.id == server)
+        .and_then(|r| r.profile)
+        .and_then(|label| ProfileId::from_window_label(&label))
+    {
+        return id;
+    }
     if let Some(p) = projects.iter().find(|p| p.server.as_deref() == Some(server)) {
         return p.profile.clone();
     }
