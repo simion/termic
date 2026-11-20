@@ -240,14 +240,7 @@ export function App() {
   // only applies in full mode.
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const rightPanelWidth = useApp(s => s.rightPanelWidth);
-  // A server project's task: its files and git are on the box, and the
-  // panel would run git on a box path here (docs/plans/server-projects.md,
-  // stage 3 brings them over the server's connection). Hidden until then.
-  const activeOnServer = useApp(s => {
-    const t = activeTask ? s.tasks.find(x => x.id === activeTask) : undefined;
-    return !!t && !!s.projects.find(p => p.id === t.project_id)?.server;
-  });
-  const showRP = !!activeTask && !hideRP && !activeOnServer;
+  const showRP = !!activeTask && !hideRP;
   // Sidebar / right panel widths use CSS `clamp(MIN, PREFERRED, vw-CAP)`:
   //   - PREFERRED is whatever the user manually dragged to (their ceiling).
   //   - vw-CAP kicks in when the viewport shrinks below `preferred / cap%`,

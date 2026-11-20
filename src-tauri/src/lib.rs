@@ -18762,7 +18762,8 @@ fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEnt
         }
         let mut entries: Vec<FileEntry> = String::from_utf8_lossy(&out)
             .lines()
-            .filter(|l| !l.is_empty() && *l != ".git/" && *l != ".DS_Store")
+            // `.git` is a file in a worktree, a folder in a checkout: hide both.
+            .filter(|l| !l.is_empty() && *l != ".git/" && *l != ".git" && *l != ".DS_Store")
             .map(|l| FileEntry { is_dir: l.ends_with('/'), name: l.trim_end_matches('/').to_string() })
             .collect();
         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));

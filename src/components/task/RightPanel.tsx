@@ -548,6 +548,7 @@ export function RightPanel() {
           <Tip content={t("rightPanel.refreshTip")} side="bottom">
             <button
               onClick={doRefresh}
+              data-testid="right-refresh"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
             >
               {/* A rotating SVG icon wobbles/looks off-center at this size

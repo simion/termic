@@ -446,6 +446,18 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect(await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "hello.txt" }), task)).toBe("hi from the box\n");
     const escape = await browser.execute((id) => window.__termic!.invoke("task_file_read", { id, path: "../../../etc/hosts" }).then(() => "read", (e: unknown) => String(e)), task);
     expect(escape).toContain("outside the task");
+    // And the right panel shows them: its Files tab lists the box's file.
+    await clickPresent(row());
+    await browser.execute(() => {
+      const tab = [...document.querySelectorAll('[data-testid="right-tab"]')].find(b => /files/i.test(b.getAttribute("data-tab") ?? "")) as HTMLElement | undefined;
+      tab?.click();
+    });
+    // No file watcher on a box: Refresh reads the folder again.
+    await clickPresent('[data-testid="right-refresh"]');
+    await waitVisible('[data-path="hello.txt"]', 20_000);
+    // Listed by the box (ls through exec), which hides the worktree's .git.
+    expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
+    await snap("remote-server-files.png");
   });
 
   it("keeps the desktop's organisation: a pin and a name stay through a resync", async () => {
