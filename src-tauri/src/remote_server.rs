@@ -455,11 +455,31 @@ fn call(s: &Session, id: &str, req: serde_json::Value, proto: Option<u32>) -> Re
             return reply;
         }
     }
+    // A phone resumes a stopped task's agent to send it a message. With no
+    // earlier session there is nothing to resume and nothing to lose: start
+    // it fresh rather than hand a person the CLI's "use --fresh".
+    let phone_resume = s.client.kind == ClientKind::Phone
+        && req.get("cmd").and_then(|c| c.as_str()) == Some("send")
+        && req.get("resume").and_then(|r| r.as_bool()) == Some(true);
+    let fresh_req = phone_resume.then(|| {
+        let mut r = req.clone();
+        r["resume"] = serde_json::Value::Bool(false);
+        r["fresh"] = serde_json::Value::Bool(true);
+        r
+    });
     let req: Request = match serde_json::from_value(req) {
         Ok(r) => r,
         Err(e) => return Reply::err(id, ErrorCode::BadRequest, format!("malformed request: {e}")),
     };
     let mut reply = s.node.run_stream_call(&s.client, req, proto);
+    if let Some(fresh) = fresh_req {
+        let no_session = reply.error.as_ref().is_some_and(|e| e.message.contains("no prior agent session") || e.message.contains("no agent session to resume"));
+        if no_session {
+            if let Ok(r) = serde_json::from_value::<Request>(fresh) {
+                reply = s.node.run_stream_call(&s.client, r, proto);
+            }
+        }
+    }
     reply.id = id.to_string();
     reply
 }

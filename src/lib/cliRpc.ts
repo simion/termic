@@ -700,7 +700,15 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
   // The cli whose capability gates --wait: the actual respawn target's
   // when an exited tab exists (its cli may differ from the persisted
   // default), the persisted default's otherwise.
-  const exited = p.resume
+  // Whether any earlier session exists. With none, a fresh agent and a
+  // restarted default tab are the same thing (no context either way), so
+  // --fresh restarts the task's own tab instead of adding a second agent
+  // beside it (a phone's message to a stopped task did that).
+  const hasSession =
+    !!task.has_resumable_history
+    || (task.persisted_tabs ?? []).some(pt => pt.session_id);
+  const freshInPlace = p.fresh && !hasSession;
+  const exited = p.resume || freshInPlace
     ? (agentTabs.find(t => t.is_default && !t.ptyId) ?? agentTabs.find(t => !t.ptyId))
     : undefined;
   const spawnCli =
@@ -713,7 +721,7 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
   }
 
   let tabId: string | undefined;
-  if (p.fresh) {
+  if (p.fresh && !freshInPlace) {
     // A NEW secondary agent tab starts fresh by design (no resume
     // machinery touches it); unattended so a startup update menu can't
     // swallow the injection; focus:false so it never yanks the
@@ -742,10 +750,7 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
     tabId = newTabId;
   } else {
     // --resume: a prior session must exist, else --fresh is the answer.
-    const hasSession =
-      !!task.has_resumable_history
-      || (task.persisted_tabs ?? []).some(pt => pt.session_id);
-    if (!hasSession) {
+    if (!hasSession && !freshInPlace) {
       throw sendErr(
         "no_session",
         "this task has no agent session to resume; use --fresh to start a new agent without context",

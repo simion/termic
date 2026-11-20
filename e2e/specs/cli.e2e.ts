@@ -155,6 +155,34 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     expect(dflt.data.data).not.toContain(marker);
   });
 
+  it("send --fresh to a stopped task with no session restarts its own tab, no second agent", async () => {
+    // A phone's message to a stopped task resumes it, and with no session
+    // to resume the desktop retries as fresh (remote_server.rs). Fresh used
+    // to ADD a tab while restoring the default one, so two agents started.
+    const r = await rpc({ cmd: "new", name: "fresh-in-place", mode: "worktree", agent: "fakeagent", project: "fixture-repo" });
+    expect(r.ok).toBe(true);
+    const id = r.data.task.id as string;
+    const agentTabs = () => browser.execute((tid) =>
+      ((window.__termic!.useApp.getState().tabs[tid] ?? []) as any[]).filter(t => t.type === "terminal" && !t.runTab && t.cli),
+    id) as Promise<any[]>;
+    try {
+      await browser.waitUntil(async () => (await agentTabs()).some(t => t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never started" });
+      const pty = (await agentTabs()).find(t => t.ptyId)!.ptyId as string;
+      await browser.execute((p) => window.__termic!.invoke("pty_kill", { ptyId: p }), pty);
+      await browser.waitUntil(async () => (await agentTabs()).every(t => !t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never stopped" });
+      const marker = `FRESH-${Date.now()}`;
+      const sent = await rpc({ cmd: "send", task: "fresh-in-place", prompt: marker, fresh: true });
+      expect(sent.ok).toBe(true);
+      await browser.waitUntil(async () => {
+        const logs = await rpc({ cmd: "logs", task: "fresh-in-place" });
+        return logs.ok && String(logs.data.data).includes(`FAKE-AGENT echo: ${marker}`);
+      }, { timeout: 20_000, timeoutMsg: "the fresh send never reached the agent" });
+      expect((await agentTabs()).length).toBe(1);
+    } finally {
+      await archiveTask(id);
+    }
+  });
+
   it("status lists the strip with the same ids and 1-based indices", async () => {
     // status's tab list is the --tab contract surface: what it prints
     // is what selectors mean.
