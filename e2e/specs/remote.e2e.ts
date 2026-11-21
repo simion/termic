@@ -783,6 +783,12 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     const waiting = () => alerts().then(a => a.slice(before).find(x => x[1] === "waiting"));
     await browser.waitUntil(async () => !!(await waiting()), { timeout: 10_000, timeoutMsg: "no alert for the task that started waiting" });
     expect((await waiting())![0]).toBe(task);
+    // And the CLI's list says so too (the state the desktop reports for a
+    // task whose agent runs on the box).
+    await browser.waitUntil(async () => {
+      const r = await cliRpc({ cmd: "list" });
+      return (r.data?.tasks ?? []).find((t: any) => t.id === task)?.work_state === "waiting";
+    }, { timeout: 10_000, timeoutMsg: "termic list never reported the server task waiting" });
   });
 
   it("starts a server task from the project's 'Branch new tasks from'", async () => {
