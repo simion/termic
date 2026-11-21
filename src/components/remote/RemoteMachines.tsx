@@ -27,7 +27,7 @@ import { groupColorCss } from "@/lib/taskGroups";
 import { prBadgeAppearance, type PrBadgeState } from "@/lib/prBadgeAppearance";
 import { prNounShort, prRef } from "@/lib/forge";
 import type { ForgeProvider } from "@/lib/types";
-import { openPath } from "@/lib/ipc";
+import { openPath, peerUnpair } from "@/lib/ipc";
 import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
@@ -87,6 +87,7 @@ type MenuItem = (p: { onSelect: () => void; children: ReactNode; testId?: string
 /** A server's or paired computer's menu (its ⋮ and right-click). */
 function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Sep: () => ReactNode }) {
   const { t } = useTranslation("remote");
+  const { t: ts } = useTranslation("settings");
   const setDialog = useRemote(s => s.setDialog);
   const openSettings = useApp(s => s.openSettings);
   const server = m.kind === "server";
@@ -98,6 +99,12 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
     if (!(typeof ok === "boolean" ? ok : ok.confirmed)) return;
     await serverRemove(m.id).catch(e => useUI.getState().pushToast(String(e), "error"));
   };
+  // A paired computer's id is its pairing id (remote_client.rs).
+  const unpair = async () => {
+    const ok = await useUI.getState().askConfirm({ title: ts("peers.paired.unpairTitle", { name: m.name }), message: ts("peers.paired.unpairMessage", { name: m.name }), confirmLabel: ts("peers.paired.unpair"), destructive: true });
+    if (!(typeof ok === "boolean" ? ok : ok.confirmed)) return;
+    await peerUnpair(m.id).catch(e => useUI.getState().pushToast(String(e), "error"));
+  };
   return (
     <>
       {server && online && <Item testId="server-menu-new-task" onSelect={() => setDialog({ newTaskOn: m.id })}>{t("sidebar.newTaskItem")}</Item>}
@@ -106,9 +113,11 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
       {off
         ? <Item testId="machine-menu-connect" onSelect={() => switchTo(true)}>{t("sidebar.connect")}</Item>
         : <Item testId="machine-menu-disconnect" onSelect={() => switchTo(false)}>{t("sidebar.disconnect")}</Item>}
-      <Item testId="server-menu-settings" onSelect={() => openSettings(server ? "remote" : "peers")}>{server ? t("sidebar.serverSettings") : t("sidebar.pairingSettings")}</Item>
-      {server && <Sep />}
-      {server && <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>}
+      <Item testId="server-menu-settings" onSelect={() => openSettings("remote")}>{server ? t("sidebar.serverSettings") : t("sidebar.pairingSettings")}</Item>
+      <Sep />
+      {server
+        ? <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>
+        : <Item testId="machine-menu-unpair" danger onSelect={() => void unpair()}>{t("sidebar.unpairComputer")}</Item>}
     </>
   );
 }
@@ -234,7 +243,7 @@ export function RemoteMachines() {
         folded={folded} onToggle={() => toggle("section:paired")}>
         <Tip content={t("sidebar.pairComputer")}>
           <button type="button" data-testid="sidebar-pair-computer" aria-label={t("sidebar.pairComputer")} className={headerBtn}
-            onClick={() => openSettings("peers")}><Plus className="h-3.5 w-3.5" /></button>
+            onClick={() => openSettings("remote")}><Plus className="h-3.5 w-3.5" /></button>
         </Tip>
       </SidebarSectionHeader>
       {!folded && <div className="flex flex-col gap-2">{machines.map(m => <MachineSection key={m.id} m={m} />)}</div>}

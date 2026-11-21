@@ -975,11 +975,26 @@ describe("LAN pairing", () => {
       await new Promise<void>(r => server.listen(remote.port, "127.0.0.1", () => r()));
     });
 
-    it("tells the other machine when it is unpaired", async () => {
-      await clickPresent(`[data-testid="peer-unpair-${remote.id}"]`);
+    it("unpairs from the computer's sidebar menu, and tells the other machine", async () => {
+      // The same menu as a server's, with Unpair where a server has Remove.
+      await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+      await browser.waitUntil(() => browser.execute((id) => {
+        if (document.querySelector('[data-testid="machine-menu-unpair"]')) return true;
+        const el = document.querySelector(`[data-testid="server-menu-${id}"]`) as HTMLElement | null;
+        if (!el) return false;
+        const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        return !!document.querySelector('[data-testid="machine-menu-unpair"]');
+      }, remote.id), { timeout: 10_000, timeoutMsg: "the computer's menu never opened" });
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="server-menu-remove"]'))).toBe(false);
+      await snap("peers-sidebar-menu.png");
+      await clickPresent('[data-testid="machine-menu-unpair"]');
       await clickPresent('[data-testid="confirm-ok"]');
       await waitFor("the pair is gone", status, v => !v.peers.some((p: any) => p.id === remote.id));
       await browser.waitUntil(async () => unpaired, { timeoutMsg: "the fake never received the unpair notice" });
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+      await waitVisible('[data-testid="peers-section"]');
     });
   });
 

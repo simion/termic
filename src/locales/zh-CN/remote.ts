@@ -118,6 +118,7 @@ export default {
     addProject: "添加项目...",
     serverSettings: "服务器设置",
     removeServer: "移除服务器...",
+    unpairComputer: "取消配对...",
     noServerProjects: "这台服务器上还没有项目",
     offline: "离线",
     connecting: "正在连接",

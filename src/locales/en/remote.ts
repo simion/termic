@@ -119,6 +119,7 @@ export default {
     addProject: "Add project...",
     serverSettings: "Server settings",
     removeServer: "Remove server...",
+    unpairComputer: "Unpair...",
     noServerProjects: "No projects on this server yet",
     offline: "Offline",
     connecting: "Connecting",
