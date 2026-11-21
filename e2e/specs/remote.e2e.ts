@@ -495,6 +495,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       const block = document.querySelector(`[data-testid="server-block-${sid}"]`)?.parentElement;
       return !!block?.querySelector(sel);
     }, serverId, row())).toBe(true);
+    // It belongs to the profile whose window added it (this one, "main"),
+    // and only that profile's window lists it.
+    expect(await browser.execute((sid) => window.__termic!.invoke("remote_machines").then((l: any) => l.find((m: any) => m.id === sid)?.profile), serverId)).toBe("main");
     // The PROJECTS header's server button gives way to SERVERS' own +.
     expect(await browser.execute(() => document.querySelectorAll('[data-testid="sidebar-add-server"]').length)).toBe(1);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="servers-section-header"] [data-testid="sidebar-add-server"]'))).toBe(true);

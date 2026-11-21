@@ -168,6 +168,12 @@ pub(crate) fn sync_soon(server: &str) {
     });
 }
 
+/// The window label of the profile a server belongs to (where its projects
+/// live), for the sidebar to list it only there.
+pub(crate) fn profile_label(server: &str) -> String {
+    profile_for(server, &crate::load_projects_all()).window_label()
+}
+
 /// The profile a server's projects live in: the one whose window added it,
 /// else where earlier syncs put them, else the root profile.
 fn profile_for(server: &str, projects: &[Project]) -> ProfileId {

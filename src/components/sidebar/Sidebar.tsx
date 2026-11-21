@@ -13,7 +13,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { RemoteMachines, ServersSection } from "@/components/remote/RemoteMachines";
+import { RemoteMachines, ServersSection, mine } from "@/components/remote/RemoteMachines";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
@@ -1193,7 +1193,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // grouped it on purpose). Only LOOSE (ungrouped) inactive projects fold. So
   // the fold is "declutter the loose top-level list"; folders stay intact and
   // are the user's own organization to prune.
-  const hasServers = remoteMachines.some(m => m.kind === "server");
+  const hasServers = remoteMachines.some(m => m.kind === "server" && mine(m));
   const projectIsActive = (pid: string) =>
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>

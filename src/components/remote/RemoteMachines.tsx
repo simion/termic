@@ -19,6 +19,10 @@ import { ContextMenuContent, ContextMenuItem, ContextMenuRoot, ContextMenuSepara
 import { useUI } from "@/store/ui";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import type { Project } from "@/lib/types";
+import { WINDOW_LABEL } from "@/lib/profileScope";
+
+/** A machine listed in this window: it belongs to this window's profile. */
+export const mine = (m: MachineView) => (m.profile ?? "main") === WINDOW_LABEL;
 import { groupColorCss } from "@/lib/taskGroups";
 import { prBadgeAppearance, type PrBadgeState } from "@/lib/prBadgeAppearance";
 import { prNounShort, prRef } from "@/lib/forge";
@@ -56,7 +60,7 @@ const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--colo
 export function ServersSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
   const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
-  const servers = useMemo(() => all.filter(m => m.kind === "server"), [all]);
+  const servers = useMemo(() => all.filter(m => m.kind === "server" && mine(m)), [all]);
   const folded = useRemote(s => !!s.folded["section:servers"]);
   const toggle = useRemote(s => s.toggleFold);
   if (servers.length === 0) return null;
@@ -219,7 +223,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
 export function RemoteMachines() {
   const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
-  const machines = useMemo(() => all.filter(m => m.kind !== "server"), [all]);
+  const machines = useMemo(() => all.filter(m => m.kind !== "server" && mine(m)), [all]);
   const folded = useRemote(s => !!s.folded["section:paired"]);
   const toggle = useRemote(s => s.toggleFold);
   const openSettings = useApp(s => s.openSettings);

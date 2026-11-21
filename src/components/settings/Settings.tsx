@@ -10,6 +10,7 @@ import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
 import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Smartphone, Server, Monitor } from "lucide-react";
 import { useRemote } from "@/lib/remote";
+import { mine } from "@/components/remote/RemoteMachines";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -42,7 +43,8 @@ export function Settings() {
   // This computer's projects, then each server with its projects, then the
   // paired computers: the sidebar's order.
   const projects = allProjects.filter(p => !p.server);
-  const machines = useRemote(s => s.machines);
+  const all = useRemote(s => s.machines);
+  const machines = all.filter(mine);
   const servers = machines.filter(m => m.kind === "server");
   const paired = machines.filter(m => m.kind !== "server");
 

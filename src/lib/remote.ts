@@ -91,6 +91,8 @@ export interface MachineView {
   kind: "computer" | "server";
   name: string;
   state: "connecting" | "online" | "offline" | "disconnected";
+  /** The window label of the profile it belongs to ("main" for the root). */
+  profile?: string;
   error: string | null;
   version: string | null;
   grant: "drive" | "reply" | null;

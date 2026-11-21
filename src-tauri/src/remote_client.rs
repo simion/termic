@@ -75,6 +75,9 @@ pub(crate) struct MachineView {
     pub tasks: Vec<TaskRow>,
     /// A server's ssh destination.
     pub ssh: Option<String>,
+    /// The window label of the profile it belongs to: only that window's
+    /// sidebar lists it ("main" for the root profile).
+    pub profile: String,
 }
 
 /// A server, as `servers.json` stores it.
@@ -99,6 +102,43 @@ pub(crate) struct ServerRecord {
 
 fn servers_path() -> Option<PathBuf> {
     crate::global_dir().ok().map(|d| d.join(SERVERS_FILE))
+}
+
+/// The profile each paired computer belongs to: the window it was paired
+/// from, by machine id. A server keeps its own in servers.json.
+const PROFILES_FILE: &str = "machine-profiles.json";
+
+fn profiles_path() -> Option<PathBuf> {
+    crate::global_dir().ok().map(|d| d.join(PROFILES_FILE))
+}
+
+fn load_machine_profiles() -> HashMap<String, String> {
+    profiles_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Record the profile (window label) a paired computer belongs to.
+pub(crate) fn set_machine_profile(id: &str, label: &str) -> Result<(), String> {
+    let mut m = load_machine_profiles();
+    m.insert(id.to_string(), label.to_string());
+    let p = profiles_path().ok_or("no data directory")?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    supervise();
+    Ok(())
+}
+
+/// The window label of the profile a machine belongs to. A server: the
+/// profile its projects live in. A paired computer: the window it was
+/// paired from; one paired before that was recorded belongs to the root.
+fn machine_profile(id: &str, endpoint: &Endpoint) -> String {
+    match endpoint {
+        Endpoint::Server(_) => crate::server_projects::profile_label(id),
+        Endpoint::Peer { .. } => load_machine_profiles().remove(id).unwrap_or_else(|| "main".into()),
+    }
 }
 
 /// Machines switched off in the sidebar (Disconnect): their row stays, no
@@ -190,6 +230,8 @@ struct LinkState {
     caps: Vec<String>,
     tasks: Vec<TaskRow>,
     name: String,
+    /// The window label of the profile it belongs to ("main" for the root).
+    profile: String,
 }
 
 pub(crate) type TermSink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -237,6 +279,7 @@ impl Link {
             caps: st.caps.clone(),
             tasks: st.tasks.clone(),
             ssh,
+            profile: st.profile.clone(),
         }
     }
 
@@ -394,7 +437,11 @@ pub(crate) fn supervise() {
             let was_off = l.st.lock().unwrap().state == "disconnected";
             if was_off == is_off {
                 // A rename or an edited server takes effect on the next connect.
-                l.st.lock().unwrap().name = name;
+                {
+                    let mut st = l.st.lock().unwrap();
+                    st.name = name;
+                    st.profile = machine_profile(&id, &endpoint);
+                }
                 *l.endpoint.lock().unwrap() = endpoint;
                 continue;
             }
@@ -411,11 +458,12 @@ pub(crate) fn supervise() {
 /// A link for a machine: running (its thread started) or switched off (a
 /// row with nothing behind it).
 fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off: bool) -> Arc<Link> {
+    let profile = machine_profile(&id, &endpoint);
     let l = Arc::new(Link {
         id,
         kind,
         endpoint: Mutex::new(endpoint),
-        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name }),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile }),
         tx: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         term: Mutex::new(None),
@@ -1369,7 +1417,7 @@ mod tests {
             id: "x".into(),
             kind: MachineKind::Server,
             endpoint: Mutex::new(Endpoint::Server(rec)),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into() }),
+            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into() }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),

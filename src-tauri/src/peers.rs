@@ -2856,9 +2856,12 @@ pub(crate) fn peer_set_name(app: tauri::AppHandle, name: String) -> Result<(), S
 }
 
 #[tauri::command]
-pub(crate) async fn peer_pair(app: tauri::AppHandle, target: String, code: String) -> Result<PairingView, String> {
+pub(crate) async fn peer_pair(app: tauri::AppHandle, window: tauri::Window, target: String, code: String) -> Result<PairingView, String> {
     let node = need(&app)?;
-    tauri::async_runtime::spawn_blocking(move || node.pair(&target, &code)).await.map_err(|e| e.to_string())?
+    let view = tauri::async_runtime::spawn_blocking(move || node.pair(&target, &code)).await.map_err(|e| e.to_string())??;
+    // It belongs to the profile whose window paired it.
+    let _ = crate::remote_client::set_machine_profile(&view.peer_id, window.label());
+    Ok(view)
 }
 
 /// Ask another machine to show a pairing code. Returns its name.
