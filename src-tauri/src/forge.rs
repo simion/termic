@@ -3116,6 +3116,26 @@ fn html_to_text(html: &str) -> String {
         .join("\n")
 }
 
+/// The CLI arguments that create a PR/MR. `server`: (branch, repo URL) for
+/// a folder on a server, where the CLI has no checkout to read either from.
+fn create_args(provider: &str, title: &str, body: &str, base: &str, draft: bool, server: Option<&(String, String)>) -> Vec<String> {
+    let mut a: Vec<String> = match provider {
+        GITLAB => ["mr", "create", "--title", title, "--description", body, "--target-branch", base, "--yes"].map(String::from).to_vec(),
+        _ => ["pr", "create", "--title", title, "--body", body, "--base", base].map(String::from).to_vec(),
+    };
+    if draft {
+        a.push("--draft".into());
+    }
+    if let Some((branch, repo)) = server {
+        match provider {
+            GITLAB => a.extend(["--source-branch".into(), branch.clone(), "-R".into(), repo.clone()]),
+            // GH_REPO (cli_command) names the repo for gh.
+            _ => a.extend(["--head".into(), branch.clone()]),
+        }
+    }
+    a
+}
+
 /// Create a PR/MR for `cwd`'s current branch (the caller pushes first).
 /// Returns the PR URL. Idempotent-ish: "already exists" failures that
 /// carry the existing URL are treated as success.
@@ -3132,13 +3152,8 @@ pub fn pr_create(
     if provider == AZURE {
         return azure_pr_create(&bin, cwd, title, body, base, draft);
     }
-    let mut args: Vec<&str> = match provider {
-        GITLAB => vec!["mr", "create", "--title", title, "--description", body, "--target-branch", base, "--yes"],
-        _ => vec!["pr", "create", "--title", title, "--body", body, "--base", base],
-    };
-    if draft {
-        args.push("--draft");
-    }
+    let owned = create_args(provider, title, body, base, draft, server_branch(cwd).as_ref());
+    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
     let o = run(&bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     let stdout = String::from_utf8_lossy(&o.stdout);
     let stderr = String::from_utf8_lossy(&o.stderr);
@@ -3232,6 +3247,17 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn create_args_name_the_branch_for_a_server_folder() {
+        let local = create_args(GITHUB, "t", "b", "main", false, None);
+        assert_eq!(local, ["pr", "create", "--title", "t", "--body", "b", "--base", "main"]);
+        let srv = ("feat".to_string(), "https://github.com/acme/web".to_string());
+        let gh = create_args(GITHUB, "t", "b", "main", true, Some(&srv));
+        assert_eq!(gh[gh.len() - 3..], ["--draft", "--head", "feat"]);
+        let gl = create_args(GITLAB, "t", "b", "main", false, Some(&srv));
+        assert_eq!(gl[gl.len() - 4..], ["--source-branch", "feat", "-R", "https://github.com/acme/web"]);
+    }
 
     #[test]
     fn path_of_remote_reads_both_url_shapes() {
