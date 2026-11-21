@@ -3,7 +3,7 @@
 export default {
   rail: {
     label: "Remote",
-    hint: "Phones, servers",
+    hint: "Servers, phones",
   },
   section: {
     title: "Remote",

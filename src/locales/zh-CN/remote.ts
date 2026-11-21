@@ -2,7 +2,7 @@
 export default {
   rail: {
     label: "远程",
-    hint: "手机、服务器",
+    hint: "服务器、手机",
   },
   section: {
     title: "远程",
