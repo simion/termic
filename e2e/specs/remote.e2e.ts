@@ -88,6 +88,21 @@ async function typeInShellUntil(line: string, done: () => boolean | Promise<bool
   throw new Error(what);
 }
 
+
+/** Open REMOTE's + menu in the sidebar (a Radix trigger wants pointer
+ *  events, not a click). */
+async function openAddRemote(): Promise<void> {
+  await browser.waitUntil(() => browser.execute(() => {
+    if (document.querySelector('[data-testid="sidebar-add-server"]')) return true;
+    const el = document.querySelector('[data-testid="sidebar-add-remote"]') as HTMLElement | null;
+    if (!el) return false;
+    const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+    el.dispatchEvent(new PointerEvent("pointerdown", opts));
+    el.dispatchEvent(new PointerEvent("pointerup", opts));
+    return !!document.querySelector('[data-testid="sidebar-add-server"]');
+  }), { timeout: 10_000, timeoutMsg: "REMOTE's + menu never opened" });
+}
+
 describe("Phones and servers", () => {
   const phoneId = crypto.randomBytes(16).toString("hex");
   let link = "";
@@ -134,8 +149,13 @@ describe("Phones and servers", () => {
     await snap("remote-settings-empty.png");
   });
 
-  it("connects a phone from the sidebar's phone icon", async () => {
+  it("connects a phone from the sidebar's REMOTE section, which shows with nothing in it", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await waitVisible('[data-testid="remote-section-header"]');
+    await openAddRemote();
+    expect(await browser.execute(() => ["sidebar-add-server", "sidebar-connect-phone", "sidebar-pair-computer"]
+      .every(id => !!document.querySelector(`[data-testid="${id}"]`)))).toBe(true);
+    await snap("remote-sidebar-add-menu.png");
     await clickPresent('[data-testid="sidebar-connect-phone"]');
     await waitVisible('[data-testid="phone-qr"]');
     await snap("remote-sidebar-phone.png");
@@ -200,8 +220,9 @@ describe("Phones and servers", () => {
     await expect(phone(link, phoneId, "My iPhone")).rejects.toThrow("closed 4001");
   });
 
-  it("opens Add a server from the sidebar's projects header too", async () => {
+  it("opens Add a server from the sidebar's REMOTE section too", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await openAddRemote();
     await clickPresent('[data-testid="sidebar-add-server"]');
     await waitVisible('[data-testid="server-ssh"]');
     await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
@@ -502,9 +523,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await snap("remote-local-server-row.png");
   });
 
-  it("files the server's projects under it in SERVERS, with a menu to manage it", async () => {
+  it("files the server's projects under it in REMOTE, with a menu to manage it", async () => {
     // Its project and task sit inside the server's block, not in PROJECTS.
-    await waitVisible('[data-testid="servers-section-header"]');
+    await waitVisible('[data-testid="remote-section-header"]');
     expect(await browser.execute((sid, sel) => {
       const block = document.querySelector(`[data-testid="server-block-${sid}"]`)?.parentElement;
       return !!block?.querySelector(sel);
@@ -512,9 +533,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // It belongs to the profile whose window added it (this one, "main"),
     // and only that profile's window lists it.
     expect(await browser.execute((sid) => window.__termic!.invoke("remote_machines").then((l: any) => l.find((m: any) => m.id === sid)?.profile), serverId)).toBe("main");
-    // The PROJECTS header's server button gives way to SERVERS' own +.
-    expect(await browser.execute(() => document.querySelectorAll('[data-testid="sidebar-add-server"]').length)).toBe(1);
-    expect(await browser.execute(() => !!document.querySelector('[data-testid="servers-section-header"] [data-testid="sidebar-add-server"]'))).toBe(true);
+    // One way in: REMOTE's +, none left in the PROJECTS header.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="projects-section-header"] [data-testid="sidebar-add-server"]'))).toBe(false);
     // Its menu: New task, Add project (the dialog opens on the path field),
     // settings, remove.
     const openServerMenu = () => browser.waitUntil(() => browser.execute((sid) => {

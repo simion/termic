@@ -97,8 +97,6 @@ export default {
   statusBucketCount_one: "{{count}} 个任务",
   statusBucketCount_other: "{{count}} 个任务",
   addProjectTip: "添加项目（仓库）",
-  addServerTip: "添加服务器(通过 SSH 访问的机器)",
-  connectPhoneTip: "连接手机(Termic Remote)",
   multiRepoTip: "多仓库项目",
   projectSettingsTip: "项目设置",
   projectMenuTip: "项目菜单",

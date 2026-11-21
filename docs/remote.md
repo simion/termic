@@ -158,8 +158,8 @@ forwarded from a viewer (the agent already has a terminal answering).
 ## Pairing a phone
 
 Settings > Remote (phones, then servers, then other computers) >
-**Phones** > **Connect a phone**, or the phone icon in the sidebar's
-PROJECTS header, shows a QR code.
+**Phones** > **Connect a phone**, or Connect a phone in the sidebar's
+REMOTE + menu, shows a QR code.
 The card and the dialog's first step link the app: iPhone through the
 public TestFlight link (open to anyone, no invite), Android through
 Google Play (`PhoneAppLinks` in `ConnectPhoneDialog.tsx`).
@@ -191,7 +191,7 @@ termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>
 While sharing is on, this Termic keeps a link (a stream with `tasks`) to
 every paired computer, reconnecting with a 2 to 30 s backoff and pinging
 every 20 s (the host drops a client silent for 75 s). Their tasks render
-below the local projects (`RemoteMachines.tsx`), from their own store
+under REMOTE in the sidebar (`RemoteMachines.tsx`), from their own store
 slice: a remote update never re-renders a local row, and an unchanged
 machine list is never written. A remote task opens over the main area
 (`RemoteTaskView.tsx`) as its terminal, focused, under one header that
@@ -293,21 +293,24 @@ a connection carries one terminal); its row's state and fade come from
 the server's rows (`data-remote-state`); New task on its project opens
 the server's dialog with the project picked; archive goes to the box.
 Server projects are not config-synced (another machine has its own
-servers). The sidebar has three top-level sections, each a filled
-header with a fold and a +: PROJECTS (this computer's), SERVERS
-(`ServersSection` in `RemoteMachines.tsx`: one row per server with its
-state, New task and a menu, right-click too, for New task, Add project,
-Server settings and Remove, and its projects drawn under it by the
-sidebar's own `renderProject`), and PAIRED COMPUTERS (other Termic apps,
-drawn from what they report). Every server and paired computer row
-has the same menu (its ⋮ and right-click) with Connect / Disconnect: a
-disconnected machine keeps its row, reads "Disconnected", folds its
-projects away and runs no link until switched back on, remembered in
-`remote-off.json` in the global data dir (`remote_client::set_connected`,
-`supervise` skips it). Its icon carries the connection: green, amber
-while connecting, faded otherwise. SERVERS shows once a server exists; until
-then Add a server sits on the PROJECTS header and is linked from Add
-project. Settings' rail lists projects the same way. A server belongs to
+servers). The sidebar has two top-level sections, each a filled header with a
+fold: PROJECTS (this computer's) and REMOTE (`RemoteSidebarSection` in
+`RemoteMachines.tsx`), the sidebar's half of Settings > Remote. REMOTE
+always shows (outside the compact rail), so its + menu is the one way
+in from the sidebar: Add a server, Connect a phone, Pair a computer
+(which opens Settings > Remote). Under it, servers first (one row per
+server with its state, New task and a menu, right-click too, for New
+task, Add project, Server settings and Remove, and its projects drawn
+under it by the sidebar's own `renderProject`), then paired computers
+(other Termic apps, drawn from what they report, Unpair in their menu).
+Phones get no rows: they have no tasks to show. Every server and paired
+computer row has the same menu (its ⋮ and right-click) with Connect /
+Disconnect: a disconnected machine keeps its row, reads "Disconnected",
+folds its projects away and runs no link until switched back on,
+remembered in `remote-off.json` in the global data dir
+(`remote_client::set_connected`, `supervise` skips it). Its icon carries
+the connection: green, amber while connecting, faded otherwise. Add a
+server is also linked from Add project. Settings' rail lists projects the same way. A server belongs to
 the profile whose window added it (`ServerRecord.profile`, a window
 label); one added before that field keeps its projects where they are.
 

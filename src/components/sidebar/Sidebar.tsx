@@ -13,8 +13,8 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { RemoteMachines, ServersSection, mine } from "@/components/remote/RemoteMachines";
-import { Smartphone, LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
+import { RemoteSidebarSection } from "@/components/remote/RemoteMachines";
+import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -138,7 +138,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // strip exists at all.
   useProfilesSync();
   const projects = useApp(s => s.projects);
-  const remoteMachines = useRemote(s => s.machines);
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const setSidebarWidth = useApp(s => s.setSidebarWidth);
   const tasks = useApp(s => s.tasks);
@@ -1193,7 +1192,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // grouped it on purpose). Only LOOSE (ungrouped) inactive projects fold. So
   // the fold is "declutter the loose top-level list"; folders stay intact and
   // are the user's own organization to prune.
-  const hasServers = remoteMachines.some(m => m.kind === "server" && mine(m));
   const projectIsActive = (pid: string) =>
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
@@ -1497,15 +1495,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 it belongs next to the list it acts on. */}
             <Tip content={t("addProjectTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-project" data-guide="add-project" onClick={openNewProject}>
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
-            {/* Projects on a machine you reach over SSH join this list too
-                (docs/plans/server-projects.md): add one right here. */}
-            {/* Once a server exists, SERVERS below has its own +. */}
-            {!hasServers && <Tip content={t("addServerTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-server" onClick={() => useRemote.getState().setDialog({ serverDialog: true })}>
-              <Server className={iconSize(compact)} /></Button></Tip>}
-            {/* Pair a phone (docs/remote.md): always here, a phone has no
-                section of its own in the sidebar. */}
-            <Tip content={t("connectPhoneTip")}><Button size="icon" variant="icon" data-testid="sidebar-connect-phone" onClick={() => useRemote.getState().setDialog({ phoneDialog: true })}>
-              <Smartphone className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
 
@@ -2542,14 +2531,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </div>
               )}
-              {!compact && <ServersSection projects={activeProjects.filter(p => !!p.server)} renderProject={renderProject} />}
+              {!compact && <RemoteSidebarSection projects={activeProjects.filter(p => !!p.server)} renderProject={renderProject} />}
             </>
           );
           })()}
         </div>
-        {/* Other machines: paired computers and servers, below this
-            computer's own projects (local work comes first). */}
-        {!compact && <RemoteMachines />}
       </div>
         {/* The compact rail scrolls with no visible bar (a 10px bar is a sixth
             of a 56px rail), so the fade is what says there is more below. */}

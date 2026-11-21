@@ -8,7 +8,7 @@
 
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server } from "lucide-react";
+import { Bell, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, Globe, Smartphone } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
@@ -55,27 +55,42 @@ const stateLabel = (state: string, t: (k: string) => string) =>
 
 const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
 
-/** SERVERS: each server a row (its state, New task, a menu to manage it)
- *  with its projects under it, drawn by the sidebar's own renderProject. */
-export function ServersSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
+/** REMOTE: the sidebar's half of Settings > Remote. Always shown (outside
+ *  the compact rail), so its + is where you add a server, connect a phone
+ *  or pair a computer. Servers come first, each a row (its state, New
+ *  task, a menu) with its projects under it, drawn by the sidebar's own
+ *  renderProject; then paired computers, each drawn from what it reports.
+ *  Phones get no rows: they have no tasks to show. */
+export function RemoteSidebarSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
   const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
   const servers = useMemo(() => all.filter(m => m.kind === "server" && mine(m)), [all]);
-  const folded = useRemote(s => !!s.folded["section:servers"]);
+  const computers = useMemo(() => all.filter(m => m.kind !== "server" && mine(m)), [all]);
+  const folded = useRemote(s => !!s.folded["section:remote"]);
   const toggle = useRemote(s => s.toggleFold);
-  if (servers.length === 0) return null;
+  const setDialog = useRemote(s => s.setDialog);
+  const openSettings = useApp(s => s.openSettings);
   return (
-    <div data-testid="servers-section" className="mt-3">
-      <SidebarSectionHeader testId="servers-section-header" icon={<Server className="h-4 w-4 shrink-0" />} label={t("sidebar.serversHeader")}
-        folded={folded} onToggle={() => toggle("section:servers")}>
-        <Tip content={t("sidebar.addServer")}>
-          <button type="button" data-testid="sidebar-add-server" aria-label={t("sidebar.addServer")} className={headerBtn}
-            onClick={() => useRemote.getState().setDialog({ serverDialog: true })}><Plus className="h-3.5 w-3.5" /></button>
-        </Tip>
+    <div data-testid="remote-sidebar-section" className="mt-3">
+      <SidebarSectionHeader testId="remote-section-header" icon={<Globe className="h-4 w-4 shrink-0" />} label={t("sidebar.remoteHeader")}
+        folded={folded} onToggle={() => toggle("section:remote")}>
+        <DropdownRoot>
+          <Tip content={t("sidebar.addRemote")}>
+            <DropdownTrigger asChild>
+              <button type="button" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
+            </DropdownTrigger>
+          </Tip>
+          <DropdownMenu>
+            <DropdownItem data-testid="sidebar-add-server" onSelect={() => setDialog({ serverDialog: true })}><Server className="h-4 w-4" />{t("sidebar.addServer")}</DropdownItem>
+            <DropdownItem data-testid="sidebar-connect-phone" onSelect={() => setDialog({ phoneDialog: true })}><Smartphone className="h-4 w-4" />{t("phones.connect")}</DropdownItem>
+            <DropdownItem data-testid="sidebar-pair-computer" onSelect={() => openSettings("remote")}><Monitor className="h-4 w-4" />{t("sidebar.pairComputer")}</DropdownItem>
+          </DropdownMenu>
+        </DropdownRoot>
       </SidebarSectionHeader>
       {!folded && (
         <div className="flex flex-col gap-1">
           {servers.map(m => <ServerBlock key={m.id} m={m} projects={projects.filter(p => p.server === m.id)} renderProject={renderProject} />)}
+          {computers.map(m => <MachineSection key={m.id} m={m} />)}
         </div>
       )}
     </div>
@@ -226,30 +241,6 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
     </div>
   );
 });
-
-/** PAIRED COMPUTERS: other Termic apps paired with this one (docs/peers.md),
- *  each drawn from what it reports. */
-export function RemoteMachines() {
-  const { t } = useTranslation("remote");
-  const all = useRemote(s => s.machines);
-  const machines = useMemo(() => all.filter(m => m.kind !== "server" && mine(m)), [all]);
-  const folded = useRemote(s => !!s.folded["section:paired"]);
-  const toggle = useRemote(s => s.toggleFold);
-  const openSettings = useApp(s => s.openSettings);
-  if (machines.length === 0) return null;
-  return (
-    <div data-testid="remote-machines" className="mt-3">
-      <SidebarSectionHeader testId="paired-section-header" icon={<Monitor className="h-4 w-4 shrink-0" />} label={t("sidebar.pairedHeader")}
-        folded={folded} onToggle={() => toggle("section:paired")}>
-        <Tip content={t("sidebar.pairComputer")}>
-          <button type="button" data-testid="sidebar-pair-computer" aria-label={t("sidebar.pairComputer")} className={headerBtn}
-            onClick={() => openSettings("remote")}><Plus className="h-3.5 w-3.5" /></button>
-        </Tip>
-      </SidebarSectionHeader>
-      {!folded && <div className="flex flex-col gap-2">{machines.map(m => <MachineSection key={m.id} m={m} />)}</div>}
-    </div>
-  );
-}
 
 /** The glyph a task's state draws, the desktop's own language
  *  (docs/agent-states.md): amber bell, spinner, blue dot, nothing. */
