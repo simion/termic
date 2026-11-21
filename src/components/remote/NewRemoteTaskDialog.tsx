@@ -88,6 +88,9 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
     }
   }
 
+  // The desktop's "Branch new tasks from" for this server project, if set.
+  const projectBase = useApp.getState().projects.find(p => p.server === machineId && p.name === project)?.base_branch?.trim() || "";
+
   async function start() {
     if (!project || !prompt.trim()) return;
     setBusy(true);
@@ -95,7 +98,7 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
     try {
       const r = await remoteCall(
         machineId,
-        req("new", { name: (name.trim() || derived), project, agent: agent || undefined, prompt: prompt.trim(), open: true, ...(base ? { base } : {}) }),
+        req("new", { name: (name.trim() || derived), project, agent: agent || undefined, prompt: prompt.trim(), open: true, ...((base || projectBase) ? { base: base || projectBase } : {}) }),
         330_000,
       );
       if (!r.ok) throw new Error(r.error?.message ?? "could not start the task");

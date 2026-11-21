@@ -1448,6 +1448,10 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             o.insert("project".into(), serde_json::Value::String(proj.id.clone()));
             o.remove("cwd");
             o.remove("profile");
+            // The project's "Branch new tasks from" is the desktop's setting.
+            if o.get("base").is_none_or(|b| b.is_null()) && !proj.base_branch.trim().is_empty() {
+                o.insert("base".into(), serde_json::Value::String(proj.base_branch.clone()));
+            }
         }
         let reply = match crate::remote_client::call(&server, fwd, Some(Duration::from_secs(330))) {
             Ok(v) => v,

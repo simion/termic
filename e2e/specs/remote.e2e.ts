@@ -743,6 +743,30 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect((await waiting())![0]).toBe(task);
   });
 
+  it("starts a server task from the project's 'Branch new tasks from'", async () => {
+    // A desktop setting: the server dialog passes it to the box's `new`.
+    const proj = await browser.execute((sid) => window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid), serverId) as any;
+    await browser.execute((p) => window.__termic!.invoke("project_update", { p: { ...p, base_branch: "box-task" } }), proj);
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    try {
+      await browser.execute((sid, name) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: sid, newTaskProject: name }), serverId, proj.name);
+      await waitVisible('[data-testid="remote-new-prompt"]', 20_000);
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-new-base"]'))).toBe(false);
+      await setInputValue('[data-testid="remote-new-prompt"]', "from the base");
+      await setInputValue('[data-testid="remote-new-name"]', "box-based");
+      await browser.waitUntil(() => browser.execute(() => !(document.querySelector('[data-testid="remote-new-start"]') as HTMLButtonElement).disabled),
+        { timeout: 20_000, timeoutMsg: "Start never became available" });
+      await clickPresent('[data-testid="remote-new-start"]');
+      const made = await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).find((t: any) => t.name === "box-based"),
+        { timeout: 30_000, timeoutMsg: "the task never appeared on the box" }) as any;
+      expect(made.base_branch).toBe("box-task");
+      expect((await call({ cmd: "archive", task: made.id })).ok).toBe(true);
+    } finally {
+      await browser.execute((p) => window.__termic!.invoke("project_update", { p: { ...p, base_branch: "" } }), proj);
+      await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    }
+  });
+
   it("saves a server project's .termic.yaml on the box", async () => {
     const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
     const cfg = (await browser.execute((id) => window.__termic!.invoke("repo_config_load", { projectId: id }), pid) as any) ?? {};
