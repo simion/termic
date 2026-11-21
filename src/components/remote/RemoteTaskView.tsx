@@ -11,13 +11,19 @@
 // already has a terminal answering those, and a duplicate answer arrives as
 // typed garbage.
 
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Archive, Monitor, Play, Plus, Server, SquareTerminal, X } from "lucide-react";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
+import { useApp } from "@/store/app";
+import { MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
+import type { Tab } from "@/lib/types";
+const EditorPane = lazy(() => import("@/components/task/EditorPane").then(m => ({ default: m.EditorPane })));
+const MarkdownPane = lazy(() => import("@/components/task/MarkdownPane").then(m => ({ default: m.MarkdownPane })));
+const DiffPane = lazy(() => import("@/components/task/DiffPane").then(m => ({ default: m.DiffPane })));
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Button } from "@/components/ui/Button";
 import { useUI } from "@/store/ui";
@@ -78,6 +84,8 @@ export const useServerShells = create<{
 }));
 
 const NO_SHELLS: string[] = [];
+const NO_TABS: Tab[] = [];
+const isFileTab = (t: Tab) => t.type === "edit" || t.type === "diff";
 
 /** `taskPath`: a server project's task (its worktree on the box). Its view
  *  gets shell tabs beside the agent: each is an AuxTerminal, whose PTY
@@ -94,6 +102,20 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   const [picked, setPicked] = useState<string | null>(null);
   const shells = useServerShells(s => s.shells[taskId] ?? NO_SHELLS);
   const view = useServerShells(s => s.view[taskId] ?? "agent");
+  // A server task's file and diff tabs (opened from the right panel), from
+  // the same store TaskView renders a local task's from.
+  const appTask = useApp(s => (taskPath ? s.tasks.find(t => t.id === taskId) : undefined));
+  const fileTabs = useApp(s => (taskPath ? s.tabs[taskId] ?? NO_TABS : NO_TABS)).filter(isFileTab);
+  const activeStoreTab = useApp(s => s.activeTab[taskId]);
+  // Opening a file makes its tab the active one: show it.
+  useEffect(() => {
+    if (activeStoreTab && fileTabs.some(t => t.id === activeStoreTab)) useServerShells.getState().show(taskId, activeStoreTab);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStoreTab, taskId]);
+  // A closed file tab that was showing falls back to the agent.
+  useEffect(() => {
+    if (view !== "agent" && !shells.includes(view) && !fileTabs.some(t => t.id === view)) useServerShells.getState().show(taskId, "agent");
+  }, [view, shells, fileTabs, taskId]);
   const meta = useServerShells(s => s.meta);
   const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
@@ -201,6 +223,29 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               )}
             </button>
           ))}
+          {fileTabs.map(ft => (
+            <button
+              key={ft.id}
+              type="button"
+              role="tab"
+              aria-selected={view === ft.id}
+              data-testid="server-tab-file"
+              data-path={"path" in ft ? ft.path : undefined}
+              onClick={() => { setView(ft.id); useApp.getState().setActiveTabId(taskId, ft.id); }}
+              className={cn(
+                "group flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px]",
+                view === ft.id ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+              )}
+            >
+              <span className="truncate">{ft.title}</span>
+              <span
+                role="button"
+                aria-label={t("task.closeShell")}
+                onClick={(e) => { e.stopPropagation(); useApp.getState().closeTab(taskId, ft.id); }}
+                className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+              ><X className="h-3 w-3" /></span>
+            </button>
+          ))}
           <button
             type="button"
             data-testid="server-new-shell"
@@ -217,6 +262,17 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
         <div className="absolute inset-0" style={{ display: view === "agent" ? undefined : "none" }}>
           {online && active && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
         </div>
+        {appTask && fileTabs.map(ft => (
+          <div key={ft.id} className="absolute inset-0" style={{ display: view === ft.id ? undefined : "none" }}>
+            <Suspense fallback={null}>
+              {ft.type === "diff"
+                ? <DiffPane task={appTask} tab={ft} />
+                : MARKDOWN_EXT_RE.test(ft.path)
+                  ? <MarkdownPane task={appTask} tab={ft} visible={active && view === ft.id} ownsFind={active && view === ft.id} active={active && view === ft.id} />
+                  : <EditorPane task={appTask} tab={ft} active={active && view === ft.id} />}
+            </Suspense>
+          </div>
+        ))}
         {taskPath && shells.map(id => (
           <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
             <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} initialInput={meta[id]?.input} />

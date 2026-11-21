@@ -565,6 +565,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
+    // Opening a file from the tree shows it in the server task's view (the
+    // editor reads it from the box), as a tab beside the agent.
+    await clickPresent('[data-path="hello.txt"]');
+    await waitVisible('[data-testid="server-tab-file"][data-path="hello.txt"]', 15_000);
+    await browser.waitUntil(() => browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="remote-task-view"] .cm-content')].some(e => e.textContent?.includes("edited on the desk"))),
+    { timeout: 15_000, timeoutMsg: "the server file never showed in the editor" });
+    await snap("remote-server-editor.png");
+    await clickPresent('[data-testid="server-tab-agent"]');
     // No watcher on a box: the agent finishing a turn refreshes the tree
     // instead (its row leaving "working"), with no Refresh clicked.
     writeFileSync(path.join(wt, "after-turn.txt"), "x");
