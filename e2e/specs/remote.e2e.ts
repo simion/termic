@@ -750,8 +750,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     rmSync(marker, { force: true });
     writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  archive: touch ../archive-ran\n");
     try {
-      await browser.execute((id) => window.__termic!.invoke("task_archive", { id }), task);
-      expect(existsSync(marker)).toBe(true);
+      // From the view's own Archive button, as a user does: the desktop
+      // archive, so the task also stops being the active one here.
+      await clickPresent(row());
+      await clickPresent('[data-testid="remote-task-archive"]');
+      await browser.waitUntil(async () => {
+        await browser.execute(() => (document.querySelector('[data-testid="confirm-ok"]') as HTMLElement | null)?.click());
+        return browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task);
+      }, { timeout: 30_000, timeoutMsg: "archiving from the view left the task active" });
+      await browser.waitUntil(() => existsSync(marker), { timeout: 30_000, timeoutMsg: "the archive script never ran" });
     } finally {
       rmSync(path.join(repo, ".termic.yaml"), { force: true });
       rmSync(marker, { force: true });
