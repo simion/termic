@@ -596,6 +596,29 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     { timeout: 10_000, timeoutMsg: "the other agent's tab never opened" });
     await browser.execute(() => (document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement).click());
     await waitGone('[data-testid="aux-terminal"]');
+    // ⌘T in a server task: the new-tab palette offers a terminal and the
+    // agents installed on the box, nothing from this Mac, and opens there.
+    const boxAgents = ((await call({ cmd: "agents" })).data.agents as { id: string; kind: string; usable?: boolean }[])
+      .filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id).sort();
+    const pressInView = (key: string) => browser.execute((k) => {
+      const el = (document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea') ?? document.querySelector('[data-testid="remote-task-view"] button')) as HTMLElement;
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true, cancelable: true }));
+    }, key);
+    await pressInView("t");
+    await waitVisible('[data-testid="new-tab-palette"]');
+    const offered = await browser.execute(() => ({
+      agents: [...document.querySelectorAll('[data-testid="new-tab-palette"] [data-kind="agent"]')].map(e => (e as HTMLElement).innerText.split("\n")[0].trim()).sort(),
+      kinds: [...new Set([...document.querySelectorAll('[data-testid="new-tab-palette"] [data-kind]')].map(e => e.getAttribute("data-kind")))].sort(),
+    }));
+    expect(offered.kinds).toEqual(boxAgents.length ? ["agent", "shell"] : ["shell"]);
+    expect(offered.agents).toEqual(boxAgents.map(id => ({ claude: "Claude", codex: "Codex", gemini: "Gemini", opencode: "opencode" } as Record<string, string>)[id] ?? id).sort());
+    await clickPresent('[data-testid="new-tab-palette"] [data-kind="shell"]');
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
+      { timeout: 20_000, timeoutMsg: "⌘T's Terminal never opened a shell on the box" });
+    // ⌘W closes the shell tab on screen.
+    await pressInView("w");
+    await waitGone('[data-testid="aux-terminal"]');
     // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
     // pty_open): what it runs lands in the box's worktree.
     await clickPresent('[data-testid="server-new-shell"]');

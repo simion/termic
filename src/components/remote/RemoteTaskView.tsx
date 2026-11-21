@@ -85,6 +85,27 @@ export const useServerShells = create<{
   show: (task, id) => set(s => (s.view[task] === id ? s : { view: { ...s.view, [task]: id } })),
 }));
 
+/** The agents installed on each server (its `agents` reply, usable ones
+ *  only), by machine id: the tab strip's agent buttons and ⌘T's palette
+ *  offer only these, never the desktop's own list. */
+const useBoxAgentStore = create<{ byMachine: Record<string, string[]> }>(() => ({ byMachine: {} }));
+const NO_AGENTS: string[] = [];
+const asked = new Set<string>();
+export function loadBoxAgents(machineId: string) {
+  if (asked.has(machineId)) return;
+  asked.add(machineId);
+  remoteCall(machineId, req("agents")).then(r => {
+    const list = r.ok ? (r.data?.agents ?? []) as { id: string; kind: string; usable?: boolean }[] : [];
+    const ids = list.filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id);
+    useBoxAgentStore.setState(s => ({ byMachine: { ...s.byMachine, [machineId]: ids } }));
+    if (!r.ok) asked.delete(machineId);
+  }).catch(() => asked.delete(machineId));
+}
+export function useBoxAgents(machineId: string | undefined, enabled = true): string[] {
+  useEffect(() => { if (machineId && enabled) loadBoxAgents(machineId); }, [machineId, enabled]);
+  return useBoxAgentStore(s => (machineId ? s.byMachine[machineId] : undefined) ?? NO_AGENTS);
+}
+
 const NO_SHELLS: string[] = [];
 const NO_TABS: Tab[] = [];
 const isFileTab = (t: Tab) => t.type === "edit" || t.type === "diff";
@@ -138,17 +159,8 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   useEffect(() => {
     if (active && titleState[view] === "done") setTitleState(m => ({ ...m, [view]: "idle" }));
   }, [active, view, titleState]);
-  // The box's usable agents other than the task's own, for "another agent".
-  const [boxAgents, setBoxAgents] = useState<string[]>([]);
-  useEffect(() => {
-    if (!taskPath) return;
-    let alive = true;
-    remoteCall(machineId, req("agents")).then(r => {
-      const list = r.ok ? (r.data?.agents ?? []) as { id: string; kind: string; usable?: boolean }[] : [];
-      if (alive) setBoxAgents(list.filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id));
-    }).catch(() => {});
-    return () => { alive = false; };
-  }, [machineId, taskPath]);
+  // The box's installed agents, for "another agent".
+  const boxAgents = useBoxAgents(machineId, !!taskPath);
   const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
   if (!machine) {
