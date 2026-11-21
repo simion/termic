@@ -122,11 +122,22 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   // An extra agent's state, read from its terminal title the way a local
   // agent tab's is (classifyAgentTitle): working, waiting, or nothing.
   const [titleState, setTitleState] = useState<Record<string, string>>({});
+  // Which tab is on screen, for the callback below (it outlives renders).
+  const shownRef = useRef<string | null>(null);
+  shownRef.current = active ? view : null;
   const onAgentTitle = (shell: string, agent: string) => (title: string) => {
     const w = classifyAgentTitle(agent, title);
     const st = w === "busy" ? "working" : w === "attention" ? "waiting" : "idle";
-    setTitleState(m => (m[shell] === st ? m : { ...m, [shell]: st }));
+    setTitleState(m => {
+      // Finished while its tab was not on screen: "done" until it is shown.
+      const next = st === "idle" && m[shell] === "working" && shownRef.current !== shell ? "done" : st === "idle" && m[shell] === "done" ? "done" : st;
+      return m[shell] === next ? m : { ...m, [shell]: next };
+    });
   };
+  // Showing a finished agent's tab reads it.
+  useEffect(() => {
+    if (active && titleState[view] === "done") setTitleState(m => ({ ...m, [view]: "idle" }));
+  }, [active, view, titleState]);
   // The box's usable agents other than the task's own, for "another agent".
   const [boxAgents, setBoxAgents] = useState<string[]>([]);
   useEffect(() => {
