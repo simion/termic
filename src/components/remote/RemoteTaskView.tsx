@@ -19,6 +19,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Archive, Monitor, Play, Plus, Server, SquareTerminal, X } from "lucide-react";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { useApp } from "@/store/app";
+import { classifyAgentTitle } from "@/lib/agents";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 import type { Tab } from "@/lib/types";
@@ -52,7 +53,7 @@ export function RemoteTaskOverlay() {
 
 /** A shell started to run something: its tab label, the line it types, and
  *  "run" for the Run script (the bar's Stop closes that one). */
-type ShellMeta = { label?: string; input?: string; kind?: "run" | "setup" };
+type ShellMeta = { label?: string; input?: string; kind?: "run" | "setup"; agent?: string };
 
 /** A server task's open shell tabs and which tab shows, by task id: kept
  *  here so they outlive switching to another task (MainArea keeps the view
@@ -118,6 +119,14 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
     if (view !== "agent" && !shells.includes(view) && !fileTabs.some(t => t.id === view)) useServerShells.getState().show(taskId, "agent");
   }, [view, shells, fileTabs, taskId]);
   const meta = useServerShells(s => s.meta);
+  // An extra agent's state, read from its terminal title the way a local
+  // agent tab's is (classifyAgentTitle): working, waiting, or nothing.
+  const [titleState, setTitleState] = useState<Record<string, string>>({});
+  const onAgentTitle = (shell: string, agent: string) => (title: string) => {
+    const w = classifyAgentTitle(agent, title);
+    const st = w === "busy" ? "working" : w === "attention" ? "waiting" : "idle";
+    setTitleState(m => (m[shell] === st ? m : { ...m, [shell]: st }));
+  };
   // The box's usable agents other than the task's own, for "another agent".
   const [boxAgents, setBoxAgents] = useState<string[]>([]);
   useEffect(() => {
@@ -231,6 +240,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
                 ? <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-3.5 w-3.5" /></span>
                 : <SquareTerminal className="h-3.5 w-3.5 shrink-0" />}
               <span>{id === "agent" ? t("task.agentTab") : meta[id]?.label ?? t("task.shellTab", { n: i })}</span>
+              {meta[id]?.agent && <StateGlyph state={titleState[id] ?? "idle"} size={12} />}
               {id !== "agent" && (
                 <span
                   role="button"
@@ -284,7 +294,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               title={t("task.newAgent", { agent: agentName(id) })}
               aria-label={t("task.newAgent", { agent: agentName(id) })}
               disabled={!online}
-              onClick={() => useServerShells.getState().add(taskId, { label: agentName(id), input: `${id}\r` })}
+              onClick={() => useServerShells.getState().add(taskId, { label: agentName(id), input: `${id}\r`, agent: id })}
               className={cn("rounded p-1 hover:bg-[var(--color-hover)] disabled:opacity-40", CLI_BRAND_COLOR[resolveIconId(id, [])])}
             ><CliIcon cli={resolveIconId(id, [])} className="h-3.5 w-3.5" /></button>
           ))}
@@ -308,7 +318,8 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
         ))}
         {taskPath && shells.map(id => (
           <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
-            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} initialInput={meta[id]?.input} />
+            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} initialInput={meta[id]?.input}
+              onTitle={meta[id]?.agent ? onAgentTitle(id, meta[id]!.agent!) : undefined} />
           </div>
         ))}
       </div>
