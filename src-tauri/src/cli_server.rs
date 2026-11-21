@@ -844,6 +844,37 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
     dispatch_authenticated(req, host, sink)
 }
 
+/// A verb about a server project's task (docs/plans/server-projects.md)
+/// that only the box can answer: its agent, transcript and worktree live
+/// there, so this desktop has no PTY or session to read. Sent to the box's
+/// termic-server under the task's id there. Names, pins, groups and the rest
+/// stay the desktop's own, so only these verbs go.
+fn forward_to_server(req: &Request, host: &dyn CliHost) -> Option<Reply> {
+    let (task, project, timeout_ms) = match &req.cmd {
+        Command::Send { task, project, timeout_ms, .. } | Command::Wait { task, project, timeout_ms, .. } => (task.as_deref()?, project.as_deref(), *timeout_ms),
+        Command::LastResult { task, project, .. } | Command::Logs { task, project, .. } | Command::Diff { task, project, .. } => (task.as_deref()?, project.as_deref(), None),
+        _ => return None,
+    };
+    let (projects, tasks) = host.projects_tasks();
+    let t = resolve_by_name(&projects, &tasks, task, project).ok()?;
+    let server = projects.iter().find(|p| p.id == t.project_id)?.server.clone()?;
+    let mut fwd = serde_json::to_value(req).ok()?;
+    let o = fwd.as_object_mut()?;
+    o.insert("task".into(), serde_json::Value::String(t.id.clone()));
+    o.remove("project");
+    o.remove("cwd");
+    o.remove("from_task");
+    o.remove("profile");
+    // A send or wait that waits for the turn gets its own timeout plus slack.
+    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(300_000)) + std::time::Duration::from_secs(30);
+    let mut reply = match crate::remote_client::call(&server, fwd, Some(wait)) {
+        Ok(v) => serde_json::from_value::<Reply>(v).unwrap_or_else(|e| Reply::err(&req.id, ErrorCode::Internal, format!("unexpected answer from the server: {e}"))),
+        Err(e) => Reply::err(&req.id, ErrorCode::Internal, e),
+    };
+    reply.id = req.id.clone();
+    Some(reply)
+}
+
 /// The post-auth verb dispatch, shared by the socket path (behind
 /// `auth_gate`) and the MCP endpoint (which authenticates at the HTTP
 /// layer with its own token and setting; see mcp_server). Callers MUST
@@ -861,6 +892,9 @@ pub(crate) fn dispatch_authenticated(
             Some(node) => node.forward(req, sink),
             None => Reply::err(&req.id, ErrorCode::Unsupported, "pairing is not available in this app"),
         };
+    }
+    if let Some(reply) = forward_to_server(req, host) {
+        return reply;
     }
     match &req.cmd {
         Command::PeerList | Command::PeerPair { .. } | Command::PeerUnpair { .. } | Command::PeerRename { .. } => {

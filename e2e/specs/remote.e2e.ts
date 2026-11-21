@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
+import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
 const nonce = (n: number) => { const b = Buffer.alloc(12); b.writeBigUInt64BE(BigInt(n), 4); return b; };
 const key = (pair: Buffer, salt: Buffer, dir: string, host: string, client: string) =>
@@ -531,6 +531,17 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     const taskPath = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
     await browser.waitUntil(() => existsSync(browserLog) && readFileSync(browserLog, "utf8").includes(`vscode://vscode-remote/ssh-remote+termic-e2e-local${taskPath}`),
       { timeout: 10_000, timeoutMsg: "Open with never asked the OS for the editor's SSH URL" });
+  });
+
+  it("the termic CLI drives a server task's agent on the box: send, then logs", async () => {
+    // The desktop has no PTY or session for it: cli_server forwards these.
+    const name = await browser.execute((id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.name, task) as string;
+    const sent = await cliRpc({ cmd: "send", task: name, prompt: "from the cli" });
+    expect(sent.ok).toBe(true);
+    await browser.waitUntil(async () => {
+      const r = await cliRpc({ cmd: "logs", task: name });
+      return r.ok && String(r.data?.data ?? "").includes("box says: from the cli");
+    }, { timeout: 20_000, timeoutMsg: "the CLI's send never reached the agent on the box, or logs never read it back" });
   });
 
   it("runs the task's git on the box: branches come from its worktree there", async () => {
