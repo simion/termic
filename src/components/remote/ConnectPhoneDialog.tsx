@@ -24,7 +24,7 @@ type Paired = { id: string; name: string };
 
 // Where the phone app is: TestFlight is open to anyone, so iPhone users
 // need no invite.
-const IOS_APP_URL = "https://testflight.apple.com/join/5qxhPr6a";
+const IOS_APP_URL = "https://testflight.apple.com/join/SqxhPr6a";
 const ANDROID_APP_URL = "https://play.google.com/store/apps/details?id=dev.termic.remote";
 
 /** "Get the app: iPhone (TestFlight) · Android", opened in the browser. */
