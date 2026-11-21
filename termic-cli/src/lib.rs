@@ -1416,6 +1416,25 @@ TTY without --yes), 4 app not running, 5 CLI disabled, 6 refused, \
         yes: bool,
     },
 
+    /// Stop a task's agent; the task, worktree and session stay.
+    #[command(
+        after_help = "Ends the task's running agent processes (SIGTERM, then SIGKILL). Nothing \
+else changes: `send` or `open` starts the agent again, resuming its session.
+
+Prints what was stopped on stdout. With --output-format json, one object: \
+{\"task_id\", \"name\", \"project\", \"stopped_agents\"}.
+
+Exit codes: 0 stopped (also when nothing was running), 1 unknown or ambiguous \
+task, 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Stop {
+        /// Task name, task id, or qualified project/name.
+        task: String,
+        /// Project name, to disambiguate.
+        #[arg(long)]
+        project: Option<String>,
+    },
+
     /// Manage registered projects.
     #[command(subcommand)]
     Project(ProjectCmd),
@@ -2474,6 +2493,10 @@ outside.",
         Cmd::Quit { yes } => execute_quit(&mut conn, &token, format, *yes, &paths),
         Cmd::Archive { task, project, yes } => {
             execute_archive(&mut conn, &token, format, task, project.as_deref(), *yes, &paths)
+        }
+        Cmd::Stop { task, project } => {
+            let data = client::request(&mut conn, proto::Command::Stop { task: task.clone(), project: project.clone() }, &token)?;
+            render(&cli.cmd, format, data).map(Output::ok)
         }
         Cmd::Pin { task, off, project } => {
             let target = task.clone().or_else(|| own_env("TERMIC_TASK_ID"));
@@ -3982,6 +4005,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
         (Cmd::Status { .. }, _) => Err(unexpected("status")),
         (Cmd::Open { .. }, _) => Err(unexpected("open")),
         (Cmd::Rename { .. }, _) => Err(unexpected("rename")),
+        (Cmd::Stop { .. }, proto::ReplyData::Stop(st)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&st),
+            OutputFormat::Text => format!("stopped {}/{} ({} agent{} ended)", st.project, st.name, st.stopped_agents, if st.stopped_agents == 1 { "" } else { "s" }),
+        }),
+        (Cmd::Stop { .. }, _) => Err(unexpected("stop")),
         (Cmd::Pin { .. }, proto::ReplyData::Pin(p)) => Ok(match format {
             OutputFormat::Json | OutputFormat::StreamJson => output::json(&p),
             OutputFormat::Text => format!("{} {}/{}", if p.pinned { "pinned" } else { "unpinned" }, p.task.project, p.task.name),

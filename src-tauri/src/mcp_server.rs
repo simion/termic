@@ -1562,6 +1562,18 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_stop",
+        cli_verb: "stop",
+        description: "Stop a task's agent: its running agent processes end, and the task, worktree and session stay. Sending to the task or opening it starts the agent again.",
+        params: &[P_TASK, P_PROJECT],
+        destructive: true,
+        read_only: false,
+        build: |a| Ok(Command::Stop {
+            task: need_str(a, "task")?,
+            project: arg_str(a, "project")?,
+        }),
+    },
+    ToolDef {
         name: "task_tab",
         cli_verb: "tab",
         description: "Open a tab inside a running task (the app's \"+\" menu as a tool), optionally delivering a first prompt to it. Returns the new tab's id, which is the stable selector other tools take. With `tab`, renames an open tab instead.",
@@ -4067,7 +4079,7 @@ mod tests {
         // the sidebar, which a remote client's task menu needs too.
         // 29914: project_add's `clone`, parity with `termic project add
         // --clone`: the one way a repo gets onto a termic-server box.
-        const RECORDED: usize = 29914;
+        const RECORDED: usize = 30389;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

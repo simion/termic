@@ -853,6 +853,7 @@ fn forward_to_server(req: &Request, host: &dyn CliHost) -> Option<Reply> {
     let (task, project, timeout_ms) = match &req.cmd {
         Command::Send { task, project, timeout_ms, .. } | Command::Wait { task, project, timeout_ms, .. } => (task.as_deref()?, project.as_deref(), *timeout_ms),
         Command::LastResult { task, project, .. } | Command::Logs { task, project, .. } | Command::Diff { task, project, .. } => (task.as_deref()?, project.as_deref(), None),
+        Command::Stop { task, project } => (task.as_str(), project.as_deref(), None),
         _ => return None,
     };
     let (projects, tasks) = host.projects_tasks();
@@ -1014,6 +1015,7 @@ pub(crate) fn dispatch_authenticated(
         Command::Archive { task, project } => {
             handle_archive(&req.id, host, task, project.as_deref())
         }
+        Command::Stop { task, project } => handle_stop(&req.id, host, task, project.as_deref()),
         Command::Rename { task, project, name, cwd } => {
             handle_rename(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), name)
         }
@@ -3692,6 +3694,22 @@ fn handle_archive(id: &str, host: &dyn CliHost, task: &str, project: Option<&str
             killed_agents: killed,
         }),
     )
+}
+
+// ───────────────────────────── stop ──────────────────────────────────
+
+/// End a task's agent and keep the task (worktree, session, tabs): sending
+/// to it or opening it starts the agent again. A phone's Stop.
+fn handle_stop(id: &str, host: &dyn CliHost, task: &str, project: Option<&str>) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_by_name(&projects, &tasks, task, project) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let project_name = projects.iter().find(|p| p.id == t.project_id).map(|p| p.name.clone()).unwrap_or_else(|| t.project_id.clone());
+    host.notify_detach(&t.id, "stopped");
+    let stopped = host.kill_task_ptys(&t.id);
+    Reply::ok(id, ReplyData::Stop(proto::StopData { task_id: t.id, name: t.name, project: project_name, stopped_agents: stopped }))
 }
 
 // ───────────────────────────── rename ────────────────────────────────

@@ -429,6 +429,22 @@ impl Daemon {
 
     /// Stop the agent, remove the worktree (never the project's own
     /// checkout), mark the task archived. Returns agents killed.
+    /// End a task's agent and keep the task: its worktree and session stay,
+    /// and the next send or terminal open starts the agent again.
+    pub fn stop_agent(self: &Arc<Self>, task_id: &str) -> u32 {
+        let mut stopped = 0;
+        if let Some(live) = self.live.lock().unwrap().remove(task_id) {
+            if live.pty.kill() {
+                stopped += 1;
+            }
+            live.pty.close_taps("stopped");
+        }
+        util::log(&format!("stopped task {task_id} ({stopped} agent ended)"));
+        self.poke();
+        self.bump();
+        stopped
+    }
+
     pub fn archive(self: &Arc<Self>, task_id: &str) -> Result<u32, String> {
         let t = self.st.lock().unwrap().tasks.iter().find(|t| t.id == task_id).cloned().ok_or("no such task")?;
         let mut killed = 0;

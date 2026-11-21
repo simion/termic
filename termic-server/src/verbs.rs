@@ -68,6 +68,12 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             let project = d.st.lock().unwrap().project_name(&t.project_id);
             Ok(ReplyData::Archive(ArchiveData { task_id: t.id, name: t.name, project, killed_agents: killed }))
         }
+        Command::Stop { task, project } => {
+            let t = resolve(d, Some(&task), project.as_deref(), None)?;
+            let stopped = d.stop_agent(&t.id);
+            let project = d.st.lock().unwrap().project_name(&t.project_id);
+            Ok(ReplyData::Stop(proto::StopData { task_id: t.id, name: t.name, project, stopped_agents: stopped }))
+        }
         Command::Rename { task, project, name, cwd } => {
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
             rename(d, &t, &name)

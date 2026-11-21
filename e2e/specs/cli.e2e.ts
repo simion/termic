@@ -183,6 +183,30 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     }
   });
 
+  it("stop ends a task's agent and keeps the task; send starts it again", async () => {
+    const id = await openTask("cli-stop");
+    const agentTabs = () => browser.execute((tid) =>
+      ((window.__termic!.useApp.getState().tabs[tid] ?? []) as any[]).filter(t => t.type === "terminal" && !t.runTab && t.cli),
+    id) as Promise<any[]>;
+    try {
+      await browser.waitUntil(async () => (await agentTabs()).some(t => t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never started" });
+      const stopped = await rpc({ cmd: "stop", task: "cli-stop" });
+      expect(stopped.ok).toBe(true);
+      expect(stopped.data.stopped_agents).toBe(1);
+      await browser.waitUntil(async () => (await agentTabs()).every(t => !t.ptyId), { timeout: 20_000, timeoutMsg: "the agent kept running after stop" });
+      // The task is still there, and a send starts its agent again.
+      expect((await rpc({ cmd: "list" })).data.tasks.some((t: any) => t.id === id)).toBe(true);
+      const marker = `AGAIN-${Date.now()}`;
+      expect((await rpc({ cmd: "send", task: "cli-stop", prompt: marker, fresh: true })).ok).toBe(true);
+      await browser.waitUntil(async () => {
+        const logs = await rpc({ cmd: "logs", task: "cli-stop" });
+        return logs.ok && String(logs.data.data).includes(`FAKE-AGENT echo: ${marker}`);
+      }, { timeout: 20_000, timeoutMsg: "send after stop never started the agent" });
+    } finally {
+      await archiveTask(id);
+    }
+  });
+
   it("status lists the strip with the same ids and 1-based indices", async () => {
     // status's tab list is the --tab contract surface: what it prints
     // is what selectors mean.

@@ -703,6 +703,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// Stop a task's agent: its live PTYs are ended (SIGTERM, then
+    /// SIGKILL). The task, worktree and session stay; sending to it or
+    /// opening it starts the agent again.
+    Stop {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Rename a task: the sidebar label ONLY. The branch and worktree
     /// directory keep their creation-time names (they are pushed /
     /// referenced by live PTY cwds; moving them is not this verb's job).
@@ -1198,6 +1206,7 @@ pub enum ReplyData {
     Prop(PropData),
     Quit(QuitData),
     Archive(ArchiveData),
+    Stop(StopData),
     Rename(RenameData),
     Pin(PinData),
     Group(GroupData),
@@ -1514,6 +1523,15 @@ pub struct ArchiveData {
     pub project: String,
     /// Live agent PTYs SIGKILLed before the archive ran.
     pub killed_agents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StopData {
+    pub task_id: String,
+    pub name: String,
+    pub project: String,
+    /// Agent PTYs that were running and are now ended.
+    pub stopped_agents: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2686,6 +2704,7 @@ mod tests {
             Command::Quit { commit: false },
             Command::Quit { commit: true },
             Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::Stop { task: "fix-auth".into(), project: Some("web".into()) },
             Command::Rename {
                 task: Some("fix-auth".into()),
                 project: Some("web".into()),
