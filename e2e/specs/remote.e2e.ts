@@ -609,6 +609,25 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await clickPresent('[data-testid="server-stop"]');
       await waitVisible('[data-testid="server-run"]');
       expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).not.toContain("Run");
+      // Custom run commands from the box's `.termic.yaml`: Run becomes a menu
+      // (read when the task is shown), and a command runs in its own tab.
+      writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n  run_scripts:\n    - label: Lint\n      command: touch ran-lint\n");
+      await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+      await clickPresent(row());
+      await browser.waitUntil(async () => {
+        await browser.execute(() => {
+          const el = document.querySelector('[data-testid="server-run"]') as HTMLElement | null;
+          if (!el) return;
+          const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+          el.dispatchEvent(new PointerEvent("pointerdown", opts));
+          el.dispatchEvent(new PointerEvent("pointerup", opts));
+        });
+        return browser.execute(() => !!document.querySelector('[data-testid="server-run-custom"]'));
+      }, { timeout: 15_000, timeoutMsg: "Run never offered the box's custom command" });
+      await clickWhenVisible('[data-testid="server-run-custom"]');
+      await browser.waitUntil(() => existsSync(path.join(wt, "ran-lint")),
+        { timeout: 20_000, timeoutMsg: "the custom command never ran in the worktree" });
+      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Lint");
     } finally {
       rmSync(path.join(repo, ".termic.yaml"), { force: true });
     }

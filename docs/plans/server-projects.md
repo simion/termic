@@ -61,7 +61,7 @@ a program in the task's folder. Instead of a verb per feature:
   the run script in one and Stop closes it; a task made from the server
   dialog runs the setup script in a Setup tab; Prompts go to the box's
   agent through `send`. Open with opens the worktree in VS Code or Cursor
-  over SSH. Left: custom run commands.
+  over SSH, and Run offers custom run commands too.
 - Stage 3, partly: termic-server `exec` (fenced to project roots and
   worktrees). `git_bytes` and `git_raw` (lib.rs) send a server folder's git
   there through an index of server paths in `server_projects.rs`, so the

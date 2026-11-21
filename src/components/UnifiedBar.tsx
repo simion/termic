@@ -4,7 +4,7 @@
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
@@ -35,6 +35,8 @@ import { i18n } from "@/lib/i18n";
 import { resolveRunTargets } from "@/lib/runTabs";
 import { useServerShells } from "@/components/remote/RemoteTaskView";
 import { openExternalUrl } from "@/lib/ipc";
+import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
+import type { Task } from "@/lib/types";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -74,9 +76,6 @@ export function UnifiedBar() {
   const proj = useApp(s => task ? s.projects.find(p => p.id === task.project_id) : null);
   const openSettings = useApp(s => s.openSettings);
   const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
-  // A server task's open Run tab (its shells are in useServerShells): Run
-  // turns into Stop, which closes the tab and so ends the script on the box.
-  const serverRunTab = useServerShells(s => (task ? (s.shells[task.id] ?? []).find(id => s.meta[id]?.kind === "run") : undefined));
   // Picking a prompt opens the shared destination modal (running agents +
   // new-agent CLIs) — a modal, not a submenu, which flipped to the wrong
   // side near the window edge. Shared (not local state) so the ⌥⌘P prompt
@@ -287,27 +286,7 @@ export function UnifiedBar() {
             {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
             {/* Run: the project's run script (Settings or the box's
                 `.termic.yaml`) in a new shell tab on the box. */}
-            {serverRunTab ? (
-              <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-stop"
-                onClick={() => useServerShells.getState().close(task.id, serverRunTab)}>
-                <Square className="h-3.5 w-3.5" />
-                <span>{t("panels:runControls.stop")}</span>
-              </Button>
-            ) : (
-            <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={() => {
-              void resolveRunTargets(task.id).then(targets => {
-                const host = targets.find(x => x.member === "") ?? targets[0];
-                if (!host) {
-                  useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
-                  return;
-                }
-                useServerShells.getState().add(task.id, { label: t("panels:runControls.run"), input: `${host.script}\r`, kind: "run" });
-              });
-            }}>
-              <Play className="h-4 w-4" />
-              <span>{t("panels:runControls.run")}</span>
-            </Button>
-            )}
+            <ServerRun task={task} />
             {/* Prompts go to the agent on the box through termic-server's
                 `send` (what `termic send` uses). */}
             <DropdownRoot>
@@ -532,6 +511,64 @@ function ServerOpenWith({ serverId, path }: { serverId: string; path: string }) 
         {SSH_EDITORS.map(ed => (
           <DropdownItem key={ed.id} data-testid={`server-open-${ed.id}`} onSelect={() => open(ed)}>
             <span>{t("openWith.openIn", { label: ed.name })}</span>
+          </DropdownItem>
+        ))}
+      </DropdownMenu>
+    </DropdownRoot>
+  );
+}
+
+/** Run for a server task: the run script, and any custom run commands,
+ *  each in its own shell tab on the box. While the Run tab is open, Run is
+ *  Stop, which closes it and so ends the script there (pty_kill). */
+function ServerRun({ task }: { task: Task }) {
+  const { t } = useTranslation("chrome");
+  const runTab = useServerShells(s => (s.shells[task.id] ?? []).find(id => s.meta[id]?.kind === "run"));
+  const [customs, setCustoms] = useState<ResolvedCommand[]>([]);
+  const refresh = useCallback(() => {
+    resolveCustomCommands(task.project_id).then(setCustoms).catch(() => setCustoms([]));
+  }, [task.project_id]);
+  useEffect(() => { refresh(); }, [refresh]);
+  const start = (label: string, script: string, kind?: "run") =>
+    useServerShells.getState().add(task.id, { label, input: `${script}\r`, kind });
+  const runScript = () => {
+    void resolveRunTargets(task.id).then(targets => {
+      const host = targets.find(x => x.member === "") ?? targets[0];
+      if (!host) {
+        useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
+        return;
+      }
+      start(t("panels:runControls.run"), host.script, "run");
+    });
+  };
+  if (runTab) {
+    return (
+      <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-stop"
+        onClick={() => useServerShells.getState().close(task.id, runTab)}>
+        <Square className="h-3.5 w-3.5" />
+        <span>{t("panels:runControls.stop")}</span>
+      </Button>
+    );
+  }
+  const button = (
+    <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={customs.length ? undefined : runScript}>
+      <Play className="h-4 w-4" />
+      <span>{t("panels:runControls.run")}</span>
+    </Button>
+  );
+  if (!customs.length) return button;
+  return (
+    <DropdownRoot onOpenChange={(o) => { if (o) refresh(); }}>
+      <DropdownTrigger asChild>{button}</DropdownTrigger>
+      <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+        <DropdownItem data-testid="server-run-script" onSelect={runScript}>
+          <Play className="h-4 w-4" />
+          <span>{t("panels:runControls.run")}</span>
+        </DropdownItem>
+        <DropdownSeparator />
+        {customs.map((c, i) => (
+          <DropdownItem key={`${c.source}-${i}`} data-testid="server-run-custom" onSelect={() => start(c.label || c.command, c.command)}>
+            <span className="min-w-0 flex-1 truncate">{c.label || c.command}</span>
           </DropdownItem>
         ))}
       </DropdownMenu>
