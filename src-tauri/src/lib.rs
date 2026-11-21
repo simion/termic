@@ -7175,6 +7175,23 @@ fn project_update(mut p: Project) -> Result<(), String> {
 async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), String> {
     let ptys = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // A server project exists on the box (it owns existence; a resync
+        // would bring a locally removed one back): remove it there, which
+        // archives its tasks and leaves the repo's files, then forget it here.
+        if let Some(server) = load_projects_all().into_iter().find(|p| p.id == id).and_then(|p| p.server) {
+            let reply = remote_client::call(&server, serde_json::json!({"cmd": "project_remove", "name": id}), Some(std::time::Duration::from_secs(300)))?;
+            if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not remove it").to_string());
+            }
+            for w in load_tasks_all().into_iter().filter(|w| w.project_id == id) {
+                let _ = delete_task_file(&w.id);
+            }
+            let mut list = load_projects_all();
+            list.retain(|p| p.id != id);
+            save_projects(&list).map_err(|e| e.to_string())?;
+            server_projects::refresh_paths();
+            return Ok(());
+        }
         let tasks: Vec<Task> = load_tasks_all()
             .into_iter().filter(|w| w.project_id == id).collect();
         for w in tasks {

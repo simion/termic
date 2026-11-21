@@ -1949,10 +1949,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       {p.spotlight_enabled ? t("spotlightDisable") : t("spotlightEnable")}
                     </ContextMenuItem>
                   )}
-                  <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
-                    <FolderOpen />
-                    {t("revealInFinder", { manager: FILE_MANAGER })}
-                  </ContextMenuItem>
+                  {/* A server project's folder is on the box: no Finder here. */}
+                  {!p.server && (
+                    <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
+                      <FolderOpen />
+                      {t("revealInFinder", { manager: FILE_MANAGER })}
+                    </ContextMenuItem>
+                  )}
                   <ContextMenuItem onSelect={() => copyToClipboard(p.root_path, "path")}>
                     <Copy />
                     {t("copyPath")}

@@ -691,6 +691,9 @@ fn dispatch(l: &Link, m: ServerMsg) {
         }
         ServerMsg::PtyExit { pid, reason } => pty_event(&pid, PtyEvent::Exit(reason)),
         ServerMsg::Error { message } => dlog(&format!("[remote] {}: {message}", l.id)),
+        // The keepalive's answer: a project added on the box some other way
+        // (the CLI there) changes no task row, so resync now and then.
+        ServerMsg::Pong {} if l.kind == MachineKind::Server => crate::server_projects::sync_if_stale(&l.id),
         _ => {}
     }
 }
@@ -708,7 +711,15 @@ pub(crate) fn call(machine: &str, mut req: Value, timeout: Option<Duration>) -> 
         o.remove("token");
     }
     let proto = Some(termic_proto::PROTOCOL_VERSION).filter(|_| l.kind == MachineKind::Computer);
-    match l.request(&id, ClientMsg::Call { id: id.clone(), req, proto }, timeout.unwrap_or(CALL_TIMEOUT))? {
+    // Adding or removing a project changes no task row, so the box's task
+    // list (what triggers a resync) does not move: resync after it here.
+    let projects_changed = l.kind == MachineKind::Server
+        && req.get("cmd").and_then(Value::as_str).is_some_and(|c| c.starts_with("project_"));
+    let answer = l.request(&id, ClientMsg::Call { id: id.clone(), req, proto }, timeout.unwrap_or(CALL_TIMEOUT))?;
+    if projects_changed {
+        crate::server_projects::sync_soon(machine);
+    }
+    match answer {
         ServerMsg::Reply { reply, .. } => Ok(reply),
         _ => Err("unexpected answer".into()),
     }

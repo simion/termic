@@ -49,7 +49,7 @@ fn paths() -> &'static std::sync::RwLock<Vec<(String, String)>> {
     P.get_or_init(Default::default)
 }
 
-fn refresh_paths() {
+pub(crate) fn refresh_paths() {
     let projects = crate::load_projects_all();
     let mut out: Vec<(String, String)> = Vec::new();
     for p in projects.iter().filter(|p| p.server.is_some()) {
@@ -118,6 +118,23 @@ fn busy() -> &'static Mutex<std::collections::HashMap<String, bool>> {
 }
 
 /// Sync a server's projects and tasks into the store, off the caller's thread.
+/// How long a server's projects may go without a resync while connected.
+const STALE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Resync if the last one is older than STALE (remote_client.rs, on pong).
+pub(crate) fn sync_if_stale(server: &str) {
+    static LAST: OnceLock<Mutex<std::collections::HashMap<String, std::time::Instant>>> = OnceLock::new();
+    let now = std::time::Instant::now();
+    {
+        let mut m = LAST.get_or_init(Default::default).lock().unwrap();
+        if m.get(server).is_some_and(|t| now.duration_since(*t) < STALE) {
+            return;
+        }
+        m.insert(server.to_string(), now);
+    }
+    sync_soon(server);
+}
+
 pub(crate) fn sync_soon(server: &str) {
     {
         let mut b = busy().lock().unwrap();

@@ -776,6 +776,27 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
+  it("removing a server project removes it on the box, so a resync does not bring it back", async () => {
+    const extra = path.join(box, "extra");
+    rmSync(extra, { recursive: true, force: true });
+    mkdirSync(extra, { recursive: true });
+    for (const args of [["init", "-q", "-b", "main"], ["config", "user.email", "e2e@termic.dev"], ["config", "user.name", "e2e"], ["commit", "-q", "--allow-empty", "-m", "init"]]) {
+      execFileSync("git", args, { cwd: extra });
+    }
+    expect((await call({ cmd: "project_add", path: extra })).ok).toBe(true);
+    const pid = await browser.waitUntil(async () => browser.execute((sid) =>
+      (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid && p.name === "extra") as any)?.id as string | undefined, serverId),
+    { timeout: 30_000, timeoutMsg: "the box's new project never reached the desktop" });
+    await browser.execute((id) => window.__termic!.invoke("project_remove", { id }), pid);
+    expect(((await call({ cmd: "project_list" }))?.data?.projects ?? []).some((p: any) => p.name === "extra")).toBe(false);
+    // A change on the box resyncs; the project stays gone.
+    expect((await call({ cmd: "send", task, prompt: "after removal" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await logs()).includes("box says: after removal"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    expect(await browser.execute((sid) => window.__termic!.useApp.getState().projects.some((p: any) => p.server === sid && p.name === "extra"), serverId)).toBe(false);
+    rmSync(extra, { recursive: true, force: true });
+  });
+
   it("saves a server project's .termic.yaml on the box", async () => {
     const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
     const cfg = (await browser.execute((id) => window.__termic!.invoke("repo_config_load", { projectId: id }), pid) as any) ?? {};
