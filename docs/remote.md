@@ -336,7 +336,8 @@ Prompts (through `send`), a Setup tab running the setup script when the
 task is made from the dialog, Send to main (the diff applied and
 untracked files copied with a tar pipe, both on the box), Open with (VS
 Code or Cursor opening the worktree over SSH by its Remote-SSH URL),
-custom run commands from Run's menu, and Archive. The sandbox controls
+custom run commands from Run's menu, and Archive (the archive script
+runs in the worktree on the box first). The sandbox controls
 are hidden for server tasks: the macOS sandbox does not reach the box.
 
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).

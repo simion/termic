@@ -713,7 +713,18 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
   });
 
   it("archives from the desktop: the box removes its worktree, the row goes", async () => {
-    await browser.execute((id) => window.__termic!.invoke("task_archive", { id }), task);
+    // The repo's archive script runs in the worktree on the box first.
+    const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
+    const marker = path.join(path.dirname(wt), "archive-ran");
+    rmSync(marker, { force: true });
+    writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  archive: touch ../archive-ran\n");
+    try {
+      await browser.execute((id) => window.__termic!.invoke("task_archive", { id }), task);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      rmSync(path.join(repo, ".termic.yaml"), { force: true });
+      rmSync(marker, { force: true });
+    }
     await browser.waitUntil(async () => !((await call({ cmd: "list" }))?.data?.tasks ?? []).some((t: any) => t.id === task),
       { timeout: 20_000, timeoutMsg: "the box still has the task" });
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());

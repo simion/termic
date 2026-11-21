@@ -12827,7 +12827,19 @@ fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Res
     // A server project's task lives on the box: termic-server removes its
     // worktree and stops its agent there; this side only marks the record
     // (docs/plans/server-projects.md). Nothing on this machine to tear down.
-    if let Some(server) = load_projects_all().into_iter().find(|p| p.id == w.project_id).and_then(|p| p.server) {
+    if let Some(proj) = load_projects_all().into_iter().find(|p| p.id == w.project_id && p.server.is_some()) {
+        let server = proj.server.clone().unwrap_or_default();
+        // The project's archive script runs in the worktree on the box first
+        // (Settings or the box's .termic.yaml), as a local archive runs it.
+        // A failing script does not block the archive.
+        let script = effective_scripts(&proj).2;
+        if !skip_scripts && !script.trim().is_empty() {
+            match server_projects::exec_on(&server, Path::new(&w.path), &["sh", "-c", &script], &[]) {
+                Ok((0, _, _)) => {}
+                Ok((code, _, err)) => dlog(&format!("[archive] {}: archive script exited {code}: {}", w.id, err.trim())),
+                Err(e) => dlog(&format!("[archive] {}: archive script did not run: {e}", w.id)),
+            }
+        }
         let reply = remote_client::call(&server, serde_json::json!({"cmd": "archive", "task": w.id}), Some(std::time::Duration::from_secs(300)))?;
         if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not archive it").to_string());

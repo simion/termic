@@ -68,8 +68,10 @@ a program in the task's folder. Instead of a verb per feature:
   git panel, diff, stage, commit and push work. The file tree listing,
   editor read and save, `.termic.yaml` and Send to main run on the box
   too; the tree refreshes when the box's agent finishes a turn (no
-  watcher). Left: archive scripts, clone and add project on the box, and
-  the full task menu for server tasks.
+  watcher), and archiving runs the archive script there first. Left:
+  cloning a repository onto the box (needs a verb or a wider fence), and
+  the rest of the task menu (agent, sandbox, resume, schedules,
+  duplicate).
 - Stage 4 in full: a server records the window it was added in and its
   projects mirror into that profile; the sidebar's projects header has an
   Add a server button, and the Add project dialog links to it.
