@@ -1,6 +1,7 @@
-// Other computers, in Settings > Agent access (LAN pairing, docs/peers.md). Off by default and badged
-// Experimental: turning it on runs a second listener on the network and
+// Other computers, in Settings > Remote (LAN pairing, docs/peers.md). Off by
+// default: turning it on runs a second listener on the network and
 // advertises this Termic over mDNS, so another Termic can ask to pair.
+// Paired phones come in on the same listener, so this switch is theirs too.
 //
 // Everything on this page is read from `peer_status` and re-read on the
 // backend's `peer://changed` event, never polled. Bursts of that event
@@ -83,7 +84,7 @@ const selectClass =
 const linkClass =
   "text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]";
 
-export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {}) {
+export function PeersSection() {
   const { t } = useTranslation("settings");
   const { settings, patch } = useBackendSettings();
   const [status, refresh] = usePeerStatus();
@@ -107,9 +108,17 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
   useEffect(() => { readMcp(); }, [readMcp]);
   const agentReady = otherAgent || mcp?.claude_registered === true || mcp?.codex_registered === true;
 
+  // From peer_status, never the settings copy: Connect a phone turns
+  // sharing on from its own dialog. A value from outside remounts the
+  // switch, or WKWebView keeps drawing it off (docs/gotchas.md).
+  const [drawn, setDrawn] = useState(0);
+  const shownEnabled = useRef(enabled);
+  shownEnabled.current = enabled;
   useEffect(() => {
-    if (settings) setEnabled(settings.lan_sharing_enabled === true);
-  }, [settings]);
+    if (!status || status.enabled === shownEnabled.current) return;
+    setEnabled(status.enabled);
+    setDrawn(n => n + 1);
+  }, [status]);
 
   const selfName = status?.self_name ?? "";
   const defaultName = status?.default_name ?? "";
@@ -139,7 +148,6 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
     // settings_save binds or unbinds before it resolves.
     refresh();
     readMcp();
-    if (v) onSharingOn?.();
   }
 
   async function saveName() {
@@ -209,11 +217,15 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
   // nearby, pair".
   return (
     <div className="flex flex-col gap-7" data-testid="peers-section">
-      <SectionTitle title={t("peers.title")} badge={t("shared.experimental")} />
+      <div className="flex flex-col gap-1.5">
+        <SectionTitle title={t("peers.title")} />
+        <p data-testid="peers-lead" className="text-[13px] text-[var(--color-fg-dim)]">{t("peers.lead")}</p>
+      </div>
 
       <Block first>
         <div data-testid="peers-toggle" data-enabled={enabled ? "true" : "false"}>
           <Toggle
+            key={drawn}
             label={t("peers.enable.label")}
             hint={enabled ? t("peers.enable.hint") : t("peers.enable.hintOff")}
             value={enabled}

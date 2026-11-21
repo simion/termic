@@ -70,6 +70,7 @@ export const NAMESPACES = [
   "chrome",   // root src/components/*, views, ui primitives
   "backend",  // user-visible strings from stores/hooks/lib (toasts, notifications)
   "secrets",  // Secrets + roles: settings screens, task surfaces (credential broker)
+  "remote",   // remote control: phones, servers, other machines' tasks (src/components/remote/*)
 ] as const;
 export type Namespace = typeof NAMESPACES[number];
 

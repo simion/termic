@@ -36,6 +36,10 @@ function windowLabel(): string {
   }
 }
 
+/// This window's label ("main" for the root profile): servers and paired
+/// computers belong to one profile and are listed only in its window.
+export const WINDOW_LABEL: string = windowLabel();
+
 /// `""` for the root profile, `"profile-<slug>:"` for every other.
 export const PROFILE_NS: string = (() => {
   const label = windowLabel();

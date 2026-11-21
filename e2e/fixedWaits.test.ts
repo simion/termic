@@ -76,6 +76,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "Written at each call site, never inside a helper, so this count is the "
       + "real number of waits",
   },
+  "remote.e2e.ts": {
+    count: 1,
+    why: "a negative: a resync of the box must not undo a pin and a name the "
+      + "desktop set, so the store is read after the resync window",
+  },
   "task.e2e.ts": {
     count: 1,
     why: "a negative: hovering an unlinked task draws no spawn link",

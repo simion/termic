@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker, idleBuildDirs] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker, idleBuildDirs, remote, secrets] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -86,6 +86,8 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/forgeRate"),
         import("@/lib/draftTracker"),
         import("@/lib/idleBuildDirs"),
+        import("@/lib/remote"),
+        import("@/store/secrets"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -113,6 +115,12 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // never sits over what another spec is driving; guide.e2e.ts turns it on
       // through this handle.
       useGuide: guide.useGuide,
+      // Remote control (docs/remote.md): other machines and the open remote
+      // task, so a spec can read what the sidebar is drawing from.
+      useRemote: remote.useRemote,
+      // Secrets roles as this window holds them: a spec that clears roles on
+      // disk waits for the reload (on Settings close) to land here.
+      useSecrets: secrets.useSecrets,
       // Plan usage (GH #277). Exposed so a spec can seed a reading rather than
       // wait for a real agent to report one, which no fixture agent does.
       useAgentUsage: agentUsage.useAgentUsage,

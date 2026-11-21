@@ -1,0 +1,16 @@
+[package]
+name = "termic-server"
+version = "0.1.0"
+description = "Headless Termic host: holds agent PTYs on a box and speaks the remote-control stream over `ssh <box> termic-server bridge`."
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+workspace = "../src-tauri"
+
+[dependencies]
+termic-remote = { path = "../termic-remote" }
+termic-proto = { path = "../termic-proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.8"
+libc = "0.2"

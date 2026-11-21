@@ -85,6 +85,7 @@ export interface TermicApi {
   };
   useUI: { getState: () => any; setState: (p: any) => void };
   pinWindowFocus: (focused: boolean | null) => void;
+  useRemote: { getState: () => any; setState: (p: any) => void };
   usePrefs: { getState: () => any; setState: (p: any) => void; subscribe: (fn: (s: any, prev: any) => void) => () => void };
   useRace: { getState: () => any };
   /** PR/MR store (src/store/pr.ts). Specs seed `byTask` directly to render
@@ -1212,6 +1213,19 @@ export async function typeIntoAgent(taskId: string, text: string): Promise<void>
     text,
   );
   if (result !== "ok") throw new Error(`typeIntoAgent: ${result}`);
+}
+
+/** Type into the open remote task's terminal (RemoteTaskView), through
+ *  xterm's own input path, so the bytes go out exactly as typed keys do. */
+export async function typeIntoRemoteTerminal(text: string): Promise<void> {
+  const result = await browser.execute((line) => {
+    const ta = document.querySelector<HTMLTextAreaElement>('[data-testid="remote-terminal"] .xterm-helper-textarea');
+    if (!ta) return "no remote terminal is open";
+    ta.focus();
+    ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: line, bubbles: true }));
+    return "ok";
+  }, text);
+  if (result !== "ok") throw new Error(`typeIntoRemoteTerminal: ${result}`);
 }
 
 export async function submitToAgent(taskId: string, text: string): Promise<void> {

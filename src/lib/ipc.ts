@@ -1470,6 +1470,9 @@ export async function notify(
     // The banner stays silent; the sound is decoupled and reliable.
     if (opts?.sound) void playCompletionSound(opts.sound, true);
     notifSend({ title, body, extra: route ? { taskId: route.taskId, tabId: route.tabId } : undefined });
+    // The same line to paired phones that are away (src-tauri/src/push.rs;
+    // a no-op until the push relay exists).
+    invoke("phones_push", { title, body }).catch(() => {});
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }

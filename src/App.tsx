@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { listenRemoteInterrupts } from "@/lib/remoteInterrupt";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
 import { initForgeRate } from "@/store/forgeRate";
@@ -32,6 +33,7 @@ import { RightPanel } from "@/components/task/RightPanel";
 import { RaceBoard } from "@/components/task/RaceBoard";
 import { Settings } from "@/components/settings/Settings";
 import { Dialogs } from "@/components/dialogs/Dialogs";
+import { RemoteGlobal } from "@/components/remote/RemoteGlobal";
 import { Toaster } from "@/components/ui/Toaster";
 import { GuideLayer } from "@/components/guide/GuideLayer";
 import { useGuide } from "@/store/guide";
@@ -179,6 +181,15 @@ export function App() {
     // Answer the `termic` CLI control socket's orchestration RPCs
     // (src-tauri/src/cli_server.rs). Idempotent; runs in release builds.
     const unlistenCliRpc = initCliRpc();
+    // A Stop from a phone ends the turn like a watched Escape
+    // (lib/remoteInterrupt.ts).
+    const unlistenRemoteInterrupt = listenRemoteInterrupts();
+    // A server's projects and tasks were mirrored into the store
+    // (src-tauri/src/server_projects.rs): show them.
+    const unlistenStoreReload = listen("store://reload", () => { void loadAll(); });
+    // A phone opened a task's chat or terminal (remote_server.rs
+    // seen_by_phone): what it finished is read, as a visit here reads it.
+    const unlistenRemoteSeen = listen<string>("remote://seen", (e) => useApp.getState().markSeenRemotely(e.payload));
     // Push per-task agent state down to the Rust cache the CLI's
     // list/status/wait verbs read (lib/cliAgentState.ts).
     const stopAgentPush = initAgentStatePush();
@@ -218,6 +229,9 @@ export function App() {
       window.removeEventListener("focus", onFocus);
       unlistenStatus.then(u => u());
       unlistenCliRpc.then(u => u());
+      unlistenRemoteInterrupt.then(u => u()).catch(() => {});
+      unlistenStoreReload.then(u => u()).catch(() => {});
+      unlistenRemoteSeen.then(u => u()).catch(() => {});
       deepLinks.then(u => u());
       stopAgentPush();
       stopTrayAttention();
@@ -302,6 +316,7 @@ export function App() {
         </div>
       )}
       <Dialogs />
+      <RemoteGlobal />
       <GuideLayer />
       <Toaster />
     </>

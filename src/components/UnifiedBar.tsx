@@ -4,7 +4,7 @@
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
@@ -18,7 +18,7 @@ import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Flower2,
-  MessageSquareText, Library, Palette,
+  MessageSquareText, Library, Palette, Play, Square,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -30,6 +30,13 @@ import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
+import { remoteCall, req, useRemote } from "@/lib/remote";
+import { i18n } from "@/lib/i18n";
+import { resolveRunTargets } from "@/lib/runTabs";
+import { useServerShells } from "@/components/remote/RemoteTaskView";
+import { openExternalUrl } from "@/lib/ipc";
+import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
+import type { Task } from "@/lib/types";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -270,7 +277,61 @@ export function UnifiedBar() {
             palette's global commands (new task, project picker, settings)
             work with nothing selected. */}
         <CommandPaletteButton />
-        {task && proj && (
+        {task && proj && proj.server && (
+          <>
+            {/* A server project's task (docs/plans/server-projects.md): run,
+                prompts, send to main, sandbox and open-with act on this Mac
+                and land with their stages; archive works through the box. */}
+            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
+            {/* Run: the project's run script (Settings or the box's
+                `.termic.yaml`) in a new shell tab on the box. */}
+            <ServerRun task={task} />
+            {/* Prompts go to the agent on the box through termic-server's
+                `send` (what `termic send` uses). */}
+            <DropdownRoot>
+              <Tip content={t("unifiedBar.prompts")} side="bottom">
+                <DropdownTrigger asChild>
+                  <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="prompts-menu">
+                    <MessageSquareText className="h-4 w-4" />
+                    <span>{t("unifiedBar.prompts")}</span>
+                  </Button>
+                </DropdownTrigger>
+              </Tip>
+              <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+                {enabledPrompts.length === 0 && (
+                  <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">{t("unifiedBar.promptsEmpty")}</div>
+                )}
+                {enabledPrompts.map(p => (
+                  <DropdownItem key={p.id} data-testid="server-prompt" onSelect={() => {
+                    const title = promptTitle(p, t);
+                    void remoteCall(proj.server!, req("send", { task: task.id, prompt: p.body }), 60_000)
+                      .then(r => {
+                        if (!r.ok) throw new Error(r.error?.message ?? "send failed");
+                        useUI.getState().pushToast(i18n.t("backend:runPrompt.sentTo", { title, label: task.name }), "success");
+                      })
+                      .catch(e => useUI.getState().pushToast(String(e), "error"));
+                  }}>
+                    <span className="min-w-0 flex-1 truncate">{promptTitle(p, t)}</span>
+                  </DropdownItem>
+                ))}
+              </DropdownMenu>
+            </DropdownRoot>
+            <Tip content={t("unifiedBar.archiveTask")} side="bottom">
+              <Button size="icon" variant="icon" onClick={() => { void confirmAndArchive(task); }} data-testid="archive-task">
+                <Archive className="h-4 w-4" />
+              </Button>
+            </Tip>
+            <ServerOpenWith serverId={proj.server} path={task.path} />
+            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
+            <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
+              <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
+                <PanelRight className="h-4 w-4" />
+              </Button>
+            </Tip>
+          </>
+        )}
+        {task && proj && !proj.server && (
           <>
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             {/* Popped-out run controls (GH #54): Setup + Run/Stop live up
@@ -314,41 +375,7 @@ export function UnifiedBar() {
                 nothing to send). Hard-blocks on a dirty main checkout
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
-            {!task.is_main_checkout && (
-              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
-                <Button size="sm" variant="ghost" className="gap-1.5"
-                  onClick={async () => {
-                    const ok = await useUI.getState().askConfirm({
-                      title: t("unifiedBar.sendToMainTitle", { name: taskCrumb }),
-                      message: t("unifiedBar.sendToMainMessage", { path: proj.root_path }),
-                      confirmLabel: t("unifiedBar.sendToMain"),
-                    });
-                    if (!ok) return;
-                    try {
-                      const r = await taskSendDiffToMain(task.id);
-                      // Build a compact, human-readable summary. Quietly
-                      // omit the zero halves so it reads as a result, not
-                      // a checklist of nothings-happened.
-                      const parts: string[] = [];
-                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
-                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
-                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
-                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
-                    } catch (e) {
-                      await useUI.getState().askConfirm({
-                        title: t("unifiedBar.sendToMainFailed"),
-                        message: String(e),
-                        confirmLabel: t("ok", { ns: "common" }),
-                        cancelLabel: "",
-                        destructive: true,
-                      });
-                    }
-                  }}>
-                  <ArrowUpToLine className="h-4 w-4" />
-                  <span>{t("unifiedBar.sendToMain")}</span>
-                </Button>
-              </Tip>
-            )}
+            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
             <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />
             {(() => {
               if (task.docker_sandbox_enabled) {
@@ -412,3 +439,139 @@ export function UnifiedBar() {
   );
 }
 
+/** Send to main: the task's diff into the project's main checkout. A server
+ *  task's runs on the box (lib.rs send_diff_to_main_on_server). */
+function SendToMainButton({ task, rootPath, crumb }: { task: { id: string }; rootPath: string; crumb: string }) {
+  const { t } = useTranslation("chrome");
+  return (
+              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
+                <Button size="sm" variant="ghost" className="gap-1.5" data-testid="send-to-main"
+                  onClick={async () => {
+                    const ok = await useUI.getState().askConfirm({
+                      title: t("unifiedBar.sendToMainTitle", { name: crumb }),
+                      message: t("unifiedBar.sendToMainMessage", { path: rootPath }),
+                      confirmLabel: t("unifiedBar.sendToMain"),
+                    });
+                    if (!ok) return;
+                    try {
+                      const r = await taskSendDiffToMain(task.id);
+                      // Build a compact, human-readable summary. Quietly
+                      // omit the zero halves so it reads as a result, not
+                      // a checklist of nothings-happened.
+                      const parts: string[] = [];
+                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
+                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
+                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
+                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
+                    } catch (e) {
+                      await useUI.getState().askConfirm({
+                        title: t("unifiedBar.sendToMainFailed"),
+                        message: String(e),
+                        confirmLabel: t("ok", { ns: "common" }),
+                        cancelLabel: "",
+                        destructive: true,
+                      });
+                    }
+                  }}>
+                  <ArrowUpToLine className="h-4 w-4" />
+                  <span>{t("unifiedBar.sendToMain")}</span>
+                </Button>
+              </Tip>
+  );
+}
+
+/** Editors that open a folder on another machine over SSH, by URL. */
+const SSH_EDITORS = [
+  { id: "vscode", name: "VS Code", scheme: "vscode" },
+  { id: "cursor", name: "Cursor", scheme: "cursor" },
+] as const;
+
+/** Open with, for a server task: the worktree is on the box, so an editor
+ *  opens it over SSH (its Remote-SSH URL) rather than as a local folder. */
+function ServerOpenWith({ serverId, path }: { serverId: string; path: string }) {
+  const { t } = useTranslation("chrome");
+  const ssh = useRemote(s => s.machines.find(m => m.id === serverId)?.ssh ?? null);
+  if (!ssh) return null;
+  const open = (ed: typeof SSH_EDITORS[number]) => {
+    const url = `${ed.scheme}://vscode-remote/ssh-remote+${ssh}${path}`;
+    openExternalUrl(url, "").catch((e: unknown) =>
+      useUI.getState().pushToast(t("openWith.openFailed", { name: ed.name, error: String(e) }), "error"));
+  };
+  return (
+    <DropdownRoot>
+      <Tip content={t("openWith.openWith")} side="bottom">
+        <DropdownTrigger asChild>
+          <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-open-with">
+            <Code2 className="h-4 w-4" />
+            <span>{t("openWith.openWith")}</span>
+          </Button>
+        </DropdownTrigger>
+      </Tip>
+      <DropdownMenu align="end" className="min-w-[180px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {SSH_EDITORS.map(ed => (
+          <DropdownItem key={ed.id} data-testid={`server-open-${ed.id}`} onSelect={() => open(ed)}>
+            <span>{t("openWith.openIn", { label: ed.name })}</span>
+          </DropdownItem>
+        ))}
+      </DropdownMenu>
+    </DropdownRoot>
+  );
+}
+
+/** Run for a server task: the run script, and any custom run commands,
+ *  each in its own shell tab on the box. While the Run tab is open, Run is
+ *  Stop, which closes it and so ends the script there (pty_kill). */
+function ServerRun({ task }: { task: Task }) {
+  const { t } = useTranslation("chrome");
+  const runTab = useServerShells(s => (s.shells[task.id] ?? []).find(id => s.meta[id]?.kind === "run"));
+  const [customs, setCustoms] = useState<ResolvedCommand[]>([]);
+  const refresh = useCallback(() => {
+    resolveCustomCommands(task.project_id).then(setCustoms).catch(() => setCustoms([]));
+  }, [task.project_id]);
+  useEffect(() => { refresh(); }, [refresh]);
+  const start = (label: string, script: string, kind?: "run") =>
+    useServerShells.getState().add(task.id, { label, input: `${script}\r`, kind });
+  const runScript = () => {
+    void resolveRunTargets(task.id).then(targets => {
+      const host = targets.find(x => x.member === "") ?? targets[0];
+      if (!host) {
+        useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
+        return;
+      }
+      start(t("panels:runControls.run"), host.script, "run");
+    });
+  };
+  if (runTab) {
+    return (
+      <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-stop"
+        onClick={() => useServerShells.getState().close(task.id, runTab)}>
+        <Square className="h-3.5 w-3.5" />
+        <span>{t("panels:runControls.stop")}</span>
+      </Button>
+    );
+  }
+  const button = (
+    <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={customs.length ? undefined : runScript}>
+      <Play className="h-4 w-4" />
+      <span>{t("panels:runControls.run")}</span>
+    </Button>
+  );
+  if (!customs.length) return button;
+  return (
+    <DropdownRoot onOpenChange={(o) => { if (o) refresh(); }}>
+      <DropdownTrigger asChild>{button}</DropdownTrigger>
+      <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+        <DropdownItem data-testid="server-run-script" onSelect={runScript}>
+          <Play className="h-4 w-4" />
+          <span>{t("panels:runControls.run")}</span>
+        </DropdownItem>
+        <DropdownSeparator />
+        {customs.map((c, i) => (
+          <DropdownItem key={`${c.source}-${i}`} data-testid="server-run-custom" onSelect={() => start(c.label || c.command, c.command)}>
+            <span className="min-w-0 flex-1 truncate">{c.label || c.command}</span>
+          </DropdownItem>
+        ))}
+      </DropdownMenu>
+    </DropdownRoot>
+  );
+}

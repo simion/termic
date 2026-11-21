@@ -699,6 +699,13 @@ draw, in the fixed order above (`groupBadgeKinds`, drawn by `WorkMarkList` in
 [src/components/sidebar/RollupMarks.tsx](../src/components/sidebar/RollupMarks.tsx)).
 Open, they carry none, because the rows show their own.
 
+Opening and shutting animates (240ms height and fade on the iOS curve,
+[src/components/ui/Expand.tsx](../src/components/ui/Expand.tsx)) for a
+project, a folder and each task group row. Shut content still unmounts:
+it is held only for the exit animation, the wrapper is `display:
+contents` at rest so it adds no box, and nothing animates on first mount
+or under reduced motion.
+
 A project's marks sit after its name, NOT in the action cluster on the right:
 the filter toggle and the cog there keep their space while invisible, which
 would strand the marks some 50px from the edge. A folder's sit after its name

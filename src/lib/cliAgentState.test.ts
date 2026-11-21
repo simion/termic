@@ -91,6 +91,20 @@ describe("computeAgentStates aggregation", () => {
     expect(computeAgentStates().emptied.hydrated).toBe(true);
   });
 
+  it("a server project's task reports the box's state, not its (absent) tabs", () => {
+    useApp.setState({
+      projects: [{ id: "p1", server: "box" }] as never,
+      tasks: [task("busy"), task("asleep"), task("unknown")],
+      tabs: {},
+    });
+    const machines = [{ id: "box", tasks: [{ id: "busy", state: "working" }, { id: "asleep", state: "inactive" }] }] as never;
+    const s = computeAgentStates(useApp.getState(), machines);
+    expect(s.busy).toMatchObject({ state: "working", tabs: 1, hydrated: true });
+    expect(s.asleep).toMatchObject({ state: "inactive", tabs: 0 });
+    expect(s.unknown.state).toBe("inactive");
+    useApp.setState({ projects: [] });
+  });
+
   it("counts only terminal tabs and reports the count", () => {
     const editor = { id: "e", type: "editor" } as unknown as Tab;
     const s = statesFor({ mixed: [term({ workState: "idle" }), editor, term({ workState: "idle" })] });

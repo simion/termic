@@ -52,6 +52,7 @@ import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { taskHasOpenAgent } from "@/lib/taskBoardState";
 import { sidebarTaskOrder } from "@/lib/taskGroups";
 import type { TerminalTab } from "@/lib/types";
+import { useServerShells } from "@/components/remote/RemoteTaskView";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
 
@@ -913,6 +914,15 @@ export function closeInnermost(): void {
   if (inBottom() && taskId) {
     const bottomId = state.activeBottomTab[taskId];
     if (bottomId) state.closeBottomTab(taskId, bottomId);
+    return;
+  }
+  // A server task's view: close the shell or file tab on screen (never
+  // the agent, which runs on the box past any tab).
+  if (taskId && (document.activeElement as HTMLElement | null)?.closest?.('[data-testid="remote-task-view"]')) {
+    const shells = useServerShells.getState();
+    const view = shells.view[taskId] ?? "agent";
+    if ((shells.shells[taskId] ?? []).includes(view)) shells.close(taskId, view);
+    else if (view !== "agent") state.closeTab(taskId, view);
     return;
   }
   if (inSplitPane() && taskId) {

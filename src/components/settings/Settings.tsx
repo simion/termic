@@ -8,7 +8,9 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Smartphone, Server, Monitor } from "lucide-react";
+import { useRemote } from "@/lib/remote";
+import { mine } from "@/components/remote/RemoteMachines";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -22,6 +24,7 @@ import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
 import { DockerSection } from "./DockerSection";
+import { RemoteSection } from "./RemoteSection";
 
 // Lazy: it pulls in the prefs registry and the sync module, neither of which
 // belongs on the app-start path (Settings itself is imported by App).
@@ -32,10 +35,18 @@ const SecretsSection = lazy(() => import("./secretsSettings/SecretsSection").the
 
 export function Settings() {
   const { t } = useTranslation("settings");
+  const { t: tr } = useTranslation("remote");
   const view = useApp(s => s.view);
   const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
-  const projects = useApp(s => s.projects);
+  const allProjects = useApp(s => s.projects);
+  // This computer's projects, then each server with its projects, then the
+  // paired computers: the sidebar's order.
+  const projects = allProjects.filter(p => !p.server);
+  const all = useRemote(s => s.machines);
+  const machines = all.filter(mine);
+  const servers = machines.filter(m => m.kind === "server");
+  const paired = machines.filter(m => m.kind !== "server");
 
   const tab = view.settingsTab ?? "general";
   const repoId = view.settingsRepoId;
@@ -99,12 +110,17 @@ export function Settings() {
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
         <RailItem icon={<Terminal className="h-4 w-4" />} label={t("rail.agents")} tabId="agents"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
-        {/* One rail item for every way an agent reaches Termic: the CLI,
-            MCP, and other computers, each a tab of the same page. Right under
+        {/* One rail item for every way an agent reaches Termic: the CLI
+            and MCP, each a tab of the same page. Right under
             Agents: it is about what agents can do, which is where people look
             for it; under the sandbox pages it read as a security setting. */}
         <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} hint={t("rail.cliHint")} tabId="cli"
-          active={tab === "cli" || tab === "mcp" || tab === "peers"} onClick={() => openSettings("mcp")} />
+          active={tab === "cli" || tab === "mcp"} onClick={() => openSettings("mcp")} />
+        {/* Phones, servers and other computers: everything that reaches this
+            computer or that it reaches (docs/remote.md). "peers" is an old
+            tab id that lands here. */}
+        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} tabId="remote"
+          active={tab === "remote" || tab === "peers"} onClick={() => openSettings("remote")} />
 
         <RailDivider />
 
@@ -165,6 +181,27 @@ export function Settings() {
             />
           );
         })}
+        {servers.map(m => (
+          <div key={m.id} data-testid={`settings-rail-server-${m.id}`}>
+            <button type="button" onClick={() => openSettings("remote")}
+              className="mt-4 flex w-full items-center gap-1.5 px-2 pb-1 text-left text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]">
+              <Server className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{m.name}</span>
+            </button>
+            {allProjects.filter(p => p.server === m.id).map(p => (
+              <RailItem key={p.id} label={p.name} active={tab === "repositories" && repoId === p.id}
+                onClick={() => openSettings("repositories", p.id)} />
+            ))}
+          </div>
+        ))}
+        {paired.length > 0 && (
+          <>
+            <div className="mt-4 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("rail.paired")}</div>
+            {paired.map(m => (
+              <RailItem key={m.id} icon={<Monitor className="h-3.5 w-3.5 shrink-0" />} label={m.name}
+                active={false} onClick={() => openSettings("peers")} />
+            ))}
+          </>
+        )}
         </div>
 
         <RailFooterVersion />
@@ -179,10 +216,10 @@ export function Settings() {
           {tab === "sandbox"     && <SandboxSection />}
           {tab === "secrets"     && <Suspense fallback={null}><SecretsSection /></Suspense>}
           {tab === "docker"      && <DockerSection />}
+          {(tab === "remote" || tab === "peers") && <RemoteSection />}
           {/* Agent access: the CLI and MCP are two presentations of the
-              same verbs (docs/ideas/mcp.md), and other computers are a
-              third, reached through either (docs/peers.md). */}
-          {(tab === "cli" || tab === "mcp" || tab === "peers") && <AgentAccessSection tab={tab} />}
+              same verbs (docs/ideas/mcp.md). */}
+          {(tab === "cli" || tab === "mcp") && <AgentAccessSection tab={tab} />}
           {tab === "appearance"  && <AppearanceSection />}
           {tab === "agents"      && <AgentsSection />}
           {tab === "prompts"     && <PromptLibrarySection />}

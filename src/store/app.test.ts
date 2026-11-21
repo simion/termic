@@ -128,6 +128,21 @@ describe("setWorkState", () => {
     useUI.getState().setWindowless(false);
   });
 
+  it("markSeenRemotely: a phone reading the task clears done, keeps the active tab, bails when nothing changes", () => {
+    const taskId = "ws-phone";
+    const done = makeTermTab({ workState: "done", workDoneAt: Date.now() - 1_000 });
+    const other = makeTermTab({ workState: "idle" });
+    addTab(taskId, other);
+    addTab(taskId, done);
+    useApp.getState().setActiveTabId(taskId, other.id);
+    useApp.getState().markSeenRemotely(taskId);
+    expect(getTabWorkState(taskId, done.id)).toBe("idle");
+    expect(useApp.getState().activeTab[taskId]).toBe(other.id);
+    const before = useApp.getState();
+    useApp.getState().markSeenRemotely(taskId);
+    expect(useApp.getState()).toBe(before);
+  });
+
   it("sticky done: a busy signal right after the done is ignored", () => {
     const taskId = "ws1";
     // Claude flickers ✳ ↔ spinner for a few frames after answering; that is

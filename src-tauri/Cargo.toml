@@ -3,7 +3,7 @@
 # Cargo.lock and target/ where every script, CI cache key, and Makefile
 # path already expects them.
 [workspace]
-members = ["../termic-proto", "../termic-cli"]
+members = ["../termic-proto", "../termic-cli", "../termic-remote", "../termic-server"]
 
 [package]
 name = "termic"
@@ -93,6 +93,9 @@ tauri-plugin-deep-link = "2"
 # Wire types + framing for the CLI control socket (cli_server.rs). The
 # same crate termic-cli links, so server and client cannot drift.
 termic-proto = { path = "../termic-proto" }
+termic-remote = { path = "../termic-remote" }
+# The phone pairing QR code (peers.rs), drawn as SVG; no image crates.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # canonicalize() without Windows' `\\?\` verbatim prefix, which cmd.exe (and
 # so every npm `.cmd` agent shim) refuses as a working directory. A no-op
 # re-export of std on unix.

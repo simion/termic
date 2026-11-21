@@ -126,7 +126,11 @@ use std::io::{self, BufRead, Read, Write};
 /// script in its Run tab, the same tab the app's Run button drives. A v24
 /// server does not know the verb, and the version check says "restart the
 /// app" where the bare failure would read as a broken command.
-pub const PROTOCOL_VERSION: u32 = 25;
+///
+/// v26: the `pin` verb pins or unpins a task in the sidebar (a pinned task
+/// stays listed whatever the filters say), so a remote client or an agent
+/// can do what the row's Pin does. A v25 server does not know it.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -699,6 +703,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// Stop a task's agent: its live PTYs are ended (SIGTERM, then
+    /// SIGKILL). The task, worktree and session stay; sending to it or
+    /// opening it starts the agent again.
+    Stop {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Rename a task: the sidebar label ONLY. The branch and worktree
     /// directory keep their creation-time names (they are pushed /
     /// referenced by live PTY cwds; moving them is not this verb's job).
@@ -712,6 +724,19 @@ pub enum Command {
         /// same-project live duplicate is a Conflict.
         name: String,
         /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// v26: pin or unpin a task in the sidebar, as the row's Pin does: a
+    /// pinned task stays listed whatever the sidebar's filters say. Pins by
+    /// default; `pinned: false` unpins. cwd-aware when `task` absent.
+    Pin {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default = "pin_default")]
+        pinned: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
@@ -858,12 +883,33 @@ pub enum Command {
         path: String,
         #[serde(default)]
         non_git: bool,
+        /// Clone this git URL into `path` first (which must not exist yet),
+        /// then register it. For a machine you only reach remotely (a
+        /// termic-server box), where nothing else can put a repo there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clone: Option<String>,
     },
     /// Registered projects with live-task counts.
     ProjectList,
     /// Unregister a project. Archives and deletes ALL its tasks; the
     /// CLI confirms before sending.
     ProjectRemove { name: String },
+    /// Run a program in a folder and return what it printed: termic-server
+    /// only (docs/plans/server-projects.md), reached through the desktop's
+    /// own ssh bridge, and only inside a registered project or one of its
+    /// worktrees. The desktop answers it with Unsupported: an agent or a
+    /// paired machine must never run arbitrary commands through it.
+    Exec {
+        cwd: String,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env: Vec<(String, String)>,
+        /// Bytes for the program's stdin, base64.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
     /// This machine, the machines paired with it, and the unpaired ones in
     /// sight on the LAN (v22, docs/peers.md).
     PeerList,
@@ -1160,12 +1206,15 @@ pub enum ReplyData {
     Prop(PropData),
     Quit(QuitData),
     Archive(ArchiveData),
+    Stop(StopData),
     Rename(RenameData),
+    Pin(PinData),
     Group(GroupData),
     Run(RunData),
     Pad(PadData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
+    Exec(ExecData),
     ProjectRemove(ProjectRemoveData),
     Send(SendData),
     Apply(ApplyData),
@@ -1477,11 +1526,31 @@ pub struct ArchiveData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StopData {
+    pub task_id: String,
+    pub name: String,
+    pub project: String,
+    /// Agent PTYs that were running and are now ended.
+    pub stopped_agents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RenameData {
     /// The task AFTER the rename, re-read from disk (name is the new one).
     pub task: TaskSummary,
     /// What the task was called before, for "renamed X to Y" output.
     pub old_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PinData {
+    /// The task after the change, re-read from disk.
+    pub task: TaskSummary,
+    pub pinned: bool,
+}
+
+fn pin_default() -> bool {
+    true
 }
 
 /// A task's sidebar task group, as `group` and task summaries report it.
@@ -1565,6 +1634,14 @@ pub struct PadData {
     pub truncated: bool,
 }
 
+/// What `exec` printed: stdout base64 (it may be binary), stderr as text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ExecData {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProjectInfo {
     pub id: String,
@@ -1579,6 +1656,12 @@ pub struct ProjectInfo {
     /// v24: a multi-repo project's member repos, in project order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<ProjectMemberInfo>,
+    /// The slug of the profile it belongs to. Absent with no profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// The server it lives on, by name. Absent for a project here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// One member repo of a multi-repo project (v24).
@@ -2621,6 +2704,7 @@ mod tests {
             Command::Quit { commit: false },
             Command::Quit { commit: true },
             Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::Stop { task: "fix-auth".into(), project: Some("web".into()) },
             Command::Rename {
                 task: Some("fix-auth".into()),
                 project: Some("web".into()),
@@ -2633,6 +2717,8 @@ mod tests {
                 name: "retitled".into(),
                 cwd: Some("/tasks/web/x".into()),
             },
+            Command::Pin { task: Some("fix-auth".into()), project: Some("web".into()), pinned: true, cwd: None },
+            Command::Pin { task: None, project: None, pinned: false, cwd: Some("/tasks/web/x".into()) },
             Command::PadList { task: None, project: None, scope: None, cwd: Some("/tasks/web/x".into()) },
             Command::PadNew {
                 task: Some("fix-auth".into()),
@@ -2654,8 +2740,8 @@ mod tests {
             Command::PadRead { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadRemove { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadClear { task: None, project: Some("web".into()), scope: Some("project".into()), cwd: None },
-            Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
-            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
+            Command::ProjectAdd { path: "/repo/web".into(), non_git: false, clone: None },
+            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true, clone: None },
             Command::ProjectList,
             Command::ProjectRemove { name: "web".into() },
             Command::PeerList,
@@ -2787,6 +2873,8 @@ mod tests {
                 },
                 ProjectMemberInfo { name: "docs".into(), root_path: "/src/docs".into(), non_git: true, base_branch: String::new() },
             ],
+            profile: None,
+            server: None,
         }
     }
 
@@ -3075,6 +3163,8 @@ mod tests {
                         default_agent: "claude".into(),
                         project_type: "single".into(),
                         members: Vec::new(),
+                        profile: None,
+                        server: None,
                     },
                     shop_project(),
                 ],

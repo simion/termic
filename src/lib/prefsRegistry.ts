@@ -182,6 +182,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "commandPaletteThemeRecent", scoped: false, class: "local", reason: "recent palette theme picks" },
   { key: "commandPaletteThemeFilter", scoped: false, class: "local", reason: "palette theme list dark / light toggle" },
   { key: "sidebarWidth", scoped: false, class: "local", reason: "panel size" },
+  { key: "termic.remoteFolded", scoped: false, class: "local", reason: "collapse state of other machines' sidebar sections, which are per machine" },
 
   // ── Task view layout ──
   { key: "rightPanelHidden", scoped: false, class: "local", reason: "collapse state" },

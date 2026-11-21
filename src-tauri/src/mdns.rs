@@ -449,6 +449,14 @@ fn interface_addrs() -> Vec<Ipv4Addr> {
 
 #[cfg(windows)]
 fn interface_addrs() -> Vec<Ipv4Addr> {
+    windows_addrs(true)
+}
+
+/// Every up, non-loopback IPv4 address. `multicast_only` is discovery's
+/// filter; the phone's reachable list passes false, because a VPN adapter
+/// (Tailscale's) has no multicast and is exactly the away-from-home path.
+#[cfg(windows)]
+fn windows_addrs(multicast_only: bool) -> Vec<Ipv4Addr> {
     use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
@@ -493,7 +501,7 @@ fn interface_addrs() -> Vec<Ipv4Addr> {
             cur = a.Next;
             if a.OperStatus != IfOperStatusUp
                 || a.IfType == IF_TYPE_SOFTWARE_LOOPBACK
-                || a.Anonymous2.Flags & IP_ADAPTER_NO_MULTICAST != 0
+                || (multicast_only && a.Anonymous2.Flags & IP_ADAPTER_NO_MULTICAST != 0)
             {
                 continue;
             }
@@ -519,6 +527,58 @@ fn interface_addrs() -> Vec<Ipv4Addr> {
 #[cfg(not(any(unix, windows)))]
 fn interface_addrs() -> Vec<Ipv4Addr> {
     Vec::new()
+}
+
+/// Every address a phone or another machine might reach this one on, best
+/// first: private LAN ranges, then CGNAT (Tailscale's 100.64.0.0/10), then
+/// anything else that is up. Unlike discovery's list this includes
+/// interfaces without multicast (a VPN tunnel), and leaves out link-local.
+pub(crate) fn reachable_addrs() -> Vec<Ipv4Addr> {
+    #[cfg(unix)]
+    let mut all = {
+        let mut out = Vec::new();
+        // SAFETY: as in interface_addrs: read the list, free it once.
+        unsafe {
+            let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+            if libc::getifaddrs(&mut head) == 0 {
+                let mut cur = head;
+                while !cur.is_null() {
+                    let ifa = &*cur;
+                    cur = ifa.ifa_next;
+                    if ifa.ifa_addr.is_null() || (*ifa.ifa_addr).sa_family as i32 != libc::AF_INET {
+                        continue;
+                    }
+                    if ifa.ifa_flags & libc::IFF_UP as u32 == 0 || ifa.ifa_flags & libc::IFF_LOOPBACK as u32 != 0 {
+                        continue;
+                    }
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                    if !out.contains(&ip) {
+                        out.push(ip);
+                    }
+                }
+                libc::freeifaddrs(head);
+            }
+        }
+        out
+    };
+    #[cfg(windows)]
+    let mut all = windows_addrs(false);
+    #[cfg(not(any(unix, windows)))]
+    let mut all = interface_addrs();
+    all.retain(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local());
+    let rank = |ip: &Ipv4Addr| -> u8 {
+        let o = ip.octets();
+        if ip.is_private() {
+            0
+        } else if o[0] == 100 && (64..128).contains(&o[1]) {
+            1
+        } else {
+            2
+        }
+    };
+    all.sort_by_key(rank);
+    all
 }
 
 /// Test seam: confine discovery to the loopback interface. macOS's Local

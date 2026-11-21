@@ -25,3 +25,6 @@ resources/tinyproxy
 # termic-cli sidecar staging (built by src-tauri/build.rs / scripts/build-cli.mjs
 # into binaries/termic-cli-<triple>; arch-specific, never committed).
 /binaries/
+
+# termic-server builds (scripts/build-termic-server.mjs); README stays.
+/resources/termic-server/termic-server-*

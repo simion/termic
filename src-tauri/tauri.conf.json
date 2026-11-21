@@ -24,7 +24,8 @@
       "binaries/termic-cli"
     ],
     "resources": [
-      "resources/sounds/choo_choo.caf"
+      "resources/sounds/choo_choo.caf",
+      "resources/termic-server/*"
     ],
     "icon": [
       "icons/32x32.png",

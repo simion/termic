@@ -9,6 +9,7 @@
 // The tab was renamed "Commit" by #199 because two git surfaces made "Git"
 // ambiguous; folding them back together makes "Git" right again.
 
+import { useRemote } from "@/lib/remote";
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -247,6 +248,20 @@ export function RightPanel() {
     return () => window.removeEventListener("focus", onFocus);
   }, [task?.id, refreshGit]);
 
+  // A server task's agent runs on the box, so no local terminal settles to
+  // bump fsRevision: its row leaving "working" is the same signal.
+  const serverTaskState = useRemote(s => {
+    if (!task) return undefined;
+    const server = useApp.getState().projects.find(p => p.id === task.project_id)?.server;
+    return server ? s.machines.find(m => m.id === server)?.tasks.find(t => t.id === task.id)?.state : undefined;
+  });
+  const prevServerState = useRef(serverTaskState);
+  useEffect(() => {
+    const was = prevServerState.current;
+    prevServerState.current = serverTaskState;
+    if (task && was === "working" && serverTaskState !== "working") useApp.getState().bumpFsRevision(task.id);
+  }, [serverTaskState, task?.id]);
+
   // Agent terminal settled (fsRevision) or a git-only mutation happened
   // (gitRevision: editor save, tree rename/delete) → refresh git status in
   // place. Skip the first run (initial fetch above already covers it).
@@ -370,6 +385,8 @@ export function RightPanel() {
   // worktree-only: never for repo-root, multi-repo, or non-git tasks.
   const spotlightAvailable = !!task && !task.is_main_checkout
     && !!project?.spotlight_enabled
+    // A server project's checkout is on the box: nothing to mirror onto here.
+    && !project?.server
     && project?.type !== "multi"
     && !project?.non_git;
 
@@ -548,6 +565,7 @@ export function RightPanel() {
           <Tip content={t("rightPanel.refreshTip")} side="bottom">
             <button
               onClick={doRefresh}
+              data-testid="right-refresh"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
             >
               {/* A rotating SVG icon wobbles/looks off-center at this size
@@ -796,7 +814,7 @@ function FTab({ label, icon, active, onClick, onClose }: {
       )}
       style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
     >
-      <button onClick={onClick} className="flex items-center gap-1 px-1.5 py-1">
+      <button onClick={onClick} data-testid="foot-tab" data-tab={label} className="flex items-center gap-1 px-1.5 py-1">
         {icon}{label}
       </button>
       {onClose && (

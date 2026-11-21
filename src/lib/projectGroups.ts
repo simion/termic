@@ -39,8 +39,14 @@ export function projectSections(list: Project[]): ProjectSection[] {
 
 /** Flat project list in the ORDER the sidebar renders them (group members
  *  pulled together at the group's position). */
-export const visualProjectOrder = (list: Project[]): Project[] =>
-  projectSections(list).flatMap(s => (s.kind === "loose" ? [s.p] : s.members));
+export const visualProjectOrder = (list: Project[]): Project[] => {
+  // A server's projects draw under it in SERVERS, after this computer's.
+  // shortcut: servers in order of their first project, while the sidebar
+  // draws them in the remote store's order; upgrade if they ever disagree.
+  const local = projectSections(list.filter(p => !p.server)).flatMap(s => (s.kind === "loose" ? [s.p] : s.members));
+  const servers = [...new Set(list.filter(p => p.server).map(p => p.server!))];
+  return [...local, ...servers.flatMap(id => list.filter(p => p.server === id))];
+};
 
 /** Section list ordered so any section holding an active task floats to the
  *  top, sections keeping their relative order otherwise (Array.sort is stable).

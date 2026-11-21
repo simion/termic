@@ -730,6 +730,34 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   .termic-pop[data-state] { animation: none; }
 }
 
+/* Sidebar projects, folders and task groups opening and shutting
+   (components/ui/Expand.tsx): the block's height via grid rows 0fr <-> 1fr,
+   which reaches the content's natural height without measuring it. The
+   curve is iOS's own sheet curve, both ways, so it settles rather than
+   stops. */
+.termic-expand-in {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: termic-expand-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.termic-expand-out {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  animation: termic-expand-out 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes termic-expand-in {
+  from { grid-template-rows: 0fr; opacity: 0; }
+  to   { grid-template-rows: 1fr; opacity: 1; }
+}
+@keyframes termic-expand-out {
+  from { grid-template-rows: 1fr; opacity: 1; }
+  to   { grid-template-rows: 0fr; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .termic-expand-in, .termic-expand-out { animation: none; }
+}
+
 /* New Task's third column (an issue, PR or branch to start from) slides in
    from the right when a source opens it, so it reads as arriving from the
    choice rather than popping into an empty half of the dialog. Transform and

@@ -13,6 +13,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
+import { RemoteSidebarSection } from "@/components/remote/RemoteMachines";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
@@ -25,6 +26,8 @@ import { useUI } from "@/store/ui";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
+import { Expand } from "@/components/ui/Expand";
+import { useRemote } from "@/lib/remote";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { reportBug } from "@/lib/reportBug";
@@ -1192,7 +1195,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const projectIsActive = (pid: string) =>
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
-    !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p);
+    !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p) || !!p.server;
   // While filtering: a project shows when a task of its matches (the open
   // task counts, the tree keeps it listed), or when `project:` names it, so
   // an empty project can still be found to start a task in. The inactive
@@ -1698,6 +1701,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           ) : (
                             <span className="truncate">{p.name}</span>
                           )}
+                          {/* Lives on a server: which one, so a project with
+                              the same name here and there reads apart. */}
                           {/* Multi-repo marker sits AFTER the name so
                               project names stay vertically aligned
                               regardless of type (no snake-indent). */}
@@ -1742,6 +1747,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               <DropdownTrigger asChild>
                                 <button
                                   onClick={e => e.stopPropagation()}
+                                  // A server project has one thing to make, a
+                                  // task on the box: open its dialog straight
+                                  // away, not a menu of one item. Radix skips
+                                  // its own handler for a prevented event.
+                                  onPointerDown={p.server ? (e) => {
+                                    e.preventDefault();
+                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                  } : undefined}
+                                  onKeyDown={p.server ? (e) => {
+                                    if (e.key !== "Enter" && e.key !== " ") return;
+                                    e.preventDefault();
+                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                  } : undefined}
                                   // Icon-only, so there's no text for e2e to
                                   // match on. Keyed by project id because the
                                   // sidebar renders one per project.
@@ -1939,10 +1957,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       {p.spotlight_enabled ? t("spotlightDisable") : t("spotlightEnable")}
                     </ContextMenuItem>
                   )}
-                  <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
-                    <FolderOpen />
-                    {t("revealInFinder", { manager: FILE_MANAGER })}
-                  </ContextMenuItem>
+                  {/* A server project's folder is on the box: no Finder here. */}
+                  {!p.server && (
+                    <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
+                      <FolderOpen />
+                      {t("revealInFinder", { manager: FILE_MANAGER })}
+                    </ContextMenuItem>
+                  )}
                   <ContextMenuItem onSelect={() => copyToClipboard(p.root_path, "path")}>
                     <Copy />
                     {t("copyPath")}
@@ -1989,7 +2010,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     dragged still reads oldest-first, and new tasks append at
                     the bottom), and a live drag splices the same array — an
                     extra sort here would fight the drag. */}
-                {!collapsed && layoutTaskList(visibleTasks, groupFor).map(seg => {
+                <Expand open={!collapsed}>
+                {layoutTaskList(visibleTasks, groupFor).map(seg => {
                   const row = (w: Task) => (
                     <TaskRowSlot
                       key={w.id}
@@ -2051,11 +2073,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       dragTy={dragBlockTy}
                       onDragPointerDown={onBlockDragPointerDown}
                     >
-                      {shown.map(row)}
+                      {seg.tasks.map(w => <Expand key={w.id} open={shown.includes(w)}>{row(w)}</Expand>)}
                     </TaskGroupBlock>
                   );
                 })}
-                {!collapsed && noMatches && (
+                {noMatches && (
                   <div
                     data-testid={`project-filter-empty-${p.id}`}
                     className="ml-3 mr-1 mb-px flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
@@ -2079,14 +2101,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     Rendered after the real rows, compact mode excluded (same
                     as TaskRow's own compact branch: no room for a labeled
                     row on the icon rail). */}
-                {!collapsed && !compact && pendingForProject.map(t => (
+                {!compact && pendingForProject.map(t => (
                   <PendingTaskRow key={t.id} pending={t} />
                 ))}
                 {/* Inline name prompt renders at the BOTTOM — that's
                     where a newly-created repo-root task lands in
                     the sort order, so the row physically appears in
                     the spot it'll occupy after Enter. */}
-                {!collapsed && pendingRepoRoot?.projectId === p.id && (
+                {pendingRepoRoot?.projectId === p.id && (
                   <PendingRepoRootRow
                     mode={pendingRepoRoot.mode}
                     cli={pendingRepoRoot.cli}
@@ -2153,6 +2175,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     }}
                   />
                 )}
+                </Expand>
                 {/* "New task" under the project's tasks: the SAME dropdown
                     as the row's `+` icon, at the bottom where the new task
                     lands (the inline name row renders just above). Always on
@@ -2265,7 +2288,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       )}
                     </button>
                   </Tip>
-                  {!collapsed && members.map(renderProject)}
+                  <Expand open={!collapsed}>{members.map(renderProject)}</Expand>
                 </div>
               );
             }
@@ -2408,7 +2431,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 </ContextMenuRoot>
                 {/* Indented members with a tree guide line — reads as
                     "inside the folder" without stealing much width. */}
-                {!collapsed && (
+                <Expand open={!collapsed}>
                   <div
                     // Tint the guide line toward the group's accent so a
                     // long member list stays attributable mid-scroll. If
@@ -2419,7 +2442,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   >
                     {members.map(renderProject)}
                   </div>
-                )}
+                </Expand>
               </div>
             );
           };
@@ -2429,7 +2452,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           // FIRST member's position with all its members. Only ungrouped
           // inactive projects drop to the flat fold below. Keyboard nav
           // (useShortcuts) walks the same visualProjectOrder.
-          const sections = projectSections(activeProjects);
+          // A server's projects live under it in SERVERS (the rail keeps
+          // them inline: it draws no section headers).
+          const sections = projectSections(compact ? activeProjects : activeProjects.filter(p => !p.server));
           return (
             <>
               {/* Active projects render in place (original order). */}
@@ -2506,6 +2531,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </div>
               )}
+              {!compact && <RemoteSidebarSection projects={activeProjects.filter(p => !!p.server)} renderProject={renderProject} />}
             </>
           );
           })()}
@@ -2982,7 +3008,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
   const spotlightAvailable = !w.is_main_checkout && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
-  const isActive = activeTaskId === w.id;
+  // A server task open in the main area is the active row then, not this
+  // one (it stayed highlighted underneath: two active rows).
+  const remoteOpen = useRemote(s => s.open !== null);
+  const isActive = activeTaskId === w.id && !remoteOpen;
   // Live this session = mounted (its TaskView is rendered and owns PTYs).
   // Gates the Stop menu item; a never-visited or already-stopped task has
   // nothing to stop.
@@ -2994,7 +3023,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // on the joined id string, never the array: see the hook.
   const tabDrag = useSidebarTabDrag(w.id, terminalTabs.map(t => t.id).join(" "));
   const collectedProps = collectTaskProps(tabs);
-  const isLoaded = terminalTabs.some(t => t.ptyId);
+  // A server project's task runs on the box: its state comes from the
+  // server's own rows (server_projects.rs), there is no local PTY.
+  const serverId = project?.server;
+  const remoteState = useRemote(s => serverId ? s.machines.find(m => m.id === serverId)?.tasks.find(t => t.id === w.id)?.state : undefined);
+  const isLoaded = serverId ? !!remoteState && remoteState !== "inactive" && remoteState !== "unknown" : terminalTabs.some(t => t.ptyId);
   // The run controls the COLLAPSED header row carries, mirroring the child rows
   // that are not rendered while collapsed: one button per run tab, each with
   // the same Stop-while-live / Play-once-finished pair its own row would have
@@ -3084,15 +3117,15 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Shared with the dashboard (src/lib/taskWorkState.ts) so the two surfaces
   // showing one task can never disagree about its badge.
   const workPrefs = { settledHighlight, workingIndicator, attentionIndicator };
-  const hasAttention = taskNeedsAttention(tabs, workPrefs);
-  const hasDone = !hasAttention && taskWorkDone(tabs, workPrefs);
+  const hasAttention = remoteState === "waiting" || taskNeedsAttention(tabs, workPrefs);
+  const hasDone = !hasAttention && (remoteState === "done" || taskWorkDone(tabs, workPrefs));
   // Working aggregate is independent of settledHighlight (it's its own
   // opt-in pref) but yields to attention/done — a finished or blocked agent
   // is more actionable than one still chugging.
   // A tab the user marked unread by hand: under done, over working (the
   // precedence in taskWorkBadge).
   const hasMarked = !hasAttention && !hasDone && taskMarkedUnread(tabs);
-  const hasWorking = !hasAttention && !hasDone && !hasMarked && taskWorking(tabs, workPrefs);
+  const hasWorking = !hasAttention && !hasDone && !hasMarked && (remoteState === "working" || taskWorking(tabs, workPrefs));
   // Lowest rung: something the agent started is still running, and nothing
   // else wanted the slot. `rowDelegated` is the report itself, for the
   // tooltip; the first tab that has one speaks for the row, which matches how
@@ -3211,6 +3244,87 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     );
   }
 
+  // Move to group: the project row's menu, for tasks (both a local and a
+  // server task's menu; groups are the desktop's). The group list is READ
+  // while the menu is open rather than subscribed: a subscription here
+  // would re-render every row on every task change, for a menu nobody has
+  // open.
+  const groupMenu = menuOpen ? (() => {
+                const all = useApp.getState().tasks;
+                const strays = crossProjectStrays(all);
+                const groups = liveGroups(all.filter(t => t.project_id === w.project_id && !strays.has(t.id)));
+                const run = (p: Promise<void>) => { void p.finally(() => loadAll()); };
+                return (
+                  <DropdownSub>
+                    <DropdownSubTrigger className="justify-between" data-testid={`task-move-to-group-${w.id}`}>
+                      <span className="flex items-center gap-2">
+                        <Folder className="h-4 w-4" />
+                        <span>{t("taskGroup.moveToGroup")}</span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                    </DropdownSubTrigger>
+                    <DropdownSubContent className="max-h-80 overflow-y-auto">
+                      {groups.map(g => {
+                        // Join through a live member, not the group id: that is
+                        // the lead's task id, and the lead may be archived.
+                        const via = all.find(t => !t.archived && t.id !== w.id && t.group?.id === g.id && t.project_id === w.project_id)?.id;
+                        const current = w.group?.id === g.id;
+                        return (
+                          <DropdownItem
+                            key={g.id}
+                            className="items-center [&>svg]:mt-0"
+                            data-testid={`task-move-to-group-${w.id}-${g.id}`}
+                            onSelect={() => {
+                              if (current || !via) return;
+                              // Open it so the moved task stays in view.
+                              setTreeFold("taskGroup", g.id, false, compact);
+                              run(taskGroupJoin(w.id, via));
+                            }}
+                          >
+                            {current
+                              ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                              : <span className="block h-2.5 w-2.5 shrink-0 rounded-full mx-0.5" style={{ backgroundColor: taskGroupColorCss(g) }} />}
+                            <span className="truncate">{groupLabel(g, all, t)}</span>
+                          </DropdownItem>
+                        );
+                      })}
+                      {groups.length > 0 && <DropdownSeparator />}
+                      <DropdownItem
+                        className="items-center [&>svg]:mt-0"
+                        data-testid={`task-new-group-${w.id}`}
+                        onSelect={() => {
+                          void taskGroupNew(w.id, nextGroupColor(all))
+                            .then(() => loadAll())
+                            .then(() => {
+                              // Offer the real name straight away, like a new
+                              // project folder. The id is read back because a
+                              // task already leading a group gets a fresh one.
+                              // The draft starts as the label the group shows:
+                              // the task's name either way (followed or stored).
+                              const gid = useApp.getState().tasks.find(t => t.id === w.id)?.group?.id;
+                              if (gid && !compact) useUI.setState({ groupRenaming: { groupId: gid, value: w.name } });
+                            })
+                            .catch(() => loadAll());
+                        }}
+                      >
+                        <FolderPlus className="h-4 w-4" />
+                        <span>{t("taskGroup.newGroup")}</span>
+                      </DropdownItem>
+                      {w.group && (
+                        <DropdownItem
+                          className="items-center [&>svg]:mt-0"
+                          data-testid={`task-leave-group-${w.id}`}
+                          onSelect={() => run(taskGroupLeave(w.id))}
+                        >
+                          <FolderMinus className="h-4 w-4" />
+                          <span>{t("taskGroup.removeFromGroup")}</span>
+                        </DropdownItem>
+                      )}
+                    </DropdownSubContent>
+                  </DropdownSub>
+                );
+              })() : null;
+
   return (
     // `data-sidebar-task-row` spans the header AND every expanded tab row, so
     // an e2e spec can scope "the work badge the sidebar shows for this task"
@@ -3227,6 +3341,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
       <div
         data-sidebar-task-id={w.id}
         data-sidebar-task-project-id={w.project_id}
+        data-remote-state={remoteState}
         data-guide={isActive ? "active-task-row" : undefined}
         style={dragging ? { transform: `translateY(${dragTy}px)`, position: "relative", zIndex: 20 } : undefined}
         onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, w) : undefined}
@@ -3460,6 +3575,64 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               // the trigger highlighted with a focus ring is just noise.
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
+              {/* A server project's task (docs/plans/server-projects.md): what
+                  works on it today. The rest acts on this Mac (agent, sandbox,
+                  resume, schedules, duplicate) and joins as it runs on the box. */}
+              {serverId ? (
+                <>
+                  <DropdownItem
+                    className="items-center [&>svg]:mt-0"
+                    data-testid="task-menu-pin"
+                    onSelect={() => {
+                      const next = !w.pinned;
+                      setTaskPinned(w.id, next);
+                      taskSetPinned(w.id, next).catch(e => {
+                        setTaskPinned(w.id, !next);
+                        useUI.getState().pushToast(String(e), "error");
+                      });
+                    }}
+                  >
+                    {w.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                    <span>{w.pinned ? t("unpinTask") : t("pinTask")}</span>
+                  </DropdownItem>
+                  <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => setTaskRenaming(w.name)}>
+                    <Pencil className="h-4 w-4" />
+                    <span>{t("rename", { ns: "common" })}</span>
+                  </DropdownItem>
+                  {w.branch && (
+                    <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => copyToClipboard(w.branch, `"${w.branch}"`)}>
+                      <Copy className="h-4 w-4" />
+                      <span>{t("copyBranch")}</span>
+                    </DropdownItem>
+                  )}
+                  {!w.is_main_checkout && w.branch && (
+                    <DropdownItem
+                      className="items-center [&>svg]:mt-0"
+                      data-testid={`task-duplicate-${w.id}`}
+                      // The server's New task dialog, starting from this branch.
+                      onSelect={() => requestAnimationFrame(() => {
+                        const p = useApp.getState().projects.find(x => x.id === w.project_id);
+                        if (p?.server) useRemote.getState().setDialog({ newTaskOn: p.server, newTaskProject: p.name, newTaskBase: w.branch });
+                      })}
+                    >
+                      <GitBranchPlus className="h-4 w-4" />
+                      <span>{t("duplicateWorktree")}</span>
+                    </DropdownItem>
+                  )}
+                  {groupMenu}
+                  <DropdownSeparator />
+                  <DropdownItem
+                    className="items-center [&>svg]:mt-0"
+                    onSelect={async () => {
+                      if (taskRenaming !== null) return;
+                      await confirmAndArchive(w);
+                    }}
+                  >
+                    <Archive className="h-4 w-4" />
+                    <span>{t("archiveTask")}</span>
+                  </DropdownItem>
+                </>
+              ) : (<>
               {/* Leads the menu: "what else can I put in this task" is the
                   question people bring to a task row (GH #197). A submenu,
                   not a flat section, so the row's own actions stay one
@@ -3694,85 +3867,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   </span>
                 </DropdownItem>
               ))}
-              {/* Move to group: the project row's menu, for tasks. The group
-                  list is READ while the menu is open rather than subscribed:
-                  a subscription here would re-render every row on every task
-                  change, for a menu nobody has open. */}
-              {menuOpen && (() => {
-                const all = useApp.getState().tasks;
-                const strays = crossProjectStrays(all);
-                const groups = liveGroups(all.filter(t => t.project_id === w.project_id && !strays.has(t.id)));
-                const run = (p: Promise<void>) => { void p.finally(() => loadAll()); };
-                return (
-                  <DropdownSub>
-                    <DropdownSubTrigger className="justify-between" data-testid={`task-move-to-group-${w.id}`}>
-                      <span className="flex items-center gap-2">
-                        <Folder className="h-4 w-4" />
-                        <span>{t("taskGroup.moveToGroup")}</span>
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-                    </DropdownSubTrigger>
-                    <DropdownSubContent className="max-h-80 overflow-y-auto">
-                      {groups.map(g => {
-                        // Join through a live member, not the group id: that is
-                        // the lead's task id, and the lead may be archived.
-                        const via = all.find(t => !t.archived && t.id !== w.id && t.group?.id === g.id && t.project_id === w.project_id)?.id;
-                        const current = w.group?.id === g.id;
-                        return (
-                          <DropdownItem
-                            key={g.id}
-                            className="items-center [&>svg]:mt-0"
-                            data-testid={`task-move-to-group-${w.id}-${g.id}`}
-                            onSelect={() => {
-                              if (current || !via) return;
-                              // Open it so the moved task stays in view.
-                              setTreeFold("taskGroup", g.id, false, compact);
-                              run(taskGroupJoin(w.id, via));
-                            }}
-                          >
-                            {current
-                              ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
-                              : <span className="block h-2.5 w-2.5 shrink-0 rounded-full mx-0.5" style={{ backgroundColor: taskGroupColorCss(g) }} />}
-                            <span className="truncate">{groupLabel(g, all, t)}</span>
-                          </DropdownItem>
-                        );
-                      })}
-                      {groups.length > 0 && <DropdownSeparator />}
-                      <DropdownItem
-                        className="items-center [&>svg]:mt-0"
-                        data-testid={`task-new-group-${w.id}`}
-                        onSelect={() => {
-                          void taskGroupNew(w.id, nextGroupColor(all))
-                            .then(() => loadAll())
-                            .then(() => {
-                              // Offer the real name straight away, like a new
-                              // project folder. The id is read back because a
-                              // task already leading a group gets a fresh one.
-                              // The draft starts as the label the group shows:
-                              // the task's name either way (followed or stored).
-                              const gid = useApp.getState().tasks.find(t => t.id === w.id)?.group?.id;
-                              if (gid && !compact) useUI.setState({ groupRenaming: { groupId: gid, value: w.name } });
-                            })
-                            .catch(() => loadAll());
-                        }}
-                      >
-                        <FolderPlus className="h-4 w-4" />
-                        <span>{t("taskGroup.newGroup")}</span>
-                      </DropdownItem>
-                      {w.group && (
-                        <DropdownItem
-                          className="items-center [&>svg]:mt-0"
-                          data-testid={`task-leave-group-${w.id}`}
-                          onSelect={() => run(taskGroupLeave(w.id))}
-                        >
-                          <FolderMinus className="h-4 w-4" />
-                          <span>{t("taskGroup.removeFromGroup")}</span>
-                        </DropdownItem>
-                      )}
-                    </DropdownSubContent>
-                  </DropdownSub>
-                );
-              })()}
+              {groupMenu}
               {/* Duplicate: only for worktree tasks (the repo-root
                   entry IS the project's checkout, can't be branched
                   off cleanly). Pre-fills the New worktree dialog with
@@ -3826,6 +3921,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Archive className="h-4 w-4" />
                 <span>{t("archiveTask")}</span>
               </DropdownItem>
+              </>)}
             </DropdownMenu>
           </DropdownRoot>
           {/* `translate3d(0,0,0)` pins it to its own compositing layer for

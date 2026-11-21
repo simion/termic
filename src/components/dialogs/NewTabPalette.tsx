@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { isGhLogin, roleSecrets, useShellRoles } from "@/lib/shellSecrets";
 import { useSecrets } from "@/store/secrets";
 import { roleColour } from "@/lib/secretsUi";
+import { agentName, useBoxAgents, useServerShells } from "@/components/remote/RemoteTaskView";
 
 const NO_CLOSED_TABS: ClosedTabEntry[] = [];
 
@@ -73,6 +74,10 @@ export function NewTabPalette() {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const task = useApp(s => s.tasks.find(w => w.id === taskId));
+  // A server project's task: its tabs open on the box (useServerShells),
+  // and only the agents installed THERE are offered.
+  const server = useApp(s => s.projects.find(p => p.id === task?.project_id)?.server);
+  const boxAgents = useBoxAgents(server ?? undefined, open);
   const closedTabs = useApp(s => (taskId ? (s.closedTabs[taskId] ?? NO_CLOSED_TABS) : NO_CLOSED_TABS));
   const addTab = useApp(s => s.addTab);
   const addPaneTab = useApp(s => s.addPaneTab);
@@ -108,6 +113,18 @@ export function NewTabPalette() {
   const baseItems = useMemo(() => {
     if (!taskId) return [];
     const items: NewTabPaletteItem[] = [];
+    if (server) {
+      const add = useServerShells.getState().add;
+      items.push({ id: "shell", kind: "shell", title: t("newTab.terminal"), category: "terminals", iconId: "shell", run: () => add(taskId) });
+      for (const id of boxAgents) {
+        items.push({
+          id: `ag-${id}`, kind: "agent", title: agentName(id), category: "agents", iconId: resolveIconId(id, registry),
+          badge: t("newTabPalette.groupAgents"),
+          run: () => add(taskId, { label: agentName(id), input: `${id}\r`, agent: id }),
+        });
+      }
+      return items;
+    }
 
     // 1. Shell terminal
     items.push({
@@ -221,12 +238,12 @@ export function NewTabPalette() {
     }
 
     return items;
-  }, [taskId, paneId, registry, detectedClis, closedTabs, task?.project_id, t, addTab, addPaneTab, resumeClosedTab]);
+  }, [taskId, server, boxAgents, paneId, registry, detectedClis, closedTabs, task?.project_id, t, addTab, addPaneTab, resumeClosedTab]);
 
   // a shell running a Secrets role (docs/sandbox.md "Shells"), one row per
   // role. Reached by → on Terminal, or by typing; never in the default list.
   const roleItems = useMemo(() => {
-    if (!taskId) return [];
+    if (!taskId || server) return [];
     return shellRoles.map((role): NewTabPaletteItem => {
       const bound = roleSecrets(role, allSecrets);
       const hosts = [...new Set(bound.flatMap(s => s.hosts))];
@@ -251,7 +268,7 @@ export function NewTabPalette() {
         },
       };
     });
-  }, [taskId, paneId, shellRoles, allSecrets, t, addTab, addPaneTab]);
+  }, [taskId, server, paneId, shellRoles, allSecrets, t, addTab, addPaneTab]);
 
   // Fuzzy filter + custom command option
   const rows = useMemo(() => {
@@ -295,7 +312,9 @@ export function NewTabPalette() {
         category: "custom_command",
         iconId: "shell",
         run: () => {
-          if (paneId) {
+          if (server) {
+            useServerShells.getState().add(taskId, { label: trimmed, input: `${trimmed}\r` });
+          } else if (paneId) {
             addPaneTab(taskId, paneId, "shell", {
               title: trimmed,
               command: trimmed,
@@ -319,7 +338,7 @@ export function NewTabPalette() {
     }
 
     return scored;
-  }, [baseItems, roleItems, roleMode, query, paneId, taskId, addPaneTab, addTab, t]);
+  }, [baseItems, roleItems, roleMode, query, paneId, taskId, server, addPaneTab, addTab, t]);
 
   useEffect(() => {
     if (activeIdx > rows.length - 1) setActiveIdx(Math.max(0, rows.length - 1));
