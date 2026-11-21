@@ -64,7 +64,7 @@ pub(crate) struct MachineView {
     pub id: String,
     pub kind: MachineKind,
     pub name: String,
-    /// "connecting" | "online" | "offline".
+    /// "connecting" | "online" | "offline" | "disconnected" (switched off).
     pub state: String,
     /// Why it is offline, in one sentence a person can act on.
     pub error: Option<String>,
@@ -99,6 +99,35 @@ pub(crate) struct ServerRecord {
 
 fn servers_path() -> Option<PathBuf> {
     crate::global_dir().ok().map(|d| d.join(SERVERS_FILE))
+}
+
+/// Machines switched off in the sidebar (Disconnect): their row stays, no
+/// link runs until switched back on. Ids of servers and paired computers.
+const OFF_FILE: &str = "remote-off.json";
+
+fn off_path() -> Option<PathBuf> {
+    crate::global_dir().ok().map(|d| d.join(OFF_FILE))
+}
+
+pub(crate) fn load_off() -> std::collections::HashSet<String> {
+    off_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Switch a machine's link on or off, remembered across restarts.
+pub(crate) fn set_connected(id: &str, on: bool) -> Result<(), String> {
+    let mut off = load_off();
+    if on { off.remove(id); } else { off.insert(id.to_string()); }
+    let p = off_path().ok_or("no data directory")?;
+    let mut list: Vec<&String> = off.iter().collect();
+    list.sort();
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string(&list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    supervise();
+    Ok(())
 }
 
 /// A server's name for display, by its id (the id itself if unknown).
@@ -336,6 +365,7 @@ pub(crate) fn supervise() {
     for s in load_servers() {
         want.push((s.id.clone(), MachineKind::Server, s.name.clone(), Endpoint::Server(s)));
     }
+    let off = load_off();
     let mut map = links().lock().unwrap();
     let stale: Vec<String> = map.keys().filter(|id| !want.iter().any(|w| &w.0 == *id)).cloned().collect();
     for id in stale {
@@ -344,17 +374,25 @@ pub(crate) fn supervise() {
         }
     }
     for (id, kind, name, endpoint) in want {
+        // Switched off: a row with no link behind it ("disconnected").
+        let is_off = off.contains(&id);
         if let Some(l) = map.get(&id) {
-            // A rename or an edited server takes effect on the next connect.
-            l.st.lock().unwrap().name = name;
-            *l.endpoint.lock().unwrap() = endpoint;
-            continue;
+            let was_off = l.st.lock().unwrap().state == "disconnected";
+            if was_off == is_off {
+                // A rename or an edited server takes effect on the next connect.
+                l.st.lock().unwrap().name = name;
+                *l.endpoint.lock().unwrap() = endpoint;
+                continue;
+            }
+            if let Some(l) = map.remove(&id) {
+                l.halt();
+            }
         }
         let l = Arc::new(Link {
             id: id.clone(),
             kind,
             endpoint: Mutex::new(endpoint),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name }),
+            st: Mutex::new(LinkState { state: if is_off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),
@@ -364,7 +402,9 @@ pub(crate) fn supervise() {
             sock: Mutex::new(None),
         });
         map.insert(id, l.clone());
-        std::thread::spawn(move || run_link(l));
+        if !is_off {
+            std::thread::spawn(move || run_link(l));
+        }
     }
     drop(map);
     changed();
@@ -1008,6 +1048,11 @@ pub(crate) fn remote_term_size(machine: String, cols: u16, rows: u16) -> Result<
 #[tauri::command]
 pub(crate) fn remote_term_input(machine: String, data: String) -> Result<(), String> {
     term_input(&machine, &data)
+}
+
+#[tauri::command]
+pub(crate) fn remote_set_connected(machine: String, on: bool) -> Result<(), String> {
+    set_connected(&machine, on)
 }
 
 #[tauri::command]

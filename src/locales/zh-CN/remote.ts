@@ -108,6 +108,10 @@ export default {
     done: "完成",
   },
   sidebar: {
+    connect: "连接",
+    disconnect: "断开连接",
+    disconnected: "已断开",
+    pairingSettings: "配对设置",
     serversHeader: "服务器",
     pairedHeader: "已配对的电脑",
     addServer: "添加服务器",

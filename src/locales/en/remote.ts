@@ -109,6 +109,10 @@ export default {
     done: "Done",
   },
   sidebar: {
+    connect: "Connect",
+    disconnect: "Disconnect",
+    disconnected: "Disconnected",
+    pairingSettings: "Pairing settings",
     serversHeader: "Servers",
     pairedHeader: "Paired computers",
     addServer: "Add a server",

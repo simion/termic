@@ -24,7 +24,7 @@ import { prBadgeAppearance, type PrBadgeState } from "@/lib/prBadgeAppearance";
 import { prNounShort, prRef } from "@/lib/forge";
 import type { ForgeProvider } from "@/lib/types";
 import { openPath } from "@/lib/ipc";
-import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
+import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
  *  with the label, a fold, and its actions on the right. */
@@ -45,6 +45,9 @@ export function SidebarSectionHeader({ testId, icon, label, folded, onToggle, ch
 /** A machine's connection, as its icon's colour: green, amber, faded. */
 const statusIcon = (state: string) =>
   state === "online" ? "text-[var(--color-ok)]" : state === "connecting" ? "text-[var(--color-warn)]" : "text-[var(--color-fg-faint)] opacity-60";
+
+const stateLabel = (state: string, t: (k: string) => string) =>
+  state === "connecting" ? t("sidebar.connecting") : state === "disconnected" ? t("sidebar.disconnected") : t("sidebar.offline");
 
 const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
 
@@ -75,11 +78,17 @@ export function ServersSection({ projects, renderProject }: { projects: Project[
   );
 }
 
-function ServerMenuItems({ m, Item, Sep }: { m: MachineView; Item: (p: { onSelect: () => void; children: ReactNode; testId?: string; danger?: boolean }) => ReactNode; Sep: () => ReactNode }) {
+type MenuItem = (p: { onSelect: () => void; children: ReactNode; testId?: string; danger?: boolean }) => ReactNode;
+
+/** A server's or paired computer's menu (its ⋮ and right-click). */
+function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Sep: () => ReactNode }) {
   const { t } = useTranslation("remote");
   const setDialog = useRemote(s => s.setDialog);
   const openSettings = useApp(s => s.openSettings);
+  const server = m.kind === "server";
   const online = m.state === "online";
+  const off = m.state === "disconnected";
+  const switchTo = (on: boolean) => void remoteSetConnected(m.id, on).catch(e => useUI.getState().pushToast(String(e), "error"));
   const remove = async () => {
     const ok = await useUI.getState().askConfirm({ title: t("servers.removeTitle", { name: m.name }), message: t("servers.removeMessage", { name: m.name }), confirmLabel: t("servers.remove"), destructive: true });
     if (!(typeof ok === "boolean" ? ok : ok.confirmed)) return;
@@ -87,13 +96,45 @@ function ServerMenuItems({ m, Item, Sep }: { m: MachineView; Item: (p: { onSelec
   };
   return (
     <>
-      {online && <Item testId="server-menu-new-task" onSelect={() => setDialog({ newTaskOn: m.id })}>{t("sidebar.newTaskItem")}</Item>}
-      {online && <Item testId="server-menu-add-project" onSelect={() => setDialog({ newTaskOn: m.id, newTaskAdding: true })}>{t("sidebar.addProject")}</Item>}
-      {!online && <Item testId="server-menu-reconnect" onSelect={() => void remoteReconnect()}>{t("sidebar.reconnect")}</Item>}
-      <Item testId="server-menu-settings" onSelect={() => openSettings("remote")}>{t("sidebar.serverSettings")}</Item>
-      <Sep />
-      <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>
+      {server && online && <Item testId="server-menu-new-task" onSelect={() => setDialog({ newTaskOn: m.id })}>{t("sidebar.newTaskItem")}</Item>}
+      {server && online && <Item testId="server-menu-add-project" onSelect={() => setDialog({ newTaskOn: m.id, newTaskAdding: true })}>{t("sidebar.addProject")}</Item>}
+      {!online && !off && <Item testId="server-menu-reconnect" onSelect={() => void remoteReconnect()}>{t("sidebar.reconnect")}</Item>}
+      {off
+        ? <Item testId="machine-menu-connect" onSelect={() => switchTo(true)}>{t("sidebar.connect")}</Item>
+        : <Item testId="machine-menu-disconnect" onSelect={() => switchTo(false)}>{t("sidebar.disconnect")}</Item>}
+      <Item testId="server-menu-settings" onSelect={() => openSettings(server ? "remote" : "peers")}>{server ? t("sidebar.serverSettings") : t("sidebar.pairingSettings")}</Item>
+      {server && <Sep />}
+      {server && <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>}
     </>
+  );
+}
+
+/** The ⋮ button that opens a machine's menu. */
+function MachineMenuButton({ m }: { m: MachineView }) {
+  const { t } = useTranslation("remote");
+  return (
+    <DropdownRoot>
+      <DropdownTrigger asChild>
+        <button type="button" data-testid={`server-menu-${m.id}`} aria-label={t("sidebar.serverSettings")} className={headerBtn}><MoreVertical className="h-3.5 w-3.5" /></button>
+      </DropdownTrigger>
+      <DropdownMenu>
+        <MachineMenuItems m={m} Sep={() => <DropdownSeparator />}
+          Item={({ onSelect, children, testId, danger }) => <DropdownItem onSelect={onSelect} data-testid={testId} className={danger ? "text-[var(--color-err)]" : undefined}>{children}</DropdownItem>} />
+      </DropdownMenu>
+    </DropdownRoot>
+  );
+}
+
+/** Right-click on a machine's row opens the same menu. */
+function MachineContextMenu({ m, children }: { m: MachineView; children: ReactNode }) {
+  return (
+    <ContextMenuRoot>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <MachineMenuItems m={m} Sep={() => <ContextMenuSeparator />}
+          Item={({ onSelect, children: c, danger }) => <ContextMenuItem onSelect={onSelect} destructive={danger}>{c}</ContextMenuItem>} />
+      </ContextMenuContent>
+    </ContextMenuRoot>
   );
 }
 
@@ -103,19 +144,21 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
   const toggle = useRemote(s => s.toggleFold);
   const setDialog = useRemote(s => s.setDialog);
   const online = m.state === "online";
+  // Switched off: the row stays, its projects fold away until it is back on.
+  const off = m.state === "disconnected";
   const waiting = m.tasks.filter(x => x.state === "waiting").length;
   const header = (
     <div data-testid={`server-block-${m.id}`} data-state={m.state}
       className={cn("group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]", !online && "opacity-70")}>
-      <button type="button" onClick={() => toggle(m.id)} aria-expanded={!folded} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
-        {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+      <button type="button" onClick={() => toggle(m.id)} aria-expanded={!folded && !off} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
+        {folded || off ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
         <Server data-testid={`server-icon-${m.id}`} className={cn("h-4 w-4 shrink-0", statusIcon(m.state))} />
         <span className="truncate text-[var(--color-fg)]">{m.name}</span>
-        {!online && <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{m.state === "connecting" ? t("sidebar.connecting") : t("sidebar.offline")}</span>}
+        {!online && <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{stateLabel(m.state, t)}</span>}
         {online && waiting > 0 && <span className="flex items-center gap-0.5 px-1 text-[11px] tabular-nums text-[var(--color-warn)]"><Bell className="h-3 w-3" />{waiting}</span>}
       </button>
       <div className="flex shrink-0 items-center gap-0.5">
-        {!online && (
+        {!online && !off && (
           <Tip content={m.error ?? t("sidebar.reconnect")}>
             <button type="button" aria-label={t("sidebar.reconnect")} onClick={() => void remoteReconnect()} className={headerBtn}><RefreshCw className="h-3.5 w-3.5" /></button>
           </Tip>
@@ -125,31 +168,17 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
             <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => setDialog({ newTaskOn: m.id })} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
           </Tip>
         )}
-        <DropdownRoot>
-          <DropdownTrigger asChild>
-            <button type="button" data-testid={`server-menu-${m.id}`} aria-label={t("sidebar.serverSettings")} className={headerBtn}><MoreVertical className="h-3.5 w-3.5" /></button>
-          </DropdownTrigger>
-          <DropdownMenu>
-            <ServerMenuItems m={m} Sep={() => <DropdownSeparator />}
-              Item={({ onSelect, children, testId, danger }) => <DropdownItem onSelect={onSelect} data-testid={testId} className={danger ? "text-[var(--color-err)]" : undefined}>{children}</DropdownItem>} />
-          </DropdownMenu>
-        </DropdownRoot>
+        <MachineMenuButton m={m} />
       </div>
     </div>
   );
   return (
     <div>
-      <ContextMenuRoot>
-        <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
-        <ContextMenuContent>
-          <ServerMenuItems m={m} Sep={() => <ContextMenuSeparator />}
-            Item={({ onSelect, children, danger }) => <ContextMenuItem onSelect={onSelect} destructive={danger}>{children}</ContextMenuItem>} />
-        </ContextMenuContent>
-      </ContextMenuRoot>
-      {!online && !folded && m.error && (
+      <MachineContextMenu m={m}>{header}</MachineContextMenu>
+      {!online && !off && !folded && m.error && (
         <div className="mx-2 mt-0.5 text-[11.5px] text-[var(--color-fg-faint)]">{m.error}</div>
       )}
-      {!folded && (
+      {!folded && !off && (
         <div className="flex flex-col gap-0.5">
           {projects.length === 0
             ? <div className="flex h-[var(--task-row-h)] items-center px-2 text-[12.5px] text-[var(--color-fg-faint)]">{t("sidebar.noServerProjects")}</div>
@@ -212,6 +241,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
   const Icon = m.kind === "server" ? Server : Monitor;
   return (
     <div data-testid={`remote-machine-${m.id}`} data-state={m.state}>
+      <MachineContextMenu m={m}>
       <div
         className={cn(
           "group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
@@ -229,7 +259,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
           <span className="truncate text-[var(--color-fg)]">{m.name}</span>
           {!online && (
             <span className="truncate text-[11px] font-normal normal-case tracking-normal text-[var(--color-fg-faint)]">
-              {m.state === "connecting" ? t("sidebar.connecting") : t("sidebar.offline")}
+              {stateLabel(m.state, t)}
             </span>
           )}
         </button>
@@ -241,7 +271,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
               </span>
             </Tip>
           )}
-          {!online && (
+          {!online && m.state !== "disconnected" && (
             <Tip content={m.error ?? t("sidebar.reconnect")}>
               <button
                 type="button"
@@ -266,9 +296,11 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
               </button>
             </Tip>
           )}
+          <MachineMenuButton m={m} />
         </div>
       </div>
-      {!online && !folded && m.error && (
+      </MachineContextMenu>
+      {!online && m.state !== "disconnected" && !folded && m.error && (
         <button
           type="button"
           onClick={() => openSettings(m.kind === "server" ? "remote" : "mcp")}

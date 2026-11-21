@@ -90,7 +90,7 @@ export interface MachineView {
   id: string;
   kind: "computer" | "server";
   name: string;
-  state: "connecting" | "online" | "offline";
+  state: "connecting" | "online" | "offline" | "disconnected";
   error: string | null;
   version: string | null;
   grant: "drive" | "reply" | null;
@@ -151,6 +151,8 @@ export const remoteTermInput = (machine: string, data: string) => invoke<void>("
  *  is sent it; for any other this is a no-op (see remote_client.rs). */
 export const remoteTermSize = (machine: string, cols: number, rows: number) => invoke<void>("remote_term_size", { machine, cols, rows });
 export const remoteReconnect = () => invoke<void>("remote_reconnect");
+/** Switch a server's or paired computer's connection on or off (kept across restarts). */
+export const remoteSetConnected = (machine: string, on: boolean) => invoke<void>("remote_set_connected", { machine, on });
 
 export const serverAdd = (ssh: string, name: string) => invoke<ServerRecord>("server_add", { ssh, name });
 export const serverRemove = (id: string) => invoke<void>("server_remove", { id });

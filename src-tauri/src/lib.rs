@@ -29003,6 +29003,7 @@ pub fn run() {
             remote_client::remote_set_sidebar_folds,
             remote_client::remote_term_size,
             remote_client::remote_reconnect,
+            remote_client::remote_set_connected,
             remote_client::server_add,
             remote_client::server_remove,
             remote_client::server_rename,

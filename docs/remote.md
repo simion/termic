@@ -296,7 +296,13 @@ header with a fold and a +: PROJECTS (this computer's), SERVERS
 state, New task and a menu, right-click too, for New task, Add project,
 Server settings and Remove, and its projects drawn under it by the
 sidebar's own `renderProject`), and PAIRED COMPUTERS (other Termic apps,
-drawn from what they report). SERVERS shows once a server exists; until
+drawn from what they report). Every server and paired computer row
+has the same menu (its ⋮ and right-click) with Connect / Disconnect: a
+disconnected machine keeps its row, reads "Disconnected", folds its
+projects away and runs no link until switched back on, remembered in
+`remote-off.json` in the global data dir (`remote_client::set_connected`,
+`supervise` skips it). Its icon carries the connection: green, amber
+while connecting, faded otherwise. SERVERS shows once a server exists; until
 then Add a server sits on the PROJECTS header and is linked from Add
 project. Settings' rail lists projects the same way. A server belongs to
 the profile whose window added it (`ServerRecord.profile`, a window
