@@ -42,6 +42,10 @@ export function SidebarSectionHeader({ testId, icon, label, folded, onToggle, ch
   );
 }
 
+/** A machine's connection, as its icon's colour: green, amber, faded. */
+const statusIcon = (state: string) =>
+  state === "online" ? "text-[var(--color-ok)]" : state === "connecting" ? "text-[var(--color-warn)]" : "text-[var(--color-fg-faint)] opacity-60";
+
 const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
 
 /** SERVERS: each server a row (its state, New task, a menu to manage it)
@@ -100,18 +104,15 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
   const setDialog = useRemote(s => s.setDialog);
   const online = m.state === "online";
   const waiting = m.tasks.filter(x => x.state === "waiting").length;
-  const done = m.tasks.filter(x => x.state === "done").length;
   const header = (
     <div data-testid={`server-block-${m.id}`} data-state={m.state}
       className={cn("group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]", !online && "opacity-70")}>
       <button type="button" onClick={() => toggle(m.id)} aria-expanded={!folded} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
         {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
-        <Server className="h-4 w-4 shrink-0" />
+        <Server data-testid={`server-icon-${m.id}`} className={cn("h-4 w-4 shrink-0", statusIcon(m.state))} />
         <span className="truncate text-[var(--color-fg)]">{m.name}</span>
-        <span aria-hidden className={cn("ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-[var(--color-ok)]" : m.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]")} />
         {!online && <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{m.state === "connecting" ? t("sidebar.connecting") : t("sidebar.offline")}</span>}
         {online && waiting > 0 && <span className="flex items-center gap-0.5 px-1 text-[11px] tabular-nums text-[var(--color-warn)]"><Bell className="h-3 w-3" />{waiting}</span>}
-        {online && waiting === 0 && done > 0 && <span className="ml-1 block h-2 w-2 rounded-full bg-[var(--color-info)]" />}
       </button>
       <div className="flex shrink-0 items-center gap-0.5">
         {!online && (
@@ -201,7 +202,6 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
   const online = m.state === "online";
   const drives = m.grant !== "reply";
   const waiting = m.tasks.filter(t => t.state === "waiting").length;
-  const done = m.tasks.filter(t => t.state === "done").length;
   // Offline sections fold: rows that may be stale and cannot be acted on
   // are worse than none.
   const showRows = online && !folded;
@@ -225,15 +225,8 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
           aria-expanded={showRows}
         >
           {folded || !online ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
-          <Icon className="h-4 w-4 shrink-0" />
+          <Icon className={cn("h-4 w-4 shrink-0", statusIcon(m.state))} />
           <span className="truncate text-[var(--color-fg)]">{m.name}</span>
-          <span
-            aria-hidden
-            className={cn(
-              "ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-              online ? "bg-[var(--color-ok)]" : m.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]",
-            )}
-          />
           {!online && (
             <span className="truncate text-[11px] font-normal normal-case tracking-normal text-[var(--color-fg-faint)]">
               {m.state === "connecting" ? t("sidebar.connecting") : t("sidebar.offline")}
@@ -247,9 +240,6 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
                 <Bell className="h-3 w-3" />{waiting}
               </span>
             </Tip>
-          )}
-          {online && waiting === 0 && done > 0 && (
-            <span className="mr-1 block h-2 w-2 rounded-full bg-[var(--color-info)]" />
           )}
           {!online && (
             <Tip content={m.error ?? t("sidebar.reconnect")}>
