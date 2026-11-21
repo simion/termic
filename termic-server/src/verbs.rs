@@ -112,7 +112,12 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
                 .collect();
             Ok(ReplyData::Agents(AgentsData { agents }))
         }
-        Command::ProjectAdd { path, non_git } => project_add(d, &path, non_git),
+        Command::ProjectAdd { path, non_git, clone } => {
+            if let Some(url) = clone {
+                clone_into(&path, &url)?;
+            }
+            project_add(d, &path, non_git)
+        }
         Command::ProjectList => {
             let st = d.st.lock().unwrap();
             let projects = st.projects.iter().map(|p| project_info(p, &st.tasks)).collect();
@@ -520,6 +525,36 @@ fn project_info(p: &Project, tasks: &[TaskRec]) -> ProjectInfo {
         profile: None,
         server: None,
     }
+}
+
+/// `git clone <url> <path>` for `project_add --clone`: the path must be
+/// inside the user's home and not exist yet; git runs under the login
+/// shell's PATH and credentials, as exec does.
+fn clone_into(path: &str, url: &str) -> Result<(), Fail> {
+    let home = util::home();
+    let dest = match path.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => std::path::PathBuf::from(path),
+    };
+    if !dest.is_absolute() || dest.components().any(|c| matches!(c, std::path::Component::ParentDir)) || !dest.starts_with(&home) {
+        return Err(fail(ErrorCode::BadRequest, format!("{path}: clone into a folder inside your home on the server")));
+    }
+    if dest.exists() {
+        return Err(fail(ErrorCode::Conflict, format!("{path} already exists on the server")));
+    }
+    if url.starts_with('-') || url.trim().is_empty() {
+        return Err(fail(ErrorCode::BadRequest, "not a git URL"));
+    }
+    let out = std::process::Command::new("/bin/sh")
+        .args(["-lc", "exec git clone --quiet -- \"$0\" \"$1\"", url, &dest.to_string_lossy()])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| fail(ErrorCode::Internal, format!("could not run git: {e}")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(fail(ErrorCode::Internal, format!("git clone failed: {}", err.trim())));
+    }
+    Ok(())
 }
 
 fn project_add(d: &Arc<Daemon>, path: &str, non_git: bool) -> Result<ReplyData, Fail> {

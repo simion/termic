@@ -257,6 +257,15 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     });
     assert!(why.contains("not inside a project"), "{why}");
     assert_eq!(again["project"]["id"], p["project"]["id"], "adding twice is idempotent");
+    // project_add --clone: how a repo gets onto a box. Only inside home, only
+    // onto a path that does not exist yet.
+    let cl = a.ok(json!({"cmd":"project_add","path":"~/cloned","clone": e.repo().display().to_string()}));
+    assert_eq!(cl["project"]["name"], "cloned");
+    let twice = a.call(json!({"cmd":"project_add","path":"~/cloned","clone": e.repo().display().to_string()}));
+    assert_eq!(twice["ok"], false, "cloned over an existing folder: {twice}");
+    let outside = a.call(json!({"cmd":"project_add","path":"/tmp/termic-clone-outside","clone": e.repo().display().to_string()}));
+    assert_eq!(outside["ok"], false, "cloned outside home: {outside}");
+    a.ok(json!({"cmd":"project_remove","name":"cloned"}));
     let bad = a.call(json!({"cmd":"project_add","path": e.root.join("home")}));
     assert_eq!(bad["ok"], json!(false), "a non-git dir needs non_git");
     assert_eq!(a.ok(json!({"cmd":"project_list"}))["projects"].as_array().unwrap().len(), 1);

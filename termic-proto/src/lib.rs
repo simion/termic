@@ -875,6 +875,11 @@ pub enum Command {
         path: String,
         #[serde(default)]
         non_git: bool,
+        /// Clone this git URL into `path` first (which must not exist yet),
+        /// then register it. For a machine you only reach remotely (a
+        /// termic-server box), where nothing else can put a repo there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clone: Option<String>,
     },
     /// Registered projects with live-task counts.
     ProjectList,
@@ -2716,8 +2721,8 @@ mod tests {
             Command::PadRead { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadRemove { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadClear { task: None, project: Some("web".into()), scope: Some("project".into()), cwd: None },
-            Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
-            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
+            Command::ProjectAdd { path: "/repo/web".into(), non_git: false, clone: None },
+            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true, clone: None },
             Command::ProjectList,
             Command::ProjectRemove { name: "web".into() },
             Command::PeerList,

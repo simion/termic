@@ -73,7 +73,11 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
     setAdding(true);
     setError(null);
     try {
-      const r = await remoteCall(machineId, req("project_add", { path }));
+      // A git URL clones onto the server, into ~/<repo name>; anything else
+      // is a folder already there.
+      const url = /^(https?:\/\/|ssh:\/\/|git@)/.test(path) ? path : null;
+      const dest = url ? `~/${url.replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop() || "repo"}` : path;
+      const r = await remoteCall(machineId, req("project_add", { path: dest, ...(url ? { clone: url } : {}) }), url ? 600_000 : undefined);
       if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
       await load();
       const added = r.data?.project?.name ?? r.data?.name;

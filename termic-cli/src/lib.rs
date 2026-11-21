@@ -1690,6 +1690,11 @@ repository, missing directory), 4 app not running, 5 CLI disabled, \
         /// support main-checkout tasks (worktrees need git).
         #[arg(long)]
         non_git: bool,
+        /// Clone this git URL into PATH first (PATH must not exist yet),
+        /// then register it. With --peer, the clone happens on that machine:
+        /// how a repo gets onto a termic-server box.
+        #[arg(long, value_name = "URL")]
+        clone: Option<String>,
     },
     /// List registered projects with live-task counts.
     #[command(
@@ -2773,7 +2778,7 @@ fn run_new_wire(
             // a busy webview must not turn a confirmed registration
             // into a false "connection lost".
             fresh.set_read_timeout(client::PROJECT_ADD_READ_TIMEOUT);
-            let add = proto::Command::ProjectAdd { path: root, non_git: false };
+            let add = proto::Command::ProjectAdd { path: root, non_git: false, clone: None };
             client::request(&mut fresh, add, token)?;
             run_streamed(&mut fresh, wire, token, format).map_err(StreamError::into_cli)?
         }
@@ -3308,13 +3313,16 @@ fn execute_project(
             };
             Ok(Output::ok(final_stdout(format, &output::project_list_text(&l.projects), &l)))
         }
-        ProjectCmd::Add { path, non_git } => {
+        ProjectCmd::Add { path, non_git, clone } => {
             // Canonicalize CLIENT-side: the server must never resolve a
             // relative path against ITS cwd. Under --peer the path names a
             // folder on THAT machine, which this one cannot see: it goes as
             // typed, and must be absolute (or ~/...) for the same reason.
             let abs = if client::peer().is_some() {
                 std::path::PathBuf::from(remote_path(path)?)
+            } else if clone.is_some() {
+                // The clone creates it: absolute, but nothing to canonicalize yet.
+                std::env::current_dir().map_err(|e| CliError::new(exit_code::ERROR, e.to_string()))?.join(path)
             } else {
                 std::fs::canonicalize(path).map_err(|e| {
                     CliError::new(exit_code::ERROR, format!("cannot resolve {path} ({e})"))
@@ -3326,6 +3334,7 @@ fn execute_project(
                 proto::Command::ProjectAdd {
                     path: abs.to_string_lossy().into_owned(),
                     non_git: *non_git,
+                    clone: clone.clone(),
                 },
                 token,
             )?;

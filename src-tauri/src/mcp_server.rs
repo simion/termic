@@ -1723,12 +1723,14 @@ const TOOLS: &[ToolDef] = &[
         params: &[
             ParamDef { name: "path", json_type: "string", required: true, description: "Absolute path to the repo (or folder with nonGit).", cli_flag: Some("path") },
             ParamDef { name: "nonGit", json_type: "boolean", required: false, description: "Allow a plain non-git folder.", cli_flag: Some("--non-git") },
+            ParamDef { name: "clone", json_type: "string", required: false, description: "Git URL to clone into path first (path must not exist). With peer, the clone happens on that machine.", cli_flag: Some("--clone") },
         ],
         destructive: false,
         read_only: false,
         build: |a| Ok(Command::ProjectAdd {
             path: need_str(a, "path")?,
             non_git: arg_bool(a, "nonGit")?,
+            clone: arg_str(a, "clone")?,
         }),
     },
     ToolDef {
@@ -4063,7 +4065,9 @@ mod tests {
         // that steers an agent to it instead of its own dev server.
         // 29770: task_pin, parity with `termic pin`: pin or unpin a task in
         // the sidebar, which a remote client's task menu needs too.
-        const RECORDED: usize = 29770;
+        // 29914: project_add's `clone`, parity with `termic project add
+        // --clone`: the one way a repo gets onto a termic-server box.
+        const RECORDED: usize = 29914;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

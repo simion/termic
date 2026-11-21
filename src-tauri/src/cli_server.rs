@@ -1018,7 +1018,19 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "clear" }),
         ),
-        Command::ProjectAdd { path, non_git } => {
+        Command::ProjectAdd { path, non_git, clone } => {
+            if let Some(url) = clone {
+                // As termic-server does: clone into a path that does not
+                // exist yet, with this user's git and credentials.
+                if url.starts_with('-') || std::path::Path::new(path).exists() {
+                    return Reply::err(&req.id, ErrorCode::BadRequest, format!("{path} already exists, or {url} is not a git URL"));
+                }
+                match crate::git_command().args(["clone", "--quiet", "--", url, path]).env("PATH", crate::shell_env::resolved_path()).output() {
+                    Ok(o) if o.status.success() => {}
+                    Ok(o) => return Reply::err(&req.id, ErrorCode::Internal, format!("git clone failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+                    Err(e) => return Reply::err(&req.id, ErrorCode::Internal, format!("could not run git: {e}")),
+                }
+            }
             handle_project_add(&req.id, host, path, *non_git)
         }
         Command::ProjectList => handle_project_list(&req.id, host),
@@ -8985,7 +8997,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
@@ -9002,7 +9014,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Err("project already added".into()));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
@@ -9011,7 +9023,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Err("project already added".into()));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/unknown".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/unknown".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         assert_eq!(reply.error.expect("error").code, ErrorCode::Internal);
@@ -9093,7 +9105,7 @@ mod tests {
             Err("/x/plain is not a git repo. Confirm adding it as a plain folder.".into()),
         );
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let err = reply.error.expect("error");
@@ -9103,7 +9115,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: true }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: true, clone: None }, Some("tok")),
             &host,
         );
         assert!(reply.ok, "{reply:?}");
