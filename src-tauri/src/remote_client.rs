@@ -240,6 +240,8 @@ struct LinkState {
     update: Option<String>,
     /// The bundled build an upgrade was tried for: once per app run.
     upgrade_tried: Option<String>,
+    /// A restart onto `update` was sent; cleared by the next connection.
+    restarting: bool,
 }
 
 pub(crate) type TermSink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -472,7 +474,7 @@ fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off
         id,
         kind,
         endpoint: Mutex::new(endpoint),
-        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, upgrade_tried: None }),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, upgrade_tried: None, restarting: false }),
         tx: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         term: Mutex::new(None),
@@ -510,6 +512,7 @@ fn run_link(l: Arc<Link>) {
                 if let ServerMsg::Welcome { version, grant, caps, name, .. } = welcome {
                     let mut st = l.st.lock().unwrap();
                     st.version = Some(version);
+                    st.restarting = false;
                     st.grant = grant;
                     st.caps = caps;
                     // A server names itself; a paired computer keeps the
@@ -786,6 +789,7 @@ fn dispatch(l: &Link, m: ServerMsg) {
                 }
             };
             if differs {
+                restart_when_settled(l);
                 changed();
                 // A server's projects and tasks live in the desktop's store
                 // (server_projects.rs): bring it up to date.
@@ -1326,11 +1330,11 @@ fn bundled_version(app: Option<&tauri::AppHandle>) -> Option<String> {
 }
 
 /// On connecting to a server: keep its termic-server the build this app
-/// carries. A different version is replaced over ssh (the running daemon
-/// keeps going on the old file), then the daemon is restarted onto it: at
-/// once when no agent is running, otherwise the row asks first, since a
-/// restart stops the agents (they come back in their sessions). A server
-/// started with its own command is the user's to manage.
+/// carries, newer or older (the desktop's version decides). A different
+/// build is replaced over ssh (the running daemon keeps going on the old
+/// file), then the daemon restarts onto it by itself once no agent is
+/// mid-turn (restart_when_settled); the row offers Restart now meanwhile.
+/// A server started with its own command is the user's to manage.
 fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
     if rec.command.is_some() {
         return;
@@ -1361,15 +1365,31 @@ fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
                 return;
             }
         }
-        let quiet = call(&l.id, serde_json::json!({ "cmd": "quit", "commit": false }), None)
-            .ok()
-            .and_then(|r| r.pointer("/data/tasks_with_agents").and_then(Value::as_u64))
-            == Some(0);
-        if quiet {
-            let _ = call(&l.id, serde_json::json!({ "cmd": "quit", "commit": true }), None);
-        } else {
-            l.st.lock().unwrap().update = Some(want);
-            changed();
+        l.st.lock().unwrap().update = Some(want);
+        changed();
+        restart_when_settled(&l);
+    });
+}
+
+/// With an update installed, restart the server onto it as soon as no
+/// agent is mid-turn (working, or waiting on a question): the agents come
+/// back in their sessions, so a settled one loses nothing. Called after the
+/// install and on every change to the server's task rows.
+fn restart_when_settled(l: &Link) {
+    {
+        let mut st = l.st.lock().unwrap();
+        if st.update.is_none() || st.restarting || st.tasks.iter().any(|t| t.state == "working" || t.state == "waiting") {
+            return;
+        }
+        st.restarting = true;
+    }
+    let id = l.id.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = call(&id, serde_json::json!({ "cmd": "quit", "commit": true }), None) {
+            eprintln!("[remote] {id}: could not restart termic-server: {e}");
+            if let Ok(l) = link(&id) {
+                l.st.lock().unwrap().restarting = false;
+            }
         }
     });
 }
@@ -1490,7 +1510,7 @@ mod tests {
             id: "x".into(),
             kind: MachineKind::Server,
             endpoint: Mutex::new(Endpoint::Server(rec)),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, upgrade_tried: None }),
+            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, upgrade_tried: None, restarting: false }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),

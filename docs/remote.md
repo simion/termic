@@ -292,9 +292,13 @@ open connection, no new ssh: `quit` previews the agents a restart would
 stop, and commit records them (`resume_on_boot` in `state.json`), hangs
 them up, answers, and exits; the link's reconnect runs `bridge`, which
 starts the new binary, and that daemon resumes those agents in their
-sessions before any client. With no agent running it restarts at once;
-otherwise the server's row says the update is installed and offers
-**Restart** (`server-update-<id>`), since an in-flight turn is lost. A
+sessions before any client. The restart waits until no agent is
+mid-turn (no row working or waiting, `restart_when_settled`, checked
+after the install and on every change to the server's rows), since an
+in-flight turn is what a restart loses; meanwhile the server's row says
+the update is installed and offers **Restart now** (`server-update-<id>`).
+The desktop's version decides, older or newer: the box runs the build of
+the desktop that last connected to it. A
 server added with its own `command` is left alone. Who else can send a
 box `quit`: this desktop's own authenticated CLI (`termic --peer <box>
 quit --yes`, the same reach that can already `stop` its agents), never a

@@ -1049,7 +1049,19 @@ describeUpgrade("A server's termic-server stays current", function () {
       execFileSync("git", ["-C", repo, ...args]);
     }
     const agent = path.join(box, "agent.sh");
-    writeFileSync(agent, "#!/bin/sh\nprintf 'fake agent ready\\r\\n> '\nwhile IFS= read -r l; do printf 'box says: %s\\r\\n> ' \"$l\"; done\n");
+    // "busy N": a turn that prints for N half-seconds (the server reads
+    // output as working), then settles.
+    writeFileSync(agent, [
+      "#!/bin/sh",
+      "printf 'fake agent ready\\r\\n> '",
+      "while IFS= read -r l; do",
+      "  case \"$l\" in",
+      "    busy*) set -- $l; i=0; while [ $i -lt $2 ]; do printf 'working %s\\r\\n' $i; sleep 0.5; i=$((i+1)); done; printf 'done\\r\\n> ' ;;",
+      "    *) printf 'box says: %s\\r\\n> ' \"$l\" ;;",
+      "  esac",
+      "done",
+      "",
+    ].join("\n"));
     chmodSync(agent, 0o755);
     writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent] }));
     stageOld();
@@ -1073,39 +1085,58 @@ describeUpgrade("A server's termic-server stays current", function () {
     expect(readFileSync(installed, "utf8")).toContain("0-old");
   });
 
-  it("with an agent running, installs the carried build and asks before restarting", async () => {
+  const stateOf = async (name: string) => (await call({ cmd: "list" }))?.data?.tasks?.find((t: any) => t.name === name)?.work_state as string | undefined;
+  const busy = async (halfSeconds: number) => {
+    expect((await call({ cmd: "send", task: "long-job", prompt: `busy ${halfSeconds}`, resume: true })).ok).toBe(true);
+    await browser.waitUntil(async () => (await stateOf("long-job")) === "working", { timeout: 15_000, timeoutMsg: "the agent never started its turn" });
+  };
+  const stageNew = () => {
     mkdirSync(staged, { recursive: true });
     execFileSync("cp", [bin, path.join(staged, `termic-server-${triple}`)]);
     writeFileSync(path.join(staged, "termic-server-version.txt"), `${server("version").trim().replace(/^termic-server /, "")}\n`);
+  };
+  const newVersion = () => server("version").trim().replace(/^termic-server /, "");
+
+  it("mid-turn, installs the carried build and waits; restarts by itself when the turn ends", async () => {
+    stageNew();
+    await busy(16); // 8 s
     await reconnect();
     await waitVisible(`[data-testid="server-update-${serverId}"]`, 40_000);
     // Installed, not yet running: the file is the real build, the daemon still the old one.
     expect(readFileSync(installed).subarray(0, 2).toString()).not.toBe("#!");
     expect((await machine()).version).toBe("0-old");
-    expect((await call({ cmd: "list" })).data.tasks.find((t: any) => t.name === "long-job")?.state).not.toBe("inactive");
-    await snap("remote-server-update-ready.png");
-  });
-
-  it("Restart moves the server onto the new build and the agent comes back", async () => {
-    const want = server("version").trim().replace(/^termic-server /, "");
-    await clickPresent(`[data-testid="server-restart-${serverId}"]`);
-    await versionIs(want, "the server never came back on the new build");
+    await snap("remote-server-update-waiting.png");
+    // The turn ends; the server moves onto the new build with no click, and
+    // the agent comes back.
+    await versionIs(newVersion(), "the server never restarted after the turn ended");
     await waitGone(`[data-testid="server-update-${serverId}"]`);
-    await browser.waitUntil(async () => {
-      const t = (await call({ cmd: "list" }))?.data?.tasks?.find((x: any) => x.name === "long-job");
-      return !!t && t.state !== "inactive";
-    }, { timeout: 20_000, timeoutMsg: "the agent was not resumed after the restart" });
+    await browser.waitUntil(async () => { const st = await stateOf("long-job"); return !!st && st !== "inactive"; },
+      { timeout: 20_000, timeoutMsg: "the agent was not resumed after the restart" });
   });
 
-  it("with no agent running, restarts onto the carried build without asking", async () => {
-    expect((await call({ cmd: "stop", task: "long-job" })).ok).toBe(true);
+  it("Restart now does not wait for the turn", async () => {
+    // An old server, with nothing carried yet so it stays old while a long
+    // turn starts; then the carried build appears and a fresh link (off and
+    // on) installs it.
+    rmSync(staged, { recursive: true, force: true });
     stageOld();
     await reconnect();
-    // The wrapper is replaced (it may be running for only a moment, so the
-    // file is what proves an upgrade ran, not catching the old version).
+    await versionIs("0-old", "the re-staged old server never came online");
+    await busy(240);
+    stageNew();
+    await reconnect();
+    await waitVisible(`[data-testid="server-update-${serverId}"]`, 40_000);
+    await clickPresent(`[data-testid="server-restart-${serverId}"]`);
+    await versionIs(newVersion(), "Restart now did not move the server onto the new build");
+  });
+
+  it("with no agent mid-turn, restarts onto the carried build without showing anything", async () => {
+    stageOld();
+    await reconnect();
+    // The wrapper is replaced (it may run for only a moment, so the file is
+    // what proves an upgrade ran, not catching the old version).
     await browser.waitUntil(() => readFileSync(installed).subarray(0, 2).toString() !== "#!", { timeout: 40_000, timeoutMsg: "the old build was never replaced" });
-    const want = server("version").trim().replace(/^termic-server /, "");
-    await versionIs(want, "an idle server was not restarted onto the new build");
+    await versionIs(newVersion(), "a settled server was not restarted onto the new build");
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="server-update-${id}"]`), serverId)).toBe(false);
   });
 });

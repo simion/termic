@@ -89,8 +89,8 @@ A server must not stay on the version it was installed with.
 version plus a hash of its sources; on connect the desktop pushes the
 build it carries when the box runs another one (the Install path, no
 internet needed on the box), then restarts the daemon onto it with the
-`quit` verb over the open connection: at once when no agent runs, after
-the user's **Restart** on the server's row otherwise. The agents that
+`quit` verb over the open connection, by itself as soon as no agent is
+mid-turn (**Restart now** on the server's row skips the wait). The agents that
 were running come back in their sessions (`resume_on_boot`), so a restart
 costs an in-flight turn, not the conversation.
 
