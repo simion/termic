@@ -321,7 +321,12 @@ funnels consult it:
   the editor (a write goes to a temp file and is renamed over). A
   relative path that could climb out of the task is refused before it
   is sent.
-- `repo_config::load`: a server repo's `.termic.yaml`.
+- `repo_config::load` / `save`: a server repo's `.termic.yaml`.
+- forge.rs `cli_command`: gh, glab and az run on this Mac from home, with
+  `GH_REPO` from the box's origin remote; PR status and create name the
+  branch (and `-R` for glab), read on the box. Azure passes its scope
+  explicitly already. GitHub was checked against a real repo; GitLab and
+  Azure for server tasks were not.
 - `pty_spawn` / `pty_write` / `pty_resize` / `pty_kill` / `pty_attached`:
   a terminal in a server folder opens there and its output arrives as the
   same `pty://` and `pty-exit://` events (held until the pane attaches,
