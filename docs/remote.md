@@ -305,6 +305,10 @@ than growing a verb per feature:
   registered project or one of its worktrees (canonicalized, so `..`
   cannot leave), 120 s default timeout, output capped. The desktop host
   answers it with Unsupported.
+- `project_add { path, clone }`: with `clone`, git clones the URL into
+  `path` first (inside home, not existing yet), then registers it; the
+  server dialog's add-project field takes a URL for this, and the CLI
+  has `termic project add --clone <url> <path>` (with `--peer`).
 - `pty_open { pid, cwd, argv, env, cols, rows }`, `pty_input`,
   `pty_resize`, `pty_kill`, answered by `pty_data` and `pty_exit` (cap
   `pty`): extra terminals beside the agent's, fenced the same way, no
