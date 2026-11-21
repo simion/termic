@@ -19,6 +19,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Archive, Monitor, Play, Plus, Server, SquareTerminal, X } from "lucide-react";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { useApp } from "@/store/app";
+import { confirmAndArchive } from "@/lib/archiveTask";
 import { MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 import type { Tab } from "@/lib/types";
 const EditorPane = lazy(() => import("@/components/task/EditorPane").then(m => ({ default: m.EditorPane })));
@@ -147,7 +148,13 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
         <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-[var(--color-ok)]" : "bg-[var(--color-fg-faint)]")} />
         <span className="truncate text-[12.5px] text-[var(--color-fg-faint)]">{task.project}{task.branch ? ` · ${task.branch}` : ""}</span>
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="sm" data-testid="remote-task-archive" disabled={!online} onClick={() => void archive(machine.name, machineId, task, close, t)}>
+          <Button variant="ghost" size="sm" data-testid="remote-task-archive" disabled={!online} onClick={() => {
+            // A server project's task is a desktop task too: its archive
+            // (the same confirm as the sidebar's) runs the archive script,
+            // archives on the box and clears it as the active task here.
+            if (appTask) void confirmAndArchive(appTask);
+            else void archive(machine.name, machineId, task, close, t);
+          }}>
             <Archive className="h-3.5 w-3.5" />
             {t("task.archive")}
           </Button>
