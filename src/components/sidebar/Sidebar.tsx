@@ -1752,6 +1752,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               <DropdownTrigger asChild>
                                 <button
                                   onClick={e => e.stopPropagation()}
+                                  // A server project has one thing to make, a
+                                  // task on the box: open its dialog straight
+                                  // away, not a menu of one item. Radix skips
+                                  // its own handler for a prevented event.
+                                  onPointerDown={p.server ? (e) => {
+                                    e.preventDefault();
+                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                  } : undefined}
+                                  onKeyDown={p.server ? (e) => {
+                                    if (e.key !== "Enter" && e.key !== " ") return;
+                                    e.preventDefault();
+                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                  } : undefined}
                                   // Icon-only, so there's no text for e2e to
                                   // match on. Keyed by project id because the
                                   // sidebar renders one per project.

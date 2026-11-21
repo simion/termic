@@ -60,7 +60,7 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
       if (!p.ok) setError(p.error?.message ?? null);
     } catch (e) {
       setProjects([]);
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
   useEffect(() => { void load(); }, [machineId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -86,7 +86,7 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
       // it first showed the old project selected until the list reloaded.
       setAddingPath(null);
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setAdding(false);
     }
@@ -129,7 +129,7 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
       }
       openTask({ machine: machineId, task: id });
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }

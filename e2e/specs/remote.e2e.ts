@@ -797,6 +797,20 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     rmSync(extra, { recursive: true, force: true });
   });
 
+  it("a server project's + opens the server dialog straight away", async () => {
+    const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    }, `[data-testid="project-new-task-${pid}"]`);
+    await waitVisible('[data-testid="remote-new-prompt"]', 20_000);
+    expect(await browser.execute(() => !!document.querySelector("[role='menu']"))).toBe(false);
+    await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ newTaskOn: null, newTaskProject: null }));
+    await waitGone('[data-testid="remote-new-prompt"]');
+  });
+
   it("saves a server project's .termic.yaml on the box", async () => {
     const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
     const cfg = (await browser.execute((id) => window.__termic!.invoke("repo_config_load", { projectId: id }), pid) as any) ?? {};
