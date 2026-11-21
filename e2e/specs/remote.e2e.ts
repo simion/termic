@@ -142,6 +142,8 @@ describe("Phones and servers", () => {
       const top = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().top;
       return top("remote-connect-phone") < top("remote-add-server") && top("remote-add-server") < top("settings-peers");
     })).toBe(true);
+    // Termic servers say what they are and how they work, in three steps.
+    expect(await browser.execute(() => document.querySelectorAll('[data-testid="servers-how"] li').length)).toBe(3);
     // The phone card is open, with where to get the app on each platform.
     await waitVisible('[data-testid="remote-connect-phone"]');
     expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/5qxhPr6a");

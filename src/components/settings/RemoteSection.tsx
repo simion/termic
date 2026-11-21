@@ -110,7 +110,18 @@ export function RemoteSection() {
       <Card
         icon={<Server className="h-4 w-4" />}
         title={t("servers.title")}
-        lead={<>{t("servers.lead")} <span className="text-[var(--color-fg-faint)]">{t("servers.leadSsh")}</span></>}
+        lead={<>
+          {t("servers.lead")}
+          <ol data-testid="servers-how" className="mt-2 flex flex-col gap-1.5">
+            {[t("servers.how1"), t("servers.how2"), t("servers.how3")].map((s, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-3)] text-[11px] font-semibold tabular-nums text-[var(--color-fg-dim)]">{i + 1}</span>
+                <span>{s}</span>
+              </li>
+            ))}
+          </ol>
+          <span className="mt-2 block text-[var(--color-fg-faint)]">{t("servers.leadSsh")}</span>
+        </>}
         action={
           <Button variant={servers.length === 0 ? "primary" : "secondary"} size="sm" data-testid="remote-add-server" className="shrink-0" onClick={() => setDialog({ serverDialog: true })}>
             <Plus className="h-3.5 w-3.5" />
@@ -141,7 +152,7 @@ function Card({ icon, title, lead, action, footer, children }: {
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-hover)] text-[var(--color-fg-dim)]">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-medium leading-8">{title}</div>
-          <p className="text-[12.5px] text-[var(--color-fg-dim)]">{lead}</p>
+          <div className="text-[12.5px] text-[var(--color-fg-dim)]">{lead}</div>
         </div>
         <div className="pt-0.5">{action}</div>
       </header>

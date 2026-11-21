@@ -292,7 +292,7 @@ describe("settings rail", () => {
     ["cli", "Agent access", "Enable MCP endpoint"],
     // Remote (docs/remote.md): phones, servers and other computers, under
     // Agent access.
-    ["remote", "Remote", "Add a server"],
+    ["remote", "Remote", "Add a Termic server"],
     ["tasks", "Tasks", "Branch prefix"],
     ["notifications", "Notifications", "Desktop notifications"],
     ["prompts", "Prompts", "Prompts"],

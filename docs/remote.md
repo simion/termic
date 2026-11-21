@@ -259,7 +259,8 @@ contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Remote > Servers > **Add a server** is a checklist; nothing
+Settings > Remote > Termic servers > **Add a Termic server** (also in
+the sidebar's REMOTE + menu) is a checklist; nothing
 is saved until it passes:
 
 1. **Reach** `ssh -T -o BatchMode=yes -- <dest> ...`: the user's own ssh,

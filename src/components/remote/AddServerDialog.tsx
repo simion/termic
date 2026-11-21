@@ -123,6 +123,7 @@ function AddServerBody({ onClose }: { onClose: () => void }) {
   return (
     <AppDialog open onOpenChange={v => { if (!v) cancel(); }} title={t("addServer.title")} className="max-w-[560px]">
       <div className="flex flex-col gap-4">
+        <p className="text-[13px] text-[var(--color-fg-dim)]">{t("addServer.intro")}</p>
         <div className="grid grid-cols-[1fr_180px] gap-3">
           <label className="flex flex-col gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
             {t("addServer.sshLabel")}
