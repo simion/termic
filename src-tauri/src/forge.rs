@@ -82,6 +82,15 @@ pub fn path_of_remote(url: &str) -> Option<String> {
     (p.contains('/')).then(|| p.to_string())
 }
 
+/// For a folder on a server: (its current branch, its repo as an https URL),
+/// both read on the box through the routed git. None for a local folder.
+fn server_branch(cwd: &Path) -> Option<(String, String)> {
+    crate::server_projects::server_for_path(cwd)?;
+    let branch = crate::git(&["branch", "--show-current"], cwd).ok()?.trim().to_string();
+    let repo = server_repo_env(cwd)?;
+    (!branch.is_empty()).then(|| (branch, format!("https://{repo}")))
+}
+
 /// For a folder that lives on a server (server_projects.rs): `gh` runs here
 /// with no checkout to read, so it is told the repo (`GH_REPO`), from the
 /// box's origin remote (read through the routed git, once per folder).
@@ -1033,10 +1042,7 @@ pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Opti
 fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
     // A folder on a server has no checkout here for gh to read the branch
     // from: name it (the branch, read on the box through the routed git).
-    let num_s = number.map(|n| n.to_string()).or_else(|| {
-        crate::server_projects::server_for_path(cwd)?;
-        crate::git(&["branch", "--show-current"], cwd).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
-    });
+    let num_s = number.map(|n| n.to_string()).or_else(|| server_branch(cwd).map(|(b, _)| b));
     let mut args: Vec<&str> = vec!["pr", "view"];
     if let Some(n) = num_s.as_deref() {
         args.push(n);
@@ -1441,12 +1447,18 @@ fn rollup_to_checks(rollup: &serde_json::Value) -> String {
 }
 
 fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
-    let num_s = number.map(|n| n.to_string());
+    // A folder on a server: name the branch and the repo (glab has no
+    // checkout here to read them from), as github_pr_status does.
+    let server = server_branch(cwd);
+    let num_s = number.map(|n| n.to_string()).or_else(|| server.as_ref().map(|(b, _)| b.clone()));
     let mut args: Vec<&str> = vec!["mr", "view"];
     if let Some(n) = num_s.as_deref() {
         args.push(n);
     }
     args.extend(["--output", "json"]);
+    if let Some((_, repo)) = &server {
+        args.extend(["-R", repo.as_str()]);
+    }
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
