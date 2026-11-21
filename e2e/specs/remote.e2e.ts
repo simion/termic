@@ -995,3 +995,117 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     serverId = "";
   });
 });
+
+// Keeping a server's termic-server current (remote_client::auto_upgrade):
+// on connecting, a box running another build than the one this app carries
+// gets the carried one, then a restart onto it. The "old" server is the
+// debug build wrapped to report another version (TERMIC_SERVER_FAKE_VERSION,
+// debug only); the carried build is the same binary staged where the app
+// looks for its builds (.e2e/server-bin, wdio.conf.ts).
+const describeUpgrade = process.platform !== "win32" && localBox && !process.env.TERMIC_E2E_SERVER_BIN_DIR ? describe : describe.skip;
+
+describeUpgrade("A server's termic-server stays current", function () {
+  this.timeout(180_000);
+  const HOST = "termic-e2e-local";
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
+  const box = localBox!;
+  const repo = path.join(box, "repo");
+  const bin = path.join(process.env.TERMIC_E2E_SERVER_DIR ?? path.join(repoRoot, "src-tauri", "target", "debug"), "termic-server");
+  const staged = path.join(repoRoot, ".e2e", "server-bin");
+  const installed = path.join(box, ".termic", "bin", "termic-server");
+  const triple = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl"}`;
+  const server = (...args: string[]) => execFileSync(bin, args, { env: { ...process.env, HOME: box, SHELL: "/bin/sh" }, encoding: "utf8" });
+  let serverId = "";
+  const machine = () => browser.execute((id) => window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id) ?? null, serverId) as Promise<any>;
+  const call = (request: Record<string, unknown>) => browser.execute((m, r) =>
+    window.__termic!.invoke("remote_call", { machine: m, request: { id: "", ...r } }), serverId, request) as Promise<any>;
+  /** The box runs an old build: the daemon stopped, the installed binary a wrapper. */
+  const stageOld = () => {
+    try { server("stop"); } catch { /* not running */ }
+    mkdirSync(path.dirname(installed), { recursive: true });
+    writeFileSync(installed, `#!/bin/sh\nTERMIC_SERVER_FAKE_VERSION=0-old exec "${bin}" "$@"\n`);
+    chmodSync(installed, 0o755);
+  };
+  /** Off and on again: a fresh connection, which is when the upgrade runs. */
+  const reconnect = async () => {
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: false }), serverId);
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: true }), serverId);
+  };
+  const versionIs = (v: string, msg: string) => browser.waitUntil(async () => {
+    const m = await machine();
+    return m?.state === "online" && m.version === v;
+  }, { timeout: 40_000, timeoutMsg: msg });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    execFileSync("cargo", ["build", "-q", "-p", "termic-server"], { cwd: path.join(repoRoot, "src-tauri"), stdio: "inherit" });
+    try { server("stop"); } catch { /* not running */ }
+    rmSync(box, { recursive: true, force: true });
+    rmSync(staged, { recursive: true, force: true });
+    mkdirSync(path.join(box, ".termic-server"), { recursive: true });
+    mkdirSync(repo, { recursive: true });
+    for (const args of [["init", "-q", "-b", "main"], ["config", "user.email", "e2e@termic.dev"], ["config", "user.name", "e2e"], ["commit", "-q", "--allow-empty", "-m", "init"]]) {
+      execFileSync("git", ["-C", repo, ...args]);
+    }
+    const agent = path.join(box, "agent.sh");
+    writeFileSync(agent, "#!/bin/sh\nprintf 'fake agent ready\\r\\n> '\nwhile IFS= read -r l; do printf 'box says: %s\\r\\n> ' \"$l\"; done\n");
+    chmodSync(agent, 0o755);
+    writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent] }));
+    stageOld();
+  });
+
+  after(async () => {
+    if (serverId) await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId).catch(() => {});
+    try { server("stop"); } catch { /* already gone */ }
+    rmSync(box, { recursive: true, force: true });
+    rmSync(staged, { recursive: true, force: true });
+  });
+
+  it("leaves an old server alone while this app carries no build", async () => {
+    const rec = await browser.execute((h) => window.__termic!.invoke("server_add", { ssh: h, name: "Upgrade box" }), HOST) as any;
+    serverId = rec.id;
+    await versionIs("0-old", "the old server never came online");
+    expect((await call({ cmd: "project_add", path: repo })).ok).toBe(true);
+    const r = await call({ cmd: "new", name: "long-job", project: "repo", agent: "fake" });
+    expect(r.ok).toBe(true);
+    expect((await machine()).update ?? null).toBe(null);
+    expect(readFileSync(installed, "utf8")).toContain("0-old");
+  });
+
+  it("with an agent running, installs the carried build and asks before restarting", async () => {
+    mkdirSync(staged, { recursive: true });
+    execFileSync("cp", [bin, path.join(staged, `termic-server-${triple}`)]);
+    writeFileSync(path.join(staged, "termic-server-version.txt"), `${server("version").trim().replace(/^termic-server /, "")}\n`);
+    await reconnect();
+    await waitVisible(`[data-testid="server-update-${serverId}"]`, 40_000);
+    // Installed, not yet running: the file is the real build, the daemon still the old one.
+    expect(readFileSync(installed).subarray(0, 2).toString()).not.toBe("#!");
+    expect((await machine()).version).toBe("0-old");
+    expect((await call({ cmd: "list" })).data.tasks.find((t: any) => t.name === "long-job")?.state).not.toBe("inactive");
+    await snap("remote-server-update-ready.png");
+  });
+
+  it("Restart moves the server onto the new build and the agent comes back", async () => {
+    const want = server("version").trim().replace(/^termic-server /, "");
+    await clickPresent(`[data-testid="server-restart-${serverId}"]`);
+    await versionIs(want, "the server never came back on the new build");
+    await waitGone(`[data-testid="server-update-${serverId}"]`);
+    await browser.waitUntil(async () => {
+      const t = (await call({ cmd: "list" }))?.data?.tasks?.find((x: any) => x.name === "long-job");
+      return !!t && t.state !== "inactive";
+    }, { timeout: 20_000, timeoutMsg: "the agent was not resumed after the restart" });
+  });
+
+  it("with no agent running, restarts onto the carried build without asking", async () => {
+    expect((await call({ cmd: "stop", task: "long-job" })).ok).toBe(true);
+    stageOld();
+    await reconnect();
+    // The wrapper is replaced (it may be running for only a moment, so the
+    // file is what proves an upgrade ran, not catching the old version).
+    await browser.waitUntil(() => readFileSync(installed).subarray(0, 2).toString() !== "#!", { timeout: 40_000, timeoutMsg: "the old build was never replaced" });
+    const want = server("version").trim().replace(/^termic-server /, "");
+    await versionIs(want, "an idle server was not restarted onto the new build");
+    expect(await browser.execute((id) => !!document.querySelector(`[data-testid="server-update-${id}"]`), serverId)).toBe(false);
+  });
+});

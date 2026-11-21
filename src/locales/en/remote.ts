@@ -124,6 +124,8 @@ export default {
     removeServer: "Remove server...",
     unpairComputer: "Unpair...",
     noServerProjects: "No projects on this server yet",
+    updateReady: "Update installed. Restart to use it; agents resume their sessions.",
+    restartServer: "Restart",
     offline: "Offline",
     connecting: "Connecting",
     needsYou: "{{count}} need you",

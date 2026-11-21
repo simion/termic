@@ -11,6 +11,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The log rotates past this size (one previous file is kept).
 const LOG_CAP: u64 = 2 * 1024 * 1024;
 
+
+/// This build's version: the app's version plus a hash of the sources it
+/// was built from (scripts/build-termic-server.mjs), so the desktop can
+/// tell the build it carries from the one installed on a box and only
+/// replace (and restart) a server that differs. A plain cargo build says
+/// the crate version.
+pub fn version() -> String {
+    // Debug builds only: e2e/specs/remote.e2e.ts stages an "old" server
+    // without building a second binary.
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("TERMIC_SERVER_FAKE_VERSION") {
+        return v;
+    }
+    option_env!("TERMIC_SERVER_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

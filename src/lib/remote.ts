@@ -99,6 +99,9 @@ export interface MachineView {
   caps: string[];
   tasks: RemoteTask[];
   ssh: string | null;
+  /** A newer termic-server, installed and waiting for a restart because
+   *  agents were running (remote_client::auto_upgrade). */
+  update?: string | null;
 }
 
 export interface ServerRecord {

@@ -478,6 +478,44 @@ impl Daemon {
             live.pty.hangup();
         }
     }
+
+    /// (tasks with a running agent, of those the ones working).
+    pub fn agent_counts(&self) -> (u32, u32) {
+        let live: Vec<String> = self.live.lock().unwrap().iter().filter(|(_, l)| !l.pty.exited()).map(|(id, _)| id.clone()).collect();
+        let views = self.views.lock().unwrap();
+        let working = live.iter().filter(|id| views.get(*id).is_some_and(|v| v.state == "working")).count();
+        (live.len() as u32, working as u32)
+    }
+
+    /// Stop every agent for a restart onto a new build, noting which were
+    /// running so the next daemon resumes them in their sessions.
+    pub fn stop_for_restart(&self) {
+        let ids: Vec<String> = self.live.lock().unwrap().iter().filter(|(_, l)| !l.pty.exited()).map(|(id, _)| id.clone()).collect();
+        {
+            let mut st = self.st.lock().unwrap();
+            st.resume_on_boot = ids;
+            self.save(&st);
+        }
+        self.hangup_all();
+    }
+
+    /// Bring back the agents a `quit` stopped, each in its last session.
+    pub fn resume_after_restart(self: &Arc<Self>) {
+        let todo: Vec<TaskRec> = {
+            let mut st = self.st.lock().unwrap();
+            if st.resume_on_boot.is_empty() {
+                return;
+            }
+            let ids = std::mem::take(&mut st.resume_on_boot);
+            self.save(&st);
+            st.tasks.iter().filter(|t| !t.archived && ids.contains(&t.id)).cloned().collect()
+        };
+        for t in todo {
+            if let Err(e) = self.spawn_agent(&t, true, None) {
+                util::log(&format!("could not resume {} after the restart: {e}", t.name));
+            }
+        }
+    }
 }
 
 /// A task the monitor has not looked at yet: an agent just spawned is

@@ -1,6 +1,8 @@
 //! What survives a daemon restart: the server's id, its projects and its
 //! tasks, in `state.json`. Live PTYs are not here; after a restart every
-//! task is a record whose agent is inactive until resumed.
+//! task is a record whose agent is inactive until resumed, except the ones
+//! a `quit` (the desktop restarting it onto a new build) left running:
+//! those come back in their sessions (`resume_on_boot`).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,9 @@ pub struct State {
     pub server_id: String,
     pub projects: Vec<Project>,
     pub tasks: Vec<TaskRec>,
+    /// Tasks whose agent a `quit` stopped: the next daemon resumes them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resume_on_boot: Vec<String>,
 }
 
 pub fn state_path(dir: &Path) -> PathBuf {

@@ -16,7 +16,8 @@
 //   node scripts/build-termic-server.mjs linux      # by OS...
 //   node scripts/build-termic-server.mjs aarch64    # ...or by arch (or a whole triple)
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, chmodSync } from "node:fs";
+import { copyFileSync, mkdirSync, chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,13 +34,26 @@ if (!targets.length) {
 }
 
 mkdirSync(out, { recursive: true });
+
+// The build's version: the app's, plus a hash of every source file the
+// server is built from, so two builds of unchanged code match and the app
+// never restarts a server for nothing (remote_client::auto_upgrade). Baked
+// in (termic-server util::VERSION) and written next to the builds, where
+// the app reads it: it cannot run a Linux build to ask.
+const appVersion = readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8").match(/^version = "([^"]+)"/m)[1];
+const sources = execFileSync("git", ["ls-files", "termic-server", "termic-remote", "termic-proto", "src-tauri/Cargo.lock"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean).sort();
+const h = createHash("sha256");
+for (const f of sources) h.update(f).update("\0").update(readFileSync(path.join(root, f))).update("\0");
+const version = `${appVersion}+${h.digest("hex").slice(0, 12)}`;
+writeFileSync(path.join(out, "termic-server-version.txt"), version + "\n");
+console.log(`termic-server ${version}`);
 for (const target of targets) {
   console.log(`→ termic-server for ${target}`);
   const darwin = target.endsWith("-apple-darwin");
   execFileSync(
     "cargo",
     [darwin ? "build" : "zigbuild", "--release", "--manifest-path", path.join(root, "src-tauri", "Cargo.toml"), "-p", "termic-server", "--target", target],
-    { stdio: "inherit" },
+    { stdio: "inherit", env: { ...process.env, TERMIC_SERVER_VERSION: version } },
   );
   const built = path.join(root, "src-tauri", "target", target, "release", "termic-server");
   const dest = path.join(out, `termic-server-${target}`);

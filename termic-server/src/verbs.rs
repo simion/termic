@@ -33,7 +33,7 @@ fn verb_name(c: &Command) -> String {
 
 fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
     match req.cmd {
-        Command::Hello => Ok(ReplyData::Hello(proto::HelloData { app: "termic-server".into(), app_version: env!("CARGO_PKG_VERSION").into(), protocol: proto::PROTOCOL_VERSION })),
+        Command::Hello => Ok(ReplyData::Hello(proto::HelloData { app: "termic-server".into(), app_version: util::version(), protocol: proto::PROTOCOL_VERSION })),
         Command::List { project, quiet } => list(d, project.as_deref(), quiet),
         Command::Status { task, project, cwd } => {
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
@@ -131,6 +131,24 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
         }
         Command::ProjectRemove { name } => project_remove(d, &name),
         Command::Exec { cwd, argv, env, stdin, timeout_ms } => exec(d, &cwd, &argv, &env, stdin.as_deref(), timeout_ms),
+        // The desktop restarting this daemon onto the build it just
+        // installed: preview counts the agents that would restart; commit
+        // stops them (noted for the next daemon to resume), answers, and
+        // exits. The desktop's reconnect starts the new binary.
+        Command::Quit { commit } => {
+            let (tasks_with_agents, working) = d.agent_counts();
+            if commit {
+                let d = d.clone();
+                std::thread::spawn(move || {
+                    // shortcut: a fixed beat for the reply to reach the bridge, no ack from the writer; fine for a one-off exit.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    util::log("quit: stopping every agent to restart on the installed build");
+                    d.stop_for_restart();
+                    crate::exit_daemon(&d.dir);
+                });
+            }
+            Ok(ReplyData::Quit(proto::QuitData { running: true, tasks_with_agents, live_agents: tasks_with_agents, working_tasks: Some(working), quitting: commit }))
+        }
         other => Err(fail(ErrorCode::Unsupported, format!("termic-server does not support {} yet", verb_name(&other)))),
     }
 }

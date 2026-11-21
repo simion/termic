@@ -182,9 +182,11 @@ export const config: WebdriverIO.Config = {
     for (const k of Object.keys(process.env)) {
       if (k.startsWith("TERMIC_") && !k.startsWith("TERMIC_E2E_")) delete process.env[k];
     }
-    // remote.e2e.ts's real-box cases: the app reads the termic-server builds
-    // to install from TERMIC_SERVER_BIN_DIR, which the loop above just dropped.
-    if (process.env.TERMIC_E2E_SERVER_BIN_DIR) process.env.TERMIC_SERVER_BIN_DIR = process.env.TERMIC_E2E_SERVER_BIN_DIR;
+    // The termic-server builds the app installs from (TERMIC_SERVER_BIN_DIR,
+    // which the loop above just dropped): remote.e2e.ts's real-box cases name
+    // theirs; otherwise .e2e/server-bin, empty unless the upgrade case stages
+    // one, so no run installs whatever a local release build left behind.
+    process.env.TERMIC_SERVER_BIN_DIR = process.env.TERMIC_E2E_SERVER_BIN_DIR ?? path.join(repoRoot, ".e2e", "server-bin");
     // remote.e2e.ts's local-server cases: a stand-in for ssh that serves the
     // host termic-e2e-local from a real termic-server built into the debug
     // target (and passes any other host to the real ssh). Not on Windows,

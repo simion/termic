@@ -123,6 +123,8 @@ export default {
     removeServer: "移除服务器...",
     unpairComputer: "取消配对...",
     noServerProjects: "这台服务器上还没有项目",
+    updateReady: "更新已安装。重启后生效，智能体会恢复各自的会话。",
+    restartServer: "重启",
     offline: "离线",
     connecting: "正在连接",
     needsYou: "{{count}} 个需要你处理",

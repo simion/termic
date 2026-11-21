@@ -78,6 +78,9 @@ pub(crate) struct MachineView {
     /// The window label of the profile it belongs to: only that window's
     /// sidebar lists it ("main" for the root profile).
     pub profile: String,
+    /// A server's newer termic-server, installed and waiting for a restart
+    /// (agents were running, so the user is asked first).
+    pub update: Option<String>,
 }
 
 /// A server, as `servers.json` stores it.
@@ -232,6 +235,11 @@ struct LinkState {
     name: String,
     /// The window label of the profile it belongs to ("main" for the root).
     profile: String,
+    /// A server's newer build, installed and waiting for a restart with
+    /// agents running (auto_upgrade).
+    update: Option<String>,
+    /// The bundled build an upgrade was tried for: once per app run.
+    upgrade_tried: Option<String>,
 }
 
 pub(crate) type TermSink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -280,6 +288,7 @@ impl Link {
             tasks: st.tasks.clone(),
             ssh,
             profile: st.profile.clone(),
+            update: st.update.clone(),
         }
     }
 
@@ -463,7 +472,7 @@ fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off
         id,
         kind,
         endpoint: Mutex::new(endpoint),
-        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile }),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, upgrade_tried: None }),
         tx: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         term: Mutex::new(None),
@@ -508,6 +517,9 @@ fn run_link(l: Arc<Link>) {
                     if matches!(endpoint, Endpoint::Server(_)) && st.name.trim().is_empty() {
                         st.name = name;
                     }
+                }
+                if let Endpoint::Server(rec) = &endpoint {
+                    auto_upgrade(&l, rec);
                 }
                 l.set_state("online", None);
                 session(&l, reader, writer);
@@ -1064,8 +1076,11 @@ pub(crate) fn rename_server(id: &str, name: &str) -> Result<(), String> {
 
 // ───────────────────────────── app wiring ────────────────────────────
 
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
 pub(crate) fn init(app: tauri::AppHandle) {
     use tauri::Emitter;
+    let _ = APP.set(app.clone());
     *notifier().lock().unwrap() = Some(Box::new(move |list| {
         let _ = app.emit("remote://machines", list);
     }));
@@ -1270,7 +1285,9 @@ fn binary_dirs(app: Option<&tauri::AppHandle>) -> Vec<PathBuf> {
     if cfg!(debug_assertions) {
         if let Ok(d) = std::env::var("TERMIC_SERVER_BIN_DIR") {
             if !d.trim().is_empty() {
-                dirs.push(PathBuf::from(d));
+                // Alone: a test that names its builds gets exactly those,
+                // never whatever a local release build left in resources.
+                return vec![PathBuf::from(d)];
             }
         }
     }
@@ -1299,6 +1316,62 @@ fn find_binary(app: Option<&tauri::AppHandle>, system: &str) -> Option<PathBuf> 
         }
     }
     None
+}
+
+/// The version of the builds this Termic carries
+/// (scripts/build-termic-server.mjs writes it next to them). None when it
+/// carries none, or builds from before versions were written.
+fn bundled_version(app: Option<&tauri::AppHandle>) -> Option<String> {
+    binary_dirs(app).iter().find_map(|d| std::fs::read_to_string(d.join("termic-server-version.txt")).ok()).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// On connecting to a server: keep its termic-server the build this app
+/// carries. A different version is replaced over ssh (the running daemon
+/// keeps going on the old file), then the daemon is restarted onto it: at
+/// once when no agent is running, otherwise the row asks first, since a
+/// restart stops the agents (they come back in their sessions). A server
+/// started with its own command is the user's to manage.
+fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
+    if rec.command.is_some() {
+        return;
+    }
+    let Some(want) = bundled_version(APP.get()) else { return };
+    {
+        let mut st = l.st.lock().unwrap();
+        if st.version.as_deref() == Some(want.as_str()) {
+            st.update = None;
+            return;
+        }
+        if st.update.as_deref() == Some(want.as_str()) || st.upgrade_tried.as_deref() == Some(want.as_str()) {
+            return;
+        }
+        st.upgrade_tried = Some(want.clone());
+    }
+    let (l, dest) = (l.clone(), rec.ssh.clone());
+    // Off the link's thread: the session starts at once, the upload beside it.
+    std::thread::spawn(move || {
+        match install(APP.get(), &dest) {
+            Ok(v) if v == want => {}
+            Ok(v) => {
+                eprintln!("[remote] {dest}: installed termic-server {v}, expected {want}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[remote] {dest}: could not upgrade termic-server: {e}");
+                return;
+            }
+        }
+        let quiet = call(&l.id, serde_json::json!({ "cmd": "quit", "commit": false }), None)
+            .ok()
+            .and_then(|r| r.pointer("/data/tasks_with_agents").and_then(Value::as_u64))
+            == Some(0);
+        if quiet {
+            let _ = call(&l.id, serde_json::json!({ "cmd": "quit", "commit": true }), None);
+        } else {
+            l.st.lock().unwrap().update = Some(want);
+            changed();
+        }
+    });
 }
 
 /// Upload termic-server to `~/.termic/bin` over the same ssh: the file goes
@@ -1417,7 +1490,7 @@ mod tests {
             id: "x".into(),
             kind: MachineKind::Server,
             endpoint: Mutex::new(Endpoint::Server(rec)),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into() }),
+            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, upgrade_tried: None }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),

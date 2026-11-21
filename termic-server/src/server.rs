@@ -38,7 +38,7 @@ fn main() {
         "status" => status(),
         "stop" => stop(),
         "version" | "--version" | "-V" => {
-            println!("termic-server {}", env!("CARGO_PKG_VERSION"));
+            println!("termic-server {}", crate::util::version());
             0
         }
         "help" | "--help" | "-h" => {
@@ -125,14 +125,16 @@ fn run_daemon() -> i32 {
     };
     let quiet = std::env::var("TERMIC_SERVER_QUIET_MS").ok().and_then(|v| v.parse().ok()).map(Duration::from_millis).unwrap_or(Duration::from_secs(2));
     let d = daemon::Daemon::new(dir.clone(), st, quiet);
-    util::log(&format!("daemon {} started (pid {}), socket {}", env!("CARGO_PKG_VERSION"), std::process::id(), sock.display()));
+    util::log(&format!("daemon {} started (pid {}), socket {}", crate::util::version(), std::process::id(), sock.display()));
     {
         let d = d.clone();
         std::thread::spawn(move || d.monitor());
     }
+    // A `quit` (the desktop restarting this daemon onto a new build) left
+    // these agents running: back in their sessions, before any client.
+    d.resume_after_restart();
     {
         let d = d.clone();
-        let (sock, pid) = (sock.clone(), util::pid_path(&dir));
         let sig = match signal_pipe() {
             Ok(f) => f,
             Err(e) => return fail(format!("could not set up signals: {e}")),
@@ -143,9 +145,7 @@ fn run_daemon() -> i32 {
             let _ = sig.read(&mut b);
             util::log(&format!("signal {}: stopping, hanging up every agent", b[0]));
             d.hangup_all();
-            let _ = std::fs::remove_file(&sock);
-            let _ = std::fs::remove_file(&pid);
-            std::process::exit(0);
+            exit_daemon(&d.dir);
         });
     }
 
@@ -168,6 +168,14 @@ fn run_daemon() -> i32 {
         });
     }
     0
+}
+
+/// Remove the socket and pid file and exit: the next `bridge` starts a
+/// daemon from the binary installed now.
+pub fn exit_daemon(dir: &Path) -> ! {
+    let _ = std::fs::remove_file(util::sock_path(dir));
+    let _ = std::fs::remove_file(util::pid_path(dir));
+    std::process::exit(0);
 }
 
 static SIGNAL_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
@@ -323,7 +331,7 @@ fn status() -> i32 {
     let dir = util::data_dir();
     match running_pid(&dir) {
         Some(pid) => {
-            println!("running (pid {pid}), version {}, data in {}", env!("CARGO_PKG_VERSION"), dir.display());
+            println!("running (pid {pid}), version {}, data in {}", crate::util::version(), dir.display());
             0
         }
         None => {

@@ -489,3 +489,37 @@ fn an_interrupt_reaches_the_agents_foreground_command() {
     a.wait_for("term_reset after a restart", |m| matches!(m, ServerMsg::TermReset { .. }).then_some(()));
     a.task_state("napper", |t| t.state != "inactive");
 }
+
+#[test]
+fn quit_restarts_onto_the_installed_build_and_resumes_running_agents() {
+    let e = Env::new("restart");
+    let (mut a, mut ab) = e.bridge();
+    a.ok(json!({"cmd":"project_add","path": e.repo()}));
+    a.ok(json!({"cmd":"new","name":"keeper","agent":"fake"}));
+    a.ok(json!({"cmd":"new","name":"stopped","agent":"fake"}));
+    a.wait_for("both idle", |m| match m {
+        ServerMsg::Tasks { tasks } => (tasks.iter().filter(|t| t.state == "idle").count() == 2).then_some(()),
+        _ => None,
+    });
+    a.ok(json!({"cmd":"stop","task":"stopped"}));
+    a.task_state("stopped", |t| t.state == "inactive");
+    // Preview: counts the agents a restart would stop, and stops nothing.
+    let p = a.ok(json!({"cmd":"quit"}));
+    assert_eq!((p["tasks_with_agents"].clone(), p["quitting"].clone()), (json!(1), json!(false)), "{p}");
+    let q = a.ok(json!({"cmd":"quit","commit":true}));
+    assert_eq!(q["quitting"], json!(true));
+    // The daemon exits; the next bridge starts a new one.
+    wait_path_gone(&e.srv().join("sock"));
+    let _ = ab.wait();
+    let (mut b, _bb) = e.bridge();
+    // The agent that was running is back; the one that was stopped is not.
+    b.wait_for("keeper back, stopped still stopped", |m| match m {
+        ServerMsg::Tasks { tasks } => {
+            let st = |n: &str| tasks.iter().find(|t| t.name == n).map(|t| t.state.clone()).unwrap_or_default();
+            (st("keeper") != "inactive" && !st("keeper").is_empty() && st("stopped") == "inactive").then_some(())
+        }
+        _ => None,
+    });
+    let st: Value = serde_json::from_slice(&std::fs::read(e.srv().join("state.json")).unwrap()).unwrap();
+    assert!(st.get("resume_on_boot").is_none(), "the resume list is consumed: {st}");
+}

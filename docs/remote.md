@@ -277,6 +277,30 @@ is saved until it passes:
    the box.
 4. **Connect** and load tasks.
 
+**Keeping termic-server current** (`remote_client::auto_upgrade`).
+`scripts/build-termic-server.mjs` stamps each build with the app's
+version plus a hash of every source file it is built from
+(`TERMIC_SERVER_VERSION`, `termic-server util::version`), and writes that
+version next to the builds (`termic-server-version.txt`), where the app
+reads it: it cannot run a Linux build to ask. Unchanged code hashes the
+same, so a release that did not touch the server restarts nothing. On
+every connect, a server whose welcome carries another version gets the
+carried build through the Install upload (renamed over the old file; the
+running daemon keeps executing it, agents untouched), once per app run
+and version. Then the daemon is restarted onto it with `quit` over the
+open connection, no new ssh: `quit` previews the agents a restart would
+stop, and commit records them (`resume_on_boot` in `state.json`), hangs
+them up, answers, and exits; the link's reconnect runs `bridge`, which
+starts the new binary, and that daemon resumes those agents in their
+sessions before any client. With no agent running it restarts at once;
+otherwise the server's row says the update is installed and offers
+**Restart** (`server-update-<id>`), since an in-flight turn is lost. A
+server added with its own `command` is left alone. Who else can send a
+box `quit`: this desktop's own authenticated CLI (`termic --peer <box>
+quit --yes`, the same reach that can already `stop` its agents), never a
+paired computer (it may not chain a call on to a third machine,
+`peers.rs`).
+
 Servers live in `<global data dir>/servers.json` (machine-wide, like
 pairing). A destination starting with `-` or containing whitespace is
 refused, and `--` precedes it on every ssh command line.
@@ -420,9 +444,10 @@ key (a Notification Service Extension decrypts it) would hide even that.
   and `build-mac` signs the macOS ones with the Developer ID first
   (notarization refuses an unsigned Mach-O in the bundle); one installed
   over ssh keeps the linker's ad hoc signature, which is enough (no
-  quarantine on a file copied by ssh). Install looks in the bundle (and,
-  in debug builds, in `TERMIC_SERVER_BIN_DIR`). Updating termic-server on a
-  box: docs/plans/termic-server.md.
+  quarantine on a file copied by ssh). Install looks in the bundle (in
+  debug builds, only in `TERMIC_SERVER_BIN_DIR` when set). A box the
+  desktop does not reach stays on its build until it does; a self-update
+  from the release is in docs/plans/termic-server.md.
 - Windows: a Windows desktop is a host and a client like any other, using
   Windows' built-in OpenSSH for servers; servers themselves run Linux or
   macOS (`termic-server` is unix only). Details in

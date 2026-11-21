@@ -190,6 +190,31 @@ function MachineContextMenu({ m, children }: { m: MachineView; children: ReactNo
   );
 }
 
+/** A newer termic-server is on the box and agents are running there:
+ *  restarting stops them (they resume in their sessions), so it asks. */
+function ServerUpdate({ m }: { m: MachineView }) {
+  const { t } = useTranslation("remote");
+  const [busy, setBusy] = useState(false);
+  return (
+    <div data-testid={`server-update-${m.id}`} className="mx-2 mb-1 mt-0.5 flex items-center gap-2 text-[11.5px] text-[var(--color-fg-dim)]">
+      <span className="min-w-0 flex-1">{t("sidebar.updateReady")}</span>
+      <button
+        type="button"
+        data-testid={`server-restart-${m.id}`}
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          remoteCall(m.id, { cmd: "quit", commit: true })
+            .catch(e => { setBusy(false); useUI.getState().pushToast(String(e), "error"); });
+        }}
+        className="shrink-0 rounded px-1.5 py-0.5 font-medium text-[var(--color-accent)] hover:bg-[var(--color-hover)] disabled:opacity-50"
+      >
+        {t("sidebar.restartServer")}
+      </button>
+    </div>
+  );
+}
+
 const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { m: MachineView; projects: Project[]; renderProject: (p: Project) => ReactNode }) {
   const { t } = useTranslation("remote");
   const folded = useRemote(s => !!s.folded[m.id]);
@@ -231,6 +256,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
       {!online && !off && !folded && m.error && (
         <div className="mx-2 mt-0.5 text-[11.5px] text-[var(--color-fg-faint)]">{m.error}</div>
       )}
+      {online && m.update && <ServerUpdate m={m} />}
       {!folded && !off && (
         <div className="flex flex-col gap-0.5">
           {projects.length === 0

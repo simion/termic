@@ -84,37 +84,31 @@ curl -fsSL https://termic.dev/install-server.sh | sh
 
 A server must not stay on the version it was installed with.
 
-- `termic-server update [--check]`: read the manifest, and if newer,
-  download to a temp file, verify the signature and the sha256, run its
-  `version`, rename it into place (never a half-written binary).
-- **Automatic** by default: the daemon checks at start and once a day,
-  and installs a newer verified build in the background. Off with
-  `"auto_update": false` in `~/.termic-server/config.json`.
-- **Installed now, active on the next restart. Nothing restarts by
-  itself.** The new file is renamed over `~/.termic/bin/termic-server`;
-  the running daemon keeps executing the old one (a rename never touches
-  a running binary's file) with every agent untouched, and the next start
-  of the daemon (a reboot, `termic-server stop`, a crash) runs the new
-  one. Settings' server row shows "update installed, applies on restart"
-  and **Restart now** (it warns that running agents stop: restarting ends
-  their PTYs; handing live PTYs to the new process is out of scope).
-- **Rename, never write in place.** On macOS, rewriting a running signed
-  binary invalidates its signature and the system can kill the process;
-  a rename gives the new file its own inode. The same on Linux.
+**Shipped: the desktop keeps its servers current** (`docs/remote.md`,
+"Keeping termic-server current"). termic-server is stamped with the app's
+version plus a hash of its sources; on connect the desktop pushes the
+build it carries when the box runs another one (the Install path, no
+internet needed on the box), then restarts the daemon onto it with the
+`quit` verb over the open connection: at once when no agent runs, after
+the user's **Restart** on the server's row otherwise. The agents that
+were running come back in their sessions (`resume_on_boot`), so a restart
+costs an in-flight turn, not the conversation.
+
+Left, for a box the desktop does not reach for a while:
+
+- `termic-server update [--check]`: read the release manifest, and if
+  newer, download to a temp file, verify the signature and the sha256,
+  run its `version`, rename it into place (never a half-written binary).
+  Automatic by default (at daemon start and once a day), off with
+  `"auto_update": false` in `~/.termic-server/config.json`. It installs
+  only; the restart stays the desktop's prompt.
+- **Rename, never write in place** (as the desktop push already does): on
+  macOS, rewriting a running signed binary invalidates its signature.
 - **Old daemon, new bridge**: every ssh connection runs the NEW file's
   `bridge` against the still-running OLD daemon. The bridge only copies
   bytes, so this works; keep it that way (no protocol in the bridge).
 - **Forward only, with a way back**: a lower version is refused even when
-  signed; the previous binary is kept as `termic-server.prev`, and a new
-  one that fails its `version` check is never installed.
-- **Boxes without internet**: the desktop pushes its bundled build when it
-  is newer than the server's (the Install path), with the same rule: it
-  applies on the daemon's next restart. So a user who updates Termic
-  updates their servers on the next connect, internet on the box or not.
-- **Versioning**: termic-server's version is stamped with the app's at
-  release, so "latest" is one number for both; compatibility between an
-  older and a newer side stays the wire's job (each side announces caps
-  and adapts, as `resize` does today).
+  signed; the previous binary is kept as `termic-server.prev`.
 - **Signing**: an ed25519 (minisign) key the release signs with, its
   public key compiled into termic-server and the install script. Whether
   this is the Tauri updater's key or a separate one is open (below).
@@ -190,9 +184,10 @@ has to reach the laptop).
 - `docs/remote.md` (the server half), `termic-server/README.md` (install,
   update, uninstall, what runs where), `docs/remote-testing.md` (the
   by-hand runbook), the e2e coverage map.
-- Updater tests: manifest parsing, a bad signature or sha refused, a
-  lower version refused, the atomic replace while the old daemon keeps
-  running, the new build active after a restart, auto-update off.
+- Updater tests (the self-update half): manifest parsing, a bad signature
+  or sha refused, a lower version refused, auto-update off. The desktop
+  push and the restart are covered (`termic-server/tests/e2e.rs`,
+  `e2e/specs/remote.e2e.ts` "A server's termic-server stays current").
 - Manual test by the maintainer and screenshots before the PR
   (CLAUDE.md).
 
