@@ -156,6 +156,18 @@ pub fn save(repo_root: &Path, cfg: &RepoConfig) -> Result<()> {
     let raw = serde_yml::to_string(&cfg).context("serialize .termic.yaml")?;
     let text = format!("{HEADER}{}", indent_block_sequences(&raw));
     let path = repo_root.join(FILE_NAME);
+    // A server project's repo: write it on the box (temp file, renamed over).
+    if let Some(server) = crate::server_projects::server_for_path(repo_root) {
+        let (code, _, err) = crate::server_projects::exec_with_stdin(
+            &server, repo_root,
+            &["sh", "-c", "t=\"$1.termic-tmp.$$\" && cat > \"$t\" && mv -f \"$t\" \"$1\"", "sh", FILE_NAME],
+            &[], Some(text.as_bytes()),
+        ).map_err(|e| anyhow::anyhow!(e))?;
+        if code != 0 {
+            anyhow::bail!("write {}: {}", path.display(), err.trim());
+        }
+        return Ok(());
+    }
     crate::write_atomic(&path, text.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }

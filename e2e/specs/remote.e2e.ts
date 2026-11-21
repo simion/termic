@@ -743,6 +743,18 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect((await waiting())![0]).toBe(task);
   });
 
+  it("saves a server project's .termic.yaml on the box", async () => {
+    const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
+    const cfg = (await browser.execute((id) => window.__termic!.invoke("repo_config_load", { projectId: id }), pid) as any) ?? {};
+    cfg.scripts = { ...(cfg.scripts ?? {}), run: "echo from-settings" };
+    await browser.execute((id, c) => window.__termic!.invoke("repo_config_save", { projectId: id, config: c }), pid, cfg);
+    try {
+      expect(readFileSync(path.join(repo, ".termic.yaml"), "utf8")).toContain("echo from-settings");
+    } finally {
+      rmSync(path.join(repo, ".termic.yaml"), { force: true });
+    }
+  });
+
   it("archives from the desktop: the box removes its worktree, the row goes", async () => {
     // The repo's archive script runs in the worktree on the box first.
     const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
