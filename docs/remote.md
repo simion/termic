@@ -290,11 +290,17 @@ a connection carries one terminal); its row's state and fade come from
 the server's rows (`data-remote-state`); New task on its project opens
 the server's dialog with the project picked; archive goes to the box.
 Server projects are not config-synced (another machine has its own
-servers). The separate per-server sidebar section is gone; paired
-computers keep theirs. A server belongs to the profile whose window
-added it (`ServerRecord.profile`, a window label); one added before that
-field keeps its projects where they are. Add a server is also on the
-sidebar's projects header and linked from Add project.
+servers). The sidebar has three top-level sections, each a filled
+header with a fold and a +: PROJECTS (this computer's), SERVERS
+(`ServersSection` in `RemoteMachines.tsx`: one row per server with its
+state, New task and a menu, right-click too, for New task, Add project,
+Server settings and Remove, and its projects drawn under it by the
+sidebar's own `renderProject`), and PAIRED COMPUTERS (other Termic apps,
+drawn from what they report). SERVERS shows once a server exists; until
+then Add a server sits on the PROJECTS header and is linked from Add
+project. Settings' rail lists projects the same way. A server belongs to
+the profile whose window added it (`ServerRecord.profile`, a window
+label); one added before that field keeps its projects where they are.
 
 **Running things on the box.** termic-server offers two general
 primitives, and the desktop sends its existing code through them rather

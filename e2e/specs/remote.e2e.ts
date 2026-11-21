@@ -488,6 +488,40 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await snap("remote-local-server-row.png");
   });
 
+  it("files the server's projects under it in SERVERS, with a menu to manage it", async () => {
+    // Its project and task sit inside the server's block, not in PROJECTS.
+    await waitVisible('[data-testid="servers-section-header"]');
+    expect(await browser.execute((sid, sel) => {
+      const block = document.querySelector(`[data-testid="server-block-${sid}"]`)?.parentElement;
+      return !!block?.querySelector(sel);
+    }, serverId, row())).toBe(true);
+    // The PROJECTS header's server button gives way to SERVERS' own +.
+    expect(await browser.execute(() => document.querySelectorAll('[data-testid="sidebar-add-server"]').length)).toBe(1);
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="servers-section-header"] [data-testid="sidebar-add-server"]'))).toBe(true);
+    // Its menu: New task, Add project (the dialog opens on the path field),
+    // settings, remove.
+    const openServerMenu = () => browser.waitUntil(() => browser.execute((sid) => {
+      if (document.querySelector('[data-testid="server-menu-settings"]')) return true;
+      const el = document.querySelector(`[data-testid="server-menu-${sid}"]`) as HTMLElement;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      return !!document.querySelector('[data-testid="server-menu-settings"]');
+    }, serverId), { timeout: 10_000, timeoutMsg: "the server's menu never opened" });
+    await openServerMenu();
+    expect(await browser.execute(() => ["new-task", "add-project", "settings", "remove"].every(k => !!document.querySelector(`[data-testid="server-menu-${k}"]`)))).toBe(true);
+    await snap("remote-server-menu.png");
+    await clickPresent('[data-testid="server-menu-add-project"]');
+    await waitVisible('[data-testid="remote-project-path"]');
+    await browser.keys("Escape");
+    await waitGone('[data-testid="remote-project-path"]');
+    // Folding the server hides its projects; unfolding brings them back.
+    await clickPresent(`[data-testid="server-block-${serverId}"] button[aria-expanded]`);
+    await waitGone(row());
+    await clickPresent(`[data-testid="server-block-${serverId}"] button[aria-expanded]`);
+    await waitVisible(row());
+  });
+
   it("opens the task as its terminal from its row, and typing reaches the agent", async () => {
     await clickPresent(row());
     await waitVisible('[data-testid="remote-task-view"]', 20_000);

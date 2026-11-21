@@ -26,11 +26,12 @@ export function NewRemoteTaskDialog() {
   const setDialog = useRemote(s => s.setDialog);
   const wanted = useRemote(s => s.newTaskProject);
   const base = useRemote(s => s.newTaskBase);
-  return machineId ? <Body machineId={machineId} wanted={wanted} base={base} onClose={() => setDialog({ newTaskOn: null, newTaskProject: null, newTaskBase: null })} /> : null;
+  const adding = useRemote(s => s.newTaskAdding);
+  return machineId ? <Body machineId={machineId} wanted={wanted} base={base} startAdding={adding} onClose={() => setDialog({ newTaskOn: null, newTaskProject: null, newTaskBase: null, newTaskAdding: false })} /> : null;
 }
 
 /** `base`: the branch to start from (Duplicate), else the project's default. */
-function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?: string | null; base?: string | null; onClose: () => void }) {
+function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: string; wanted?: string | null; base?: string | null; startAdding?: boolean; onClose: () => void }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const openTask = useRemote(s => s.openTask);
@@ -44,7 +45,7 @@ function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?
   // Adding a project is its own wait: Start must not read "Starting..." then.
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [addingPath, setAddingPath] = useState<string | null>(null);
+  const [addingPath, setAddingPath] = useState<string | null>(startAdding ? "" : null);
   const machineName = machine?.name ?? "";
 
   async function load() {

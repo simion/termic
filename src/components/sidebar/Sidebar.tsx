@@ -13,7 +13,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { RemoteMachines } from "@/components/remote/RemoteMachines";
+import { RemoteMachines, ServersSection } from "@/components/remote/RemoteMachines";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
@@ -138,6 +138,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // strip exists at all.
   useProfilesSync();
   const projects = useApp(s => s.projects);
+  const remoteMachines = useRemote(s => s.machines);
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const setSidebarWidth = useApp(s => s.setSidebarWidth);
   const tasks = useApp(s => s.tasks);
@@ -1192,10 +1193,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // grouped it on purpose). Only LOOSE (ungrouped) inactive projects fold. So
   // the fold is "declutter the loose top-level list"; folders stay intact and
   // are the user's own organization to prune.
+  const hasServers = remoteMachines.some(m => m.kind === "server");
   const projectIsActive = (pid: string) =>
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
-    !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p);
+    !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p) || !!p.server;
   // While filtering: a project shows when a task of its matches (the open
   // task counts, the tree keeps it listed), or when `project:` names it, so
   // an empty project can still be found to start a task in. The inactive
@@ -1497,8 +1499,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
             {/* Projects on a machine you reach over SSH join this list too
                 (docs/plans/server-projects.md): add one right here. */}
-            <Tip content={t("addServerTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-server" onClick={() => useRemote.getState().setDialog({ serverDialog: true })}>
-              <Server className={iconSize(compact)} /></Button></Tip>
+            {/* Once a server exists, SERVERS below has its own +. */}
+            {!hasServers && <Tip content={t("addServerTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-server" onClick={() => useRemote.getState().setDialog({ serverDialog: true })}>
+              <Server className={iconSize(compact)} /></Button></Tip>}
           </div>
         </div>
 
@@ -1707,7 +1710,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           )}
                           {/* Lives on a server: which one, so a project with
                               the same name here and there reads apart. */}
-                          {p.server && <ServerTag serverId={p.server} />}
                           {/* Multi-repo marker sits AFTER the name so
                               project names stay vertically aligned
                               regardless of type (no snake-indent). */}
@@ -2457,7 +2459,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           // FIRST member's position with all its members. Only ungrouped
           // inactive projects drop to the flat fold below. Keyboard nav
           // (useShortcuts) walks the same visualProjectOrder.
-          const sections = projectSections(activeProjects);
+          // A server's projects live under it in SERVERS (the rail keeps
+          // them inline: it draws no section headers).
+          const sections = projectSections(compact ? activeProjects : activeProjects.filter(p => !p.server));
           return (
             <>
               {/* Active projects render in place (original order). */}
@@ -2534,6 +2538,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </div>
               )}
+              {!compact && <ServersSection projects={activeProjects.filter(p => !!p.server)} renderProject={renderProject} />}
             </>
           );
           })()}
@@ -4439,18 +4444,5 @@ function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
         );
       })}
     </div>
-  );
-}
-
-/** The server a project lives on, after its name in the project row
- *  (docs/plans/server-projects.md), with its connection dot. */
-function ServerTag({ serverId }: { serverId: string }) {
-  const m = useRemote(s => s.machines.find(x => x.id === serverId));
-  return (
-    <span data-testid={`project-server-${serverId}`} className="flex min-w-0 shrink items-center gap-1 text-[11px] font-normal normal-case tracking-normal text-[var(--color-fg-faint)]">
-      <Server className="h-3 w-3 shrink-0" />
-      <span className="truncate">{m?.name ?? "server"}</span>
-      <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full", m?.state === "online" ? "bg-[var(--color-ok)]" : m?.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]")} />
-    </span>
   );
 }

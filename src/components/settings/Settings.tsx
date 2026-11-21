@@ -8,7 +8,8 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Smartphone } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, Bot, Container, UsersRound, RefreshCw, KeyRound, Smartphone, Server, Monitor } from "lucide-react";
+import { useRemote } from "@/lib/remote";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -37,7 +38,13 @@ export function Settings() {
   const view = useApp(s => s.view);
   const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
-  const projects = useApp(s => s.projects);
+  const allProjects = useApp(s => s.projects);
+  // This computer's projects, then each server with its projects, then the
+  // paired computers: the sidebar's order.
+  const projects = allProjects.filter(p => !p.server);
+  const machines = useRemote(s => s.machines);
+  const servers = machines.filter(m => m.kind === "server");
+  const paired = machines.filter(m => m.kind !== "server");
 
   const tab = view.settingsTab ?? "general";
   const repoId = view.settingsRepoId;
@@ -173,6 +180,27 @@ export function Settings() {
             />
           );
         })}
+        {servers.map(m => (
+          <div key={m.id} data-testid={`settings-rail-server-${m.id}`}>
+            <button type="button" onClick={() => openSettings("remote")}
+              className="mt-4 flex w-full items-center gap-1.5 px-2 pb-1 text-left text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]">
+              <Server className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{m.name}</span>
+            </button>
+            {allProjects.filter(p => p.server === m.id).map(p => (
+              <RailItem key={p.id} label={p.name} active={tab === "repositories" && repoId === p.id}
+                onClick={() => openSettings("repositories", p.id)} />
+            ))}
+          </div>
+        ))}
+        {paired.length > 0 && (
+          <>
+            <div className="mt-4 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("rail.paired")}</div>
+            {paired.map(m => (
+              <RailItem key={m.id} icon={<Monitor className="h-3.5 w-3.5 shrink-0" />} label={m.name}
+                active={false} onClick={() => openSettings("peers")} />
+            ))}
+          </>
+        )}
         </div>
 
         <RailFooterVersion />

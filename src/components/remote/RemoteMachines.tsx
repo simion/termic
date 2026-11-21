@@ -6,9 +6,9 @@
 // Reads only the remote store's slice: a remote update never re-renders a
 // local row, and a local change never re-renders these.
 
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, ChevronDown, ChevronRight, Folder, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server } from "lucide-react";
+import { Bell, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
@@ -17,22 +17,168 @@ import { cn } from "@/lib/utils";
 import { ACCENTS, accentCss } from "@/lib/accents";
 import { ContextMenuContent, ContextMenuItem, ContextMenuRoot, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/ContextMenu";
 import { useUI } from "@/store/ui";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import type { Project } from "@/lib/types";
 import { groupColorCss } from "@/lib/taskGroups";
 import { prBadgeAppearance, type PrBadgeState } from "@/lib/prBadgeAppearance";
 import { prNounShort, prRef } from "@/lib/forge";
 import type { ForgeProvider } from "@/lib/types";
 import { openPath } from "@/lib/ipc";
-import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteTaskRequest, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
+import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
 
-export function RemoteMachines() {
+/** A top-level sidebar section header, styled as PROJECTS': a filled bar
+ *  with the label, a fold, and its actions on the right. */
+export function SidebarSectionHeader({ testId, icon, label, folded, onToggle, children }: { testId: string; icon: ReactNode; label: string; folded: boolean; onToggle: () => void; children?: ReactNode }) {
+  return (
+    <div data-testid={testId} className="group mb-1.5 flex h-8 select-none items-center justify-between rounded-md bg-[var(--color-bg-2)] pl-1 pr-0.5 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg-dim)]">
+      <button type="button" onClick={onToggle} aria-expanded={!folded} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
+        {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+        {icon}
+        {/* A button resets text-transform: the case goes on the label. */}
+        <span className="truncate uppercase">{label}</span>
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5">{children}</div>
+    </div>
+  );
+}
+
+const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
+
+/** SERVERS: each server a row (its state, New task, a menu to manage it)
+ *  with its projects under it, drawn by the sidebar's own renderProject. */
+export function ServersSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
+  const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
-  // Servers are ordinary projects in the sidebar now (server_projects.rs);
-  // this section is for paired computers.
+  const servers = useMemo(() => all.filter(m => m.kind === "server"), [all]);
+  const folded = useRemote(s => !!s.folded["section:servers"]);
+  const toggle = useRemote(s => s.toggleFold);
+  if (servers.length === 0) return null;
+  return (
+    <div data-testid="servers-section" className="mt-3">
+      <SidebarSectionHeader testId="servers-section-header" icon={<Server className="h-4 w-4 shrink-0" />} label={t("sidebar.serversHeader")}
+        folded={folded} onToggle={() => toggle("section:servers")}>
+        <Tip content={t("sidebar.addServer")}>
+          <button type="button" data-testid="sidebar-add-server" aria-label={t("sidebar.addServer")} className={headerBtn}
+            onClick={() => useRemote.getState().setDialog({ serverDialog: true })}><Plus className="h-3.5 w-3.5" /></button>
+        </Tip>
+      </SidebarSectionHeader>
+      {!folded && (
+        <div className="flex flex-col gap-1">
+          {servers.map(m => <ServerBlock key={m.id} m={m} projects={projects.filter(p => p.server === m.id)} renderProject={renderProject} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServerMenuItems({ m, Item, Sep }: { m: MachineView; Item: (p: { onSelect: () => void; children: ReactNode; testId?: string; danger?: boolean }) => ReactNode; Sep: () => ReactNode }) {
+  const { t } = useTranslation("remote");
+  const setDialog = useRemote(s => s.setDialog);
+  const openSettings = useApp(s => s.openSettings);
+  const online = m.state === "online";
+  const remove = async () => {
+    const ok = await useUI.getState().askConfirm({ title: t("servers.removeTitle", { name: m.name }), message: t("servers.removeMessage", { name: m.name }), confirmLabel: t("servers.remove"), destructive: true });
+    if (!(typeof ok === "boolean" ? ok : ok.confirmed)) return;
+    await serverRemove(m.id).catch(e => useUI.getState().pushToast(String(e), "error"));
+  };
+  return (
+    <>
+      {online && <Item testId="server-menu-new-task" onSelect={() => setDialog({ newTaskOn: m.id })}>{t("sidebar.newTaskItem")}</Item>}
+      {online && <Item testId="server-menu-add-project" onSelect={() => setDialog({ newTaskOn: m.id, newTaskAdding: true })}>{t("sidebar.addProject")}</Item>}
+      {!online && <Item testId="server-menu-reconnect" onSelect={() => void remoteReconnect()}>{t("sidebar.reconnect")}</Item>}
+      <Item testId="server-menu-settings" onSelect={() => openSettings("remote")}>{t("sidebar.serverSettings")}</Item>
+      <Sep />
+      <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>
+    </>
+  );
+}
+
+const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { m: MachineView; projects: Project[]; renderProject: (p: Project) => ReactNode }) {
+  const { t } = useTranslation("remote");
+  const folded = useRemote(s => !!s.folded[m.id]);
+  const toggle = useRemote(s => s.toggleFold);
+  const setDialog = useRemote(s => s.setDialog);
+  const online = m.state === "online";
+  const waiting = m.tasks.filter(x => x.state === "waiting").length;
+  const done = m.tasks.filter(x => x.state === "done").length;
+  const header = (
+    <div data-testid={`server-block-${m.id}`} data-state={m.state}
+      className={cn("group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]", !online && "opacity-70")}>
+      <button type="button" onClick={() => toggle(m.id)} aria-expanded={!folded} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
+        {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+        <Server className="h-4 w-4 shrink-0" />
+        <span className="truncate text-[var(--color-fg)]">{m.name}</span>
+        <span aria-hidden className={cn("ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-[var(--color-ok)]" : m.state === "connecting" ? "bg-[var(--color-warn)]" : "bg-[var(--color-fg-faint)]")} />
+        {!online && <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{m.state === "connecting" ? t("sidebar.connecting") : t("sidebar.offline")}</span>}
+        {online && waiting > 0 && <span className="flex items-center gap-0.5 px-1 text-[11px] tabular-nums text-[var(--color-warn)]"><Bell className="h-3 w-3" />{waiting}</span>}
+        {online && waiting === 0 && done > 0 && <span className="ml-1 block h-2 w-2 rounded-full bg-[var(--color-info)]" />}
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5">
+        {!online && (
+          <Tip content={m.error ?? t("sidebar.reconnect")}>
+            <button type="button" aria-label={t("sidebar.reconnect")} onClick={() => void remoteReconnect()} className={headerBtn}><RefreshCw className="h-3.5 w-3.5" /></button>
+          </Tip>
+        )}
+        {online && (
+          <Tip content={t("sidebar.newTask", { name: m.name })}>
+            <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => setDialog({ newTaskOn: m.id })} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
+          </Tip>
+        )}
+        <DropdownRoot>
+          <DropdownTrigger asChild>
+            <button type="button" data-testid={`server-menu-${m.id}`} aria-label={t("sidebar.serverSettings")} className={headerBtn}><MoreVertical className="h-3.5 w-3.5" /></button>
+          </DropdownTrigger>
+          <DropdownMenu>
+            <ServerMenuItems m={m} Sep={() => <DropdownSeparator />}
+              Item={({ onSelect, children, testId, danger }) => <DropdownItem onSelect={onSelect} data-testid={testId} className={danger ? "text-[var(--color-err)]" : undefined}>{children}</DropdownItem>} />
+          </DropdownMenu>
+        </DropdownRoot>
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <ContextMenuRoot>
+        <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
+        <ContextMenuContent>
+          <ServerMenuItems m={m} Sep={() => <ContextMenuSeparator />}
+            Item={({ onSelect, children, danger }) => <ContextMenuItem onSelect={onSelect} destructive={danger}>{children}</ContextMenuItem>} />
+        </ContextMenuContent>
+      </ContextMenuRoot>
+      {!online && !folded && m.error && (
+        <div className="mx-2 mt-0.5 text-[11.5px] text-[var(--color-fg-faint)]">{m.error}</div>
+      )}
+      {!folded && (
+        <div className="ml-[13px] flex flex-col gap-0.5 border-l border-[var(--color-border-soft)] pl-1">
+          {projects.length === 0
+            ? <div className="flex h-[var(--task-row-h)] items-center px-2 text-[12.5px] text-[var(--color-fg-faint)]">{t("sidebar.noServerProjects")}</div>
+            : projects.map(renderProject)}
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** PAIRED COMPUTERS: other Termic apps paired with this one (docs/peers.md),
+ *  each drawn from what it reports. */
+export function RemoteMachines() {
+  const { t } = useTranslation("remote");
+  const all = useRemote(s => s.machines);
   const machines = useMemo(() => all.filter(m => m.kind !== "server"), [all]);
+  const folded = useRemote(s => !!s.folded["section:paired"]);
+  const toggle = useRemote(s => s.toggleFold);
+  const openSettings = useApp(s => s.openSettings);
   if (machines.length === 0) return null;
   return (
-    <div data-testid="remote-machines" className="mt-3 flex flex-col gap-2">
-      {machines.map(m => <MachineSection key={m.id} m={m} />)}
+    <div data-testid="remote-machines" className="mt-3">
+      <SidebarSectionHeader testId="paired-section-header" icon={<Monitor className="h-4 w-4 shrink-0" />} label={t("sidebar.pairedHeader")}
+        folded={folded} onToggle={() => toggle("section:paired")}>
+        <Tip content={t("sidebar.pairComputer")}>
+          <button type="button" data-testid="sidebar-pair-computer" aria-label={t("sidebar.pairComputer")} className={headerBtn}
+            onClick={() => openSettings("peers")}><Plus className="h-3.5 w-3.5" /></button>
+        </Tip>
+      </SidebarSectionHeader>
+      {!folded && <div className="flex flex-col gap-2">{machines.map(m => <MachineSection key={m.id} m={m} />)}</div>}
     </div>
   );
 }
@@ -68,7 +214,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
     <div data-testid={`remote-machine-${m.id}`} data-state={m.state}>
       <div
         className={cn(
-          "group flex h-8 select-none items-center justify-between rounded-md bg-[var(--color-bg-2)] pl-1 pr-0.5 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg-dim)]",
+          "group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
           !online && "opacity-70",
         )}
       >
@@ -80,7 +226,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
         >
           {folded || !online ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
           <Icon className="h-4 w-4 shrink-0" />
-          <span className="truncate">{m.name}</span>
+          <span className="truncate text-[var(--color-fg)]">{m.name}</span>
           <span
             aria-hidden
             className={cn(
