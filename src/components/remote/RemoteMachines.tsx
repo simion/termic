@@ -149,7 +149,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
         <div className="mx-2 mt-0.5 text-[11.5px] text-[var(--color-fg-faint)]">{m.error}</div>
       )}
       {!folded && (
-        <div className="ml-[13px] flex flex-col gap-0.5 border-l border-[var(--color-border-soft)] pl-1">
+        <div className="ml-3 flex flex-col gap-0.5">
           {projects.length === 0
             ? <div className="flex h-[var(--task-row-h)] items-center px-2 text-[12.5px] text-[var(--color-fg-faint)]">{t("sidebar.noServerProjects")}</div>
             : projects.map(renderProject)}
