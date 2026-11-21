@@ -523,15 +523,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await waitGone(row());
     expect(await browser.execute((sid) => window.__termic!.invoke("remote_machines").then((l: any) => l.find((m: any) => m.id === sid)?.state), serverId)).toBe("disconnected");
     await snap("remote-server-disconnected.png");
-    await browser.waitUntil(() => browser.execute((sid) => {
-      if (document.querySelector('[data-testid="machine-menu-connect"]')) return true;
-      const el = document.querySelector(`[data-testid="server-menu-${sid}"]`) as HTMLElement;
-      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      return !!document.querySelector('[data-testid="machine-menu-connect"]');
-    }, serverId), { timeout: 10_000, timeoutMsg: "the disconnected server's menu never offered Connect" });
-    await clickPresent('[data-testid="machine-menu-connect"]');
+    // The row's own switch turns it back on.
+    expect(await browser.execute((sid) => document.querySelector(`[data-testid="machine-switch-${sid}"]`)?.getAttribute("aria-checked"), serverId)).toBe("false");
+    await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
     await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "online", 30_000);
     await waitVisible(row(), 20_000);
     // Folding the server hides its projects; unfolding brings them back.

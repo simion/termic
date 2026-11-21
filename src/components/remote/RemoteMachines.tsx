@@ -109,6 +109,28 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
   );
 }
 
+/** On / off for a machine's connection, right on its row: the settings
+ *  switch (Controls.tsx Toggle), sized for a sidebar row. */
+function MachineSwitch({ m }: { m: MachineView }) {
+  const { t } = useTranslation("remote");
+  const on = m.state !== "disconnected";
+  const label = on ? t("sidebar.disconnect") : t("sidebar.connect");
+  return (
+    <Tip content={label}>
+      <button
+        type="button" role="switch" aria-checked={on} aria-label={label}
+        data-testid={`machine-switch-${m.id}`}
+        onClick={(e) => { e.stopPropagation(); void remoteSetConnected(m.id, !on).catch(err => useUI.getState().pushToast(String(err), "error")); }}
+        className="relative mx-1 inline-block h-4 w-7 shrink-0 rounded-full p-0"
+        style={{ background: on ? "var(--color-accent)" : "var(--color-bg-3)", transition: "background-color 150ms" }}
+      >
+        <span className="absolute top-0.5 h-3 w-3 rounded-full"
+          style={{ left: on ? 14 : 2, background: on ? "var(--color-accent-fg)" : "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.25)", transition: "left 150ms, background-color 150ms" }} />
+      </button>
+    </Tip>
+  );
+}
+
 /** The ⋮ button that opens a machine's menu. */
 function MachineMenuButton({ m }: { m: MachineView }) {
   const { t } = useTranslation("remote");
@@ -168,6 +190,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
             <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => setDialog({ newTaskOn: m.id })} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
           </Tip>
         )}
+        <MachineSwitch m={m} />
         <MachineMenuButton m={m} />
       </div>
     </div>
@@ -296,7 +319,8 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
               </button>
             </Tip>
           )}
-          <MachineMenuButton m={m} />
+          <MachineSwitch m={m} />
+        <MachineMenuButton m={m} />
         </div>
       </div>
       </MachineContextMenu>
