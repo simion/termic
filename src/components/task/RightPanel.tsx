@@ -385,6 +385,8 @@ export function RightPanel() {
   // worktree-only: never for repo-root, multi-repo, or non-git tasks.
   const spotlightAvailable = !!task && !task.is_main_checkout
     && !!project?.spotlight_enabled
+    // A server project's checkout is on the box: nothing to mirror onto here.
+    && !project?.server
     && project?.type !== "multi"
     && !project?.non_git;
 

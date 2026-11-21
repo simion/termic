@@ -767,6 +767,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     }
   });
 
+  it("shows a server project's settings without this Mac's sandbox, secrets or code navigation", async () => {
+    const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
+    await browser.execute((id) => window.__termic!.useApp.getState().openSettings("repositories", id), pid);
+    await waitVisible('[data-repo-tab="git"]');
+    const tabs = await browser.execute(() => [...document.querySelectorAll("[data-repo-tab]")].map(e => e.getAttribute("data-repo-tab")));
+    expect(tabs).toEqual(["scripts", "git", "advanced"]);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
   it("saves a server project's .termic.yaml on the box", async () => {
     const pid = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
     const cfg = (await browser.execute((id) => window.__termic!.invoke("repo_config_load", { projectId: id }), pid) as any) ?? {};
