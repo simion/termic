@@ -3594,6 +3594,20 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       <span>{t("copyBranch")}</span>
                     </DropdownItem>
                   )}
+                  {!w.is_main_checkout && w.branch && (
+                    <DropdownItem
+                      className="items-center [&>svg]:mt-0"
+                      data-testid={`task-duplicate-${w.id}`}
+                      // The server's New task dialog, starting from this branch.
+                      onSelect={() => requestAnimationFrame(() => {
+                        const p = useApp.getState().projects.find(x => x.id === w.project_id);
+                        if (p?.server) useRemote.getState().setDialog({ newTaskOn: p.server, newTaskProject: p.name, newTaskBase: w.branch });
+                      })}
+                    >
+                      <GitBranchPlus className="h-4 w-4" />
+                      <span>{t("duplicateWorktree")}</span>
+                    </DropdownItem>
+                  )}
                   {groupMenu}
                   <DropdownSeparator />
                   <DropdownItem

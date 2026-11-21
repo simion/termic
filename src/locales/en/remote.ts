@@ -150,6 +150,7 @@ export default {
     leaveGroup: "Remove from group",
   },
   newTask: {
+    fromBranch: "Starts from {{branch}}",
     title: "New task on {{name}}",
     project: "Project",
     agent: "Agent",

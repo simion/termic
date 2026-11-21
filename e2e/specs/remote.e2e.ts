@@ -700,6 +700,28 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await browser.execute(() => window.__termic!.useApp.getState().loadAll());
       return grouped();
     }, { timeout: 5_000, timeoutMsg: "a resync dropped the server task's group" });
+    // Duplicate: the server's New task dialog, starting from this branch;
+    // the box makes the new task from it.
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      el.click();
+    }, `${row()} [data-testid="task-menu-trigger"]`);
+    await clickWhenVisible(`[data-testid="task-duplicate-${task}"]`);
+    await waitVisible('[data-testid="remote-new-base"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="remote-new-base"]')!.textContent)).toContain("box-task");
+    await waitVisible('[data-testid="remote-new-prompt"]', 20_000);
+    await setInputValue('[data-testid="remote-new-prompt"]', "the duplicate");
+    await setInputValue('[data-testid="remote-new-name"]', "box-dup");
+    await browser.waitUntil(() => browser.execute(() => !(document.querySelector('[data-testid="remote-new-start"]') as HTMLButtonElement).disabled),
+      { timeout: 20_000, timeoutMsg: "Start never became available" });
+    await clickPresent('[data-testid="remote-new-start"]');
+    const dup = await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).find((t: any) => t.name === "box-dup"),
+      { timeout: 30_000, timeoutMsg: "the duplicate never appeared on the box" }) as any;
+    expect(dup.base_branch).toBe("box-task");
+    expect((await call({ cmd: "archive", task: dup.id })).ok).toBe(true);
   });
 
   it("shows the server's agent waiting on its row, and raises the alert", async () => {

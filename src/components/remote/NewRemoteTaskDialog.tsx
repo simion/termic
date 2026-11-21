@@ -25,10 +25,12 @@ export function NewRemoteTaskDialog() {
   const machineId = useRemote(s => s.newTaskOn);
   const setDialog = useRemote(s => s.setDialog);
   const wanted = useRemote(s => s.newTaskProject);
-  return machineId ? <Body machineId={machineId} wanted={wanted} onClose={() => setDialog({ newTaskOn: null, newTaskProject: null })} /> : null;
+  const base = useRemote(s => s.newTaskBase);
+  return machineId ? <Body machineId={machineId} wanted={wanted} base={base} onClose={() => setDialog({ newTaskOn: null, newTaskProject: null, newTaskBase: null })} /> : null;
 }
 
-function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: string | null; onClose: () => void }) {
+/** `base`: the branch to start from (Duplicate), else the project's default. */
+function Body({ machineId, wanted, base, onClose }: { machineId: string; wanted?: string | null; base?: string | null; onClose: () => void }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const openTask = useRemote(s => s.openTask);
@@ -93,7 +95,7 @@ function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: stri
     try {
       const r = await remoteCall(
         machineId,
-        req("new", { name: (name.trim() || derived), project, agent: agent || undefined, prompt: prompt.trim(), open: true }),
+        req("new", { name: (name.trim() || derived), project, agent: agent || undefined, prompt: prompt.trim(), open: true, ...(base ? { base } : {}) }),
         330_000,
       );
       if (!r.ok) throw new Error(r.error?.message ?? "could not start the task");
@@ -129,6 +131,7 @@ function Body({ machineId, wanted, onClose }: { machineId: string; wanted?: stri
   return (
     <AppDialog open onOpenChange={v => { if (!v) onClose(); }} title={t("newTask.title", { name: machineName })} className="max-w-[560px]">
       <div className="flex flex-col gap-4">
+        {base && <p data-testid="remote-new-base" className="text-[12.5px] text-[var(--color-fg-dim)]">{t("newTask.fromBranch", { branch: base })}</p>}
         {projects === null ? (
           <p className="text-[13px] text-[var(--color-fg-faint)]">...</p>
         ) : projects.length === 0 && addingPath === null ? (

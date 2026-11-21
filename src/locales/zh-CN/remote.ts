@@ -149,6 +149,7 @@ export default {
     leaveGroup: "移出分组",
   },
   newTask: {
+    fromBranch: "从 {{branch}} 开始",
     title: "在 {{name}} 上新建任务",
     project: "项目",
     agent: "代理",
