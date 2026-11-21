@@ -6,14 +6,14 @@ export default {
   },
   section: {
     title: "远程",
-    lead: "用手机控制这台电脑,在通过 SSH 连接的服务器上运行代理,并与其他 Termic 电脑配对。",
+    lead: "三种连接方式:你的手机、服务器,以及你装有 Termic 的其他电脑。",
   },
   phones: {
     title: "手机",
     getApp: "获取应用:",
     ios: "iPhone(TestFlight)",
     android: "Android(Google Play)",
-    lead: "在手机上回答代理的问题、发送提示词、查看它们的终端。手机本身不运行任何东西,所有操作都在这台电脑上完成。",
+    lead: "把手机当作这台电脑的遥控器:回答代理、发送提示词、查看终端。手机本身不运行任何东西。",
     connect: "连接手机",
     connectAnother: "再连接一部手机",
     empty: "还没有配对的手机。",
@@ -60,7 +60,7 @@ export default {
   },
   servers: {
     title: "服务器",
-    lead: "在通过 SSH 连接的电脑上运行代理,例如家里的 Linux 主机或云服务器。这台电脑休眠时它们仍会继续工作,它们的任务会出现在侧边栏中。",
+    lead: "一台通过 SSH 访问的机器,例如 Linux 主机或云服务器,替你运行代理。它不需要 Termic 应用,它的任务会出现在侧边栏中,这台电脑休眠时也会继续运行。",
     leadSsh: "Termic 使用你自己的 ssh 及其配置,不保存任何密码或密钥。",
     add: "添加服务器",
     empty: "还没有添加服务器。",

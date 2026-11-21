@@ -217,7 +217,10 @@ export function PeersSection() {
   // nearby, pair".
   return (
     <div className="flex flex-col gap-7" data-testid="peers-section">
-      <SectionTitle title={t("peers.title")} />
+      <div className="flex flex-col gap-1.5">
+        <SectionTitle title={t("peers.title")} />
+        <p data-testid="peers-lead" className="text-[13px] text-[var(--color-fg-dim)]">{t("peers.lead")}</p>
+      </div>
 
       <Block first>
         <div data-testid="peers-toggle" data-enabled={enabled ? "true" : "false"}>

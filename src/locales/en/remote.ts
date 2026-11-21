@@ -7,14 +7,14 @@ export default {
   },
   section: {
     title: "Remote",
-    lead: "Control this computer from your phone, run agents on servers you reach over SSH, and pair other Termic computers.",
+    lead: "Three ways to reach beyond this computer: your phone, servers, and your other computers with Termic.",
   },
   phones: {
     title: "Phones",
     getApp: "Get the app:",
     ios: "iPhone (TestFlight)",
     android: "Android (Google Play)",
-    lead: "Answer your agents, send prompts and watch their terminals from your phone. The phone runs nothing; every action happens on this computer.",
+    lead: "Your phone as a remote control for this computer: answer agents, send prompts, watch their terminals. Nothing runs on the phone.",
     connect: "Connect a phone",
     connectAnother: "Connect another phone",
     empty: "No phone is paired yet.",
@@ -61,7 +61,7 @@ export default {
   },
   servers: {
     title: "Servers",
-    lead: "Run agents on a computer you reach over SSH, such as a Linux box at home or a cloud machine. They keep working while this computer sleeps, and their tasks appear in your sidebar.",
+    lead: "A machine you reach over SSH, such as a Linux box or a cloud server, that runs agents for you. It needs no Termic app, and its tasks appear in your sidebar and keep working while this computer sleeps.",
     leadSsh: "Termic uses your own ssh and its configuration. It stores no passwords or keys.",
     add: "Add a server",
     empty: "No server is added yet.",

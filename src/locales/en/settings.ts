@@ -357,6 +357,7 @@ export default {
 
   peers: {
     title: "Other computers",
+    lead: "Another computer where you use the Termic app, such as your laptop and your desktop. Once paired, agents on either one can start and drive tasks on the other.",
     pair: {
       title: "Pair a computer",
       how: "Click Pair on a computer below. It shows a code on its screen; type that code here.",
@@ -379,8 +380,8 @@ export default {
     },
     enable: {
       label: "Share on this network",
-      hintOff: "Lets paired phones reach this computer, and pairs it with Termic on another computer so agents can start and drive tasks across both (that needs Termic's MCP server in your coding agent on both).",
-      hint: "Paired phones can reach this computer and your other computers can find it. A paired one can run agents here, so use a network you trust.",
+      hintOff: "Off: no phone or computer can reach this one. Turn it on to pair either.",
+      hint: "On: paired phones and computers can reach this one, and computers on this network can find it. Use a network you trust.",
     },
     self: {
       title: "This computer",
