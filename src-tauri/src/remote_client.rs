@@ -592,7 +592,9 @@ pub(crate) fn explain_ssh(dest: &str, status: Option<i32>, stderr: &str) -> Stri
     } else if e.contains("permission denied") {
         format!("{dest} refused your SSH key. Check that `ssh {dest}` works without a password (Termic uses your keys and ssh-agent, never a password).")
     } else if e.contains("could not resolve hostname") || e.contains("name or service not known") {
-        format!("No machine called {dest} could be found. Check the name, or use its IP address.")
+        // The machine is the host part: "alice@" is who to log in as.
+        let host = dest.rsplit('@').next().unwrap_or(dest);
+        format!("No machine called {host} could be found. Check the name, or use its IP address.")
     } else if e.contains("connection refused") {
         format!("{dest} refused the connection. Is SSH (sshd) running there?")
     } else if e.contains("timed out") || e.contains("no route to host") || e.contains("network is unreachable") {
@@ -1265,6 +1267,9 @@ mod tests {
             assert!(!s.contains('\u{2014}'), "no em dashes: {s}");
         }
         assert!(explain_ssh("box", Some(127), "sh: termic-server: not found").contains("not installed"));
+        // The machine is the host, not the login: "alice@" is left out.
+        let s = explain_ssh("alice@nope.example", Some(255), "ssh: Could not resolve hostname nope.example: x");
+        assert!(s.contains("No machine called nope.example ") && !s.contains("alice@"), "{s}");
     }
 
     #[test]
