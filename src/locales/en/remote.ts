@@ -3,13 +3,11 @@
 export default {
   rail: {
     label: "Remote",
-    hint: "Servers",
+    hint: "Phones, servers",
   },
   section: {
     title: "Remote",
-    lead: "Run agents on other machines you reach over SSH.",
-    computersPointer: "Other Termic computers, for agents to work together, are paired in Agent access.",
-    openAgentAccess: "Open Agent access",
+    lead: "Control this computer from your phone, run agents on servers you reach over SSH, and pair other Termic computers.",
   },
   phones: {
     title: "Phones",

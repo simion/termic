@@ -329,7 +329,7 @@ export default {
       badAddress: "That is not an IP address, so nothing was changed.",
       badPort: "The port has to be a number from 1 to 65535, or empty.",
       advanced: "Network address (advanced)",
-      pairInstead: "To link this computer with another Termic, pair them under Other computers above instead: no token leaves either computer, and each decides what the other may do. This is for an MCP client on another device that is not Termic, or a private network you trust, such as Tailscale.",
+      pairInstead: "To link this computer with another Termic, pair them in Settings > Remote, Other computers, instead: no token leaves either computer, and each decides what the other may do. This is for an MCP client on another device that is not Termic, or a private network you trust, such as Tailscale.",
       exposed: "Other devices on your network can reach this address. The token is still required, but it is sent unencrypted, and anyone who has it can create tasks and run agents on this computer. Your firewall may ask to allow Termic.",
     },
     connect: "Connect an agent",
@@ -379,8 +379,8 @@ export default {
     },
     enable: {
       label: "Share on this network",
-      hintOff: "Pair with Termic on another computer, so agents can start and drive tasks across both. Needs Termic's MCP server added to your coding agent on both computers.",
-      hint: "Your other computers can find this one. A paired one can run agents here, so use a network you trust.",
+      hintOff: "Lets paired phones reach this computer, and pairs it with Termic on another computer so agents can start and drive tasks across both (that needs Termic's MCP server in your coding agent on both).",
+      hint: "Paired phones can reach this computer and your other computers can find it. A paired one can run agents here, so use a network you trust.",
     },
     self: {
       title: "This computer",

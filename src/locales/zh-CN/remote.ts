@@ -2,13 +2,11 @@
 export default {
   rail: {
     label: "远程",
-    hint: "服务器",
+    hint: "手机、服务器",
   },
   section: {
     title: "远程",
-    lead: "在通过 SSH 连接的其他机器上运行代理。",
-    computersPointer: "让代理协同工作的其他 Termic 电脑,在「代理访问」中配对。",
-    openAgentAccess: "打开代理访问",
+    lead: "用手机控制这台电脑,在通过 SSH 连接的服务器上运行代理,并与其他 Termic 电脑配对。",
   },
   phones: {
     title: "手机",

@@ -122,11 +122,27 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
+    // One page: phones first, then servers, then other computers.
+    expect(await browser.execute(() => {
+      const top = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().top;
+      return top("remote-connect-phone") < top("remote-add-server") && top("remote-add-server") < top("settings-peers");
+    })).toBe(true);
     // The phone card is open, with where to get the app on each platform.
     await waitVisible('[data-testid="remote-connect-phone"]');
     expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/5qxhPr6a");
     expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-android"]')?.getAttribute("data-url"))).toBe("https://play.google.com/store/apps/details?id=dev.termic.remote");
     await snap("remote-settings-empty.png");
+  });
+
+  it("connects a phone from the sidebar's phone icon", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await clickPresent('[data-testid="sidebar-connect-phone"]');
+    await waitVisible('[data-testid="phone-qr"]');
+    await snap("remote-sidebar-phone.png");
+    await browser.keys("Escape");
+    await waitGone('[data-testid="phone-qr"]');
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+    await waitVisible('[data-testid="remote-section"]');
   });
 
   it("shows a QR code with a countdown, turning sharing on to do it", async () => {
@@ -139,11 +155,11 @@ describe("Phones and servers", () => {
     expect(s.enabled).toBe(true);
     expect(s.phone_pairing).not.toBeNull();
     // The page behind the dialog says so too (it read a stale copy once).
-    await waitForAttr('[data-testid="remote-sharing"]', "data-enabled", "true");
+    await waitForAttr('[data-testid="peers-toggle"]', "data-enabled", "true");
     // And the switch DRAWS on: the attribute alone once said true while the
     // knob sat at off.
     await browser.waitUntil(async () => (await browser.execute(() => {
-      const b = document.querySelector('[data-testid="remote-sharing"] [role="switch"]') as HTMLElement;
+      const b = document.querySelector('[data-testid="peers-toggle"] [role="switch"]') as HTMLElement;
       return b.getAttribute("aria-checked") === "true" && getComputedStyle(b.firstElementChild!).left === "18px";
     })), { timeout: 3000, timeoutMsg: "the sharing switch is not drawn on" });
     await snap("remote-qr.png");

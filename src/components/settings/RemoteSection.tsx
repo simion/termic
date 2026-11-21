@@ -1,7 +1,9 @@
-// Settings > Remote (docs/remote.md): the servers this computer runs agents
-// on over SSH, and the phones paired with it (with where to get the app).
-// Paired Termic computers stay in Agent access: pairing them is about
-// agents working together, which is where people look for it.
+// Settings > Remote (docs/remote.md): everything that reaches this computer
+// or that it reaches. Phones paired with it (with where to get the app),
+// servers it runs agents on over SSH, and other Termic computers
+// (PeersSection, docs/peers.md). Phones and computers come in on one
+// listener, so its switch ("Share on this network") lives once, in
+// Other computers.
 //
 // Phones come from `peer_status` (re-read on `peer://changed`, never
 // polled); servers from the remote store, which the backend keeps current.
@@ -12,12 +14,12 @@ import { listen } from "@tauri-apps/api/event";
 import { Plus, RefreshCw, Server, Smartphone } from "lucide-react";
 import { PEER_CHANGED_EVENT, peerStatus } from "@/lib/ipc";
 import type { PeerStatus } from "@/lib/types";
-import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
 import { PhoneAppLinks } from "@/components/remote/ConnectPhoneDialog";
 import { cn } from "@/lib/utils";
-import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
+import { SectionTitle } from "./Controls";
+import { PeersSection } from "./PeersSection";
 import {
   phoneRename, phoneUnpair, remoteReconnect, serverRemove, serverRename, useRemote,
   type MachineView, type PhoneView,
@@ -74,42 +76,36 @@ async function confirmed(title: string, message: string, label: string): Promise
 
 export function RemoteSection() {
   const { t } = useTranslation("remote");
-  const { t: ts } = useTranslation("settings");
-  const { patch } = useBackendSettings();
   const [status, refresh] = usePhones();
   const setDialog = useRemote(s => s.setDialog);
   const machines = useRemote(s => s.machines);
   const servers = useMemo(() => machines.filter(m => m.kind === "server"), [machines]);
-  const openSettings = useApp(s => s.openSettings);
-  // The live answer, not the settings cache: Connect a phone turns sharing
-  // on from its own dialog, and peer://changed refreshes `status`.
-  const [sharing, setSharing] = useState(false);
-  // Bumped when the value arrives from outside (the Connect a phone dialog
-  // turns sharing on): the switch then kept drawing off, WKWebView never ran
-  // its transition (docs/gotchas.md). A remount draws it at once; a click on
-  // the switch itself does not remount, so it keeps focus.
-  const [drawn, setDrawn] = useState(0);
-  const shown = useRef(sharing);
-  shown.current = sharing;
-  useEffect(() => {
-    if (!status || status.enabled === shown.current) return;
-    setSharing(status.enabled);
-    setDrawn(n => n + 1);
-  }, [status]);
   const phones = status?.phones ?? [];
-
-  async function saveSharing(v: boolean) {
-    setSharing(v);
-    if (!(await patch({ lan_sharing_enabled: v }))) setSharing(!v);
-    refresh();
-  }
 
   return (
     <div className="flex flex-col gap-6" data-testid="remote-section">
       <div className="flex flex-col gap-1.5">
-        <SectionTitle title={t("section.title")} badge={ts("shared.experimental")} />
+        <SectionTitle title={t("section.title")} />
         <p className="text-[13px] text-[var(--color-fg-dim)]">{t("section.lead")}</p>
       </div>
+
+      <Card
+        icon={<Smartphone className="h-4 w-4" />}
+        title={t("phones.title")}
+        lead={<>{t("phones.lead")} <PhoneAppLinks /></>}
+        action={
+          <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
+            <Plus className="h-3.5 w-3.5" />
+            {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
+          </Button>
+        }
+      >
+        {phones.length > 0 ? (
+          <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
+        ) : (
+          <Empty>{t("phones.empty")}</Empty>
+        )}
+      </Card>
 
       <Card
         icon={<Server className="h-4 w-4" />}
@@ -129,35 +125,7 @@ export function RemoteSection() {
         )}
       </Card>
 
-      <Card
-        icon={<Smartphone className="h-4 w-4" />}
-        title={t("phones.title")}
-        lead={<>{t("phones.lead")} <PhoneAppLinks /></>}
-        action={
-          <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
-            <Plus className="h-3.5 w-3.5" />
-            {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
-          </Button>
-        }
-        footer={
-          <div data-testid="remote-sharing" data-enabled={sharing ? "true" : "false"}>
-            <Toggle key={drawn} label={t("phones.allow")} hint={t("phones.allowHint")} value={sharing} onChange={v => void saveSharing(v)} />
-          </div>
-        }
-      >
-        {phones.length > 0 ? (
-          <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
-        ) : (
-          <Empty>{t("phones.empty")}</Empty>
-        )}
-      </Card>
-
-      <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-        {t("section.computersPointer")}{" "}
-        <button type="button" onClick={() => openSettings("mcp")} className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]">
-          {t("section.openAgentAccess")}
-        </button>
-      </p>
+      <div data-testid="settings-peers" className="mt-4"><PeersSection /></div>
     </div>
   );
 }

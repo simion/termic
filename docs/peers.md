@@ -14,8 +14,7 @@ stream: [remote.md](remote.md). This page covers discovery, pairing two
 computers, the credential and the grants.
 
 **Off by default.** Nothing listens, nothing is advertised, until the
-user turns on Settings > Agent access > Other computers > "Share on this
-network"
+user turns on Settings > Remote > Other computers > "Share on this network"
 (`lan_sharing_enabled`). Turning it off unbinds the listener, sends an
 mDNS goodbye, and cancels any pairing in progress.
 
@@ -341,21 +340,22 @@ in `termic --help`, `TERMIC_CLI_HELP`, the MCP instructions and
 
 ## UI
 
-Settings > Agent access (the rail item, with a faded "MCP & CLI"), two
-tabs shown one at a time: MCP first, the Termic CLI second. They were one
-long scroll first, which read as a wall of prose and left pairing at the
-bottom where nobody found it. The MCP tab opens with Other computers,
-then the MCP endpoint: pairing is how agents reach another machine, and
-they do it through this Termic's MCP tools. Turning sharing on turns the
-MCP endpoint on with it (turning sharing off leaves MCP alone). Off with
-nothing paired, Other computers is its toggle and one line. Tab ids are
-settings tabs (`mcp`, `cli`); `peers` opens the MCP tab.
+Settings > Remote, after Phones and Servers: one page for everything
+that reaches this computer or that it reaches (docs/remote.md). It used
+to sit at the top of Agent access's MCP tab, because agents reach another
+machine through this Termic's MCP tools; it moved because phones come in
+on the same listener, and its switch is theirs too. Turning sharing on
+still turns the MCP endpoint on with it (turning sharing off leaves MCP
+alone). Off with nothing paired, Other computers is its toggle and one
+line. The switch follows `peer_status`, not the settings copy, because
+Connect a phone turns sharing on from its own dialog. The old `peers`
+settings tab id opens Remote.
 
 The MCP endpoint's network address sits folded under "Network address
 (advanced)", open only when it is already off loopback, with a line pointing here: it used to read as THE way to
 reach another machine, with one all-powerful token sent in the clear.
 
-Other computers (Experimental): the toggle with a plain warning; the
+Other computers: the toggle with a plain warning; the
 pairing-mode panel (the code in large type, a countdown, wrong codes so
 far, Stop pairing) or its "Pair a computer" button; Nearby with "Ready to
 pair" rows first, each asking for the code inline and submitting at four

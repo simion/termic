@@ -415,12 +415,11 @@ describe("LAN pairing", () => {
     const s = await status();
     expect(s.enabled).toBe(false);
     expect(s.port).toBeNull();
-    // It opens Agent access on its MCP tab, pairing first, no CLI.
-    expect(await browser.execute(() =>
-      document.querySelector('[data-testid="access-tab-mcp"]')?.getAttribute("aria-selected"))).toBe("true");
-    expect(await browser.execute(() => document.body.innerText.includes("Enable CLI"))).toBe(false);
+    // The old "peers" tab lands on Remote, with phones and servers.
+    await waitVisible('[data-testid="remote-section"]');
+    expect(await browser.execute(() => document.querySelector('[data-rail-item="remote"]')!.className.includes("color-sel"))).toBe(true);
     // Off is off, and short: with nothing paired the section stops at its
-    // toggle, so it does not push MCP down the page.
+    // toggle.
     for (const gone of ["peers-address-input", "peers-self-name", "peers-paired-empty"]) {
       expect(await browser.execute((id) => !!document.querySelector(`[data-testid="${id}"]`), gone)).toBe(false);
     }
@@ -443,7 +442,7 @@ describe("LAN pairing", () => {
     await waitFor("MCP binds",
       async (): Promise<{ url: string | null }> => browser.execute(() => window.__termic!.invoke("mcp_status")) as never,
       v => !!v.url);
-    await waitForText("Connect an agent");
+    await waitVisible('[data-testid="peers-agent-setup"]');
     const s = await waitFor("the listener binds", status, v => v.port !== null);
     appPort = s.port;
     expect(s.addresses).toEqual([`127.0.0.1:${appPort}`]);
@@ -919,7 +918,7 @@ describe("LAN pairing", () => {
       await clickPresent('[data-testid="remote-task-close"]');
       await waitGone('[data-testid="remote-task-view"]');
       // Back to where the cases after this one work.
-      await browser.execute(() => window.__termic!.useApp.getState().openSettings("mcp"));
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
       await waitVisible('[data-testid="peers-section"]');
     });
 
@@ -951,7 +950,7 @@ describe("LAN pairing", () => {
       await snap("remote-task-tabs.png");
       await clickPresent('[data-testid="remote-task-close"]');
       await waitGone('[data-testid="remote-task-view"]');
-      await browser.execute(() => window.__termic!.useApp.getState().openSettings("mcp"));
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
       await waitVisible('[data-testid="peers-section"]');
     });
 

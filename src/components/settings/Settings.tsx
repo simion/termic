@@ -110,18 +110,17 @@ export function Settings() {
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
         <RailItem icon={<Terminal className="h-4 w-4" />} label={t("rail.agents")} tabId="agents"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
-        {/* One rail item for every way an agent reaches Termic: the CLI,
-            MCP, and other computers, each a tab of the same page. Right under
+        {/* One rail item for every way an agent reaches Termic: the CLI
+            and MCP, each a tab of the same page. Right under
             Agents: it is about what agents can do, which is where people look
             for it; under the sandbox pages it read as a security setting. */}
         <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} hint={t("rail.cliHint")} tabId="cli"
-          active={tab === "cli" || tab === "mcp" || tab === "peers"} onClick={() => openSettings("mcp")} />
-        {/* A person reaching this computer from a phone, and agents running
-            on servers: remote control (docs/remote.md). Its own page, not a
-            tab of Agent access: it is about people and machines, not agents'
-            tools. */}
-        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} badge={t("rail.badgeExp")} tabId="remote"
-          active={tab === "remote"} onClick={() => openSettings("remote")} />
+          active={tab === "cli" || tab === "mcp"} onClick={() => openSettings("mcp")} />
+        {/* Phones, servers and other computers: everything that reaches this
+            computer or that it reaches (docs/remote.md). "peers" is an old
+            tab id that lands here. */}
+        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} tabId="remote"
+          active={tab === "remote" || tab === "peers"} onClick={() => openSettings("remote")} />
 
         <RailDivider />
 
@@ -217,11 +216,10 @@ export function Settings() {
           {tab === "sandbox"     && <SandboxSection />}
           {tab === "secrets"     && <Suspense fallback={null}><SecretsSection /></Suspense>}
           {tab === "docker"      && <DockerSection />}
-          {tab === "remote"      && <RemoteSection />}
+          {(tab === "remote" || tab === "peers") && <RemoteSection />}
           {/* Agent access: the CLI and MCP are two presentations of the
-              same verbs (docs/ideas/mcp.md), and other computers are a
-              third, reached through either (docs/peers.md). */}
-          {(tab === "cli" || tab === "mcp" || tab === "peers") && <AgentAccessSection tab={tab} />}
+              same verbs (docs/ideas/mcp.md). */}
+          {(tab === "cli" || tab === "mcp") && <AgentAccessSection tab={tab} />}
           {tab === "appearance"  && <AppearanceSection />}
           {tab === "agents"      && <AgentsSection />}
           {tab === "prompts"     && <PromptLibrarySection />}

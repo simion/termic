@@ -27,7 +27,7 @@ describe("no untranslated keys on screen", () => {
    *  renders a picker without one, which is still worth reading. */
   const SETTINGS_TABS = [
     "general", "agents", "appearance", "tasks", "sandbox", "docker",
-    "cli", "mcp", "peers", "notifications", "prompts", "repositories", "shortcuts", "profiles",
+    "cli", "mcp", "peers", "remote", "notifications", "prompts", "repositories", "shortcuts", "profiles",
   ];
 
   /** Nothing on screen is one of i18next's own keys. The failing screenshot

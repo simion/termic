@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { RemoteMachines, ServersSection, mine } from "@/components/remote/RemoteMachines";
-import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
+import { Smartphone, LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot, Server } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -1502,6 +1502,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             {/* Once a server exists, SERVERS below has its own +. */}
             {!hasServers && <Tip content={t("addServerTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-server" onClick={() => useRemote.getState().setDialog({ serverDialog: true })}>
               <Server className={iconSize(compact)} /></Button></Tip>}
+            {/* Pair a phone (docs/remote.md): always here, a phone has no
+                section of its own in the sidebar. */}
+            <Tip content={t("connectPhoneTip")}><Button size="icon" variant="icon" data-testid="sidebar-connect-phone" onClick={() => useRemote.getState().setDialog({ phoneDialog: true })}>
+              <Smartphone className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
 

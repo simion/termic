@@ -1,6 +1,6 @@
 # Remote control: phones, other computers, servers
 
-**Status: reference, experimental.** A phone, another Termic, or this
+**Status: reference.** A phone, another Termic, or this
 Termic itself driving agents on another machine, over one protocol: the
 stream. Pairing (how two Termics come to trust each other) is
 [peers.md](peers.md); what is left and what comes next is
@@ -157,7 +157,9 @@ forwarded from a viewer (the agent already has a terminal answering).
 
 ## Pairing a phone
 
-Settings > Remote > **Phones** > **Connect a phone** shows a QR code.
+Settings > Remote (phones, then servers, then other computers) >
+**Phones** > **Connect a phone**, or the phone icon in the sidebar's
+PROJECTS header, shows a QR code.
 The card and the dialog's first step link the app: iPhone through the
 public TestFlight link (open to anyone, no invite), Android through
 Google Play (`PhoneAppLinks` in `ConnectPhoneDialog.tsx`).

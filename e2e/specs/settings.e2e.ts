@@ -287,11 +287,11 @@ describe("settings rail", () => {
     ["general", "General", "Repos directory"],
     ["appearance", "Appearance", "Terminal font"],
     ["agents", "Agents & Terminals", "Copy on select"],
-    // Agent access, right under Agents: the CLI, MCP and other computers
-    // (LAN pairing, docs/peers.md) on one page. Its marker is the MCP
-    // master toggle, the tab it opens on.
+    // Agent access, right under Agents: the CLI and MCP on one page. Its
+    // marker is the MCP master toggle, the tab it opens on.
     ["cli", "Agent access", "Enable MCP endpoint"],
-    // Remote control (docs/remote.md): phones and servers, under Agent access.
+    // Remote (docs/remote.md): phones, servers and other computers, under
+    // Agent access.
     ["remote", "Remote", "Add a server"],
     ["tasks", "Tasks", "Branch prefix"],
     ["notifications", "Notifications", "Desktop notifications"],
@@ -787,10 +787,9 @@ describe("settings rail", () => {
     expect(pane).not.toContain(token);
   });
 
-  // Agent access is two tabs: MCP first, with pairing at its top, and the
-  // CLI. The three sections stacked read as one wall of prose, and pairing
-  // sat at the bottom of it where nobody found it.
-  it("opens on MCP with pairing first, and keeps the CLI on its own tab", async () => {
+  // Agent access is two tabs: MCP first, and the CLI. Pairing other
+  // computers lives in Remote now, with phones and servers.
+  it("opens on MCP, keeps the CLI on its own tab, and has no pairing", async () => {
     await clickRail("Agent access");
     await waitForText("Enable MCP endpoint");
     const order = () => browser.execute(() => {
@@ -803,7 +802,7 @@ describe("settings rail", () => {
       [...document.querySelectorAll('[data-testid^="access-tab-"]')]
         .filter((b) => b.getAttribute("aria-selected") === "true")
         .map((b) => b.getAttribute("data-testid")));
-    expect(await order()).toEqual(["Share on this network", "Enable MCP endpoint"]);
+    expect(await order()).toEqual(["Enable MCP endpoint"]);
     expect(await selected()).toEqual(["access-tab-mcp"]);
     expect(await textOf('[data-testid="access-tab-mcp"]')).toContain("orchestrate new tasks");
     await snap("agent-access-mcp.png");
