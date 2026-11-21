@@ -70,6 +70,33 @@ pub fn host_of_remote(url: &str) -> Option<String> {
     }
 }
 
+/// `owner/repo` (or a GitLab `group/sub/repo`) of a git remote, both URL
+/// shapes, without a trailing `.git`. None when there is no path.
+pub fn path_of_remote(url: &str) -> Option<String> {
+    let u = url.trim();
+    let path = match u.split_once("://") {
+        Some((_, r)) => r.split_once('/').map(|(_, p)| p)?,
+        None => u.split_once(':').map(|(_, p)| p)?,
+    };
+    let p = path.trim_matches('/').trim_end_matches(".git").trim_matches('/');
+    (p.contains('/')).then(|| p.to_string())
+}
+
+/// For a folder that lives on a server (server_projects.rs): `gh` runs here
+/// with no checkout to read, so it is told the repo (`GH_REPO`), from the
+/// box's origin remote (read through the routed git, once per folder).
+fn server_repo_env(cwd: &Path) -> Option<String> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(v) = cache.lock().unwrap().get(cwd) {
+        return v.clone();
+    }
+    let url = crate::git(&["remote", "get-url", "origin"], cwd).ok()?;
+    let v = host_of_remote(&url).zip(path_of_remote(&url)).map(|(h, p)| format!("{h}/{p}"));
+    cache.lock().unwrap().insert(cwd.to_path_buf(), v.clone());
+    v
+}
+
 /// Hosts each CLI is actually signed in to, learned from `auth status` and
 /// refreshed by `detect()`. This is what makes GitHub Enterprise and
 /// self-hosted GitLab work with no configuration: the CLI already knows
@@ -301,7 +328,17 @@ fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Co
         .env("AZURE_CORE_COLLECT_TELEMETRY", "false")
         .env("NO_COLOR", "1");
     if let Some(d) = cwd {
-        cmd.current_dir(d);
+        if crate::server_projects::server_for_path(d).is_some() {
+            // The folder is on a server: there is nothing to cd into here.
+            if let Some(repo) = server_repo_env(d) {
+                cmd.env("GH_REPO", repo);
+            }
+            if let Some(home) = dirs::home_dir() {
+                cmd.current_dir(home);
+            }
+        } else {
+            cmd.current_dir(d);
+        }
     }
     cmd
 }
@@ -994,7 +1031,12 @@ pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Opti
 }
 
 fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
-    let num_s = number.map(|n| n.to_string());
+    // A folder on a server has no checkout here for gh to read the branch
+    // from: name it (the branch, read on the box through the routed git).
+    let num_s = number.map(|n| n.to_string()).or_else(|| {
+        crate::server_projects::server_for_path(cwd)?;
+        crate::git(&["branch", "--show-current"], cwd).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+    });
     let mut args: Vec<&str> = vec!["pr", "view"];
     if let Some(n) = num_s.as_deref() {
         args.push(n);
@@ -3178,6 +3220,17 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn path_of_remote_reads_both_url_shapes() {
+        assert_eq!(path_of_remote("https://github.com/acme/web.git").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("git@github.com:acme/web.git").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("ssh://git@git.acme.com:22/group/sub/repo").as_deref(), Some("group/sub/repo"));
+        assert_eq!(path_of_remote("https://github.com/acme/web/").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("/local/path/repo"), None);
+        assert_eq!(path_of_remote(""), None);
+    }
+
     use super::*;
 
     #[cfg(unix)]
