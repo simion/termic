@@ -30,10 +30,11 @@ import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
-import { remoteCall, req } from "@/lib/remote";
+import { remoteCall, req, useRemote } from "@/lib/remote";
 import { i18n } from "@/lib/i18n";
 import { resolveRunTargets } from "@/lib/runTabs";
 import { useServerShells } from "@/components/remote/RemoteTaskView";
+import { openExternalUrl } from "@/lib/ipc";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -342,6 +343,7 @@ export function UnifiedBar() {
                 <Archive className="h-4 w-4" />
               </Button>
             </Tip>
+            <ServerOpenWith serverId={proj.server} path={task.path} />
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
               <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
@@ -496,5 +498,43 @@ function SendToMainButton({ task, rootPath, crumb }: { task: { id: string }; roo
                   <span>{t("unifiedBar.sendToMain")}</span>
                 </Button>
               </Tip>
+  );
+}
+
+/** Editors that open a folder on another machine over SSH, by URL. */
+const SSH_EDITORS = [
+  { id: "vscode", name: "VS Code", scheme: "vscode" },
+  { id: "cursor", name: "Cursor", scheme: "cursor" },
+] as const;
+
+/** Open with, for a server task: the worktree is on the box, so an editor
+ *  opens it over SSH (its Remote-SSH URL) rather than as a local folder. */
+function ServerOpenWith({ serverId, path }: { serverId: string; path: string }) {
+  const { t } = useTranslation("chrome");
+  const ssh = useRemote(s => s.machines.find(m => m.id === serverId)?.ssh ?? null);
+  if (!ssh) return null;
+  const open = (ed: typeof SSH_EDITORS[number]) => {
+    const url = `${ed.scheme}://vscode-remote/ssh-remote+${ssh}${path}`;
+    openExternalUrl(url, "").catch((e: unknown) =>
+      useUI.getState().pushToast(t("openWith.openFailed", { name: ed.name, error: String(e) }), "error"));
+  };
+  return (
+    <DropdownRoot>
+      <Tip content={t("openWith.openWith")} side="bottom">
+        <DropdownTrigger asChild>
+          <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-open-with">
+            <Code2 className="h-4 w-4" />
+            <span>{t("openWith.openWith")}</span>
+          </Button>
+        </DropdownTrigger>
+      </Tip>
+      <DropdownMenu align="end" className="min-w-[180px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {SSH_EDITORS.map(ed => (
+          <DropdownItem key={ed.id} data-testid={`server-open-${ed.id}`} onSelect={() => open(ed)}>
+            <span>{t("openWith.openIn", { label: ed.name })}</span>
+          </DropdownItem>
+        ))}
+      </DropdownMenu>
+    </DropdownRoot>
   );
 }

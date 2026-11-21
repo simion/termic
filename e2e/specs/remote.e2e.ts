@@ -517,6 +517,20 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     } finally {
       await browser.execute((id) => (window.__termic as any).usePromptLibrary.getState().deletePrompt(id), pid);
     }
+    // Open with: an editor opens the worktree ON THE BOX over SSH (its
+    // Remote-SSH URL), not a local folder. The e2e build records the URL.
+    const browserLog = path.join(process.cwd(), ".e2e", "profile", "e2e-browser.log");
+    rmSync(browserLog, { force: true });
+    await browser.execute(() => {
+      const el = document.querySelector('[data-testid="server-open-with"]') as HTMLElement;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    });
+    await clickWhenVisible('[data-testid="server-open-vscode"]');
+    const taskPath = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
+    await browser.waitUntil(() => existsSync(browserLog) && readFileSync(browserLog, "utf8").includes(`vscode://vscode-remote/ssh-remote+termic-e2e-local${taskPath}`),
+      { timeout: 10_000, timeoutMsg: "Open with never asked the OS for the editor's SSH URL" });
   });
 
   it("runs the task's git on the box: branches come from its worktree there", async () => {
