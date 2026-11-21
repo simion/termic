@@ -28,22 +28,29 @@ const IOS_APP_URL = "https://testflight.apple.com/join/5qxhPr6a";
 const ANDROID_APP_URL = "https://play.google.com/store/apps/details?id=dev.termic.remote";
 
 /** "Get the app: iPhone (TestFlight) · Android", opened in the browser. */
-export function PhoneAppLinks() {
+// Simple Icons (CC0), the same glyphs as termic.dev.
+const APPLE = "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701";
+const ANDROID = "M17.523 15.341c-.551 0-.999-.448-.999-1s.448-.999.999-.999c.551 0 .999.448.999.999 0 .552-.448 1-.999 1m-11.046 0c-.551 0-.999-.448-.999-1s.448-.999.999-.999c.551 0 .999.448.999.999 0 .552-.448 1-.999 1m11.405-6.02l1.997-3.459a.416.416 0 0 0-.152-.568.416.416 0 0 0-.568.152l-2.022 3.503C15.59 8.244 13.853 7.851 12 7.851s-3.59.393-5.137 1.099L4.841 5.447a.416.416 0 0 0-.568-.152.416.416 0 0 0-.152.568l1.997 3.459C2.689 11.187.343 14.659 0 18.761h24c-.344-4.102-2.689-7.574-6.118-9.44";
+
+/** The store buttons for Termic Remote, one per platform. */
+export function PhoneAppLinks({ className }: { className?: string }) {
   const { t } = useTranslation("remote");
-  const link = (url: string, label: string, id: string) => (
-    <button
-      type="button"
+  const link = (url: string, label: string, id: string, d: string) => (
+    <Button
+      variant="secondary"
+      size="sm"
       data-testid={id}
       data-url={url}
       onClick={() => void openExternalUrl(url, "").catch(e => useUI.getState().pushToast(String(e), "error"))}
-      className="text-[var(--color-accent)] underline-offset-2 hover:underline"
     >
+      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true"><path d={d} /></svg>
       {label}
-    </button>
+    </Button>
   );
   return (
-    <span data-testid="phone-app-links">
-      {t("phones.getApp")} {link(IOS_APP_URL, t("phones.ios"), "phone-app-ios")} · {link(ANDROID_APP_URL, t("phones.android"), "phone-app-android")}
+    <span data-testid="phone-app-links" className={cn("flex flex-wrap items-center gap-2", className)}>
+      {link(IOS_APP_URL, t("phones.ios"), "phone-app-ios", APPLE)}
+      {link(ANDROID_APP_URL, t("phones.android"), "phone-app-android", ANDROID)}
     </span>
   );
 }
@@ -172,7 +179,7 @@ function ConnectPhoneBody({ onClose }: { onClose: () => void }) {
               {[t("qr.step1"), t("qr.step2"), t("qr.step3")].map((s, i) => (
                 <li key={i} className="flex gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-3)] text-[11.5px] font-semibold tabular-nums text-[var(--color-fg-dim)]">{i + 1}</span>
-                  <span>{s}{i === 0 && <span className="mt-1 block text-[12.5px] text-[var(--color-fg-dim)]"><PhoneAppLinks /></span>}</span>
+                  <span>{s}{i === 0 && <PhoneAppLinks className="mt-1.5" />}</span>
                 </li>
               ))}
               {view && !expired && (

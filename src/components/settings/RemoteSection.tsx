@@ -92,7 +92,7 @@ export function RemoteSection() {
       <Card
         icon={<Smartphone className="h-4 w-4" />}
         title={t("phones.title")}
-        lead={<>{t("phones.lead")} <PhoneAppLinks /></>}
+        lead={<>{t("phones.lead")}<PhoneAppLinks className="mt-2" /></>}
         action={
           <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
             <Plus className="h-3.5 w-3.5" />

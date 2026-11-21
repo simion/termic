@@ -11,7 +11,6 @@ export default {
   },
   phones: {
     title: "Phones",
-    getApp: "Get the app:",
     ios: "iPhone (TestFlight)",
     android: "Android (Google Play)",
     lead: "Your phone as a remote control for this computer: answer agents, send prompts, watch their terminals. Nothing runs on the phone.",

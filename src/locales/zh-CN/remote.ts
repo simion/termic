@@ -10,7 +10,6 @@ export default {
   },
   phones: {
     title: "手机",
-    getApp: "获取应用:",
     ios: "iPhone(TestFlight)",
     android: "Android(Google Play)",
     lead: "把手机当作这台电脑的遥控器:回答代理、发送提示词、查看终端。手机本身不运行任何东西。",
