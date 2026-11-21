@@ -132,6 +132,7 @@ export default {
     agentTab: "Agent",
     shellTab: "Shell {{n}}",
     newShell: "New shell on the server",
+    newAgent: "Another agent on the server: {{agent}}",
     closeShell: "Close shell",
     offline: "{{machine}} is offline.",
     sizeNote: "Terminal is {{cols}} columns on {{machine}}",

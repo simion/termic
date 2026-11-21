@@ -118,6 +118,17 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
     if (view !== "agent" && !shells.includes(view) && !fileTabs.some(t => t.id === view)) useServerShells.getState().show(taskId, "agent");
   }, [view, shells, fileTabs, taskId]);
   const meta = useServerShells(s => s.meta);
+  // The box's usable agents other than the task's own, for "another agent".
+  const [boxAgents, setBoxAgents] = useState<string[]>([]);
+  useEffect(() => {
+    if (!taskPath) return;
+    let alive = true;
+    remoteCall(machineId, req("agents")).then(r => {
+      const list = r.ok ? (r.data?.agents ?? []) as { id: string; kind: string; usable?: boolean }[] : [];
+      if (alive) setBoxAgents(list.filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id));
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [machineId, taskPath]);
   const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
   if (!machine) {
@@ -262,6 +273,21 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
             onClick={() => useServerShells.getState().add(taskId)}
             className="rounded p-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
           ><Plus className="h-3.5 w-3.5" /></button>
+          {/* Another agent beside the task's own, in a tab on the box: the
+              box's usable agents, each started by its command. Its state is
+              not tracked (termic-server runs one agent per task). */}
+          {boxAgents.map(id => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`server-new-agent-${id}`}
+              title={t("task.newAgent", { agent: agentName(id) })}
+              aria-label={t("task.newAgent", { agent: agentName(id) })}
+              disabled={!online}
+              onClick={() => useServerShells.getState().add(taskId, { label: agentName(id), input: `${id}\r` })}
+              className={cn("rounded p-1 hover:bg-[var(--color-hover)] disabled:opacity-40", CLI_BRAND_COLOR[resolveIconId(id, [])])}
+            ><CliIcon cli={resolveIconId(id, [])} className="h-3.5 w-3.5" /></button>
+          ))}
         </div>
       )}
 

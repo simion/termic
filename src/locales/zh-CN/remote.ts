@@ -130,6 +130,7 @@ export default {
     agentTab: "智能体",
     shellTab: "终端 {{n}}",
     newShell: "在服务器上新建终端",
+    newAgent: "在服务器上再开一个智能体:{{agent}}",
     closeShell: "关闭终端",
     reopen: "重新打开",
     offline: "{{machine}} 离线。",

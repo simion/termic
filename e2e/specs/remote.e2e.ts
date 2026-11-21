@@ -588,6 +588,14 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       serverRun: !!document.querySelector('[data-testid="server-run"]'),
       openWith: !!document.querySelector('[data-testid="open-with-launch"]'),
     }))).toEqual({ archive: true, panel: true, prompts: true, run: false, serverRun: true, openWith: false });
+    // Another agent beside the task's own: the box's usable agents, each a
+    // button that opens a tab named after it.
+    await clickPresent('[data-testid="server-new-agent-fake"]');
+    await browser.waitUntil(() => browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="server-tab-shell"]')].some(e => e.textContent?.trim() === "fake")),
+    { timeout: 10_000, timeoutMsg: "the other agent's tab never opened" });
+    await browser.execute(() => (document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement).click());
+    await waitGone('[data-testid="aux-terminal"]');
     // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
     // pty_open): what it runs lands in the box's worktree.
     await clickPresent('[data-testid="server-new-shell"]');
