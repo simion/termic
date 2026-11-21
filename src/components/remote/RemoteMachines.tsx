@@ -122,7 +122,9 @@ function MachineSwitch({ m }: { m: MachineView }) {
         data-testid={`machine-switch-${m.id}`}
         onClick={(e) => { e.stopPropagation(); void remoteSetConnected(m.id, !on).catch(err => useUI.getState().pushToast(String(err), "error")); }}
         className="relative mx-1 inline-block h-4 w-7 shrink-0 rounded-full p-0"
-        style={{ background: on ? "var(--color-accent)" : "var(--color-bg-3)", transition: "background-color 150ms" }}
+        // Off is a grey track, not bg-3: on a hovered row bg-3 vanished and
+        // only the knob showed.
+        style={{ background: on ? "var(--color-accent)" : "color-mix(in srgb, var(--color-fg-faint) 55%, transparent)", transition: "background-color 150ms" }}
       >
         <span className="absolute top-0.5 h-3 w-3 rounded-full"
           style={{ left: on ? 14 : 2, background: on ? "var(--color-accent-fg)" : "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.25)", transition: "left 150ms, background-color 150ms" }} />

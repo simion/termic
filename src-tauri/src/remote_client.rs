@@ -126,7 +126,21 @@ pub(crate) fn set_connected(id: &str, on: bool) -> Result<(), String> {
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string(&list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
-    supervise();
+    // Flip just this machine's link, now. Not supervise(): it asks pairing
+    // for the paired list, which can wait seconds behind a connect that is
+    // rediscovering an address, and the switch would lag that long.
+    let mut map = links().lock().unwrap();
+    if let Some(old) = map.get(id).cloned() {
+        if (old.st.lock().unwrap().state == "disconnected") != on {
+            return Ok(());
+        }
+        old.halt();
+        let name = old.st.lock().unwrap().name.clone();
+        let endpoint = old.endpoint.lock().unwrap().clone();
+        map.insert(id.to_string(), new_link(id.to_string(), old.kind, name, endpoint, !on));
+    }
+    drop(map);
+    changed();
     Ok(())
 }
 
@@ -388,26 +402,33 @@ pub(crate) fn supervise() {
                 l.halt();
             }
         }
-        let l = Arc::new(Link {
-            id: id.clone(),
-            kind,
-            endpoint: Mutex::new(endpoint),
-            st: Mutex::new(LinkState { state: if is_off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name }),
-            tx: Mutex::new(None),
-            pending: Mutex::new(HashMap::new()),
-            term: Mutex::new(None),
-            stop: AtomicBool::new(false),
-            wake: (Mutex::new(false), Condvar::new()),
-            child: Mutex::new(None),
-            sock: Mutex::new(None),
-        });
-        map.insert(id, l.clone());
-        if !is_off {
-            std::thread::spawn(move || run_link(l));
-        }
+        map.insert(id.clone(), new_link(id, kind, name, endpoint, is_off));
     }
     drop(map);
     changed();
+}
+
+/// A link for a machine: running (its thread started) or switched off (a
+/// row with nothing behind it).
+fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off: bool) -> Arc<Link> {
+    let l = Arc::new(Link {
+        id,
+        kind,
+        endpoint: Mutex::new(endpoint),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name }),
+        tx: Mutex::new(None),
+        pending: Mutex::new(HashMap::new()),
+        term: Mutex::new(None),
+        stop: AtomicBool::new(false),
+        wake: (Mutex::new(false), Condvar::new()),
+        child: Mutex::new(None),
+        sock: Mutex::new(None),
+    });
+    if !off {
+        let run = l.clone();
+        std::thread::spawn(move || run_link(run));
+    }
+    l
 }
 
 /// Reconnect every offline link now (the network changed, a peer was seen).
@@ -1051,8 +1072,8 @@ pub(crate) fn remote_term_input(machine: String, data: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub(crate) fn remote_set_connected(machine: String, on: bool) -> Result<(), String> {
-    set_connected(&machine, on)
+pub(crate) async fn remote_set_connected(machine: String, on: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_connected(&machine, on)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
