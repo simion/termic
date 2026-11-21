@@ -97,6 +97,8 @@ export default {
     stepNotInstalled: "termic-server is not installed",
     installWhy: "Termic can install it for you: it copies one file to ~/.termic/bin on {{host}}. No sudo, nothing else changes.",
     install: "Install on server",
+    installCurl: "Or run this in a shell on the server, then Try again:",
+    installCurlLabel: "Install command",
     installing: "Installing...",
     noBinary: "This Termic has no termic-server build for {{system}}.",
     stepConnect: "Start termic-server and load tasks",

@@ -61,59 +61,23 @@ listener, no phone pairing, no paired computers' tasks, `peers.rs` as on
 main plus the `--peer <server>` forward. Every suite green on it (vitest,
 cargo across the crates, the e2e suite on macOS and Linux, the real box).
 
-### 2. Install from the server's own shell
+### 2 and 3. Install from the server's shell, and updates: shipped
 
-Today termic-server is installed only from the desktop (the bundled build,
-piped over ssh: no internet needed on the box). Add the usual way too:
+Both are in `docs/remote.md` ("Keeping termic-server current", and the
+install step of Add a Termic server). In short: the release attaches the
+four builds, their version and `termic-server-SHA256SUMS`;
+`curl -fsSL https://termic.dev/install-server.sh | sh` (the website repo)
+installs into `~/.termic/bin` after checking the sha256, and Add a Termic
+server shows that command beside Install. Updates are the desktop's: on
+every connect it moves the box onto the build it carries, newer or older,
+and restarts the daemon once no agent is mid-turn.
 
-```sh
-curl -fsSL https://termic.dev/install-server.sh | sh
-```
-
-- The script: `uname -sm` to a target triple, download
-  `termic-server-<triple>` from the latest GitHub release, verify it (see
-  signing below), install into `~/.termic/bin`, no sudo, print what to do
-  next ("add this machine in Termic: Settings > Servers").
-- Hosted on termic.dev (the website repo); the release publishes the
-  binaries it fetches.
-- Release assets: every `termic-server-<triple>`, its signature, and one
-  manifest, `termic-server.json` (version, and per triple: url, sha256,
-  signature), at a stable URL (`releases/latest/download/`).
-
-### 3. Self-update
-
-A server must not stay on the version it was installed with.
-
-**Shipped: the desktop keeps its servers current** (`docs/remote.md`,
-"Keeping termic-server current"). termic-server is stamped with the app's
-version plus a hash of its sources; on connect the desktop pushes the
-build it carries when the box runs another one (the Install path, no
-internet needed on the box), then restarts the daemon onto it with the
-`quit` verb over the open connection, by itself as soon as no agent is
-mid-turn (**Restart now** on the server's row skips the wait). The agents that
-were running come back in their sessions (`resume_on_boot`), so a restart
-costs an in-flight turn, not the conversation.
-
-Left, for a box the desktop does not reach for a while:
-
-- `termic-server update [--check]`: read the release manifest, and if
-  newer, download to a temp file, verify the signature and the sha256,
-  run its `version`, rename it into place (never a half-written binary).
-  Automatic by default (at daemon start and once a day), off with
-  `"auto_update": false` in `~/.termic-server/config.json`. It installs
-  only; the restart stays the desktop's prompt.
-- **Rename, never write in place** (as the desktop push already does): on
-  macOS, rewriting a running signed binary invalidates its signature.
-- **Old daemon, new bridge**: every ssh connection runs the NEW file's
-  `bridge` against the still-running OLD daemon. The bridge only copies
-  bytes, so this works; keep it that way (no protocol in the bridge).
-- **Forward only, with a way back**: a lower version is refused even when
-  signed; the previous binary is kept as `termic-server.prev`.
-- **Signing**: an ed25519 (minisign) key the release signs with, its
-  public key compiled into termic-server and the install script. Whether
-  this is the Tauri updater's key or a separate one is open (below).
-- HTTP: shell out to `curl` (present on macOS and nearly every Linux) and
-  verify in Rust, so termic-server takes on no TLS stack.
+Decided against: the daemon updating itself from the latest release. The
+desktop's version decides what a box runs (the user's call, 2026-11-21);
+a box chasing "latest" would fight a desktop that is not on it, and the
+desktop's push already reaches boxes with no internet. Without a
+self-updater there is nothing to sign beyond the release's checksums over
+https, so the signing-key question below is moot.
 
 ### 4. macOS as a server
 
@@ -184,9 +148,7 @@ has to reach the laptop).
 - `docs/remote.md` (the server half), `termic-server/README.md` (install,
   update, uninstall, what runs where), `docs/remote-testing.md` (the
   by-hand runbook), the e2e coverage map.
-- Updater tests (the self-update half): manifest parsing, a bad signature
-  or sha refused, a lower version refused, auto-update off. The desktop
-  push and the restart are covered (`termic-server/tests/e2e.rs`,
+- Updates are covered (`termic-server/tests/e2e.rs`,
   `e2e/specs/remote.e2e.ts` "A server's termic-server stays current").
 - Manual test by the maintainer and screenshots before the PR
   (CLAUDE.md).
@@ -208,12 +170,12 @@ this release may make that hard:
 - No network port. ssh is the only way in, with the user's own keys;
   host keys are shown before trust and a changed one is refused.
 - Nothing outside `~/.termic` and `~/.termic-server`, no sudo.
-- Updates are signature-checked against a key compiled into the binary,
-  over https, and never replace a working binary with an unverified one.
+- Updates come only from the desktop, over the user's ssh; the curl
+  install checks the release's sha256 over https. Neither replaces a
+  working binary with one that fails its `version` check.
 
 ## Open decisions
 
-1. The update signing key: reuse the Tauri updater key, or a separate key
-   for termic-server.
-2. Auto-update on by default (proposed) or opt-in.
-3. Where the install script lives (termic.dev path) and its name.
+None left from this plan's original three: no update signing key is
+needed (no self-updater, see above), auto-update is on and is the
+desktop's, and the install script is `termic.dev/install-server.sh`.

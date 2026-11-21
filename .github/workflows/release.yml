@@ -796,7 +796,7 @@ jobs:
 
   # ─── Stitch the universal build into a Release ────────────────────
   release:
-    needs: [build-mac, build-linux]
+    needs: [build-mac, build-linux, server-bins, server-bins-mac]
     runs-on: ubuntu-latest
     steps:
       # Checked out FIRST (before the artifacts land in mac/ and linux/) so
@@ -812,6 +812,23 @@ jobs:
         with:
           name: termic-${{ needs.build-linux.outputs.version }}-linux-x86_64
           path: linux
+      # termic-server for `curl -fsSL https://termic.dev/install-server.sh | sh`
+      # (termic.dev public/install-server.sh): the four builds, the version
+      # they carry, and a checksum file the script verifies against. The mac
+      # ones keep the linker's ad hoc signature, enough for a file curl
+      # writes (no quarantine).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: termic-server*
+          merge-multiple: true
+          path: server
+      - name: Checksum the termic-server builds
+        run: |
+          set -euo pipefail
+          cd server
+          test "$(ls termic-server-*-linux-musl termic-server-*-apple-darwin | wc -l)" -eq 4
+          sha256sum termic-server-*-linux-musl termic-server-*-apple-darwin > termic-server-SHA256SUMS
+          cat termic-server-version.txt termic-server-SHA256SUMS
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -853,6 +870,8 @@ jobs:
           cat <<'FOOTER'
           - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same. The image carries zsync update info, so Gear Lever and AppImageUpdate can update it in place (the `.zsync` beside it is for them, not for you).
 
+          - **Termic server** (Linux or macOS, for agents on another machine): add it from the app, Settings > Remote, or on the server run `curl -fsSL https://termic.dev/install-server.sh | sh`. The app keeps it on its own version from then on.
+
           The app self-updates after install. Full install and update help: https://termic.dev
           FOOTER
           } > release-notes.md
@@ -861,7 +880,8 @@ jobs:
             --title "v${VERSION}" \
             --notes-file release-notes.md \
             mac/dmg/*.dmg mac/macos/* \
-            linux/*.AppImage linux/*.AppImage.sig linux/*.AppImage.zsync
+            linux/*.AppImage linux/*.AppImage.sig linux/*.AppImage.zsync \
+            server/termic-server-*
 
   # ─── Attach the Windows build to the release ──────────────────────
   # After the release exists, and only if the Windows build succeeded, so a

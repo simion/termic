@@ -274,7 +274,12 @@ is saved until it passes:
    server**: the build for that system (a static musl build first) is
    piped through the same ssh into a temp file, run once to verify, then
    renamed into place. No sudo, nothing outside `~/.termic`, no internet on
-   the box.
+   the box. Beside it, the same install from the server's own shell:
+   `curl -fsSL https://termic.dev/install-server.sh | sh` (the website
+   repo's `public/install-server.sh`), which takes the build for `uname
+   -sm` from the release (the release workflow attaches the four builds,
+   `termic-server-version.txt` and `termic-server-SHA256SUMS`), checks its
+   sha256, runs its `version`, and renames it into `~/.termic/bin`.
 4. **Connect** and load tasks.
 
 **Keeping termic-server current** (`remote_client::auto_upgrade`).
@@ -298,7 +303,9 @@ after the install and on every change to the server's rows), since an
 in-flight turn is what a restart loses; meanwhile the server's row says
 the update is installed and offers **Restart now** (`server-update-<id>`).
 The desktop's version decides, older or newer: the box runs the build of
-the desktop that last connected to it. A
+the desktop that last connected to it. There is no self-update on the box, by
+decision: a box chasing the latest release would fight a desktop that is
+not on it (docs/plans/termic-server.md). A
 server added with its own `command` is left alone. Who else can send a
 box `quit`: this desktop's own authenticated CLI (`termic --peer <box>
 quit --yes`, the same reach that can already `stop` its agents), never a
@@ -450,8 +457,7 @@ key (a Notification Service Extension decrypts it) would hide even that.
   over ssh keeps the linker's ad hoc signature, which is enough (no
   quarantine on a file copied by ssh). Install looks in the bundle (in
   debug builds, only in `TERMIC_SERVER_BIN_DIR` when set). A box the
-  desktop does not reach stays on its build until it does; a self-update
-  from the release is in docs/plans/termic-server.md.
+  desktop does not reach stays on its build until it does.
 - Windows: a Windows desktop is a host and a client like any other, using
   Windows' built-in OpenSSH for servers; servers themselves run Linux or
   macOS (`termic-server` is unix only). Details in

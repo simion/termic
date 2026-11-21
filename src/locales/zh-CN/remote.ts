@@ -96,6 +96,8 @@ export default {
     stepNotInstalled: "未安装 termic-server",
     installWhy: "Termic 可以替你安装:它会把一个文件复制到 {{host}} 的 ~/.termic/bin。不需要 sudo,不会改动其他任何东西。",
     install: "安装到服务器",
+    installCurl: "或者在服务器的终端里运行下面的命令，然后点重试：",
+    installCurlLabel: "安装命令",
     installing: "正在安装...",
     noBinary: "这个 Termic 没有适用于 {{system}} 的 termic-server 版本。",
     stepConnect: "启动 termic-server 并加载任务",

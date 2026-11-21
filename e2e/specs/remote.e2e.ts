@@ -283,6 +283,8 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
       !!document.querySelector('[data-testid="server-install"]') || !!document.querySelector('[data-testid="server-done"]')),
     { timeout: 60_000, timeoutMsg: "the checklist neither connected nor offered an install" });
     if (await browser.execute(() => !!document.querySelector('[data-testid="server-install"]'))) {
+      // Beside the button, the same install from the server's own shell.
+      expect(await browser.execute(() => document.querySelector('[data-testid="server-step-installed"]')?.textContent ?? "")).toContain("curl -fsSL https://termic.dev/install-server.sh | sh");
       await clickPresent('[data-testid="server-install"]');
     }
     await waitVisible('[data-testid="server-done"]', 60_000);

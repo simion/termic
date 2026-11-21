@@ -12,7 +12,11 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
+import { CopyRow } from "@/components/settings/McpSection";
 import { serverAdd, serverInstall, serverProbe, serverRemove, serverTrust, useMachine, useRemote, type ServerProbe } from "@/lib/remote";
+
+/** The same install, from a shell on the server (termic.dev public/install-server.sh). */
+const INSTALL_CURL = "curl -fsSL https://termic.dev/install-server.sh | sh";
 
 type Mark = "todo" | "busy" | "ok" | "fail";
 
@@ -180,6 +184,8 @@ function AddServerBody({ onClose }: { onClose: () => void }) {
                       {busy === "install" ? t("addServer.installing") : t("addServer.install")}
                     </Button>
                   </div>
+                  <p className="text-[12.5px] text-[var(--color-fg-dim)]">{t("addServer.installCurl")}</p>
+                  <CopyRow text={INSTALL_CURL} label={t("addServer.installCurlLabel")} />
                 </div>
               )}
             </Step>
