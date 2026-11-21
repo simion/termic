@@ -13,9 +13,9 @@ export default {
   },
   phones: {
     title: "Phones",
-    preview: "Phone app",
-    soon: "Coming soon",
-    soonNote: "The Termic phone app is not out yet: it is not in the App Store or on Google Play. Pairing works for builds that already have it.",
+    getApp: "Get the app:",
+    ios: "iPhone (TestFlight)",
+    android: "Android (Google Play)",
     lead: "Answer your agents, send prompts and watch their terminals from your phone. The phone runs nothing; every action happens on this computer.",
     connect: "Connect a phone",
     connectAnother: "Connect another phone",

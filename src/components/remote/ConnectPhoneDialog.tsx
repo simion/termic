@@ -12,7 +12,7 @@ import { Check, ChevronDown, ChevronRight, RefreshCw, Wifi, Globe, Network, Shie
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { settingsLoad, settingsSave } from "@/lib/ipc";
+import { openExternalUrl, settingsLoad, settingsSave } from "@/lib/ipc";
 import { writeClipboardText } from "@/lib/clipboard";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -22,7 +22,31 @@ import {
 
 type Paired = { id: string; name: string };
 
+// Where the phone app is: TestFlight is open to anyone, so iPhone users
+// need no invite.
+const IOS_APP_URL = "https://testflight.apple.com/join/5qxhPr6a";
+const ANDROID_APP_URL = "https://play.google.com/store/apps/details?id=dev.termic.remote";
 
+/** "Get the app: iPhone (TestFlight) · Android", opened in the browser. */
+export function PhoneAppLinks() {
+  const { t } = useTranslation("remote");
+  const link = (url: string, label: string, id: string) => (
+    <button
+      type="button"
+      data-testid={id}
+      data-url={url}
+      onClick={() => void openExternalUrl(url, "").catch(e => useUI.getState().pushToast(String(e), "error"))}
+      className="text-[var(--color-accent)] underline-offset-2 hover:underline"
+    >
+      {label}
+    </button>
+  );
+  return (
+    <span data-testid="phone-app-links">
+      {t("phones.getApp")} {link(IOS_APP_URL, t("phones.ios"), "phone-app-ios")} · {link(ANDROID_APP_URL, t("phones.android"), "phone-app-android")}
+    </span>
+  );
+}
 
 export function ConnectPhoneDialog() {
   const open = useRemote(s => s.phoneDialog);
@@ -148,7 +172,7 @@ function ConnectPhoneBody({ onClose }: { onClose: () => void }) {
               {[t("qr.step1"), t("qr.step2"), t("qr.step3")].map((s, i) => (
                 <li key={i} className="flex gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-3)] text-[11.5px] font-semibold tabular-nums text-[var(--color-fg-dim)]">{i + 1}</span>
-                  <span>{s}</span>
+                  <span>{s}{i === 0 && <span className="mt-1 block text-[12.5px] text-[var(--color-fg-dim)]"><PhoneAppLinks /></span>}</span>
                 </li>
               ))}
               {view && !expired && (

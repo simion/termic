@@ -122,16 +122,14 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
-    // The phone app is not out: one closed row, nothing to press yet.
-    expect(await browser.execute(() => document.querySelector('[data-testid="remote-phones-toggle"]')?.getAttribute("aria-expanded"))).toBe("false");
-    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-connect-phone"]'))).toBe(false);
+    // The phone card is open, with where to get the app on each platform.
+    await waitVisible('[data-testid="remote-connect-phone"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/5qxhPr6a");
+    expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-android"]')?.getAttribute("data-url"))).toBe("https://play.google.com/store/apps/details?id=dev.termic.remote");
     await snap("remote-settings-empty.png");
   });
 
   it("shows a QR code with a countdown, turning sharing on to do it", async () => {
-    await clickPresent('[data-testid="remote-phones-toggle"]');
-    await waitVisible('[data-testid="remote-connect-phone"]');
-    await snap("remote-phones-open.png");
     await clickPresent('[data-testid="remote-connect-phone"]');
     await waitVisible('[data-testid="phone-qr"]');
     await waitVisible('[data-testid="phone-qr-countdown"]');

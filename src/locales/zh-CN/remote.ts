@@ -12,9 +12,9 @@ export default {
   },
   phones: {
     title: "手机",
-    preview: "手机应用",
-    soon: "即将推出",
-    soonNote: "Termic 手机应用尚未发布:App Store 和 Google Play 上都还没有。已经装有它的版本可以配对。",
+    getApp: "获取应用:",
+    ios: "iPhone(TestFlight)",
+    android: "Android(Google Play)",
     lead: "在手机上回答代理的问题、发送提示词、查看它们的终端。手机本身不运行任何东西,所有操作都在这台电脑上完成。",
     connect: "连接手机",
     connectAnother: "再连接一部手机",

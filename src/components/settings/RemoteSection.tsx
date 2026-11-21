@@ -1,6 +1,5 @@
 // Settings > Remote (docs/remote.md): the servers this computer runs agents
-// on over SSH, and, in a closed "Phone app" row until the app ships, the
-// phones paired with it.
+// on over SSH, and the phones paired with it (with where to get the app).
 // Paired Termic computers stay in Agent access: pairing them is about
 // agents working together, which is where people look for it.
 //
@@ -10,12 +9,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Smartphone } from "lucide-react";
+import { Plus, RefreshCw, Server, Smartphone } from "lucide-react";
 import { PEER_CHANGED_EVENT, peerStatus } from "@/lib/ipc";
 import type { PeerStatus } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
+import { PhoneAppLinks } from "@/components/remote/ConnectPhoneDialog";
 import { cn } from "@/lib/utils";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import {
@@ -97,10 +97,6 @@ export function RemoteSection() {
     setDrawn(n => n + 1);
   }, [status]);
   const phones = status?.phones ?? [];
-  // Closed by default; open once a paired phone shows up, so its owner sees it.
-  const [phonesOpen, setPhonesOpen] = useState(false);
-  const hasPhones = phones.length > 0;
-  useEffect(() => { if (hasPhones) setPhonesOpen(true); }, [hasPhones]);
 
   async function saveSharing(v: boolean) {
     setSharing(v);
@@ -133,49 +129,28 @@ export function RemoteSection() {
         )}
       </Card>
 
-      {/* The phone app is not released: a small row, closed until a phone is
-          paired, that says so instead of selling it. */}
-      <div data-testid="remote-phones-preview">
-        <button
-          type="button"
-          data-testid="remote-phones-toggle"
-          aria-expanded={phonesOpen}
-          onClick={() => setPhonesOpen(o => !o)}
-          className="flex items-center gap-2 rounded-md px-1 py-1 text-[13px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-        >
-          {phonesOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          <Smartphone className="h-3.5 w-3.5" />
-          {t("phones.preview")}
-          <span className="rounded bg-[var(--color-hover)] px-1.5 py-0.5 text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("phones.soon")}</span>
-        </button>
-        {phonesOpen && (
-          <div className="mt-2 flex flex-col gap-3">
-            <p className="text-[12.5px] text-[var(--color-fg-faint)]">{t("phones.soonNote")}</p>
-            <Card
-              icon={<Smartphone className="h-4 w-4" />}
-              title={t("phones.title")}
-              lead={t("phones.lead")}
-              action={
-                <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
-                  <Plus className="h-3.5 w-3.5" />
-                  {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
-                </Button>
-              }
-              footer={
-                <div data-testid="remote-sharing" data-enabled={sharing ? "true" : "false"}>
-                  <Toggle key={drawn} label={t("phones.allow")} hint={t("phones.allowHint")} value={sharing} onChange={v => void saveSharing(v)} />
-                </div>
-              }
-            >
-              {phones.length > 0 ? (
-                <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
-              ) : (
-                <Empty>{t("phones.empty")}</Empty>
-              )}
-            </Card>
+      <Card
+        icon={<Smartphone className="h-4 w-4" />}
+        title={t("phones.title")}
+        lead={<>{t("phones.lead")} <PhoneAppLinks /></>}
+        action={
+          <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
+            <Plus className="h-3.5 w-3.5" />
+            {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
+          </Button>
+        }
+        footer={
+          <div data-testid="remote-sharing" data-enabled={sharing ? "true" : "false"}>
+            <Toggle key={drawn} label={t("phones.allow")} hint={t("phones.allowHint")} value={sharing} onChange={v => void saveSharing(v)} />
           </div>
+        }
+      >
+        {phones.length > 0 ? (
+          <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
+        ) : (
+          <Empty>{t("phones.empty")}</Empty>
         )}
-      </div>
+      </Card>
 
       <p className="text-[12.5px] text-[var(--color-fg-faint)]">
         {t("section.computersPointer")}{" "}

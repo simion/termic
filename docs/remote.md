@@ -157,9 +157,10 @@ forwarded from a viewer (the agent already has a terminal answering).
 
 ## Pairing a phone
 
-Settings > Remote > **Phone app** (a closed row marked Coming soon until
-the app ships; it opens by itself once a phone is paired) > **Connect a
-phone** shows a QR code:
+Settings > Remote > **Phones** > **Connect a phone** shows a QR code.
+The card and the dialog's first step link the app: iPhone through the
+public TestFlight link (open to anyone, no invite), Android through
+Google Play (`PhoneAppLinks` in `ConnectPhoneDialog.tsx`).
 
 ```
 termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>&k=<256-bit key, base64url>
