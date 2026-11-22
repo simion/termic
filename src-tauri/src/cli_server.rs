@@ -2680,6 +2680,18 @@ fn codex_rollout_on_box(fs: &crate::task_host::Host, cwd: &str, sid: Option<&str
     Ok(out)
 }
 
+/// Whether `transcript_turns` can read a task's conversation: the agents
+/// whose session logs it parses, where it can reach them (Antigravity's is
+/// SQLite, read only on this computer). Everything else is driven from its
+/// terminal, which every agent has.
+pub(crate) fn chat_supported(cli: &str, on_server: bool) -> bool {
+    match cli {
+        "claude" | "codex" => true,
+        "agy" | "antigravity" => !on_server,
+        _ => false,
+    }
+}
+
 /// Why a task in the project's own checkout shows no chat (phones, the
 /// transcript view): its folder is shared with other sessions.
 const SHARED_CHECKOUT_CHAT: &str = "This task works in the project's own folder, which other sessions share, so its chat can't be told apart. The Terminal tab shows it.";
@@ -12389,5 +12401,19 @@ mod codex_on_box_tests {
         assert!(run(&home, "/w/none", "bbb").contains("body-for-/w/other"), "the named session wins");
         assert_eq!(run(&home, "/w/none", ""), "", "nothing for a folder with no session");
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod chat_supported_tests {
+    #[test]
+    fn chat_is_for_the_agents_whose_logs_are_read_and_where_they_can_be() {
+        use super::chat_supported;
+        assert!(chat_supported("claude", false) && chat_supported("claude", true));
+        assert!(chat_supported("codex", true));
+        assert!(chat_supported("agy", false) && !chat_supported("agy", true), "SQLite, read only here");
+        for other in ["copilot", "grok", "pi", "opencode", "muse", "my-custom", "shell"] {
+            assert!(!chat_supported(other, false), "{other}");
+        }
     }
 }

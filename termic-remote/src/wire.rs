@@ -265,6 +265,11 @@ pub struct TaskRow {
     pub project: String,
     /// The default agent id ("claude").
     pub agent: String,
+    /// Whether the host can show this task's conversation (`transcript`).
+    /// False: a client opens its terminal instead, which every agent has.
+    /// Absent from older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// "working" | "waiting" | "done" | "idle" | "inactive" | "unknown".

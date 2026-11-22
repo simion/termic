@@ -727,11 +727,13 @@ fn state_loop(s: &Session) {
                     Some(b) => (b.state.clone(), b.activity.clone(), b.question.clone(), b.tabs.clone(), b.since_ms.or(Some(entry.1))),
                     None => (state, activity, question, tabs, Some(entry.1)),
                 };
+                let on_server = projects.iter().any(|p| p.id == t.project_id && p.server.is_some());
                 TaskRow {
                     id: t.id.clone(),
                     name: t.name.clone(),
                     project,
                     agent: t.cli.clone(),
+                    chat: Some(crate::cli_server::chat_supported(&t.cli, on_server)),
                     branch: (!t.branch.is_empty()).then(|| t.branch.clone()),
                     since_ms: since,
                     activity,
