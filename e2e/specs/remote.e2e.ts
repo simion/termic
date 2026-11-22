@@ -453,6 +453,9 @@ chmod +x ~/${BOX_DIR}/agent.sh`);
 const localBox = process.env.TERMIC_E2E_LOCAL_BOX;
 const describeLocal = process.platform !== "win32" && localBox ? describe : describe.skip;
 
+/** codex on this Mac: its hooks' trust step needs the binary. */
+const codexHere = (() => { try { execFileSync("/bin/sh", ["-lc", "command -v codex"], { stdio: "ignore" }); return true; } catch { return false; } })();
+
 describeLocal("A server's tasks in the sidebar (local termic-server)", function () {
   this.timeout(120_000);
   const HOST = "termic-e2e-local";
@@ -520,12 +523,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await t.useApp.getState().loadAll();
     }, agent);
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    // claude's hooks on this Mac (the e2e agent home), so the box gets them.
+    // claude's hooks on this Mac (the e2e agent home), so the box gets them;
+    // codex's too where codex is installed (its trust step runs codex).
     await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "claude" }));
+    if (codexHere) await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "codex" }));
   });
 
   after(async () => {
     await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "claude" })).catch(() => {});
+    if (codexHere) await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "codex" })).catch(() => {});
     if (serverId) await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId).catch(() => {});
     await browser.execute(() => window.__termic!.useRemote.getState().openTask(null)).catch(() => {});
     try { server("stop"); } catch { /* already gone */ }
@@ -580,6 +586,20 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       expect(c.startsWith(`${box}/.claude/termic-hooks/`)).toBe(true);
       expect(statSync(c).mode & 0o111).toBeGreaterThan(0);
     }
+  });
+
+  (codexHere ? it : it.skip)("trusts codex's hooks on the box, as codex there reports", async () => {
+    // The box is this Mac, so its codex answers for the box's CODEX_HOME.
+    const home = path.join(box, ".codex");
+    await browser.waitUntil(() => existsSync(path.join(home, "config.toml")) && readFileSync(path.join(home, "config.toml"), "utf8").includes("trusted_hash"),
+      { timeout: 60_000, timeoutMsg: "codex's trust entries never reached the box" });
+    expect(readFileSync(path.join(home, "hooks.json"), "utf8")).toContain(`${home}/termic-hooks/`);
+    const init = JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "e2e", version: "0" } } });
+    const list = JSON.stringify({ id: 2, method: "hooks/list", params: { cwds: [box] } });
+    const out = execFileSync("/bin/sh", ["-lc", `{ printf '%s\\n%s\\n' '${init}' '${list}'; sleep 8; } | CODEX_HOME='${home}' codex app-server 2>/dev/null | grep -m 1 -E '"id": ?2[,}]'`], { encoding: "utf8" });
+    const ours = JSON.parse(out).result.data.flatMap((e: any) => e.hooks ?? []).filter((h: any) => String(h.command).startsWith(`${home}/termic-hooks/`));
+    expect(ours.length).toBeGreaterThan(0);
+    expect(ours.every((h: any) => h.trustStatus === "trusted")).toBe(true);
   });
 
   it("files the server's projects under it in REMOTE, with a menu to manage it", async () => {

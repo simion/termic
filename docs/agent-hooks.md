@@ -708,9 +708,12 @@ same parser reads it. The config is written by `agent_hooks::sync_server`
 hooks file and `termic-hooks/` from the box over `exec` as a tar, runs the
 ordinary install on that staged copy with the box's `$HOME` in the command
 paths, and pushes it back. Same consent rule as Docker: only agents whose
-hooks are installed on this computer. codex (its trust hashes need `codex
-app-server`) and the agents with a second config slot (agy, copilot, grok,
-muse) are not installed there yet and keep the fallback state.
+hooks are installed on this computer. codex's trust step runs there too:
+the hooks are pushed first, then `codex app-server` on the box is piped
+one initialize + hooks/list (a login shell, so its PATH finds codex), and
+the hashes it reports go into the staged `config.toml` pushed after.
+The agents with a second config slot (agy, copilot, grok, muse) are not
+installed there yet and keep the fallback state.
 
 ### Working and done are termic's own bodies, not OSC 133
 

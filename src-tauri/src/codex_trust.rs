@@ -82,7 +82,7 @@ pub fn discover_ours(
 /// The ownership rule, split from the spawn so it can be tested against a
 /// recorded response instead of a live codex. Every case it has to get right
 /// is a shape question, not a process question.
-fn filter_ours(
+pub(crate) fn filter_ours(
     raw: &Value,
     source_path: &Path,
     command_prefix: &str,

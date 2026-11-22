@@ -139,8 +139,7 @@ Order, each step shippable on its own:
    terminals is gone (their slots are local). Not on a box yet: git-crypt,
    profile customizations written into the worktree.
 3. **The agent as an ordinary tab** (done; hook config on the box for
-   every agent but codex and the slot agents, docs/agent-hooks.md
-   "Transport"): spawned with the desktop's argv, session id and env through
+   every agent but the slot agents, docs/agent-hooks.md "Transport"): spawned with the desktop's argv, session id and env through
    `pty_spawn`; server tasks draw with TaskView and TabBar. RemoteTaskView
    is the paired-computer overlay only (`useServerShells`, `useBoxAgents`
    and its server tabs are deleted).
@@ -202,8 +201,8 @@ from titles (and the floor) until one exists.
 
 ### Agent hooks on the box
 
-Done for the file-only installs (`agent_hooks::sync_server`); codex's
-trust step and the slot agents are what is left.
+Done (`agent_hooks::sync_server`), codex's trust step included; the
+slot agents (agy, copilot, grok, muse) are what is left.
 
 Hooks are not a socket back to the desktop: each one writes an OSC into
 the agent's own terminal (`$TERMIC_PTY`, docs/agent-hooks.md
