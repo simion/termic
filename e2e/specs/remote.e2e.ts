@@ -14,7 +14,7 @@
 // when TERMIC_E2E_TEST_BOX names one.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoAgent, typeIntoRemoteTerminal, waitForAgentPty, waitForAppShell, waitTabInFront, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
@@ -1086,6 +1086,68 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     } finally {
       rmSync(path.join(repo, ".termic.yaml"), { force: true });
     }
+  });
+
+  it("renaming the server project here keeps its tasks through a resync", async () => {
+    // server_projects.rs mirror: box tasks are matched by the box's project
+    // id; matched by name, a rename here archived every task.
+    const proj = await browser.execute((sid) => window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid), serverId) as any;
+    await browser.execute((p) => window.__termic!.invoke("project_update", { p: { ...p, name: "Renamed here" } }), proj);
+    try {
+      expect((await cliRpc({ cmd: "send", task, prompt: "after a project rename" })).ok).toBe(true);
+      await browser.waitUntil(async () => (await deskLogs()).includes("box says: after a project rename"), { timeout: 20_000, timeoutMsg: "the send never landed" });
+      // The box's changed snapshot resyncs; the task must still be live.
+      await browser.waitUntil(async () => browser.execute(async (id) => {
+        await window.__termic!.useApp.getState().loadAll();
+        const t = window.__termic!.useApp.getState().tasks.find((x: any) => x.id === id) as any;
+        return !!t && !t.archived;
+      }, task), { timeout: 10_000, timeoutMsg: "a project rename archived the server task" });
+    } finally {
+      await browser.execute((p) => window.__termic!.invoke("project_update", { p }), proj);
+    }
+  });
+
+  it("an editor save on the box keeps the file's mode and writes through a symlink", async () => {
+    // lib.rs BOX_WRITE_SH: was a plain cat-then-mv, which left a 0755
+    // script 0644 and replaced a dotfiles link with a file.
+    const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
+    writeFileSync(path.join(wt, "run.sh"), "#!/bin/sh\necho old\n");
+    chmodSync(path.join(wt, "run.sh"), 0o755);
+    execFileSync("ln", ["-sf", "run.sh", path.join(wt, "link.sh")]);
+    await browser.execute((id) => window.__termic!.invoke("task_file_write", { id, path: "link.sh", content: "#!/bin/sh\necho new\n" }), task);
+    expect(readFileSync(path.join(wt, "run.sh"), "utf8")).toContain("echo new");
+    expect(statSync(path.join(wt, "run.sh")).mode & 0o777).toBe(0o755);
+    expect(lstatSync(path.join(wt, "link.sh")).isSymbolicLink()).toBe(true);
+  });
+
+  it("a terminal closed while the box is offline ends there once it is back", async () => {
+    // remote_client.rs pending_kills: the kill used to be dropped, and the
+    // process ran on the box with nobody left who knew it.
+    const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path as string, task);
+    const marker = `sleep ${7000 + Math.floor(Math.random() * 999)}`;
+    const running = () => { try { execFileSync("pgrep", ["-f", marker.replace("sleep", "[s]leep")]); return true; } catch { return false; } };
+    const pty = await browser.execute((cwd, m, id) => window.__termic!.invoke("pty_spawn", { args: { cwd, cmd: "/bin/sh", args: ["-c", m], rows: 24, cols: 80, owner: { task_id: id, tab_id: "offline-kill", kind: "aux" } } }), wt, marker, task) as any;
+    await browser.waitUntil(async () => running(), { timeout: 15_000, timeoutMsg: "the terminal never started on the box" });
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: false }), serverId);
+    await browser.execute((id) => window.__termic!.invoke("pty_kill", { ptyId: id }), pty.id);
+    // Outlasts remote_client's KILL_GRACE (1.5 s): the kill is attempted
+    // after it, finds no link, and must be queued, not dropped.
+    await browser.pause(2500);
+    expect(running()).toBe(true);
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: true }), serverId);
+    await browser.waitUntil(async () => !running(), { timeout: 30_000, timeoutMsg: "the closed terminal kept running on the box" });
+  });
+
+  it("archiving with Delete branch removes the branch on the box too", async () => {
+    // lib.rs task_archive_sync: the server branch returned before reading it.
+    const proj = await browser.execute((sid) => window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid), serverId) as any;
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), proj.id);
+    const id = await createInDialog("box-branch-gone");
+    const branch = await browser.execute((t) => (window.__termic!.useApp.getState().tasks.find((x: any) => x.id === t) as any)?.branch as string, id);
+    const branches = () => execFileSync("git", ["-C", repo, "branch", "--list", "--format=%(refname:short)"], { encoding: "utf8" }).split("\n");
+    expect(branches()).toContain(branch);
+    await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t, deleteBranch: true }), id);
+    await browser.waitUntil(async () => !branches().includes(branch), { timeout: 20_000, timeoutMsg: "the branch stayed on the box" });
   });
 
   it("archives from the desktop: the box removes its worktree, the row goes", async () => {
