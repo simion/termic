@@ -179,7 +179,8 @@ export interface ServerProbe {
   millis: number;
 }
 export const serverProbe = (ssh: string) => invoke<ServerProbe>("server_probe", { ssh });
-export const serverTrust = (ssh: string) => invoke<ServerProbe>("server_trust", { ssh });
+/** `fingerprint`: the one the user was shown; another key is refused. */
+export const serverTrust = (ssh: string, fingerprint?: string | null) => invoke<ServerProbe>("server_trust", { ssh, fingerprint: fingerprint ?? null });
 /** Upload termic-server over ssh; resolves to the installed version. */
 export const serverInstall = (ssh: string) => invoke<string>("server_install", { ssh });
 

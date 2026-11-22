@@ -129,8 +129,6 @@ fn run_daemon() -> i32 {
         let d = d.clone();
         std::thread::spawn(move || d.monitor());
     }
-    // A `quit` (the desktop restarting this daemon onto a new build) left
-    // these agents running: back in their sessions, before any client.
     {
         let d = d.clone();
         let sig = match signal_pipe() {

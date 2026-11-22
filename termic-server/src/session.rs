@@ -312,6 +312,7 @@ fn transcript(d: &Daemon, task: &str) -> Result<(String, Vec<wire::Turn>), Strin
 #[allow(clippy::too_many_arguments)]
 fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16, seen: Option<u64>) {
     let exit = |reason: String| send(s, ServerMsg::PtyExit { pid: pid.clone(), reason });
+    let opening = s.d.opening.lock().unwrap();
     let running = {
         let mut map = s.d.ptys.lock().unwrap();
         // Ended PTYs nobody came back for go now.
@@ -370,6 +371,7 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
             p
         }
     };
+    drop(opening);
     let _ = p.resize(rows, cols);
     let (tap, backlog, at, rx) = match p.subscribe_from(seen) {
         Ok(x) => x,

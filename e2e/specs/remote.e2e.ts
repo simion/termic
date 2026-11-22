@@ -742,6 +742,20 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       { timeout: 20_000, timeoutMsg: "the CLI's send never reached the agent on the box, or logs never read it back" });
   });
 
+  it("the termic CLI's new makes a server task the way the dialog does", async () => {
+    // cli_server.rs handle_new: a server project's task is made by the
+    // desktop (worktree through exec, then task_put), not forwarded.
+    const project = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.name as string, serverId);
+    const r = await cliRpc({ cmd: "new", name: "cli-made", project, agent: "boxagent" });
+    expect(r.ok).toBe(true);
+    const id = r.data.task.id as string;
+    await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).some((t: any) => t.id === id),
+      { timeout: 20_000, timeoutMsg: "the box never recorded the CLI's task" });
+    const refused = await cliRpc({ cmd: "new", name: "cli-pr", project, pr: 1 });
+    expect(refused.ok).toBe(false);
+    await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), id);
+  });
+
   it("reads a server task's result from the transcript on the box", async () => {
     // cli_server.rs claude_transcript_file through TaskHost: the claude
     // session file is the box's (HOME there), never this Mac's.

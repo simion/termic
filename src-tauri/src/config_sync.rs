@@ -333,7 +333,7 @@ fn profile_accent(id: &ProfileId) -> Option<String> {
 ///
 /// Only a NAME for a new folder, never the identity: the binding stays in
 /// `SyncLocal::sync_id`, because slugs are minted per machine (the same
-/// profile can be `work` here and `nexttech` there) and the root profile may
+/// profile can be `work` here and `office` there) and the root profile may
 /// have none.
 pub(crate) fn new_folder_id(id: &ProfileId, taken: &BTreeSet<String>) -> String {
     let reg = crate::profiles_registry();

@@ -58,6 +58,9 @@ pub struct Daemon {
     pub ptys: Mutex<HashMap<String, Arc<crate::pty::Pty>>>,
     /// A `quit` is ending every PTY to restart onto a new build.
     pub restarting: std::sync::atomic::AtomicBool,
+    /// Held across a `pty_open`'s look-up, spawn and insert, so two
+    /// connections opening one claim at once start one process.
+    pub opening: Mutex<()>,
 }
 
 pub type Fail = (termic_proto::ErrorCode, String);
@@ -86,6 +89,7 @@ impl Daemon {
             wake_cv: Condvar::new(),
             ptys: Mutex::new(HashMap::new()),
             restarting: std::sync::atomic::AtomicBool::new(false),
+            opening: Mutex::new(()),
         })
     }
 
@@ -182,16 +186,14 @@ impl Daemon {
     fn compute(&self, pty: Option<&Arc<Pty>>, now: Instant) -> (View, Option<Instant>) {
         let blank = |s: &str| View { state: s.into(), since_ms: 0, activity: None, question: None };
         let Some(pty) = pty else { return (blank("inactive"), None) };
-        struct L<'a> { pty: &'a Arc<Pty> }
-        let live = L { pty };
-        let (exited, act, out, inp) = live.pty.activity();
+        let (exited, act, out, inp) = pty.activity();
         let working = !exited && inp.is_some() && act.is_some_and(|t| now.saturating_duration_since(t) < self.quiet);
         let mut lines: Option<Vec<String>> = None;
         let mut screen_lines = || -> Vec<String> {
             lines
                 .get_or_insert_with(|| {
-                    let (tail, _) = live.pty.tail(SCREEN_BYTES);
-                    let (rows, cols) = live.pty.size();
+                    let (tail, _) = pty.tail(SCREEN_BYTES);
+                    let (rows, cols) = pty.size();
                     screen::render(&tail, rows, cols)
                 })
                 .clone()
@@ -202,7 +204,7 @@ impl Daemon {
             question = screen::question(&screen_lines());
             asks = question.is_some() || detect::shows_question(&screen_lines());
         }
-        let (watched, seen) = live.pty.watched();
+        let (watched, seen) = pty.watched();
         let a = detect::Activity { exited, last_activity: act, last_output: out, last_input: inp, question: asks, watched, seen };
         let state = detect::work_state(&a, now, self.quiet);
         let activity = if state == "working" { screen::activity(&screen_lines()) } else { None };

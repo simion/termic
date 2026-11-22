@@ -280,13 +280,15 @@ impl Pty {
 
     /// SIGKILL the agent's whole process group (portable-pty makes the
     /// child a session leader, so its pid is the group id).
+    /// Returns whether its own process was still running. The group is
+    /// killed either way: the leader may be gone while children that
+    /// ignored the hang-up are not.
     pub fn kill(&self) -> bool {
         let Some(pid) = self.pid else { return false };
-        if self.exited() {
-            return false;
-        }
+        let running = !self.exited();
         // SAFETY: killpg with a pid we spawned; at worst ESRCH.
-        unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) == 0 }
+        unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        running
     }
 
     /// SIGHUP the group, the way a closed terminal ends it (daemon stop).

@@ -7478,7 +7478,7 @@ fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn task_open_repo(
+async fn task_open_repo(
     project_id: String,
     cli: Option<String>,
     name: Option<String>,
@@ -7510,6 +7510,8 @@ fn task_open_repo(
     // Unknown paths are ignored — the list is a filter, not a spec.
     members: Option<Vec<String>>,
 ) -> Result<Task, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     check_session_id(resume_session_id.as_deref())?;
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -7748,6 +7750,7 @@ fn task_open_repo(
         let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), effective_customization_mode(&proj), &task.cli);
     }
     Ok(task)
+}).await.map_err(|e| e.to_string())?
 }
 
 // ───────────────────────── import existing worktree (issue #5) ─────────────────────────
@@ -8311,8 +8314,12 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     let host = task_host::Host::for_project(&proj);
     let wt_root = match &proj.server {
         Some(server) => {
+            // The slug plus the project's id: two projects whose names slug
+            // alike ("my.app", "my-app") must not share a folder, where one's
+            // orphan sweep would delete the other's live worktree.
             let pslug = slugify(&proj.name);
-            task_host::server_worktrees_root(server, &repo)?.join(if pslug.is_empty() { proj.id.clone() } else { pslug })
+            let short: String = proj.id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
+            task_host::server_worktrees_root(server, &repo)?.join(if pslug.is_empty() { proj.id.clone() } else { format!("{pslug}-{short}") })
         }
         None => project_tasks_root(&globals.default_tasks_path, &proj)?,
     };
@@ -8709,9 +8716,17 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     seed_task_role(&mut task);
     // A server project's task is recorded on the box too, as plain data, so
     // every desktop that reaches it lists it (task_put) and the box reads
-    // its agent's state; the desktop starts that agent itself.
+    // its agent's state; the desktop starts that agent itself. Unrecorded,
+    // the worktree just made would be an orphan the next try refuses: it is
+    // taken back (git routes to the box by path).
     if let Some(server) = &proj.server {
-        server_projects::put_task(server, &task)?;
+        if let Err(e) = server_projects::put_task(server, &task) {
+            let _ = git(&["worktree", "remove", "--force", &task.path], &repo);
+            if !task.checkout_existing {
+                let _ = git(&["branch", "-D", &task.branch], &repo);
+            }
+            return Err(format!("{}: could not record the task ({e})", remote_client::server_name(server)));
+        }
     }
     save_task(&task).map_err(|e| e.to_string())?;
     if proj.server.is_some() {
@@ -10778,12 +10793,15 @@ fn tokenize_home_prefix(path: &str) -> String {
 /// `Ok(None)` when the repo has no such file; `Err` when it exists but
 /// is malformed. Keyed by project — backs the Repository settings.
 #[tauri::command]
-fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig>, String> {
+async fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig>, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
         .ok_or("no such project")?;
     repo_config::load(Path::new(&p.root_path)).map_err(|e| e.to_string())
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Load a repo's `.termic.yaml` directly by path — used for inline
@@ -10799,12 +10817,15 @@ fn repo_config_load_at(path: String) -> Result<Option<repo_config::RepoConfig>, 
 /// Write a project's `.termic.yaml` (full re-serialize — see
 /// `repo_config::save`). Backs the Repository settings' Scripts tab.
 #[tauri::command]
-fn repo_config_save(project_id: String, config: repo_config::RepoConfig) -> Result<(), String> {
+async fn repo_config_save(project_id: String, config: repo_config::RepoConfig) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
         .ok_or("no such project")?;
     repo_config::save(Path::new(&p.root_path), &config).map_err(|e| e.to_string())
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Write a fresh `.termic.yaml` scaffold to a project's repo if it has
@@ -13079,6 +13100,11 @@ fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Res
         let reply = remote_client::call(&server, serde_json::json!({"cmd": "archive", "task": w.id}), Some(std::time::Duration::from_secs(300)))?;
         if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not archive it").to_string());
+        }
+        // "Delete the branch too", as for a local task: the box removed the
+        // worktree and kept the branch; git runs there by the project's path.
+        if delete_branch && !w.is_main_checkout && !w.branch.is_empty() {
+            let _ = git(&["branch", "-D", &w.branch], Path::new(&proj.root_path));
         }
         w.archived = true;
         return save_task(w).map_err(|e| e.to_string());
@@ -17691,7 +17717,9 @@ fn read_external_file(path: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn task_file_read(id: String, path: String) -> Result<String, String> {
+async fn task_file_read(id: String, path: String) -> Result<String, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // A server task: read the file on the box, same cap, text only.
     if let Some(server) = server_projects::server_for_path(Path::new(&w.path)) {
@@ -17713,6 +17741,7 @@ fn task_file_read(id: String, path: String) -> Result<String, String> {
     let abs = safe_task_read_path(&w, &cwd, &rel)?;
     // Refuse binary or huge files for now — viewer is text-only.
     read_text_file_capped(&abs, 2_000_000)
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Text-or-nothing decode for the editor's read. Split out ONLY so the
@@ -17987,8 +18016,16 @@ fn taskpdf_response(uri_path: &str) -> tauri::http::Response<Vec<u8>> {
 /// as the read side. Synchronous to mirror `task_file_read` — a
 /// single text file (capped at 2 MB on read) is not the heavy-IO case
 /// the spawn_blocking discipline targets.
+/// Write stdin to the file $1 on a box, atomically, as `write_atomic` does
+/// here: through a symlink to its target (a dotfiles link stays a link),
+/// keeping the file's mode (an executable script stays executable), via a
+/// temp file renamed over it. `stat -c` is GNU and busybox, `-f` the BSDs.
+pub(crate) const BOX_WRITE_SH: &str = r#"f=$1; [ -L "$f" ] && f=$(readlink -f -- "$f" 2>/dev/null || printf %s "$f"); t="$f.termic-tmp.$$"; cat > "$t" || exit 1; if [ -e "$f" ]; then m=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null) && chmod "$m" "$t"; fi; mv -f "$t" "$f""#;
+
 #[tauri::command]
-fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
+async fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // A server task: write it on the box (write to a temp file, then rename
     // over, so a torn write never leaves half a file), fenced to the task.
@@ -17998,7 +18035,7 @@ fn task_file_write(id: String, path: String, content: String) -> Result<(), Stri
         let f = file.to_string_lossy();
         let (code, _, err) = server_projects::exec_with_stdin(
             &server, &base,
-            &["sh", "-c", "t=\"$1.termic-tmp.$$\" && cat > \"$t\" && mv -f \"$t\" \"$1\"", "sh", &f],
+            &["sh", "-c", BOX_WRITE_SH, "sh", &f],
             &[], Some(content.as_bytes()),
         )?;
         return if code == 0 { Ok(()) } else { Err(format!("write failed: {}", err.trim())) };
@@ -18008,6 +18045,7 @@ fn task_file_write(id: String, path: String, content: String) -> Result<(), Stri
     // Atomic: uncommitted source is unrecoverable if a truncate-write tears.
     // Tradeoff accepted: the swap installs a new inode (breaks hardlinks).
     write_atomic(&abs, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+}).await.map_err(|e| e.to_string())?
 }
 
 // ──────────────────────────── scratchpads (GH #244) ────────────────────────
@@ -40546,5 +40584,29 @@ mod server_spawn_tests {
             assert!(env.iter().any(|(ek, ev)| ek == k && ev == v), "{k} missing");
         }
         assert!(!env.iter().any(|(k, _)| k == "TERMIC_TASK_ID"), "no task, no id");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod box_write_tests {
+    #[test]
+    fn a_box_write_keeps_the_mode_and_writes_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("box-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let real = d.join("run.sh");
+        std::fs::write(&real, "old").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = d.join("link.sh");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut c = std::process::Command::new("/bin/sh").args(["-c", super::BOX_WRITE_SH, "sh"]).arg(&link).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(c.stdin.as_mut().unwrap(), b"new").unwrap();
+        drop(c.stdin.take());
+        assert!(c.wait().unwrap().success());
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o755);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

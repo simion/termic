@@ -214,10 +214,18 @@ fn save_servers(list: &[ServerRecord]) -> Result<(), String> {
 /// one on PATH. One `sh -c` line, so it works whatever the login shell is.
 fn bridge_command(rec: &ServerRecord) -> String {
     rec.command.clone().unwrap_or_else(|| {
-        format!(
+        posix(&format!(
             "if [ -x {SERVER_BIN} ]; then exec {SERVER_BIN} bridge; elif command -v termic-server >/dev/null 2>&1; then exec termic-server bridge; else echo 'termic-server is not installed' >&2; exit 127; fi"
-        )
+        ))
     })
+}
+
+/// A POSIX script as the command ssh hands the box's LOGIN shell: run by
+/// `sh -c`, since that shell may be fish or csh, which read `if [ ]; then`
+/// and `t=~/x` as errors. Single quotes, with `'` as `'\''`, read the same
+/// in sh, bash, zsh, fish and csh.
+pub(crate) fn posix(script: &str) -> String {
+    format!("sh -c '{}'", script.replace('\'', "'\\''"))
 }
 
 // ───────────────────────────── a link ────────────────────────────────
@@ -1065,6 +1073,14 @@ pub(crate) fn pty_open(machine: &str, pid: &str, remote: &str, cwd: &str, argv: 
 /// `pty_exit`.
 fn reattach_ptys(l: &Link) {
     let keeps = l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY_KEEP);
+    // Terminals closed here while the box was away: end them there now,
+    // unless one was opened again under the same claim meanwhile.
+    let killed = pending_kills().lock().unwrap().remove(&l.id).unwrap_or_default();
+    for remote in killed {
+        if !ptys().lock().unwrap().values().any(|p| p.machine == l.id && p.remote == remote && p.exit.is_none()) {
+            let _ = l.send(ClientMsg::PtyKill { pid: remote });
+        }
+    }
     let mut claims: Vec<(String, u64, (u16, u16))> = Vec::new();
     {
         let mut map = ptys().lock().unwrap();
@@ -1128,14 +1144,25 @@ pub(crate) fn pty_kill(pid: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    let l = link(&machine)?;
     std::thread::spawn(move || {
         std::thread::sleep(KILL_GRACE);
-        if !ptys().lock().unwrap().values().any(|p| p.machine == machine && p.remote == remote) {
-            let _ = l.send(ClientMsg::PtyKill { pid: remote });
+        if ptys().lock().unwrap().values().any(|p| p.machine == machine && p.remote == remote) {
+            return;
+        }
+        // Offline: the box's PTY would run on with nobody left who knows it.
+        // The next connection sends the kill (reattach_ptys).
+        if link(&machine).and_then(|l| l.send(ClientMsg::PtyKill { pid: remote.clone() })).is_err() {
+            pending_kills().lock().unwrap().entry(machine).or_default().insert(remote);
         }
     });
     Ok(())
+}
+
+/// Kills that could not reach their box (it was offline), by machine, sent
+/// when it is back.
+fn pending_kills() -> &'static Mutex<HashMap<String, std::collections::HashSet<String>>> {
+    static K: std::sync::OnceLock<Mutex<HashMap<String, std::collections::HashSet<String>>>> = std::sync::OnceLock::new();
+    K.get_or_init(Default::default)
 }
 
 /// A message that answers by id (a transcript, keys or an interrupt with an
@@ -1322,13 +1349,19 @@ pub(crate) async fn server_add(window: tauri::Window, ssh: String, name: String)
 }
 
 #[tauri::command]
-pub(crate) fn server_remove(id: String) -> Result<(), String> {
+pub(crate) async fn server_remove(id: String) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     remove_server(&id)
+}).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub(crate) fn server_rename(id: String, name: String) -> Result<(), String> {
+pub(crate) async fn server_rename(id: String, name: String) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     rename_server(&id, &name)
+}).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1364,7 +1397,7 @@ const PROBE_SCRIPT: &str = "uname -sm; if [ -x ~/.termic/bin/termic-server ]; th
 
 pub(crate) fn probe(dest: &str) -> Probe {
     let started = std::time::Instant::now();
-    let out = match ssh_command(dest).arg(PROBE_SCRIPT).stdin(Stdio::null()).output() {
+    let out = match ssh_command(dest).arg(posix(PROBE_SCRIPT)).stdin(Stdio::null()).output() {
         Ok(o) => o,
         Err(e) => return Probe { error: Some(ssh_missing(&e)), host_key: "unchecked".into(), ..Default::default() },
     };
@@ -1418,18 +1451,44 @@ fn fingerprint(dest: &str) -> Option<String> {
 }
 
 /// Record a first-seen host key in the user's known_hosts, the way typing
-/// "yes" at ssh's own prompt would (`accept-new` refuses a CHANGED key).
-pub(crate) fn trust(dest: &str) -> Result<(), String> {
-    let out = tool("ssh")
-        .args(["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", "--", dest, "true"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| ssh_missing(&e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(explain_ssh(dest, out.status.code(), &String::from_utf8_lossy(&out.stderr)))
-    }
+/// "yes" at ssh's own prompt would, but only the key the user was shown.
+/// The fingerprint came from a separate scan; a connection that offered a
+/// different key (another type, or someone in the middle of this one
+/// connection only) must not be trusted under it. So ssh records the key
+/// into a throwaway file first, its fingerprint is compared with `shown`,
+/// and only then is that entry added to the real known_hosts.
+pub(crate) fn trust(dest: &str, shown: Option<&str>) -> Result<(), String> {
+    let dir = std::env::temp_dir().join(format!("termic-trust-{}-{}", std::process::id(), next_id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let scratch = dir.join("known_hosts");
+    let result = (|| {
+        let out = tool("ssh")
+            .args(["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8"])
+            .arg("-o").arg(format!("UserKnownHostsFile={}", scratch.display()))
+            .args(["-o", "GlobalKnownHostsFile=/dev/null", "--", dest, "true"])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| ssh_missing(&e))?;
+        if !out.status.success() {
+            return Err(explain_ssh(dest, out.status.code(), &String::from_utf8_lossy(&out.stderr)));
+        }
+        let entry = std::fs::read_to_string(&scratch).map_err(|e| format!("could not read the server's key ({e})"))?;
+        if let Some(shown) = shown {
+            let fp = tool("ssh-keygen").arg("-lf").arg(&scratch).output().map_err(|e| e.to_string())?;
+            let fp = String::from_utf8_lossy(&fp.stdout);
+            let want = shown.split_whitespace().next().unwrap_or(shown);
+            if !fp.split_whitespace().any(|w| w == want) {
+                return Err(format!("{dest} offered a different key than the one shown ({want}). Not trusted: check it from the server's own console."));
+            }
+        }
+        let home = dirs::home_dir().ok_or("no home directory")?;
+        let ssh_dir = home.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).map_err(|e| e.to_string())?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(ssh_dir.join("known_hosts")).map_err(|e| e.to_string())?;
+        io::Write::write_all(&mut f, entry.as_bytes()).map_err(|e| e.to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// The Rust target triples a `uname -sm` can run, most portable first: a
@@ -1624,7 +1683,7 @@ pub(crate) fn restart_server(id: &str) -> Result<(), String> {
         Endpoint::Server(rec) if rec.command.is_none() => rec.ssh.clone(),
         _ => return Err(msg),
     };
-    let out = ssh_command(&dest).arg("~/.termic/bin/termic-server stop").output().map_err(|e| ssh_missing(&e))?;
+    let out = ssh_command(&dest).arg(posix("~/.termic/bin/termic-server stop")).output().map_err(|e| ssh_missing(&e))?;
     if !out.status.success() {
         return Err(format!("could not stop the old termic-server: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -1658,7 +1717,7 @@ pub(crate) fn install(app: Option<&tauri::AppHandle>, dest: &str) -> Result<Stri
     let file = std::fs::File::open(&bin).map_err(|e| format!("Could not read {} ({e})", bin.display()))?;
     let script = "set -e; mkdir -p ~/.termic/bin; chmod 700 ~/.termic; t=~/.termic/bin/.termic-server.upload.$$; cat > \"$t\"; chmod 755 \"$t\"; \"$t\" version >/dev/null; mv -f \"$t\" ~/.termic/bin/termic-server; ~/.termic/bin/termic-server version";
     let out = ssh_command(dest)
-        .arg(script)
+        .arg(posix(script))
         .stdin(Stdio::from(file))
         .output()
         .map_err(|e| ssh_missing(&e))?;
@@ -1677,8 +1736,8 @@ pub(crate) async fn server_probe(ssh: String) -> Result<Probe, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn server_trust(ssh: String) -> Result<Probe, String> {
-    tauri::async_runtime::spawn_blocking(move || trust(&ssh).map(|_| probe(&ssh))).await.map_err(|e| e.to_string())?
+pub(crate) async fn server_trust(ssh: String, fingerprint: Option<String>) -> Result<Probe, String> {
+    tauri::async_runtime::spawn_blocking(move || trust(&ssh, fingerprint.as_deref()).map(|_| probe(&ssh))).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1688,6 +1747,16 @@ pub(crate) async fn server_install(app: tauri::AppHandle, ssh: String) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_posix_script_survives_any_login_shell_quoting() {
+        let script = "echo 'a b'; t=~/x";
+        let wrapped = super::posix(script);
+        assert_eq!(wrapped, "sh -c 'echo '\\''a b'\\''; t=~/x'");
+        // What sh makes of it is the script itself.
+        let out = std::process::Command::new("/bin/sh").args(["-c", &format!("printf %s {}", &wrapped[6..])]).output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), script);
+    }
     use super::*;
 
     #[test]

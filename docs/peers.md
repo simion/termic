@@ -421,7 +421,7 @@ profile brings that profile's window on screen: shown if hidden or
 minimized, built if closed, the same path as picking the profile from the
 menu (`reveal_profile_window`, triggered by `cli_server::PEER_ORIGIN` just
 before the request's RPC reaches the window). Found when a paired laptop
-named a project that lived in the Personal profile while only the NextTech
+named a project that lived in the Personal profile while only the Work
 window was open: its task started in a window nobody could see. Confining
 each pair to one profile was considered and left out on purpose; visibility
 is the rule instead.

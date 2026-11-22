@@ -160,7 +160,7 @@ pub fn save(repo_root: &Path, cfg: &RepoConfig) -> Result<()> {
     if let Some(server) = crate::server_projects::server_for_path(repo_root) {
         let (code, _, err) = crate::server_projects::exec_with_stdin(
             &server, repo_root,
-            &["sh", "-c", "t=\"$1.termic-tmp.$$\" && cat > \"$t\" && mv -f \"$t\" \"$1\"", "sh", FILE_NAME],
+            &["sh", "-c", crate::BOX_WRITE_SH, "sh", FILE_NAME],
             &[], Some(text.as_bytes()),
         ).map_err(|e| anyhow::anyhow!(e))?;
         if code != 0 {

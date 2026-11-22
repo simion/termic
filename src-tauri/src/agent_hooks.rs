@@ -2480,10 +2480,22 @@ pub fn config_dir(target: &Target) -> Result<PathBuf, String> {
     }
 }
 
-/// Where a server agent's config is staged here while it is installed.
+/// Where a server agent's config is staged here while it is installed: in
+/// this user's own cache folder, made 0700, never a shared temp dir (the
+/// staged files are the user's agent config, and what is in this folder is
+/// pushed back to the box as hook scripts that run there). Removed after
+/// each sync (`sync_one_on_server`).
 fn server_stage(server: &str, agent: &str) -> PathBuf {
     let safe = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect::<String>();
-    std::env::temp_dir().join("termic-server-hooks").join(safe(server)).join(safe(agent))
+    let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("termic").join("server-hooks");
+    if std::fs::create_dir_all(&base).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    base.join(safe(server)).join(safe(agent))
 }
 
 /// The config FILE we merge into, which is not the same shape per agent:
@@ -7190,23 +7202,39 @@ fn sync_one_on_server(
     // Pull what the install reads and writes, as a tar of what exists.
     let mut pull = vec![remote.as_str()];
     pull.extend_from_slice(&rel_args);
+    // A symlinked config (dotfiles) is left alone: pushed back it would
+    // replace the link with a file, and staged here a link would point at
+    // a path on this computer.
     let tar = sh(
-        "cd \"$1\" 2>/dev/null || exit 0; shift; set -- $(for f; do [ -e \"$f\" ] && printf '%s\\n' \"$f\"; done); [ $# -gt 0 ] && tar cf - \"$@\"; true",
+        "cd \"$1\" 2>/dev/null || exit 0; shift; for f; do [ -L \"$f\" ] && { echo \"$f is a symlink\" >&2; exit 3; }; done; set -- $(for f; do [ -e \"$f\" ] && printf '%s\\n' \"$f\"; done); [ $# -gt 0 ] && tar cf - \"$@\"; true",
         &pull,
         None,
     )?;
     let stage = config_dir(target)?;
+    let result = stage_install_push(target, &stage, &tar, &rel_args, &remote, sh);
     let _ = std::fs::remove_dir_all(&stage);
-    std::fs::create_dir_all(&stage).map_err(|e| format!("create {}: {e}", stage.display()))?;
+    result
+}
+
+fn stage_install_push(
+    target: &Target,
+    stage: &Path,
+    tar: &[u8],
+    rel_args: &[&str],
+    remote: &str,
+    sh: &dyn Fn(&str, &[&str], Option<&[u8]>) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(stage);
+    std::fs::create_dir_all(stage).map_err(|e| format!("create {}: {e}", stage.display()))?;
     if !tar.is_empty() {
-        run_tar(&["xf", "-", "-C", &stage.to_string_lossy()], Some(&tar))?;
+        run_tar(&["xf", "-", "-C", &stage.to_string_lossy()], Some(tar))?;
     }
     let st = status(target);
     if st.ours_present && !st.stale && st.error.is_none() {
         return Ok(());
     }
     install(target)?;
-    push_stage(&stage, &rel_args, &remote, sh)?;
+    push_stage(stage, rel_args, remote, sh)?;
     crate::dlog(&format!("[agent-hooks] installed {} on a server in {remote}", target.agent()));
     Ok(())
 }
@@ -7253,7 +7281,8 @@ mod server_tests {
         let t = Target::Server { agent: "claude".into(), server: "box 1".into(), home: "/home/u/".into(), cwd: "/home/u/repo".into() };
         assert_eq!(command_prefix(&t).unwrap(), "/home/u/.claude/termic-hooks/");
         let dir = config_dir(&t).unwrap();
-        assert!(dir.starts_with(std::env::temp_dir()));
+        assert!(dir.to_string_lossy().contains("termic/server-hooks"), "{}", dir.display());
+        assert!(!dir.starts_with("/tmp"), "never a shared temp dir");
         assert!(dir.ends_with("box_1/claude"));
     }
 

@@ -97,9 +97,6 @@ struct Session {
     client: StreamClient,
     out: Outbox,
     term: Arc<Mutex<Option<TermState>>>,
-    /// The server whose terminal this client has open, when the task lives
-    /// on a server (server_projects.rs): input, size and close go there.
-
     done: Arc<AtomicBool>,
 }
 

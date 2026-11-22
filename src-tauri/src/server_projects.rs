@@ -51,21 +51,26 @@ pub(crate) fn app_handle() -> Option<tauri::AppHandle> {
 /// Folders that live on a server, longest first: each server project's
 /// root and each of its tasks' worktrees, with the server's id. `git_bytes`
 /// (lib.rs) runs git there through termic-server's `exec`.
-fn paths() -> &'static std::sync::RwLock<Vec<(String, String)>> {
-    static P: OnceLock<std::sync::RwLock<Vec<(String, String)>>> = OnceLock::new();
+/// Every project's and task's folder with where it lives (None: this
+/// computer), longest first. LOCAL ones are in it too: a box path can be
+/// spelled exactly like a local one (`/home/alice/src/api` on a Linux
+/// desktop and its box, a box project at `~`), and the most specific
+/// folder decides, so a local project is never sent to a box.
+fn paths() -> &'static std::sync::RwLock<Vec<(String, Option<String>)>> {
+    static P: OnceLock<std::sync::RwLock<Vec<(String, Option<String>)>>> = OnceLock::new();
     P.get_or_init(Default::default)
 }
 
 pub(crate) fn refresh_paths() {
     let projects = crate::load_projects_all();
-    let mut out: Vec<(String, String)> = Vec::new();
-    for p in projects.iter().filter(|p| p.server.is_some()) {
-        out.push((p.root_path.clone(), p.server.clone().unwrap_or_default()));
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for p in &projects {
+        out.push((p.root_path.clone(), p.server.clone()));
     }
     for t in crate::load_tasks_all() {
-        if let Some(p) = projects.iter().find(|p| p.id == t.project_id && p.server.is_some()) {
+        if let Some(p) = projects.iter().find(|p| p.id == t.project_id) {
             if !t.path.is_empty() {
-                out.push((t.path.clone(), p.server.clone().unwrap_or_default()));
+                out.push((t.path.clone(), p.server.clone()));
             }
         }
     }
@@ -74,10 +79,15 @@ pub(crate) fn refresh_paths() {
     *paths().write().unwrap() = out;
 }
 
-/// The server a folder lives on, if it is one of a server project's.
+/// The server a folder lives on: the most specific project or task folder
+/// holding it, when that one is a server's.
 pub(crate) fn server_for_path(dir: &std::path::Path) -> Option<String> {
     let dir = dir.to_string_lossy();
-    paths().read().unwrap().iter().find(|(p, _)| dir == p.as_str() || dir.starts_with(&format!("{p}/"))).map(|(_, s)| s.clone())
+    route(&paths().read().unwrap(), &dir)
+}
+
+fn route(table: &[(String, Option<String>)], dir: &str) -> Option<String> {
+    table.iter().find(|(p, _)| dir == p.as_str() || dir.starts_with(&format!("{p}/"))).and_then(|(_, s)| s.clone())
 }
 
 /// Run a program in a server folder through termic-server's `exec`:
@@ -226,6 +236,7 @@ fn sync(server: &str) -> Result<bool, String> {
     for t in &changed_tasks {
         crate::save_task(t).map_err(|e| e.to_string())?;
     }
+    synced().lock().unwrap().insert(server.to_string());
     // The agents' hooks on the box (once a run), from a folder exec may use.
     if let Some(root) = box_projects.iter().find_map(|p| p.get("root_path").and_then(Value::as_str).filter(|r| !r.is_empty())) {
         crate::agent_hooks::sync_server(server, std::path::Path::new(root));
@@ -312,6 +323,12 @@ pub(crate) fn push_org_if_changed(t: &Task) {
         return;
     }
     let Some(server) = server_for_path(std::path::Path::new(&t.path)) else { return };
+    // Not before this run's first sync of that box: what this desktop holds
+    // then may be older than what another desktop wrote there meanwhile,
+    // and stamping it "now" would overwrite theirs.
+    if !synced().lock().unwrap().contains(&server) {
+        return;
+    }
     let org = org_of(t);
     {
         let m = pushed().lock().unwrap();
@@ -322,9 +339,17 @@ pub(crate) fn push_org_if_changed(t: &Task) {
     let t = t.clone();
     std::thread::spawn(move || {
         if let Err(e) = put_task(&server, &t) {
+            // Forget it was sent, so the next save of the task sends it again.
+            pushed().lock().unwrap().remove(&t.id);
             crate::dlog(&format!("[server-projects] {server}: could not share {}'s organisation: {e}", t.name));
         }
     });
+}
+
+/// Servers mirrored at least once this run (`push_org_if_changed`).
+fn synced() -> &'static Mutex<std::collections::HashSet<String>> {
+    static S: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    S.get_or_init(Default::default)
 }
 
 /// The pure part of a sync: what to change in `projects` (in place) and
@@ -360,13 +385,19 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
             }
         }
     }
-    // A project the box no longer has goes (its tasks are archived below).
+    // A project the box no longer has goes (its tasks are archived below:
+    // so this server's project ids are taken before it goes).
+    let mine: std::collections::HashSet<String> = projects.iter().filter(|p| p.server.as_deref() == Some(server)).map(|p| p.id.clone()).collect();
     let on_box: std::collections::HashSet<String> = box_projects.iter().map(|p| s(p, "id")).collect();
     let before = projects.len();
     projects.retain(|p| p.server.as_deref() != Some(server) || on_box.contains(&p.id));
     projects_changed |= projects.len() != before;
 
-    let project_of = |name: &str| projects.iter().find(|p| p.server.as_deref() == Some(server) && p.name == name).map(|p| p.id.clone());
+    // A box task names its project by the BOX's name for it; the desktop may
+    // call it something else (a rename in Settings), so it is matched by the
+    // box's id, which the mirrored project keeps.
+    let project_of = |name: &str| box_projects.iter().find(|bp| s(bp, "name") == name).map(|bp| s(bp, "id"))
+        .filter(|id| projects.iter().any(|p| p.id == *id && p.server.as_deref() == Some(server)));
     let mut out: Vec<Task> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for bt in box_tasks {
@@ -414,9 +445,8 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
         }
     }
     // Tasks of this server's projects that left the box: archived, kept.
-    let mine: std::collections::HashSet<&str> = projects.iter().filter(|p| p.server.as_deref() == Some(server)).map(|p| p.id.as_str()).collect();
     for t in tasks {
-        if !t.archived && mine.contains(t.project_id.as_str()) && !seen.contains(&t.id) {
+        if !t.archived && mine.contains(&t.project_id) && !seen.contains(&t.id) {
             let mut n = t.clone();
             n.archived = true;
             out.push(n);
@@ -489,6 +519,33 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_project_keeps_its_tasks_and_a_removed_one_archives_them() {
+        let mut projects = vec![];
+        let path = "/home/u/.termic-server/worktrees/bot/t1";
+        let (_, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[bt("t1", "bot", path)], &mut projects, &[]);
+        // Renamed in Settings here; the box still calls it "bot".
+        projects[0].name = "My bot".into();
+        let (_, again) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[bt("t1", "bot", path)], &mut projects, &out);
+        assert!(again.iter().all(|t| !t.archived), "a rename here archived the task");
+        // Removed on the box: the project goes and its task is archived.
+        let (pc, gone) = mirror("box", &[], &[], &mut projects, &out);
+        assert!(pc && projects.is_empty());
+        assert_eq!(gone.len(), 1);
+        assert!(gone[0].archived);
+    }
+
+    #[test]
+    fn the_most_specific_folder_routes_and_a_local_one_never_goes_to_a_box() {
+        let table = vec![
+            ("/home/alice/src/api".to_string(), None),
+            ("/home/alice".to_string(), Some("box".to_string())),
+        ];
+        assert_eq!(route(&table, "/home/alice/src/api/lib"), None, "the local project wins");
+        assert_eq!(route(&table, "/home/alice/other"), Some("box".into()));
+        assert_eq!(route(&table, "/home/alicex"), None);
+    }
+
+    #[test]
     fn another_servers_and_local_projects_are_left_alone() {
         let mut projects = vec![
             Project { id: "local".into(), name: "app".into(), root_path: "/Users/u/app".into(), ..Default::default() },
@@ -526,7 +583,7 @@ pub(crate) fn note_server_path(dir: &std::path::Path, server: &str) {
     let d = dir.to_string_lossy().to_string();
     let mut p = paths().write().unwrap();
     if !p.iter().any(|(x, _)| *x == d) {
-        p.push((d, server.to_string()));
+        p.push((d, Some(server.to_string())));
         p.sort_by_key(|(x, _)| std::cmp::Reverse(x.len()));
     }
 }

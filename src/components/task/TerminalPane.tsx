@@ -3334,9 +3334,11 @@ const captureArmedRef = useRef(false);
         const unlistenExit = await ipc.onPtyExit(ptyId, (code, restarted) => {
           activity.dispose();
           ptyRef.current = null;
-          // Its server restarted onto a new build (an upgrade): start it
-          // again, an agent resuming its session, as after an app restart.
-          if (restarted && !isRunTab) {
+          // Its server restarted onto a new build (an upgrade, which a
+          // required one does by itself once no agent is mid-turn): start it
+          // again, an agent resuming its session, a run script running
+          // again, as they were before the box went away.
+          if (restarted) {
             setGen(g => g + 1);
             return;
           }

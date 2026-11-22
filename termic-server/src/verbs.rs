@@ -47,6 +47,8 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             }
             check_tab(tab.as_deref())?;
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
+            // resume / fresh / now: the desktop starts agents and types at
+            // once; a running agent is all this host can send to.
             let _ = (resume, fresh, now);
             send(d, &t, prompt, wait, timeout_ms)
         }
@@ -270,14 +272,13 @@ pub fn wait_settled(d: &Daemon, task_id: &str, timeout_ms: Option<u64>) -> WaitR
     loop {
         let state = d.view_of(task_id).state;
         let live = d.agent_pty(task_id);
-        let pending = false;
         // The view lags a fresh prompt by one monitor pass; a pty that just
         // took input reads as working until the monitor catches up.
         let fresh_input = live.as_ref().is_some_and(|p| {
             let (exited, act, _, _) = p.activity();
             !exited && act.is_some_and(|t| t.elapsed() < d.quiet)
         });
-        if !pending && !fresh_input {
+        if !fresh_input {
             match state.as_str() {
                 "done" | "idle" | "inactive" => return WaitResult { outcome: WaitOutcome::Done, state: Some(state), detail: None },
                 "waiting" => return WaitResult { outcome: WaitOutcome::NeedsInput, state: Some(state), detail: None },
@@ -311,6 +312,9 @@ fn rename(d: &Arc<Daemon>, t: &TaskRec, name: &str) -> Result<ReplyData, Fail> {
         // the old one back (last write wins).
         if let Some(o) = x.org.as_object_mut() {
             o.insert("name".into(), serde_json::Value::String(name.to_string()));
+            // Newer than what any desktop holds, or none would take it.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            o.insert("at".into(), serde_json::Value::from(now));
         }
         let x = x.clone();
         d.save(&st);
@@ -548,15 +552,19 @@ fn exec(d: &Arc<Daemon>, cwd: &str, argv: &[String], env: &[(String, String)], s
         e
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap_or(EXEC_DEFAULT_TIMEOUT_MS));
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(5)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(fail(ErrorCode::Internal, format!("{} did not finish in time", argv[0])));
-            }
+    // Waited for on its own thread, not polled: a sleep loop here woke every
+    // 5 ms for as long as a git or a tar ran.
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let _ = tx.send(child.wait()); });
+    let status = match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+        Ok(Ok(st)) => st,
+        Ok(Err(e)) => return Err(fail(ErrorCode::Internal, format!("{}: {e}", argv[0]))),
+        Err(_) => {
+            // SAFETY: the pid of the child we spawned; the waiter reaps it.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let _ = rx.recv();
+            return Err(fail(ErrorCode::Internal, format!("{} did not finish in time", argv[0])));
         }
     };
     let stdout = reader.join().unwrap_or_default();

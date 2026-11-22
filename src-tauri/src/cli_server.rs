@@ -1453,28 +1453,11 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             },
         },
     };
-    // A server project's task is made on the box (docs/plans/server-projects.md):
-    // forward the request there, by the project's id (the box's own), and let
-    // the mirror bring the new task into the store.
-    if let Some(server) = proj.server.clone() {
-        let mut fwd = serde_json::to_value(req).unwrap_or_default();
-        if let Some(o) = fwd.as_object_mut() {
-            o.insert("project".into(), serde_json::Value::String(proj.id.clone()));
-            o.remove("cwd");
-            o.remove("profile");
-            // The project's "Branch new tasks from" is the desktop's setting.
-            if o.get("base").is_none_or(|b| b.is_null()) && !proj.base_branch.trim().is_empty() {
-                o.insert("base".into(), serde_json::Value::String(proj.base_branch.clone()));
-            }
-        }
-        let reply = match crate::remote_client::call(&server, fwd, Some(Duration::from_secs(330))) {
-            Ok(v) => v,
-            Err(e) => return fail(ErrorCode::Internal, format!("{}: {e}", crate::remote_client::server_name(&server))),
-        };
-        crate::server_projects::sync_soon(&server);
-        return serde_json::from_value::<Reply>(reply)
-            .map(|mut r| { r.id = id.clone(); r })
-            .unwrap_or_else(|e| fail(ErrorCode::Internal, format!("unreadable answer from the server: {e}")));
+    // A server project's task is made by the desktop like any other (its
+    // worktree through `exec`, then `task_put`, task_create_sync); only
+    // adopting a worktree or a PR checkout are not done on a box yet.
+    if proj.server.is_some() && (from.is_some() || pr.is_some()) {
+        return fail(ErrorCode::Unsupported, format!("project \"{}\" is on a server; --from and --pr are not supported there yet", proj.name));
     }
     if proj.non_git && from.is_some() {
         return fail(
@@ -7093,15 +7076,15 @@ mod tests {
     fn two_windows_merge_and_the_window_running_a_task_wins() {
         let st = |s: &str| TaskAgentState { props: Default::default(), state: s.into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true };
         let cache = AgentCache::new();
-        // The NextTech window runs t1; the Personal window knows t1 too but
+        // The Work window runs t1; the Personal window knows t1 too but
         // runs nothing for it, and has its own t2.
-        cache.update_from("nexttech", HashMap::from([("t1".to_string(), st("idle"))]));
+        cache.update_from("work", HashMap::from([("t1".to_string(), st("idle"))]));
         cache.update_from("personal", HashMap::from([("t1".to_string(), st("inactive")), ("t2".to_string(), st("working"))]));
         let snap = cache.snapshot();
         assert_eq!(snap.states["t1"].state, "idle", "the running window's view, whichever pushed last");
         assert_eq!(snap.states["t2"].state, "working");
         // And again in the other order: no flipping.
-        cache.update_from("nexttech", HashMap::from([("t1".to_string(), st("idle"))]));
+        cache.update_from("work", HashMap::from([("t1".to_string(), st("idle"))]));
         assert_eq!(cache.snapshot().states["t1"].state, "idle");
         assert_eq!(cache.snapshot().states["t2"].state, "working", "the other window's tasks stay");
     }

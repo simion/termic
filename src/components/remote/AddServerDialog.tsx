@@ -74,7 +74,7 @@ function AddServerBody({ onClose }: { onClose: () => void }) {
   async function trust() {
     setBusy("trust");
     try {
-      const p = await serverTrust(host);
+      const p = await serverTrust(host, probe?.fingerprint);
       setProbe(p);
       if (p.reached && p.installed) await add();
     } catch (e) {
