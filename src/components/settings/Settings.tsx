@@ -40,13 +40,13 @@ export function Settings() {
   const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
   const allProjects = useApp(s => s.projects);
-  // This computer's projects, then each server with its projects, then the
-  // paired computers: the sidebar's order.
+  // This computer's projects, then each server with its projects: the
+  // sidebar's order. Paired computers have no settings of their own here
+  // (they are managed in Remote), so they get no rail rows.
   const projects = allProjects.filter(p => !p.server);
   const all = useRemote(s => s.machines);
   const machines = all.filter(mine);
   const servers = machines.filter(m => m.kind === "server");
-  const paired = machines.filter(m => m.kind !== "server");
 
   const tab = view.settingsTab ?? "general";
   const repoId = view.settingsRepoId;
@@ -193,15 +193,6 @@ export function Settings() {
             ))}
           </div>
         ))}
-        {paired.length > 0 && (
-          <>
-            <div className="mt-4 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("rail.paired")}</div>
-            {paired.map(m => (
-              <RailItem key={m.id} icon={<Monitor className="h-3.5 w-3.5 shrink-0" />} label={m.name}
-                active={false} onClick={() => openSettings("peers")} />
-            ))}
-          </>
-        )}
         </div>
 
         <RailFooterVersion />

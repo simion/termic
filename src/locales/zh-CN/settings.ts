@@ -29,7 +29,6 @@ export default {
     secrets: "密钥",
     projects: "项目",
     noProjects: "还没有项目。",
-    paired: "已配对的电脑",
     pickProject: "在左侧选择一个项目以编辑其设置。",
     viewChangelog: "查看更新日志",
     checkUpdates: "检查更新",

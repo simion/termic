@@ -30,7 +30,6 @@ export default {
     secrets: "Secrets",
     projects: "Projects",
     noProjects: "No projects yet.",
-    paired: "Paired computers",
     pickProject: "Pick a project on the left to edit its settings.",
     viewChangelog: "View the changelog",
     checkUpdates: "Check for updates",
