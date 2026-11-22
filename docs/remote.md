@@ -387,11 +387,20 @@ than growing a verb per feature:
   `path` first (inside home, not existing yet), then registers it; the
   server dialog's add-project field takes a URL for this, and the CLI
   has `termic project add --clone <url> <path>` (with `--peer`).
-- `pty_open { pid, cwd, argv, env, cols, rows }`, `pty_input`,
-  `pty_resize`, `pty_kill`, answered by `pty_data` and `pty_exit` (cap
-  `pty`): extra terminals beside the agent's, fenced the same way, no
-  argv being the box's login shell, 32 per connection, hung up when it
-  ends. The desktop host refuses `pty_open`.
+- `pty_open { pid, cwd, argv, env, cols, rows, seen? }`, `pty_input`,
+  `pty_resize`, `pty_kill`, answered by `pty_data { pid, data, at? }` and
+  `pty_exit` (cap `pty`): extra terminals beside the agent's, fenced the
+  same way, no argv being the box's login shell, 64 running at once. With
+  cap `pty_keep` they belong to the daemon, not the connection: a shell or
+  a run script keeps running while the laptop sleeps or the network drops.
+  On every new connection the desktop sends `pty_open` again for the PTYs
+  it had open there, with `seen` (bytes of output it already has), and the
+  box attaches and sends only the rest, its first `pty_data` carrying `at`
+  (where that backlog starts). `seen` also means attach only: a PTY that
+  ended meanwhile (a server restart) answers `pty_exit` instead of running
+  its command again. An older box without `pty_keep` hangs them up when
+  the connection ends, and the desktop reports that as before. The
+  desktop host refuses `pty_open`.
 
 `server_projects.rs` keeps an index of the folders that live on a server
 (project roots and task worktrees), longest first, and the desktop's

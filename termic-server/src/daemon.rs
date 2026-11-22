@@ -83,6 +83,10 @@ pub struct Daemon {
     wake_cv: Condvar,
     /// Serialises task creation so two `new`s cannot take one name.
     pub create: Mutex<()>,
+    /// `pty_open` PTYs by the client's id. The daemon owns them, so a
+    /// shell or a script outlives the connection that opened it (a laptop
+    /// asleep, a dropped network) and the next one attaches.
+    pub ptys: Mutex<HashMap<String, Arc<crate::pty::Pty>>>,
 }
 
 pub type Fail = (termic_proto::ErrorCode, String);
@@ -111,6 +115,7 @@ impl Daemon {
             wake: Mutex::new(false),
             wake_cv: Condvar::new(),
             create: Mutex::new(()),
+            ptys: Mutex::new(HashMap::new()),
         })
     }
 

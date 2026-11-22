@@ -776,6 +776,7 @@ pub(crate) fn explain_ssh(dest: &str, status: Option<i32>, stderr: &str) -> Stri
 fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
     let (tx, rx) = mpsc::channel::<ClientMsg>();
     *l.tx.lock().unwrap() = Some(tx);
+    reattach_ptys(l);
     let writer_thread = std::thread::spawn(move || {
         loop {
             match rx.recv_timeout(PING_EVERY) {
@@ -800,10 +801,13 @@ fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
     l.tx.lock().unwrap().take();
     // Every waiting call fails now rather than at its timeout.
     l.pending.lock().unwrap().clear();
-    // The box hangs up a connection's PTYs when it ends: say so.
-    let gone: Vec<String> = ptys().lock().unwrap().iter().filter(|(_, p)| p.machine == l.id).map(|(id, _)| id.clone()).collect();
-    for pid in gone {
-        pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+    // A box that keeps PTYs (`pty_keep`) still runs them: the next
+    // connection attaches (reattach_ptys). An older one hung them up.
+    if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY_KEEP) {
+        let gone: Vec<String> = ptys().lock().unwrap().iter().filter(|(_, p)| p.machine == l.id).map(|(id, _)| id.clone()).collect();
+        for pid in gone {
+            pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+        }
     }
     if let Some(sink) = l.term.lock().unwrap().as_ref() {
         sink(serde_json::json!({ "t": "term_closed", "reason": "disconnected" }));
@@ -849,9 +853,14 @@ fn dispatch(l: &Link, m: ServerMsg) {
                 sink(serde_json::to_value(&m).unwrap_or_default());
             }
         }
-        ServerMsg::PtyData { pid, data } => {
+        ServerMsg::PtyData { pid, data, at } => {
             if let Some(bytes) = termic_remote::unb64(&data) {
-                pty_event(&pid, PtyEvent::Data(bytes));
+                if let Some(p) = ptys().lock().unwrap().get_mut(&pid) {
+                    p.seen = at.unwrap_or(p.seen) + bytes.len() as u64;
+                }
+                if !bytes.is_empty() {
+                    pty_event(&pid, PtyEvent::Data(bytes));
+                }
             }
         }
         ServerMsg::PtyExit { pid, reason } => pty_event(&pid, PtyEvent::Exit(reason)),
@@ -913,6 +922,10 @@ struct RemotePty {
     attached: bool,
     held: Vec<u8>,
     exit: Option<String>,
+    /// Bytes of its output received so far: what a reattach skips.
+    seen: u64,
+    /// (cols, rows) last asked for, to size it again on a reattach.
+    size: (u16, u16),
 }
 
 /// Held output kept per unattached PTY, at most.
@@ -987,10 +1000,26 @@ pub(crate) fn pty_open(machine: &str, pid: &str, cwd: &str, argv: Vec<String>, e
     if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY) {
         return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Remote", server_name(machine)));
     }
-    ptys().lock().unwrap().insert(pid.to_string(), RemotePty { machine: machine.to_string(), attached: false, held: Vec::new(), exit: None });
-    l.send(ClientMsg::PtyOpen { pid: pid.into(), cwd: cwd.into(), argv, env, cols, rows }).inspect_err(|_| {
+    ptys().lock().unwrap().insert(pid.to_string(), RemotePty { machine: machine.to_string(), attached: false, held: Vec::new(), exit: None, seen: 0, size: (cols, rows) });
+    l.send(ClientMsg::PtyOpen { pid: pid.into(), cwd: cwd.into(), argv, env, cols, rows, seen: None }).inspect_err(|_| {
         ptys().lock().unwrap().remove(pid);
     })
+}
+
+/// A new connection to a box: attach again to the PTYs this desktop had
+/// open there, asking only for the output it has not seen. A box that
+/// keeps none (older, or restarted) answers each with `pty_exit`.
+fn reattach_ptys(l: &Link) {
+    let keeps = l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY_KEEP);
+    let mine: Vec<(String, u64, (u16, u16))> = ptys().lock().unwrap().iter()
+        .filter(|(_, p)| p.machine == l.id && p.exit.is_none())
+        .map(|(id, p)| (id.clone(), p.seen, p.size)).collect();
+    for (pid, seen, (cols, rows)) in mine {
+        let sent = keeps && l.send(ClientMsg::PtyOpen { pid: pid.clone(), cwd: String::new(), argv: Vec::new(), env: Vec::new(), cols, rows, seen: Some(seen) }).is_ok();
+        if !sent {
+            pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+        }
+    }
 }
 
 /// The server a desktop pty id runs on, if it is a server PTY.
@@ -1003,6 +1032,9 @@ pub(crate) fn pty_input(machine: &str, pid: &str, data: &[u8]) -> Result<(), Str
 }
 
 pub(crate) fn pty_resize(machine: &str, pid: &str, cols: u16, rows: u16) -> Result<(), String> {
+    if let Some(p) = ptys().lock().unwrap().get_mut(pid) {
+        p.size = (cols, rows);
+    }
     link(machine)?.send(ClientMsg::PtyResize { pid: pid.into(), cols, rows })
 }
 
@@ -1572,7 +1604,7 @@ mod tests {
             });
         }));
         let mine = |p: &str| SEEN.lock().unwrap().iter().filter(|l| l.starts_with(p)).cloned().collect::<Vec<_>>();
-        ptys().lock().unwrap().insert("held-1".into(), RemotePty { machine: "m".into(), attached: false, held: Vec::new(), exit: None });
+        ptys().lock().unwrap().insert("held-1".into(), RemotePty { machine: "m".into(), attached: false, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
         pty_event("held-1", PtyEvent::Data(b"$ ".to_vec()));
         pty_event("held-1", PtyEvent::Data(b"hi".to_vec()));
         pty_event("held-1", PtyEvent::Exit("exited".into()));
@@ -1581,7 +1613,7 @@ mod tests {
         assert_eq!(mine("held-1"), ["held-1 data $ hi", "held-1 exit exited"]);
         assert!(pty_machine("held-1").is_none(), "an exited PTY is forgotten");
         // Attached: output flows straight through.
-        ptys().lock().unwrap().insert("live-1".into(), RemotePty { machine: "m".into(), attached: true, held: Vec::new(), exit: None });
+        ptys().lock().unwrap().insert("live-1".into(), RemotePty { machine: "m".into(), attached: true, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
         pty_event("live-1", PtyEvent::Data(b"x".to_vec()));
         assert_eq!(mine("live-1"), ["live-1 data x"]);
         assert!(!pty_attached("not-a-server-pty"));

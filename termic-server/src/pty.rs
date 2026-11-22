@@ -166,6 +166,13 @@ impl Pty {
     /// The backlog and a tap for everything after it, atomically, so not a
     /// byte is lost or doubled between the two.
     pub fn subscribe(&self) -> Result<(u64, Vec<u8>, mpsc::Receiver<TapMsg>), String> {
+        self.subscribe_from(None).map(|(id, backlog, _, rx)| (id, backlog, rx))
+    }
+
+    /// `subscribe` for a client that already has the first `seen` bytes of
+    /// the output: the backlog starts there, or at the oldest byte the ring
+    /// still holds. Also returns where the backlog starts in the output.
+    pub fn subscribe_from(&self, seen: Option<u64>) -> Result<(u64, Vec<u8>, u64, mpsc::Receiver<TapMsg>), String> {
         let mut g = self.inner.lock().unwrap();
         if let Some(why) = &g.closed {
             return Err(why.clone());
@@ -174,7 +181,10 @@ impl Pty {
         let id = self.next_tap.fetch_add(1, Ordering::Relaxed);
         g.taps.push((id, tx));
         g.seen = Some(Instant::now());
-        Ok((id, g.ring.iter().copied().collect(), rx))
+        let oldest = g.total - g.ring.len() as u64;
+        let start = seen.unwrap_or(0).clamp(oldest, g.total);
+        let backlog = g.ring.iter().skip((start - oldest) as usize).copied().collect();
+        Ok((id, backlog, start, rx))
     }
 
     pub fn unsubscribe(&self, id: u64) {

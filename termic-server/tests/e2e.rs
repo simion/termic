@@ -238,11 +238,11 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     assert_eq!(dotdot["ok"], false, "a .. path escaped the project: {dotdot}");
     // pty_open: a shell in the project, several apart from the agent's.
     let repo = e.repo().canonicalize().unwrap();
-    a.send(&ClientMsg::PtyOpen { pid: "sh1".into(), cwd: repo.display().to_string(), argv: vec![], env: vec![], cols: 90, rows: 20 });
+    a.send(&ClientMsg::PtyOpen { pid: "sh1".into(), cwd: repo.display().to_string(), argv: vec![], env: vec![], cols: 90, rows: 20, seen: None });
     a.send(&ClientMsg::PtyInput { pid: "sh1".into(), data: termic_remote::b64(b"echo marker-$((40+2)); stty size\r") });
     let mut seen = String::new();
     a.wait_for("the shell's output", |m| match m {
-        ServerMsg::PtyData { pid, data } if pid == "sh1" => {
+        ServerMsg::PtyData { pid, data, .. } if pid == "sh1" => {
             seen.push_str(&String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()));
             (seen.contains("marker-42") && seen.contains("20 90")).then_some(())
         }
@@ -250,7 +250,7 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     });
     a.send(&ClientMsg::PtyKill { pid: "sh1".into() });
     a.wait_for("the shell's exit", |m| matches!(m, ServerMsg::PtyExit { pid, .. } if pid == "sh1").then_some(()));
-    a.send(&ClientMsg::PtyOpen { pid: "sh2".into(), cwd: "/".into(), argv: vec!["ls".into()], env: vec![], cols: 80, rows: 24 });
+    a.send(&ClientMsg::PtyOpen { pid: "sh2".into(), cwd: "/".into(), argv: vec!["ls".into()], env: vec![], cols: 80, rows: 24, seen: None });
     let why = a.wait_for("a refusal outside the project", |m| match m {
         ServerMsg::PtyExit { pid, reason } if pid == "sh2" => Some(reason.clone()),
         _ => None,
@@ -522,4 +522,61 @@ fn quit_restarts_onto_the_installed_build_and_resumes_running_agents() {
     });
     let st: Value = serde_json::from_slice(&std::fs::read(e.srv().join("state.json")).unwrap()).unwrap();
     assert!(st.get("resume_on_boot").is_none(), "the resume list is consumed: {st}");
+}
+
+#[test]
+fn a_shell_outlives_its_connection_and_the_next_one_attaches() {
+    let e = Env::new("keep");
+    let (mut a, mut bridge) = e.bridge();
+    match &a.welcome {
+        ServerMsg::Welcome { caps, .. } => assert!(caps.iter().any(|c| c == "pty_keep"), "{caps:?}"),
+        m => panic!("not a welcome: {m:?}"),
+    }
+    a.ok(json!({"cmd":"project_add","path": e.repo()}));
+    let repo = e.repo().canonicalize().unwrap();
+    a.send(&ClientMsg::PtyOpen { pid: "keep1".into(), cwd: repo.display().to_string(), argv: vec![], env: vec![], cols: 80, rows: 24, seen: None });
+    a.send(&ClientMsg::PtyInput { pid: "keep1".into(), data: termic_remote::b64(b"echo before-$((1+1))\r") });
+    let mut got = 0u64;
+    let mut text = String::new();
+    a.wait_for("output before the drop", |m| match m {
+        ServerMsg::PtyData { pid, data, at } if pid == "keep1" => {
+            let b = termic_remote::unb64(data).unwrap();
+            got = at.unwrap_or(got) + b.len() as u64;
+            text.push_str(&String::from_utf8_lossy(&b));
+            text.contains("before-2").then_some(())
+        }
+        _ => None,
+    });
+    // The laptop sleeps: the connection goes, the shell does not.
+    let _ = bridge.kill();
+    drop(a);
+    let (mut b, _bridge2) = e.bridge();
+    b.send(&ClientMsg::PtyOpen { pid: "keep1".into(), cwd: String::new(), argv: vec![], env: vec![], cols: 80, rows: 24, seen: Some(got) });
+    // The backlog starts where this client left off: nothing seen twice.
+    let backlog = b.wait_for("the attach backlog", |m| match m {
+        ServerMsg::PtyData { pid, data, at: Some(at) } if pid == "keep1" => Some((*at, String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()).to_string())),
+        _ => None,
+    });
+    assert_eq!(backlog.0, got);
+    assert!(!backlog.1.contains("before-2"), "output seen before the drop was sent again: {:?}", backlog.1);
+    // The same shell takes input.
+    b.send(&ClientMsg::PtyInput { pid: "keep1".into(), data: termic_remote::b64(b"echo after-$((2+2))\r") });
+    let mut after = String::new();
+    b.wait_for("the same shell answers", |m| match m {
+        ServerMsg::PtyData { pid, data, .. } if pid == "keep1" => {
+            after.push_str(&String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()));
+            after.contains("after-4").then_some(())
+        }
+        _ => None,
+    });
+    // Attaching to one that is gone never starts it again.
+    b.send(&ClientMsg::PtyOpen { pid: "never".into(), cwd: repo.display().to_string(), argv: vec!["ls".into()], env: vec![], cols: 80, rows: 24, seen: Some(0) });
+    let why = b.wait_for("a refusal to restart", |m| match m {
+        ServerMsg::PtyExit { pid, reason } if pid == "never" => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(why.contains("ended"), "{why}");
+    b.send(&ClientMsg::PtyKill { pid: "keep1".into() });
+    b.wait_for("the kill", |m| matches!(m, ServerMsg::PtyExit { pid, .. } if pid == "keep1").then_some(()));
+    e.stop();
 }

@@ -33,8 +33,8 @@ const BEHIND_BYTES: usize = 1024 * 1024;
 const MAX_CALLS: usize = 32;
 /// Keystrokes per message.
 const MAX_KEYS: usize = 64 * 1024;
-/// `pty_open` PTYs one connection may hold at once.
-const MAX_PTYS: usize = 32;
+/// `pty_open` PTYs the daemon keeps running at once, across connections.
+const MAX_PTYS: usize = 64;
 
 enum Out {
     Msg(ServerMsg),
@@ -63,8 +63,9 @@ struct Session {
     gen: AtomicU64,
     calls: AtomicUsize,
     done: AtomicBool,
-    /// `pty_open` PTYs by the client's id. They end with the connection.
-    ptys: Mutex<std::collections::HashMap<String, Arc<pty::Pty>>>,
+    /// The daemon's `pty_open` PTYs this connection watches: id -> (PTY,
+    /// tap). Dropped with the connection; the PTYs keep running.
+    taps: Mutex<std::collections::HashMap<String, (Arc<pty::Pty>, u64)>>,
 }
 
 /// One connection on the daemon's unix socket (what `bridge` copies an ssh
@@ -98,7 +99,7 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
         name: d.name.clone(),
         version: crate::util::version(),
         kind: HostKind::Server,
-        caps: [caps::CALL, caps::TASKS, caps::TERMINAL, caps::KEYS, caps::TRANSCRIPT, caps::RESIZE, caps::PTY].map(String::from).to_vec(),
+        caps: [caps::CALL, caps::TASKS, caps::TERMINAL, caps::KEYS, caps::TRANSCRIPT, caps::RESIZE, caps::PTY, caps::PTY_KEEP].map(String::from).to_vec(),
         grant: Some("drive".into()),
         needs: Some(termic_remote::compat::REQUIRES_DESKTOP.into()),
     };
@@ -116,7 +117,7 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
         gen: AtomicU64::new(0),
         calls: AtomicUsize::new(0),
         done: AtomicBool::new(false),
-        ptys: Mutex::new(Default::default()),
+        taps: Mutex::new(Default::default()),
     });
     let writer_thread = {
         let s = s.clone();
@@ -131,8 +132,9 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
     }
     s.done.store(true, Ordering::SeqCst);
     close_term(&s);
-    for (_, p) in s.ptys.lock().unwrap().drain() {
-        p.hangup();
+    // Stop watching; the PTYs are the daemon's and keep running.
+    for (_, (p, tap)) in s.taps.lock().unwrap().drain() {
+        p.unsubscribe(tap);
     }
     d.nudge();
     if let Some(t) = state_thread {
@@ -237,9 +239,9 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             let r = running(s, &task, tab.as_deref()).and_then(|(_, live)| live.pty.input(agents::interrupt_key(&live.agent)));
             ack(s, id, r);
         }
-        ClientMsg::PtyOpen { pid, cwd, argv, env, cols, rows } => pty_open(s, pid, &cwd, argv, env, cols, rows),
+        ClientMsg::PtyOpen { pid, cwd, argv, env, cols, rows, seen } => pty_open(s, pid, &cwd, argv, env, cols, rows, seen),
         ClientMsg::PtyInput { pid, data } => {
-            let p = s.ptys.lock().unwrap().get(&pid).cloned();
+            let p = s.d.ptys.lock().unwrap().get(&pid).cloned();
             if let (Some(p), Some(bytes)) = (p, termic_remote::unb64(&data)) {
                 if bytes.len() <= MAX_KEYS {
                     let _ = p.input(&bytes);
@@ -247,12 +249,14 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
         }
         ClientMsg::PtyResize { pid, cols, rows } => {
-            if let Some(p) = s.ptys.lock().unwrap().get(&pid).cloned() {
+            if let Some(p) = s.d.ptys.lock().unwrap().get(&pid).cloned() {
                 let _ = p.resize(rows, cols);
             }
         }
         ClientMsg::PtyKill { pid } => {
-            if let Some(p) = s.ptys.lock().unwrap().remove(&pid) {
+            // Hung up, not unsubscribed: the watcher sees it close and
+            // reports the exit.
+            if let Some(p) = s.d.ptys.lock().unwrap().remove(&pid) {
                 p.hangup();
                 let p2 = p.clone();
                 std::thread::spawn(move || {
@@ -308,37 +312,61 @@ fn transcript(d: &Daemon, task: &str) -> Result<(String, Vec<wire::Turn>), Strin
 
 /// A shell or a script in a project's folder (`pty_open`): fenced like
 /// `exec`, run under the login shell's PATH, output streamed by `pid`.
-fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16) {
+/// The daemon owns it: an open with the `pid` of one still running
+/// attaches instead, sending only the output after `seen`; with `seen`
+/// set and nothing running under that `pid`, it never starts a new one.
+#[allow(clippy::too_many_arguments)]
+fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16, seen: Option<u64>) {
     let exit = |reason: String| send(s, ServerMsg::PtyExit { pid: pid.clone(), reason });
-    if !verbs::exec_allowed(&s.d, std::path::Path::new(cwd)) {
-        return exit(format!("{cwd} is not inside a project on this server"));
-    }
-    if s.ptys.lock().unwrap().len() >= MAX_PTYS {
-        return exit(format!("too many terminals open on this connection ({MAX_PTYS})"));
-    }
-    let wrapped: Vec<String> = if argv.is_empty() {
-        vec!["/bin/sh".into(), "-c".into(), "exec \"${SHELL:-/bin/sh}\" -l".into()]
-    } else {
-        ["/bin/sh", "-lc", "exec \"$0\" \"$@\""].iter().map(|x| x.to_string()).chain(argv).collect()
+    let running = {
+        let mut map = s.d.ptys.lock().unwrap();
+        // Ended PTYs nobody came back for go now.
+        map.retain(|_, p| !p.exited());
+        map.get(&pid).cloned()
     };
-    let mut env = env;
-    for (k, v) in [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")] {
-        if !env.iter().any(|(e, _)| e == k) {
-            env.push((k.into(), v.into()));
+    let p = match running {
+        Some(p) => p,
+        // `seen` means "attach": a PTY that ended while the client was away
+        // (a server restart) is not started again, or a run script would
+        // run twice.
+        None if seen.is_some() => return exit("ended while this computer was away".into()),
+        None => {
+            if !verbs::exec_allowed(&s.d, std::path::Path::new(cwd)) {
+                return exit(format!("{cwd} is not inside a project on this server"));
+            }
+            if s.d.ptys.lock().unwrap().len() >= MAX_PTYS {
+                return exit(format!("too many terminals running on this server ({MAX_PTYS})"));
+            }
+            let wrapped: Vec<String> = if argv.is_empty() {
+                vec!["/bin/sh".into(), "-c".into(), "exec \"${SHELL:-/bin/sh}\" -l".into()]
+            } else {
+                ["/bin/sh", "-lc", "exec \"$0\" \"$@\""].iter().map(|x| x.to_string()).chain(argv).collect()
+            };
+            let mut env = env;
+            for (k, v) in [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")] {
+                if !env.iter().any(|(e, _)| e == k) {
+                    env.push((k.into(), v.into()));
+                }
+            }
+            let p = match pty::Pty::spawn(&wrapped, cwd, &env, Duration::from_millis(500), Arc::new(|| {})) {
+                Ok(p) => p,
+                Err(e) => return exit(e),
+            };
+            s.d.ptys.lock().unwrap().insert(pid.clone(), p.clone());
+            p
         }
-    }
-    let p = match pty::Pty::spawn(&wrapped, cwd, &env, Duration::from_millis(500), Arc::new(|| {})) {
-        Ok(p) => p,
-        Err(e) => return exit(e),
     };
     let _ = p.resize(rows, cols);
-    let (_, backlog, rx) = match p.subscribe() {
+    let (tap, backlog, at, rx) = match p.subscribe_from(seen) {
         Ok(x) => x,
         Err(e) => return exit(e),
     };
-    s.ptys.lock().unwrap().insert(pid.clone(), p);
-    if !backlog.is_empty() {
-        send(s, ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&backlog) });
+    // A second open of the same PTY on this connection replaces the first tap.
+    if let Some((old, old_tap)) = s.taps.lock().unwrap().insert(pid.clone(), (p.clone(), tap)) {
+        old.unsubscribe(old_tap);
+    }
+    if !backlog.is_empty() || seen.is_some() {
+        send(s, ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&backlog), at: Some(at) });
     }
     let s2 = s.clone();
     std::thread::spawn(move || {
@@ -347,12 +375,21 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
         // same accounting if a script floods a slow link.
         loop {
             match rx.recv() {
-                Ok(TapMsg::Data(bytes)) => send(&s2, ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&bytes) }),
+                Ok(TapMsg::Data(bytes)) => send(&s2, ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&bytes), at: None }),
                 Ok(TapMsg::Resize(..)) => {}
-                Ok(TapMsg::Closed(_)) | Err(_) => break,
+                Ok(TapMsg::Closed(_)) => break,
+                // Unsubscribed: the connection ended or attached again. The
+                // PTY runs on; nothing to tell.
+                Err(_) => return,
             }
         }
-        s2.ptys.lock().unwrap().remove(&pid);
+        {
+            let mut map = s2.d.ptys.lock().unwrap();
+            if map.get(&pid).is_some_and(|x| Arc::ptr_eq(x, &p)) {
+                map.remove(&pid);
+            }
+        }
+        s2.taps.lock().unwrap().remove(&pid);
         send(&s2, ServerMsg::PtyExit { pid, reason: "exited".into() });
     });
 }

@@ -755,6 +755,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
     await clickPresent(row());
     await typeInShellUntil("touch still-here\r", () => existsSync(path.join(wt, "still-here")), "the shell did not survive switching away from the task");
+    // The connection drops (laptop asleep, network gone) and comes back:
+    // the box kept the shell (pty_keep), the desktop attaches to it again,
+    // and the same shell takes input.
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: false }), serverId);
+    await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: true }), serverId);
+    await browser.waitUntil(() => browser.execute((sid) =>
+      window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.state === "online", serverId), { timeout: 20_000, timeoutMsg: "the server never came back online" });
+    expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
+    await typeInShellUntil("touch after-reconnect\r", () => existsSync(path.join(wt, "after-reconnect")), "the shell did not survive the connection dropping");
     // Run: the box repo's `.termic.yaml` run script (read on the box) runs
     // in a new shell tab, in the task's worktree there.
     writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n");

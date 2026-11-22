@@ -113,11 +113,12 @@ laptop. That is the reason the agent never moved.
 
 Order, each step shippable on its own:
 
-1. **Share the copies**: `last_assistant_text`, `interrupt_key`, the slug
-   move into `termic-remote` / `termic-proto`.
-2. **Daemon-owned PTYs**: move the PTY map from `Session` to `Daemon`,
-   add `pty_attach` by id (`pty.rs` already keeps a ring and
-   subscribers). Raise `compat::REQUIRES_SERVER`.
+1. **Share the copies** (done, 16696208): `slugify` and `interrupt_key`
+   in `termic-proto`, `last_assistant_text` in `termic-remote`.
+2. **Daemon-owned PTYs** (done): the PTY map is the daemon's; `pty_open`
+   with a running `pid` attaches, `seen` skips what the client has and
+   means attach only (cap `pty_keep`, docs/remote.md). No floor bump: a
+   desktop falls back to the old behaviour on a box without the cap.
 3. **The agent as an ordinary tab**: spawn it with the desktop's argv,
    session id and env through `pty_spawn`; draw server tasks with
    TaskView and TabBar. Delete RemoteTaskView's server half,
