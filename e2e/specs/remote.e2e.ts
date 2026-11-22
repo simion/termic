@@ -14,7 +14,7 @@
 // when TERMIC_E2E_TEST_BOX names one.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoAgent, typeIntoRemoteTerminal, waitForAgentPty, waitForAppShell, waitTabInFront, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
@@ -517,9 +517,12 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await t.useApp.getState().loadAll();
     }, agent);
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    // claude's hooks on this Mac (the e2e agent home), so the box gets them.
+    await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "claude" }));
   });
 
   after(async () => {
+    await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "claude" })).catch(() => {});
     if (serverId) await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId).catch(() => {});
     await browser.execute(() => window.__termic!.useRemote.getState().openTask(null)).catch(() => {});
     try { server("stop"); } catch { /* already gone */ }
@@ -555,6 +558,22 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute((id) => document.querySelector(`[data-testid="server-row-${id}"]`)!.scrollIntoView({ block: "center" }), serverId);
     await snap("remote-settings-with-server.png");
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  it("installs this Mac's agent hooks on the box, naming the box's own paths", async () => {
+    // agent_hooks.rs sync_server: the agents with hooks here get them there,
+    // so a server agent reports its state exactly as a local one does.
+    const settings = path.join(box, ".claude", "settings.json");
+    await browser.waitUntil(async () => existsSync(settings) && readFileSync(settings, "utf8").includes(`${box}/.claude/termic-hooks/`),
+      { timeout: 30_000, timeoutMsg: "claude's hooks never reached the box" });
+    const cfg = JSON.parse(readFileSync(settings, "utf8"));
+    const commands = Object.values(cfg.hooks ?? {}).flat().flatMap((e: any) => (e.hooks ?? []).map((h: any) => h.command as string));
+    expect(commands.length).toBeGreaterThan(0);
+    // Every command is a script on the box, never this Mac's install.
+    for (const c of commands) {
+      expect(c.startsWith(`${box}/.claude/termic-hooks/`)).toBe(true);
+      expect(statSync(c).mode & 0o111).toBeGreaterThan(0);
+    }
   });
 
   it("files the server's projects under it in REMOTE, with a menu to manage it", async () => {

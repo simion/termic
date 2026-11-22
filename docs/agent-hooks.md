@@ -701,6 +701,17 @@ the CONTAINER's address (`/proc/1/fd/1`). Before that, every hook in a
 sandboxed tab exited on its first line and a whole tab delivered zero OSCs
 while its unsandboxed neighbours delivered hundreds.
 
+**A termic-server box is a third realm.** The daemon sets `TERMIC_PTY` to its
+own PTY's slave path, so the OSC rides the PTY stream to the desktop and the
+same parser reads it. The config is written by `agent_hooks::sync_server`
+(`Target::Server`), once per run when a server syncs: it pulls the agent's
+hooks file and `termic-hooks/` from the box over `exec` as a tar, runs the
+ordinary install on that staged copy with the box's `$HOME` in the command
+paths, and pushes it back. Same consent rule as Docker: only agents whose
+hooks are installed on this computer. codex (its trust hashes need `codex
+app-server`) and the agents with a second config slot (agy, copilot, grok,
+muse) are not installed there yet and keep the fallback state.
+
 ### Working and done are termic's own bodies, not OSC 133
 
 Until schema v13 the hooks said "turn started" / "turn over" as raw OSC

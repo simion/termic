@@ -225,6 +225,10 @@ fn sync(server: &str) -> Result<bool, String> {
     for t in &changed_tasks {
         crate::save_task(t).map_err(|e| e.to_string())?;
     }
+    // The agents' hooks on the box (once a run), from a folder exec may use.
+    if let Some(root) = box_projects.iter().find_map(|p| p.get("root_path").and_then(Value::as_str).filter(|r| !r.is_empty())) {
+        crate::agent_hooks::sync_server(server, std::path::Path::new(root));
+    }
     Ok(projects_changed || !changed_tasks.is_empty())
 }
 
