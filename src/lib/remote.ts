@@ -12,6 +12,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { useEffect, useState } from "react";
 
 // ───────────────────────── wire types (termic-remote) ─────────────────
 
@@ -504,3 +505,30 @@ export function remoteProps(task: RemoteTask): string {
 
 /** Sections in the order a person scans them: what needs them first. */
 export const STATE_ORDER: Record<string, number> = { waiting: 0, working: 1, done: 2, idle: 3, inactive: 4, unknown: 5 };
+
+/** Which of the desktop's agents a server project's box can run, in the
+ *  shape `detectedClis` has locally, so the same visibility rules apply
+ *  (visibleCliIds). The registry is the desktop's; the box only answers
+ *  `which` for each command (server_which, the TaskHost `which`). Empty
+ *  until asked, and for a local project. Cached per project for the run. */
+const serverClis = new Map<string, Record<string, import("@/lib/types").CliInfo>>();
+export function useServerDetectedClis(projectId: string | undefined, isServer: boolean, agents: import("@/lib/types").Agent[], enabled = true): Record<string, import("@/lib/types").CliInfo> {
+  const [map, setMap] = useState<Record<string, import("@/lib/types").CliInfo>>(() => (projectId && serverClis.get(projectId)) || {});
+  useEffect(() => {
+    if (!projectId || !isServer || !enabled) return;
+    const cached = serverClis.get(projectId);
+    if (cached) { setMap(cached); return; }
+    const entries = agents.filter(a => a.command);
+    let live = true;
+    invoke<boolean[]>("server_which", { projectId, programs: entries.map(a => a.command) })
+      .then(found => {
+        const next: Record<string, import("@/lib/types").CliInfo> = {};
+        entries.forEach((a, i) => { next[a.id] = { name: a.id, found: !!found[i], path: "", version: "" }; });
+        serverClis.set(projectId, next);
+        if (live) setMap(next);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [projectId, isServer, enabled, agents]);
+  return isServer ? map : {};
+}

@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible } from "../helpers.js";
+import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoAgent, typeIntoRemoteTerminal, waitForAgentPty, waitForAppShell, waitTabInFront, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
 const nonce = (n: number) => { const b = Buffer.alloc(12); b.writeBigUInt64BE(BigInt(n), 4); return b; };
 const key = (pair: Buffer, salt: Buffer, dir: string, host: string, client: string) =>
@@ -497,14 +497,27 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       "printf 'fake agent ready\\r\\n> '",
       "while IFS= read -r l; do",
       "  case \"$l\" in",
-      "    *ask*) printf 'Do you want to proceed? (y/n) ' ;;",
+      // Asks the way an agent's hook reports it: Termic's attention OSC in
+      // its own terminal (docs/agent-hooks.md "Transport"), then the question.
+      "    *ask*) printf '\\033]777;notify;termic;agent needs your input\\007Do you want to proceed? (y/n) ' ;;",
       "    *) printf 'box says: %s\\r\\n> ' \"$l\" ;;",
       "  esac",
       "done",
       "",
     ].join("\n"));
     chmodSync(agent, 0o755);
-    writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent] }));
+    writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent], boxagent: [agent] }));
+    // The desktop's own registry starts a server task's agent now: the same
+    // fake, as a desktop agent (the box is this Mac, so the path is there).
+    await browser.execute(async (cmd) => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      const fake = s.agents.find((a: any) => a.id === "fakeagent");
+      const caps = { ...fake.capabilities, yolo_args: [], resume_args: [], session_id_args: [], resume_id_args: [], name_args: [] };
+      s.agents = [...s.agents.filter((a: any) => a.id !== "boxagent"), { ...fake, id: "boxagent", display_name: "BoxAgent", command: cmd, args: [], builtin: false, capabilities: caps }];
+      await t.ipc.settingsSave(s);
+      await t.useApp.getState().loadAll();
+    }, agent);
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
@@ -523,7 +536,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     { timeout: 30_000, timeoutMsg: "the local server never came online" });
     const added = await call({ cmd: "project_add", path: repo });
     expect(added.ok).toBe(true);
-    const r = await call({ cmd: "new", name: "box-task", project: "repo", agent: "fake", prompt: "hello" });
+    const r = await call({ cmd: "new", name: "box-task", project: "repo", agent: "boxagent", prompt: "hello" });
     expect(r.ok).toBe(true);
     task = r.data.task.id;
     // Mirrored into the desktop's own store (server_projects.rs): an
@@ -595,35 +608,49 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await waitVisible(row());
   });
 
-  it("opens the task as its terminal from its row, and typing reaches the agent", async () => {
+  // A server task is an ordinary desktop task whose terminals run on the
+  // box (docs/plans/server-projects.md): the desktop starts its agent
+  // itself, through the same TaskView, tabs and PTY slots as a local one.
+  const deskLogs = async () => String((await cliRpc({ cmd: "logs", task }))?.data?.data ?? "");
+  const terminalTabs = () => browser.execute((id) =>
+    (window.__termic!.useApp.getState().tabs[id] ?? []).filter((t: any) => t.type === "terminal").map((t: any) => ({ id: t.id, cli: t.cli, ptyId: t.ptyId, isDefault: !!t.is_default })), task) as Promise<{ id: string; cli: string; ptyId?: string; isDefault: boolean }[]>;
+  const showAgentTab = async () => {
+    const agentTab = (await terminalTabs()).find(t => t.isDefault)!;
+    await browser.execute((id, tab) => window.__termic!.useApp.getState().setActiveTabId(id, tab), task, agentTab.id);
+    await waitTabInFront(task, agentTab.id);
+  };
+  const typeUntil = async (text: string, done: () => boolean | Promise<boolean>, msg: string) => {
+    await browser.waitUntil(async () => {
+      await typeIntoAgent(task, text);
+      for (let i = 0; i < 10; i++) {
+        if (await done()) return true;
+        await new Promise(r => setTimeout(r, 300)); // a poll tick for a file on disk, not a wait for the app
+      }
+      return false;
+    }, { timeout: 30_000, timeoutMsg: msg });
+  };
+  // A shortcut pressed in the task's visible terminal, as a user does.
+  const pressCmd = (key: string) => browser.execute((k, id) => {
+    const ta = [...document.querySelectorAll<HTMLTextAreaElement>(`[data-task-id="${id}"] .xterm-helper-textarea`)]
+      .find(el => (el.closest(".xterm") ?? el).getBoundingClientRect().width > 0);
+    const target: HTMLElement | Window = ta ?? window;
+    ta?.focus();
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true, cancelable: true }));
+  }, key, task);
+  const boxState = () => browser.execute((id, sid) =>
+    window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.tasks.find((t: any) => t.id === id)?.state as string, task, serverId);
+
+  it("opens the task as its terminal, the agent started by this desktop on the box", async () => {
     await clickPresent(row());
-    await waitVisible('[data-testid="remote-task-view"]', 20_000);
-    await waitVisible('[data-testid="remote-terminal"]');
-    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-tabs"]'))).toBe(false);
-    expect(await browser.execute(() => document.querySelector('[data-testid="remote-terminal"]')!.getAttribute("data-owns-size"))).toBe("true");
-    await typeIntoRemoteTerminal("typed here\r");
-    await browser.waitUntil(async () => (await logs()).includes("box says: typed here"), { timeout: 20_000, timeoutMsg: "keys typed into the terminal never reached the agent" });
+    await waitForAgentPty(task, 30_000);
+    // The id is the claim: one agent per task on the box, whichever desktop
+    // opens it, and a restarted desktop attaches to it.
+    expect((await terminalTabs()).find(t => t.isDefault)?.ptyId?.startsWith(`${task}:agent/`)).toBe(true);
+    expect(await browser.execute((id) => !!document.querySelector(`[data-task-id="${id}"] .xterm`), task)).toBe(true);
+    await typeIntoAgent(task, "typed here\r");
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: typed here"),
+      { timeout: 20_000, timeoutMsg: "keys typed into the terminal never reached the agent on the box" });
     await snap("remote-local-server-task.png");
-    // The top bar's Prompts menu sends a prompt to the agent on the box.
-    const pid = await browser.execute(() => (window.__termic as any).usePromptLibrary.getState().addPrompt({ title: "Box prompt", body: "prompt from the menu", enabled: true }) as string);
-    try {
-      // Radix opens a menu on pointerdown, which el.click() skips.
-      await browser.execute(() => {
-        const el = document.querySelector('[data-testid="prompts-menu"]') as HTMLElement;
-        const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
-        el.dispatchEvent(new PointerEvent("pointerdown", opts));
-        el.dispatchEvent(new PointerEvent("pointerup", opts));
-      });
-      await browser.waitUntil(() => browser.execute(() => {
-        const item = [...document.querySelectorAll('[data-testid="server-prompt"]')].find(e => e.textContent?.includes("Box prompt")) as HTMLElement | undefined;
-        item?.click();
-        return !!item;
-      }), { timeout: 10_000, timeoutMsg: "the Prompts menu never listed the prompt" });
-      await browser.waitUntil(async () => (await logs()).includes("box says: prompt from the menu"),
-        { timeout: 20_000, timeoutMsg: "a prompt from the Prompts menu never reached the agent on the box" });
-    } finally {
-      await browser.execute((id) => (window.__termic as any).usePromptLibrary.getState().deletePrompt(id), pid);
-    }
     // Open with: an editor opens the worktree ON THE BOX over SSH (its
     // Remote-SSH URL), not a local folder. The e2e build records the URL.
     const browserLog = path.join(process.cwd(), ".e2e", "profile", "e2e-browser.log");
@@ -640,18 +667,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       { timeout: 10_000, timeoutMsg: "Open with never asked the OS for the editor's SSH URL" });
   });
 
-  it("the termic CLI drives a server task's agent on the box: send, then logs", async () => {
-    // The desktop has no PTY or session for it: cli_server forwards these.
+  it("the termic CLI drives a server task's agent like a local one: send, then logs", async () => {
     const name = await browser.execute((id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.name, task) as string;
     const sent = await cliRpc({ cmd: "send", task: name, prompt: "from the cli" });
     expect(sent.ok).toBe(true);
-    await browser.waitUntil(async () => {
-      const r = await cliRpc({ cmd: "logs", task: name });
-      return r.ok && String(r.data?.data ?? "").includes("box says: from the cli");
-    }, { timeout: 20_000, timeoutMsg: "the CLI's send never reached the agent on the box, or logs never read it back" });
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: from the cli"),
+      { timeout: 20_000, timeoutMsg: "the CLI's send never reached the agent on the box, or logs never read it back" });
   });
 
-  it("runs the task's git on the box: branches come from its worktree there", async () => {
+  it("runs the task's git, files, shells and scripts on the box through the normal view", async () => {
     // git_bytes (lib.rs) sends a server folder's git through termic-server's exec.
     const branches = await browser.execute((id) => window.__termic!.invoke("task_git_branches", { id, dirName: "" }), task) as string[];
     expect(branches).toContain("box-task");
@@ -671,186 +695,101 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute((id) => window.__termic!.invoke("task_stage", { id, dirName: "", paths: ["hello.txt"] }), task);
     await browser.execute((id) => window.__termic!.invoke("task_commit", { id, dirName: "", subject: "from the desk", body: "", amend: false, push: false }), task);
     expect(execFileSync("git", ["-C", wt, "log", "-1", "--format=%s"], { encoding: "utf8" }).trim()).toBe("from the desk");
-    // And the right panel shows them: its Files tab lists the box's file.
+    // The right panel's Files tab lists the box's file; opening it is an
+    // ordinary editor tab, read from the box.
     await clickPresent(row());
     await browser.execute(() => {
       const tab = [...document.querySelectorAll('[data-testid="right-tab"]')].find(b => /files/i.test(b.getAttribute("data-tab") ?? "")) as HTMLElement | undefined;
       tab?.click();
     });
-    // No file watcher on a box: Refresh reads the folder again.
     await clickPresent('[data-testid="right-refresh"]');
     await waitVisible('[data-path="hello.txt"]', 20_000);
-    // Listed by the box (ls through exec), which hides the worktree's .git.
     expect(await browser.execute(() => !!document.querySelector('[data-path=".git"]'))).toBe(false);
     await snap("remote-server-files.png");
-    // Opening a file from the tree shows it in the server task's view (the
-    // editor reads it from the box), as a tab beside the agent.
     await clickPresent('[data-path="hello.txt"]');
-    await waitVisible('[data-testid="server-tab-file"][data-path="hello.txt"]', 15_000);
-    await browser.waitUntil(() => browser.execute(() =>
-      [...document.querySelectorAll('[data-testid="remote-task-view"] .cm-content')].some(e => e.textContent?.includes("edited on the desk"))),
+    await browser.waitUntil(() => browser.execute((id) =>
+      [...document.querySelectorAll(`[data-task-id="${id}"] .cm-content`)].some(e => e.textContent?.includes("edited on the desk")), task),
     { timeout: 15_000, timeoutMsg: "the server file never showed in the editor" });
     await snap("remote-server-editor.png");
-    await clickPresent('[data-testid="server-tab-agent"]');
-    // No watcher on a box: the agent finishing a turn refreshes the tree
-    // instead (its row leaving "working"), with no Refresh clicked.
+    await showAgentTab();
+    // No watcher on a box: the agent finishing a turn refreshes the tree.
     writeFileSync(path.join(wt, "after-turn.txt"), "x");
-    expect((await call({ cmd: "send", task, prompt: "a turn" })).ok).toBe(true);
+    expect((await cliRpc({ cmd: "send", task, prompt: "a turn" })).ok).toBe(true);
     await waitVisible('[data-path="after-turn.txt"]', 30_000);
-    // Its top bar keeps what works on a box: prompts, archive, the panel toggle.
+    // One top bar for every task: what acts only on this Mac is left out.
     expect(await browser.execute(() => ({
       archive: !!document.querySelector('[data-testid="archive-task"]'),
       panel: !!document.querySelector('[data-testid="toggle-right-panel"]'),
       prompts: !!document.querySelector('[data-testid="prompts-menu"]'),
       run: !!document.querySelector('[data-testid="run-button"]'),
-      serverRun: !!document.querySelector('[data-testid="server-run"]'),
-      openWith: !!document.querySelector('[data-testid="open-with-launch"]'),
-    }))).toEqual({ archive: true, panel: true, prompts: true, run: false, serverRun: true, openWith: false });
-    // Another agent beside the task's own: the box's usable agents, each a
-    // button that opens a tab named after it.
-    await clickPresent('[data-testid="server-new-agent-fake"]');
-    await browser.waitUntil(() => browser.execute(() =>
-      [...document.querySelectorAll('[data-testid="server-tab-shell"]')].some(e => e.textContent?.trim() === "fake")),
-    { timeout: 10_000, timeoutMsg: "the other agent's tab never opened" });
-    await browser.execute(() => (document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement).click());
-    await waitGone('[data-testid="aux-terminal"]');
-    // ⌘T in a server task: the new-tab palette offers a terminal and the
-    // agents installed on the box, nothing from this Mac, and opens there.
-    const boxAgents = ((await call({ cmd: "agents" })).data.agents as { id: string; kind: string; usable?: boolean }[])
-      .filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id).sort();
-    const pressInView = (key: string) => browser.execute((k) => {
-      const el = (document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea') ?? document.querySelector('[data-testid="remote-task-view"] button')) as HTMLElement;
-      el.focus();
-      el.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true, cancelable: true }));
-    }, key);
-    await pressInView("t");
+      openWith: !!document.querySelector('[data-testid="server-open-with"]'),
+      localOpenWith: !!document.querySelector('[data-testid="open-with-launch"]'),
+    }))).toEqual({ archive: true, panel: true, prompts: true, run: true, openWith: true, localOpenWith: false });
+    // ⌘T: the same new-tab palette as locally, its agents the ones
+    // installed ON THE BOX (the desktop's registry, checked there).
+    await pressCmd("t");
     await waitVisible('[data-testid="new-tab-palette"]');
-    const offered = await browser.execute(() => ({
-      agents: [...document.querySelectorAll('[data-testid="new-tab-palette"] [data-kind="agent"]')].map(e => (e as HTMLElement).innerText.split("\n")[0].trim()).sort(),
-      kinds: [...new Set([...document.querySelectorAll('[data-testid="new-tab-palette"] [data-kind]')].map(e => e.getAttribute("data-kind")))].sort(),
-    }));
-    expect(offered.kinds).toEqual(boxAgents.length ? ["agent", "shell"] : ["shell"]);
-    expect(offered.agents).toEqual(boxAgents.map(id => ({ claude: "Claude", codex: "Codex", gemini: "Gemini", opencode: "opencode" } as Record<string, string>)[id] ?? id).sort());
-    await clickPresent('[data-testid="new-tab-palette"] [data-kind="shell"]');
-    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
-      { timeout: 20_000, timeoutMsg: "⌘T's Terminal never opened a shell on the box" });
-    // ⌘W closes the shell tab on screen.
-    await pressInView("w");
-    await waitGone('[data-testid="aux-terminal"]');
-    // A shell tab is a shell ON THE BOX, in the task's folder (termic-server
-    // pty_open): what it runs lands in the box's worktree.
-    await clickPresent('[data-testid="server-new-shell"]');
-    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="aux-terminal"] .xterm-helper-textarea')),
-      { timeout: 20_000, timeoutMsg: "the shell tab never mounted its terminal" });
-    await typeInShellUntil("touch from-shell-$((6*7))\r", () => existsSync(path.join(wt, "from-shell-42")), "the shell tab never ran in the box's worktree");
+    const offered = await browser.execute(() => [...document.querySelectorAll('[data-testid="new-tab-palette"] [data-kind="agent"]')].map(e => (e as HTMLElement).innerText.split("\n")[0].trim()));
+    expect(offered).toContain("BoxAgent");
+    await browser.keys("Escape");
+    await waitGone('[data-testid="new-tab-palette"]');
+    // A shell tab is a shell ON THE BOX, in the task's folder.
+    const before = (await terminalTabs()).length;
+    const shellId = await browser.execute((id) => {
+      const tabId = crypto.randomUUID();
+      window.__termic!.useApp.getState().addTab(id, { id: tabId, type: "terminal", title: "Terminal", cli: "shell" });
+      return tabId;
+    }, task) as string;
+    await waitTabInFront(task, shellId);
+    await browser.waitUntil(async () => !!(await terminalTabs()).find(t => t.id === shellId)?.ptyId, { timeout: 20_000, timeoutMsg: "the shell tab never started on the box" });
+    expect((await terminalTabs()).find(t => t.id === shellId)?.ptyId?.startsWith(`${task}:${shellId}/`)).toBe(true);
+    await typeUntil("touch from-shell-$((6*7))\r", () => existsSync(path.join(wt, "from-shell-42")), "the shell tab never ran in the box's worktree");
     await snap("remote-server-shell.png");
-    // Away and back: the same shell is still running (MainArea keeps a server
-    // task with shells mounted), and still takes input.
-    const shellTab = await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')!.getAttribute("data-tab-id"));
-    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
-    await browser.waitUntil(() => browser.execute(() => {
-      const v = document.querySelector('[data-testid="remote-task-view"]');
-      return !!v && v.getBoundingClientRect().width === 0;
-    }), { timeout: 10_000, timeoutMsg: "the server task's view never went into hiding" });
-    expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
-    await clickPresent(row());
-    await typeInShellUntil("touch still-here\r", () => existsSync(path.join(wt, "still-here")), "the shell did not survive switching away from the task");
-    // The connection drops (laptop asleep, network gone) and comes back:
-    // the box kept the shell (pty_keep), the desktop attaches to it again,
-    // and the same shell takes input.
+    // The connection drops (laptop asleep) and comes back: the box kept
+    // the shell (pty_keep) and the desktop attaches to it again.
     await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: false }), serverId);
     await browser.execute((id) => window.__termic!.invoke("remote_set_connected", { machine: id, on: true }), serverId);
     await browser.waitUntil(() => browser.execute((sid) =>
       window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.state === "online", serverId), { timeout: 20_000, timeoutMsg: "the server never came back online" });
-    expect(await browser.execute(() => document.querySelector('[data-testid="aux-terminal"]')?.getAttribute("data-tab-id"))).toBe(shellTab);
-    await typeInShellUntil("touch after-reconnect\r", () => existsSync(path.join(wt, "after-reconnect")), "the shell did not survive the connection dropping");
-    // Run: the box repo's `.termic.yaml` run script (read on the box) runs
-    // in a new shell tab, in the task's worktree there.
+    await typeUntil("touch after-reconnect\r", () => existsSync(path.join(wt, "after-reconnect")), "the shell did not survive the connection dropping");
+    // ⌘W closes the shell tab like a local one (it is not the agent).
+    await pressCmd("w");
+    await browser.waitUntil(async () => !(await terminalTabs()).some(t => t.id === shellId), { timeout: 10_000, timeoutMsg: "⌘W did not close the server shell tab" });
+    expect((await terminalTabs()).length).toBe(before);
+    // Run: the repo's run script in a run tab, on the box.
     writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n");
     try {
-      await clickPresent('[data-testid="server-run"]');
-      await browser.waitUntil(() => existsSync(path.join(wt, "ran-by-run")),
-        { timeout: 20_000, timeoutMsg: "Run never ran the box's run script in the worktree" });
-      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Run");
-      // While it runs, Run is Stop; Stop closes the Run tab (ending it on the box).
-      await clickPresent('[data-testid="server-stop"]');
-      await waitVisible('[data-testid="server-run"]');
-      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).not.toContain("Run");
-      // Custom run commands from the box's `.termic.yaml`: Run becomes a menu
-      // (read when the task is shown), and a command runs in its own tab.
-      writeFileSync(path.join(repo, ".termic.yaml"), "scripts:\n  run: touch ran-by-run\n  run_scripts:\n    - label: Lint\n      command: touch ran-lint\n");
-      await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
-      await clickPresent(row());
-      await browser.waitUntil(async () => {
-        await browser.execute(() => {
-          const el = document.querySelector('[data-testid="server-run"]') as HTMLElement | null;
-          if (!el) return;
-          const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
-          el.dispatchEvent(new PointerEvent("pointerdown", opts));
-          el.dispatchEvent(new PointerEvent("pointerup", opts));
-        });
-        return browser.execute(() => !!document.querySelector('[data-testid="server-run-custom"]'));
-      }, { timeout: 15_000, timeoutMsg: "Run never offered the box's custom command" });
-      await clickWhenVisible('[data-testid="server-run-custom"]');
-      await browser.waitUntil(() => existsSync(path.join(wt, "ran-lint")),
-        { timeout: 20_000, timeoutMsg: "the custom command never ran in the worktree" });
-      expect(await browser.execute(() => [...document.querySelectorAll('[data-testid="server-tab-shell"]')].map(e => e.textContent?.trim()))).toContain("Lint");
+      await clickPresent('[data-testid="run-button"]');
+      await browser.waitUntil(() => existsSync(path.join(wt, "ran-by-run")), { timeout: 30_000, timeoutMsg: "Run never ran the script on the box" });
     } finally {
       rmSync(path.join(repo, ".termic.yaml"), { force: true });
     }
-    // Back to the agent: its terminal is still there; closing the shell ends it.
-    await clickPresent('[data-testid="server-tab-agent"]');
-    await waitVisible('[data-testid="remote-terminal"]');
-    for (;;) {
-      const closed = await browser.execute(() => {
-        const x = document.querySelector('[data-testid="server-tab-shell"] [role="button"]') as HTMLElement | null;
-        x?.click();
-        return !!x;
-      });
-      if (!closed) break;
-    }
-    await waitGone('[data-testid="aux-terminal"]');
-    // ⌘W with focus outside the view (the sidebar, the page) still acts on a
-    // server task: the shell on screen first, then, on the agent, the view.
-    const pressOutside = () => browser.execute(() => {
-      (document.activeElement as HTMLElement | null)?.blur();
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true, cancelable: true }));
-    });
-    await clickPresent('[data-testid="server-new-shell"]');
-    await waitVisible('[data-testid="aux-terminal"]', 20_000);
-    await pressOutside();
-    await waitGone('[data-testid="aux-terminal"]');
-    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, task)).toBe(true);
-    // On the agent it asks: the agent runs on the box past any tab.
-    // Cancel keeps everything; Close view leaves the agent running there.
-    await pressOutside();
+    await showAgentTab();
+    // ⌘W on the agent asks: it runs on the box past the view. Cancel keeps
+    // everything; Close view leaves the agent running there.
+    await pressCmd("w");
     await waitVisible('[data-testid="server-close-dialog"]');
     await snap("remote-server-close-ask.png");
     await clickPresent('[data-testid="server-close-cancel"]');
     await waitGone('[data-testid="server-close-dialog"]');
     expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, task)).toBe(true);
-    await pressOutside();
+    await pressCmd("w");
     await clickPresent('[data-testid="server-close-view"]');
     await browser.waitUntil(() => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task),
       { timeout: 5_000, timeoutMsg: "Close view did not close the server task's view" });
-    expect(["working", "idle", "waiting", "done"]).toContain(await browser.execute((id, sid) =>
-      window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.tasks.find((t: any) => t.id === id)?.state, task, serverId));
+    expect((await terminalTabs()).find(t => t.isDefault)?.ptyId?.startsWith(`${task}:agent/`)).toBe(true);
     await clickPresent(row());
-    // It comes back on the tab it last showed (the file opened earlier).
-    await clickPresent('[data-testid="server-tab-agent"]');
-    await waitVisible('[data-testid="remote-terminal"]');
-    // Stop agent: the view closes (an open terminal would start it again)
-    // and the box stops it; opening the task starts it in its session.
-    const boxState = () => browser.execute((id, sid) =>
-      window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.tasks.find((t: any) => t.id === id)?.state as string, task, serverId);
-    await pressOutside();
+    await typeIntoAgent(task, "still running\r");
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: still running"),
+      { timeout: 20_000, timeoutMsg: "the agent did not keep running behind a closed view" });
+    // Stop agent: the desktop stops its tabs, so the agent ends on the box;
+    // opening the task starts it again.
+    await pressCmd("w");
     await clickPresent('[data-testid="server-close-stop"]');
-    await browser.waitUntil(async () => (await boxState()) === "inactive", { timeout: 15_000, timeoutMsg: "Stop agent did not stop it on the box" });
-    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task)).toBe(true);
+    await browser.waitUntil(async () => (await boxState()) === "inactive", { timeout: 20_000, timeoutMsg: "Stop agent did not end it on the box" });
     await clickPresent(row());
-    await browser.waitUntil(async () => (await boxState()) !== "inactive", { timeout: 15_000, timeoutMsg: "opening the stopped task did not start its agent" });
-    await clickPresent('[data-testid="server-tab-agent"]');
-    await waitVisible('[data-testid="remote-terminal"]');
+    await waitForAgentPty(task, 30_000);
+    await browser.waitUntil(async () => (await boxState()) !== "inactive", { timeout: 20_000, timeoutMsg: "opening the stopped task did not start its agent" });
     // Send to main runs on the box: the task's committed edit and its
     // untracked files land in the box repo's main checkout, uncommitted.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="send-to-main"]'))).toBe(true);
@@ -859,8 +798,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       expect(sent.tracked_files).toBe(1);
       expect(sent.untracked_files).toBeGreaterThan(0);
       expect(readFileSync(path.join(repo, "hello.txt"), "utf8")).toBe("edited on the desk\n");
-      expect(existsSync(path.join(repo, "still-here"))).toBe(true);
-      // A dirty main checkout is refused, as locally.
+      expect(existsSync(path.join(repo, "after-reconnect"))).toBe(true);
       const again = await browser.execute((id) => window.__termic!.invoke("task_send_diff_to_main", { id }).then(() => "sent", (e: unknown) => JSON.stringify(e)), task);
       expect(again).not.toBe("sent");
     } finally {
@@ -877,8 +815,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       await t.useApp.getState().loadAll();
     }, task);
     // Anything on the box changing makes the desktop resync it.
-    expect((await call({ cmd: "send", task, prompt: "nudge" })).ok).toBe(true);
-    await browser.waitUntil(async () => (await logs()).includes("box says: nudge"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
+    expect((await cliRpc({ cmd: "send", task, prompt: "nudge" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: nudge"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
     // Outlasts the resync the box's new task list starts (sync_soon: one
     // project_list and list round trip on a local socket, then a reload),
     // so the check below reads the store after it, not before.
@@ -902,8 +840,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     const grouped = () => browser.execute((id) => !!(window.__termic!.useApp.getState().tasks.find((y: any) => y.id === id) as any)?.group, task);
     await browser.waitUntil(grouped, { timeout: 10_000, timeoutMsg: "the server task never joined a new group" });
     await browser.keys("Escape");
-    expect((await call({ cmd: "send", task, prompt: "nudge again" })).ok).toBe(true);
-    await browser.waitUntil(async () => (await logs()).includes("box says: nudge again"), { timeout: 20_000, timeoutMsg: "the second nudge never landed" });
+    expect((await cliRpc({ cmd: "send", task, prompt: "nudge again" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: nudge again"), { timeout: 20_000, timeoutMsg: "the second nudge never landed" });
     await browser.waitUntil(async () => {
       await browser.execute(() => window.__termic!.useApp.getState().loadAll());
       return grouped();
@@ -932,14 +870,11 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect((await call({ cmd: "archive", task: dup.id })).ok).toBe(true);
   });
 
-  it("shows the server's agent waiting on its row, and raises the alert", async () => {
-    const alerts = () => browser.execute(() => (window.__termic!.useRemote.getState().alerts as any[]).map(a => [a.task, a.kind, a.machineName] as string[])) as Promise<string[][]>;
-    const before = (await alerts()).length;
-    expect((await call({ cmd: "send", task, prompt: "please ask" })).ok).toBe(true);
+  it("shows the server's agent waiting on its row, from its hook's report", async () => {
+    // The agent reports through its terminal, as a hook does; the desktop
+    // reads it exactly as it reads a local agent's.
+    expect((await cliRpc({ cmd: "send", task, prompt: "please ask" })).ok).toBe(true);
     await waitForAttr(row(), "data-remote-state", "waiting", 20_000);
-    const waiting = () => alerts().then(a => a.slice(before).find(x => x[1] === "waiting"));
-    await browser.waitUntil(async () => !!(await waiting()), { timeout: 10_000, timeoutMsg: "no alert for the task that started waiting" });
-    expect((await waiting())![0]).toBe(task);
     // And the CLI's list says so too (the state the desktop reports for a
     // task whose agent runs on the box).
     await browser.waitUntil(async () => {
@@ -999,8 +934,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute((id) => window.__termic!.invoke("project_remove", { id }), pid);
     expect(((await call({ cmd: "project_list" }))?.data?.projects ?? []).some((p: any) => p.name === "extra")).toBe(false);
     // A change on the box resyncs; the project stays gone.
-    expect((await call({ cmd: "send", task, prompt: "after removal" })).ok).toBe(true);
-    await browser.waitUntil(async () => (await logs()).includes("box says: after removal"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
+    expect((await cliRpc({ cmd: "send", task, prompt: "after removal" })).ok).toBe(true);
+    await browser.waitUntil(async () => (await deskLogs()).includes("box says: after removal"), { timeout: 20_000, timeoutMsg: "the nudge never landed" });
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     expect(await browser.execute((sid) => window.__termic!.useApp.getState().projects.some((p: any) => p.server === sid && p.name === "extra"), serverId)).toBe(false);
     rmSync(extra, { recursive: true, force: true });

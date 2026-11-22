@@ -4719,19 +4719,41 @@ fn agent_tab_id(args: &SpawnArgs) -> Option<&str> {
     args.role.as_ref().filter(|r| r.kind == "agent").and_then(|r| r.tab_id.as_deref())
 }
 
+/// A server PTY's id. A task's tab gets a stable one, `<task>:<tab>`, and
+/// its default agent `<task>:agent`, so the id is the claim: termic-server
+/// attaches an open whose id is already running instead of starting a
+/// second process. A restarted desktop finds its agent still running on
+/// the box, and two desktops opening one task share one agent. Anything
+/// without a tab (an aux shell spawned bare) gets a fresh id.
+fn server_pty_id(args: &SpawnArgs) -> String {
+    if let Some(r) = &args.role {
+        if r.kind == "agent" && r.is_default {
+            return format!("{}:agent", r.task_id);
+        }
+        if let Some(tab) = &r.tab_id {
+            return format!("{}:{tab}", r.task_id);
+        }
+    }
+    // A shell tab carries no CLI role (it stays out of the CLI's reach) but
+    // its owner names the tab, which is all the id needs.
+    if let Some(PtyOwner { task_id: Some(task), tab_id: Some(tab), .. }) = &args.owner {
+        return format!("{task}:{tab}");
+    }
+    Uuid::new_v4().to_string()
+}
+
 /// The argv a spawn built for this computer runs as on a box. The program
-/// is looked up there by name (termic-server runs it through the login
-/// shell's PATH), so a registry entry pointing at an absolute path here
-/// becomes its basename. A shell running a command (`zsh -lic "<run
-/// script>"`) runs under the box's own login shell with the same flags,
-/// since the box may not have this computer's shell.
+/// runs as named (termic-server looks a bare name up on the login shell's
+/// PATH there, as the registry's defaults are). A shell running a command
+/// (`zsh -lic "<run script>"`) runs under the box's own login shell with
+/// the same flags, since the box may not have this computer's shell.
 fn server_argv(cmd: &str, args: &[String]) -> Vec<String> {
     let name = Path::new(cmd).file_name().and_then(|n| n.to_str()).unwrap_or(cmd).to_string();
     if matches!(name.as_str(), "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh") {
         return ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" \"$@\"", "sh"].iter().map(|s| s.to_string())
             .chain(args.iter().cloned()).collect();
     }
-    std::iter::once(name).chain(args.iter().cloned()).collect()
+    std::iter::once(cmd.to_string()).chain(args.iter().cloned()).collect()
 }
 
 /// A terminal in a server project's folder runs on the box (termic-server
@@ -4743,7 +4765,11 @@ fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, Strin
         .is_some_and(|n| matches!(n, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh"))
         && args.args.iter().all(|a| matches!(a.as_str(), "-l" | "-i" | "--login" | "-il" | "-li"));
     let argv = if shell_only { Vec::new() } else { server_argv(&args.cmd, &args.args) };
-    let id = Uuid::new_v4().to_string();
+    // The claim on the box, and this spawn's own id here (unique, so a kill
+    // of an earlier spawn cannot reach this one: remote_client::pty_open).
+    let claim = server_pty_id(args);
+    // `/` keeps it a legal Tauri event name (`pty://<id>`).
+    let id = format!("{claim}/{}", &Uuid::new_v4().simple().to_string()[..8]);
     // The webview's overlay, then what every task spawn gets (as locally,
     // the task env applied after the overlay wins).
     let mut env: Vec<(String, String)> = args.env.iter()
@@ -4753,16 +4779,17 @@ fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, Strin
         env.retain(|(e, _)| *e != k);
         env.push((k, v));
     }
-    remote_client::pty_open(server, &id, &args.cwd, argv, env, args.cols, args.rows)?;
+    remote_client::pty_open(server, &id, &claim, &args.cwd, argv, env, args.cols, args.rows)?;
     // A slot like a local PTY's, so everything that finds, reads, types into
     // or sizes a terminal (the CLI's logs / send / attach, the phone host)
     // has one path: its writer and master forward to the server, and the
     // feed fills from the server's output (server_projects' sink).
     if let Some(app) = server_projects::app_handle() {
         let state = tauri::Manager::state::<PtyManager>(&app);
-        state.inner.lock().insert(id.clone(), PtySlot {
-            writer: Arc::new(Mutex::new(Box::new(RemotePtyWriter { machine: server.to_string(), pid: id.clone() }))),
-            master: Box::new(RemotePtyMaster { machine: server.to_string(), pid: id.clone(), size: Mutex::new((args.rows, args.cols)) }),
+        let mut map = state.inner.lock();
+        map.insert(id.clone(), PtySlot {
+            writer: Arc::new(Mutex::new(Box::new(RemotePtyWriter { pid: id.clone() }))),
+            master: Box::new(RemotePtyMaster { pid: id.clone(), size: Mutex::new((args.rows, args.cols)) }),
             child_pid: None,
             sandbox: None,
             shell: None,
@@ -4801,13 +4828,12 @@ pub(crate) fn server_pty_gone(app: &AppHandle, pid: &str) {
 
 /// Typing into a server PTY through its slot (the CLI's `send` and attach).
 struct RemotePtyWriter {
-    machine: String,
     pid: String,
 }
 
 impl Write for RemotePtyWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        remote_client::pty_input(&self.machine, &self.pid, buf).map_err(std::io::Error::other)?;
+        remote_client::pty_input(&self.pid, buf).map_err(std::io::Error::other)?;
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -4817,7 +4843,6 @@ impl Write for RemotePtyWriter {
 
 /// A server PTY's size through its slot: a resize goes to the server.
 struct RemotePtyMaster {
-    machine: String,
     pid: String,
     size: Mutex<(u16, u16)>,
 }
@@ -4825,7 +4850,7 @@ struct RemotePtyMaster {
 impl portable_pty::MasterPty for RemotePtyMaster {
     fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
         *self.size.lock() = (size.rows, size.cols);
-        remote_client::pty_resize(&self.machine, &self.pid, size.cols, size.rows).map_err(anyhow::Error::msg)
+        remote_client::pty_resize(&self.pid, size.cols, size.rows).map_err(anyhow::Error::msg)
     }
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
         let (rows, cols) = *self.size.lock();
@@ -4835,7 +4860,7 @@ impl portable_pty::MasterPty for RemotePtyMaster {
         Err(anyhow::anyhow!("a server PTY's output arrives over its connection"))
     }
     fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-        Ok(Box::new(RemotePtyWriter { machine: self.machine.clone(), pid: self.pid.clone() }))
+        Ok(Box::new(RemotePtyWriter { pid: self.pid.clone() }))
     }
     #[cfg(unix)]
     fn process_group_leader(&self) -> Option<libc::pid_t> {
@@ -5724,8 +5749,10 @@ fn pty_resize(
 
 #[tauri::command]
 fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> {
-    if let Some(m) = remote_client::pty_machine(&pty_id) {
-        return remote_client::pty_kill(&m, &pty_id);
+    if remote_client::pty_machine(&pty_id).is_some() {
+        // Its slot goes now: the box sends no exit for a kill it was asked for.
+        state.inner.lock().remove(&pty_id);
+        return remote_client::pty_kill(&pty_id);
     }
     let slot = state.inner.lock().remove(&pty_id);
     if let Some(mut slot) = slot {
@@ -29079,6 +29106,7 @@ pub fn run() {
             remote_client::remote_reconnect,
             remote_client::remote_set_connected,
             remote_client::server_add,
+            server_projects::server_which,
             remote_client::server_remove,
             remote_client::server_rename,
             remote_client::server_list,
@@ -40409,8 +40437,8 @@ mod server_spawn_tests {
     #[test]
     fn a_spawn_built_here_runs_by_name_on_a_box() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        // A registry entry pointing at a local path: its basename on the box.
-        assert_eq!(server_argv("/Users/u/.local/bin/claude", &s(&["--resume", "x"])), s(&["claude", "--resume", "x"]));
+        // The program as named: a bare name is found on the box's PATH.
+        assert_eq!(server_argv("claude", &s(&["--resume", "x"])), s(&["claude", "--resume", "x"]));
         assert_eq!(server_argv("codex", &[]), s(&["codex"]));
         // A shell running a command: the box's own login shell, same flags.
         let run = server_argv("/bin/zsh", &s(&["-lic", "npm run dev"]));

@@ -246,9 +246,13 @@ impl Daemon {
     }
 
     /// The current work state of a task, computed now.
-    fn compute(&self, live: Option<&Arc<Live>>, now: Instant) -> (View, Option<Instant>) {
+    /// `pty` is the task's agent terminal: the desktop's (`<task>:agent` in
+    /// `ptys`) or one this daemon started itself.
+    fn compute(&self, pty: Option<&Arc<Pty>>, now: Instant) -> (View, Option<Instant>) {
         let blank = |s: &str| View { state: s.into(), since_ms: 0, activity: None, question: None };
-        let Some(live) = live else { return (blank("inactive"), None) };
+        let Some(pty) = pty else { return (blank("inactive"), None) };
+        struct L<'a> { pty: &'a Arc<Pty> }
+        let live = L { pty };
         let (exited, act, out, inp) = live.pty.activity();
         let working = !exited && inp.is_some() && act.is_some_and(|t| now.saturating_duration_since(t) < self.quiet);
         let mut lines: Option<Vec<String>> = None;
@@ -282,6 +286,10 @@ impl Daemon {
             let now = Instant::now();
             let ids: Vec<String> = self.st.lock().unwrap().tasks.iter().filter(|t| !t.archived).map(|t| t.id.clone()).collect();
             let lives = self.live.lock().unwrap().clone();
+            // The desktop starts a task's agent itself (`<task>:agent`, a
+            // daemon-owned PTY): its state is read the same way, the floor
+            // for when no desktop is attached (docs/plans/server-projects.md).
+            let desk = self.ptys.lock().unwrap().clone();
             let mut next: Option<Instant> = None;
             let mut soonest = |t: Instant| next = Some(next.map_or(t, |n: Instant| n.min(t)));
             let mut changed = false;
@@ -291,7 +299,8 @@ impl Daemon {
                 let old = self.views.lock().unwrap();
                 for id in &ids {
                     let live = lives.get(id);
-                    let (mut v, deadline) = self.compute(live, now);
+                    let agent_pty = live.map(|l| &l.pty).or_else(|| desk.get(&format!("{id}:agent")));
+                    let (mut v, deadline) = self.compute(agent_pty, now);
                     if let Some(d) = deadline {
                         soonest(d);
                     }

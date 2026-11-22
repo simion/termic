@@ -119,6 +119,14 @@ Order, each step shippable on its own:
    with a running `pid` attaches, `seen` skips what the client has and
    means attach only (cap `pty_keep`, docs/remote.md). No floor bump: a
    desktop falls back to the old behaviour on a box without the cap.
+3. Partly done: server tasks are drawn by TaskView; the desktop starts
+   their agent and every tab through `pty_spawn` (claims and handles,
+   docs/remote.md), with `task_spawn_env` shared and PtyManager slots, so
+   the CLI's send / wait / logs / stop / diff take the local path. One
+   top bar, one task menu, one Cmd+T palette (agents by `server_which`
+   against the desktop's registry); the box's state reading covers a
+   desktop-started agent for when no desktop has it open. Left: writing
+   the hook config on the box, deleting RemoteTaskView's server half.
 3. **The agent as an ordinary tab**: spawn it with the desktop's argv,
    session id and env through `pty_spawn`; draw server tasks with
    TaskView and TabBar. Delete RemoteTaskView's server half,

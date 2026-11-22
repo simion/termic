@@ -379,3 +379,23 @@ mod tests {
         assert_eq!(projects.len(), 2);
     }
 }
+
+/// Which of `programs` a server project's box can run: each looked up on
+/// its login shell's PATH (the TaskHost `which`,
+/// docs/plans/server-projects.md). The desktop's own agent registry decides
+/// what to offer; the box only says what is installed there.
+#[tauri::command]
+pub(crate) async fn server_which(project_id: String, programs: Vec<String>) -> Result<Vec<bool>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = crate::load_projects_all().into_iter().find(|p| p.id == project_id).ok_or("no such project")?;
+        let server = p.server.clone().ok_or("not a server project")?;
+        let script = "for p; do command -v \"$p\" >/dev/null 2>&1 && echo 1 || echo 0; done";
+        let mut argv: Vec<&str> = vec!["/bin/sh", "-lc", script, "sh"];
+        argv.extend(programs.iter().map(String::as_str));
+        let (_, out, _) = exec_on(&server, std::path::Path::new(&p.root_path), &argv, &[])?;
+        let lines: Vec<bool> = String::from_utf8_lossy(&out).lines().map(|l| l.trim() == "1").collect();
+        Ok(programs.iter().enumerate().map(|(i, _)| lines.get(i).copied().unwrap_or(false)).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

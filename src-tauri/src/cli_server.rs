@@ -845,15 +845,13 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
 }
 
 /// A verb about a server project's task (docs/plans/server-projects.md)
-/// that only the box can answer: its agent, transcript and worktree live
-/// there, so this desktop has no PTY or session to read. Sent to the box's
-/// termic-server under the task's id there. Names, pins, groups and the rest
-/// stay the desktop's own, so only these verbs go.
+/// that only the box can answer. A server task's agent is a desktop tab
+/// whose PTY runs on the box (its slot is in PtyManager), so send, wait,
+/// logs, stop and diff take the local path; `result` reads the agent's
+/// transcript, a file on the box, until file reads go through TaskHost.
 fn forward_to_server(req: &Request, host: &dyn CliHost) -> Option<Reply> {
     let (task, project, timeout_ms) = match &req.cmd {
-        Command::Send { task, project, timeout_ms, .. } | Command::Wait { task, project, timeout_ms, .. } => (task.as_deref()?, project.as_deref(), *timeout_ms),
-        Command::LastResult { task, project, .. } | Command::Logs { task, project, .. } | Command::Diff { task, project, .. } => (task.as_deref()?, project.as_deref(), None),
-        Command::Stop { task, project } => (task.as_str(), project.as_deref(), None),
+        Command::LastResult { task, project, .. } => (task.as_deref()?, project.as_deref(), None),
         _ => return None,
     };
     let (projects, tasks) = host.projects_tasks();

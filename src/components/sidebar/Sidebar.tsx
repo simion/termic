@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { RemoteSidebarSection } from "@/components/remote/RemoteMachines";
-import { agentName, stopRemoteAgent, useBoxAgents, useServerShells } from "@/components/remote/RemoteTaskView";
+import { stopRemoteAgent } from "@/components/remote/RemoteTaskView";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
@@ -3027,8 +3027,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // A server project's task runs on the box: its state comes from the
   // server's own rows (server_projects.rs), there is no local PTY.
   const serverId = project?.server;
-  const remoteState = useRemote(s => serverId ? s.machines.find(m => m.id === serverId)?.tasks.find(t => t.id === w.id)?.state : undefined);
-  const isLoaded = serverId ? !!remoteState && remoteState !== "inactive" && remoteState !== "unknown" : terminalTabs.some(t => t.ptyId);
+  const boxRowState = useRemote(s => serverId ? s.machines.find(m => m.id === serverId)?.tasks.find(t => t.id === w.id)?.state : undefined);
+  // A server task's tabs run on the box and read state like local ones once
+  // this desktop has them open; until then (a fresh start, another
+  // desktop's agent) the box's own reading of its agent stands in.
+  const hasLivePty = terminalTabs.some(t => t.ptyId);
+  const remoteState = serverId && !hasLivePty ? boxRowState : undefined;
+  const isLoaded = hasLivePty || (!!remoteState && remoteState !== "inactive" && remoteState !== "unknown");
   // The run controls the COLLAPSED header row carries, mirroring the child rows
   // that are not rendered while collapsed: one button per run tab, each with
   // the same Stop-while-live / Play-once-finished pair its own row would have
@@ -3050,8 +3055,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Task actions menu — controlled so a right-click on the row can
   // open the same menu the kebab button triggers.
   const [menuOpen, setMenuOpen] = useState(false);
-  // The box's installed agents, for the menu's New: read once the menu opens.
-  const boxAgents = useBoxAgents(serverId, !!serverId && menuOpen);
   // Task rename
   const [taskRenaming, setTaskRenaming] = useState<string | null>(null);
   const taskRenameInputRef = useRef<HTMLInputElement | null>(null);
@@ -3344,7 +3347,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
       <div
         data-sidebar-task-id={w.id}
         data-sidebar-task-project-id={w.project_id}
-        data-remote-state={remoteState}
+        // A server task's state as the row shows it, from its tabs once
+        // open here, else the box's own reading (e2e reads this).
+        data-remote-state={serverId ? (hasAttention ? "waiting" : hasDone ? "done" : hasWorking ? "working" : isLoaded ? "idle" : "inactive") : undefined}
         data-guide={isActive ? "active-task-row" : undefined}
         style={dragging ? { transform: `translateY(${dragTy}px)`, position: "relative", zIndex: 20 } : undefined}
         onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, w) : undefined}
@@ -3597,28 +3602,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 </DropdownSubTrigger>
                 <DropdownSubContent>
-                  {serverId ? (
-                    <>
-                      <DropdownItem
-                        className="items-center [&>svg]:mt-0"
-                        data-testid={`task-new-shell-${w.id}`}
-                        onSelect={() => { setActive(w.id); useServerShells.getState().add(w.id); }}
-                      >
-                        <SquareChevronRight className="h-4 w-4" />
-                        <span>{t("remote:task.terminal")}</span>
-                      </DropdownItem>
-                      {boxAgents.map(id => (
-                        <DropdownItem
-                          key={id}
-                          className="items-center [&>svg]:mt-0"
-                          onSelect={() => { setActive(w.id); useServerShells.getState().add(w.id, { label: agentName(id), input: `${id}\r`, agent: id }); }}
-                        >
-                          <span className={cn("flex h-4 w-4 items-center justify-center", CLI_BRAND_COLOR[resolveIconId(id, [])])}><CliIcon cli={resolveIconId(id, [])} className="h-4 w-4" /></span>
-                          <span>{agentName(id)}</span>
-                        </DropdownItem>
-                      ))}
-                    </>
-                  ) : (
                   <NewTabMenuItems
                     taskId={w.id}
                     onSpawnCli={(cli) => spawnIntoTask({
@@ -3654,7 +3637,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     }}
                     onMore={() => { setMenuOpen(false); setView("history", { projectId: w.project_id }); }}
                   />
-                  )}
                 </DropdownSubContent>
               </DropdownSub>
               <DropdownSeparator />
@@ -3887,26 +3869,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   the memory, keep the session. Opening the task again
                   respawns with resume — same lifecycle as restarting
                   termic, scoped to one task. */}
-              {serverId ? (remoteState === "inactive" ? (
-                <DropdownItem
-                  className="items-center [&>svg]:mt-0"
-                  data-testid={`task-start-agent-${w.id}`}
-                  // Opening a stopped server task starts its agent in its session.
-                  onSelect={() => setActive(w.id)}
-                >
-                  <Play className="h-4 w-4" />
-                  <span>{t("remote:task.startAgent")}</span>
-                </DropdownItem>
-              ) : remoteState && remoteState !== "unknown" ? (
-                <DropdownItem
-                  className="items-center [&>svg]:mt-0"
-                  data-testid={`task-stop-agent-${w.id}`}
-                  onSelect={() => void stopRemoteAgent(serverId, w.id, useRemote.getState().machines.find(m => m.id === serverId)?.name ?? serverId)}
-                >
-                  <CircleStop className="h-4 w-4" />
-                  <span>{t("remote:task.stopAgent")}</span>
-                </DropdownItem>
-              ) : null) : isMounted && (
+              {isMounted && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   onSelect={() => {

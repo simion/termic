@@ -854,16 +854,33 @@ fn dispatch(l: &Link, m: ServerMsg) {
             }
         }
         ServerMsg::PtyData { pid, data, at } => {
-            if let Some(bytes) = termic_remote::unb64(&data) {
-                if let Some(p) = ptys().lock().unwrap().get_mut(&pid) {
-                    p.seen = at.unwrap_or(p.seen) + bytes.len() as u64;
-                }
-                if !bytes.is_empty() {
-                    pty_event(&pid, PtyEvent::Data(bytes));
+            let Some(bytes) = termic_remote::unb64(&data) else { return };
+            // A backlog (`at` set) is for the handles still waiting for one;
+            // live output for every handle on the claim.
+            let targets: Vec<String> = {
+                let mut map = ptys().lock().unwrap();
+                map.iter_mut()
+                    .filter(|(_, p)| p.machine == l.id && p.remote == pid && (at.is_none() || p.wants_backlog))
+                    .map(|(id, p)| {
+                        p.seen = at.unwrap_or(p.seen) + bytes.len() as u64;
+                        if at.is_some() {
+                            p.wants_backlog = false;
+                        }
+                        id.clone()
+                    })
+                    .collect()
+            };
+            if !bytes.is_empty() {
+                for local in targets {
+                    pty_event(&local, PtyEvent::Data(bytes.clone()));
                 }
             }
         }
-        ServerMsg::PtyExit { pid, reason } => pty_event(&pid, PtyEvent::Exit(reason)),
+        ServerMsg::PtyExit { pid, reason } => {
+            for local in local_ids(&l.id, &pid) {
+                pty_event(&local, PtyEvent::Exit(reason.clone()));
+            }
+        }
         ServerMsg::Error { message } => dlog(&format!("[remote] {}: {message}", l.id)),
         // The keepalive's answer: a project added on the box some other way
         // (the CLI there) changes no task row, so resync now and then.
@@ -919,6 +936,16 @@ type PtySink = Box<dyn Fn(&str, PtyEvent) + Send + Sync>;
 /// a fast link could otherwise deliver the first prompt to nobody.
 struct RemotePty {
     machine: String,
+    /// Its id on the box: the stable claim (`<task>:agent`, `<task>:<tab>`)
+    /// that a second open attaches to. This desktop's own id (the map key,
+    /// the `pty://` event name) is unique per spawn: a handle on the claim.
+    /// Several handles may share one claim for a moment (the webview's kill
+    /// of an old spawn races its respawn, a cancelled spawn); the box's PTY
+    /// ends only when the last handle is killed.
+    remote: String,
+    /// The backlog of the next attach is for this handle (a fresh one, or
+    /// every one after a reconnect); live output goes to all of them.
+    wants_backlog: bool,
     attached: bool,
     held: Vec<u8>,
     exit: Option<String>,
@@ -994,30 +1021,58 @@ pub(crate) fn pty_attached(pid: &str) -> bool {
     true
 }
 
-/// Start a program on a PTY on a server, `argv` empty for its login shell.
-pub(crate) fn pty_open(machine: &str, pid: &str, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16) -> Result<(), String> {
+/// This desktop's handles on the PTY a box knows as `remote`.
+fn local_ids(machine: &str, remote: &str) -> Vec<String> {
+    ptys().lock().unwrap().iter().filter(|(_, p)| p.machine == machine && p.remote == remote).map(|(id, _)| id.clone()).collect()
+}
+
+/// Start a program on a PTY on a server, `argv` empty for its login shell,
+/// as `remote` there and `pid` here (a handle). An open of a claim that is
+/// already running on the box attaches to it instead of starting a second
+/// process; a second handle here asks the box for the backlog again, which
+/// only it draws.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pty_open(machine: &str, pid: &str, remote: &str, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16) -> Result<(), String> {
     let l = link(machine)?;
     if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY) {
         return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Remote", server_name(machine)));
     }
-    ptys().lock().unwrap().insert(pid.to_string(), RemotePty { machine: machine.to_string(), attached: false, held: Vec::new(), exit: None, seen: 0, size: (cols, rows) });
-    l.send(ClientMsg::PtyOpen { pid: pid.into(), cwd: cwd.into(), argv, env, cols, rows, seen: None }).inspect_err(|_| {
+    let shared = {
+        let mut map = ptys().lock().unwrap();
+        let shared = map.values().any(|p| p.machine == machine && p.remote == remote && p.exit.is_none());
+        map.insert(pid.to_string(), RemotePty { machine: machine.to_string(), remote: remote.to_string(), wants_backlog: true, attached: false, held: Vec::new(), exit: None, seen: 0, size: (cols, rows) });
+        shared
+    };
+    // Shared: attach only (`seen` 0, the whole ring), never a second start.
+    let seen = if shared { Some(0) } else { None };
+    l.send(ClientMsg::PtyOpen { pid: remote.into(), cwd: cwd.into(), argv, env, cols, rows, seen }).inspect_err(|_| {
         ptys().lock().unwrap().remove(pid);
     })
 }
 
 /// A new connection to a box: attach again to the PTYs this desktop had
-/// open there, asking only for the output it has not seen. A box that
-/// keeps none (older, or restarted) answers each with `pty_exit`.
+/// open there, once per claim, asking only for the output its handles have
+/// not seen. A box that keeps none (older, or restarted) answers with
+/// `pty_exit`.
 fn reattach_ptys(l: &Link) {
     let keeps = l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY_KEEP);
-    let mine: Vec<(String, u64, (u16, u16))> = ptys().lock().unwrap().iter()
-        .filter(|(_, p)| p.machine == l.id && p.exit.is_none())
-        .map(|(id, p)| (id.clone(), p.seen, p.size)).collect();
-    for (pid, seen, (cols, rows)) in mine {
-        let sent = keeps && l.send(ClientMsg::PtyOpen { pid: pid.clone(), cwd: String::new(), argv: Vec::new(), env: Vec::new(), cols, rows, seen: Some(seen) }).is_ok();
+    let mut claims: Vec<(String, u64, (u16, u16))> = Vec::new();
+    {
+        let mut map = ptys().lock().unwrap();
+        for p in map.values_mut().filter(|p| p.machine == l.id && p.exit.is_none()) {
+            p.wants_backlog = true;
+            match claims.iter_mut().find(|(r, _, _)| *r == p.remote) {
+                Some(c) => c.1 = c.1.min(p.seen),
+                None => claims.push((p.remote.clone(), p.seen, p.size)),
+            }
+        }
+    }
+    for (remote, seen, (cols, rows)) in claims {
+        let sent = keeps && l.send(ClientMsg::PtyOpen { pid: remote.clone(), cwd: String::new(), argv: Vec::new(), env: Vec::new(), cols, rows, seen: Some(seen) }).is_ok();
         if !sent {
-            pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+            for pid in local_ids(&l.id, &remote) {
+                pty_event(&pid, PtyEvent::Exit("disconnected".into()));
+            }
         }
     }
 }
@@ -1027,20 +1082,37 @@ pub(crate) fn pty_machine(pid: &str) -> Option<String> {
     ptys().lock().unwrap().get(pid).map(|p| p.machine.clone())
 }
 
-pub(crate) fn pty_input(machine: &str, pid: &str, data: &[u8]) -> Result<(), String> {
-    link(machine)?.send(ClientMsg::PtyInput { pid: pid.into(), data: termic_remote::b64(data) })
+fn remote_of(pid: &str) -> Option<(String, String)> {
+    ptys().lock().unwrap().get(pid).map(|p| (p.machine.clone(), p.remote.clone()))
 }
 
-pub(crate) fn pty_resize(machine: &str, pid: &str, cols: u16, rows: u16) -> Result<(), String> {
+pub(crate) fn pty_input(pid: &str, data: &[u8]) -> Result<(), String> {
+    let Some((machine, remote)) = remote_of(pid) else { return Ok(()) };
+    link(&machine)?.send(ClientMsg::PtyInput { pid: remote, data: termic_remote::b64(data) })
+}
+
+pub(crate) fn pty_resize(pid: &str, cols: u16, rows: u16) -> Result<(), String> {
+    let Some((machine, remote)) = remote_of(pid) else { return Ok(()) };
     if let Some(p) = ptys().lock().unwrap().get_mut(pid) {
         p.size = (cols, rows);
     }
-    link(machine)?.send(ClientMsg::PtyResize { pid: pid.into(), cols, rows })
+    link(&machine)?.send(ClientMsg::PtyResize { pid: remote, cols, rows })
 }
 
-pub(crate) fn pty_kill(machine: &str, pid: &str) -> Result<(), String> {
-    ptys().lock().unwrap().remove(pid);
-    link(machine)?.send(ClientMsg::PtyKill { pid: pid.into() })
+/// Drop a handle; the box's PTY ends with the last one. A kill that races a
+/// respawn (the webview does not await it) or a cancelled spawn leaves the
+/// other handle, and with it the running process, alone.
+pub(crate) fn pty_kill(pid: &str) -> Result<(), String> {
+    let Some((machine, remote)) = remote_of(pid) else { return Ok(()) };
+    let last = {
+        let mut map = ptys().lock().unwrap();
+        map.remove(pid);
+        !map.values().any(|p| p.machine == machine && p.remote == remote)
+    };
+    if !last {
+        return Ok(());
+    }
+    link(&machine)?.send(ClientMsg::PtyKill { pid: remote })
 }
 
 /// A message that answers by id (a transcript, keys or an interrupt with an
@@ -1604,7 +1676,7 @@ mod tests {
             });
         }));
         let mine = |p: &str| SEEN.lock().unwrap().iter().filter(|l| l.starts_with(p)).cloned().collect::<Vec<_>>();
-        ptys().lock().unwrap().insert("held-1".into(), RemotePty { machine: "m".into(), attached: false, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
+        ptys().lock().unwrap().insert("held-1".into(), RemotePty { machine: "m".into(), remote: "r".into(), wants_backlog: false, attached: false, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
         pty_event("held-1", PtyEvent::Data(b"$ ".to_vec()));
         pty_event("held-1", PtyEvent::Data(b"hi".to_vec()));
         pty_event("held-1", PtyEvent::Exit("exited".into()));
@@ -1613,7 +1685,7 @@ mod tests {
         assert_eq!(mine("held-1"), ["held-1 data $ hi", "held-1 exit exited"]);
         assert!(pty_machine("held-1").is_none(), "an exited PTY is forgotten");
         // Attached: output flows straight through.
-        ptys().lock().unwrap().insert("live-1".into(), RemotePty { machine: "m".into(), attached: true, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
+        ptys().lock().unwrap().insert("live-1".into(), RemotePty { machine: "m".into(), remote: "r".into(), wants_backlog: false, attached: true, held: Vec::new(), exit: None, seen: 0, size: (80, 24) });
         pty_event("live-1", PtyEvent::Data(b"x".to_vec()));
         assert_eq!(mine("live-1"), ["live-1 data x"]);
         assert!(!pty_attached("not-a-server-pty"));

@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { isGhLogin, roleSecrets, useShellRoles } from "@/lib/shellSecrets";
 import { useSecrets } from "@/store/secrets";
 import { roleColour } from "@/lib/secretsUi";
-import { agentName, useBoxAgents, useServerShells } from "@/components/remote/RemoteTaskView";
+import { useServerDetectedClis } from "@/lib/remote";
 
 const NO_CLOSED_TABS: ClosedTabEntry[] = [];
 
@@ -74,10 +74,12 @@ export function NewTabPalette() {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const task = useApp(s => s.tasks.find(w => w.id === taskId));
-  // A server project's task: its tabs open on the box (useServerShells),
-  // and only the agents installed THERE are offered.
+  // A server project's task: its tabs open on the box like any tab (the
+  // spawn routes them there); the agents offered are the ones installed
+  // THERE, by the same rules as locally.
   const server = useApp(s => s.projects.find(p => p.id === task?.project_id)?.server);
-  const boxAgents = useBoxAgents(server ?? undefined, open);
+  const serverClis = useServerDetectedClis(task?.project_id, !!server, registry, open);
+  const clisHere = server ? serverClis : detectedClis;
   const closedTabs = useApp(s => (taskId ? (s.closedTabs[taskId] ?? NO_CLOSED_TABS) : NO_CLOSED_TABS));
   const addTab = useApp(s => s.addTab);
   const addPaneTab = useApp(s => s.addPaneTab);
@@ -113,19 +115,6 @@ export function NewTabPalette() {
   const baseItems = useMemo(() => {
     if (!taskId) return [];
     const items: NewTabPaletteItem[] = [];
-    if (server) {
-      const add = useServerShells.getState().add;
-      items.push({ id: "shell", kind: "shell", title: t("newTab.terminal"), category: "terminals", iconId: "shell", run: () => add(taskId) });
-      for (const id of boxAgents) {
-        items.push({
-          id: `ag-${id}`, kind: "agent", title: agentName(id), category: "agents", iconId: resolveIconId(id, registry),
-          badge: t("newTabPalette.groupAgents"),
-          run: () => add(taskId, { label: agentName(id), input: `${id}\r`, agent: id }),
-        });
-      }
-      return items;
-    }
-
     // 1. Shell terminal
     items.push({
       id: "shell",
@@ -174,7 +163,7 @@ export function NewTabPalette() {
     }
 
     // 3. AI Agents
-    const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
+    const visibleClis = visibleCliIds(registry.map(a => a.id), registry, clisHere);
     const agentEntries = registry.filter(a => !isTerminalEntry(a) && visibleClis.has(a.id));
     for (const ag of agentEntries) {
       items.push({
@@ -238,7 +227,7 @@ export function NewTabPalette() {
     }
 
     return items;
-  }, [taskId, server, boxAgents, paneId, registry, detectedClis, closedTabs, task?.project_id, t, addTab, addPaneTab, resumeClosedTab]);
+  }, [taskId, paneId, registry, clisHere, closedTabs, task?.project_id, t, addTab, addPaneTab, resumeClosedTab]);
 
   // a shell running a Secrets role (docs/sandbox.md "Shells"), one row per
   // role. Reached by → on Terminal, or by typing; never in the default list.
@@ -312,9 +301,7 @@ export function NewTabPalette() {
         category: "custom_command",
         iconId: "shell",
         run: () => {
-          if (server) {
-            useServerShells.getState().add(taskId, { label: trimmed, input: `${trimmed}\r` });
-          } else if (paneId) {
+          if (paneId) {
             addPaneTab(taskId, paneId, "shell", {
               title: trimmed,
               command: trimmed,

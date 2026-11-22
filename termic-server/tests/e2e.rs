@@ -248,8 +248,8 @@ fn a_task_runs_end_to_end_through_the_bridge() {
         }
         _ => None,
     });
+    // A kill reports no exit to its asker (it may reuse the id at once).
     a.send(&ClientMsg::PtyKill { pid: "sh1".into() });
-    a.wait_for("the shell's exit", |m| matches!(m, ServerMsg::PtyExit { pid, .. } if pid == "sh1").then_some(()));
     a.send(&ClientMsg::PtyOpen { pid: "sh2".into(), cwd: "/".into(), argv: vec!["ls".into()], env: vec![], cols: 80, rows: 24, seen: None });
     let why = a.wait_for("a refusal outside the project", |m| match m {
         ServerMsg::PtyExit { pid, reason } if pid == "sh2" => Some(reason.clone()),
@@ -576,7 +576,26 @@ fn a_shell_outlives_its_connection_and_the_next_one_attaches() {
         _ => None,
     });
     assert!(why.contains("ended"), "{why}");
+    // Reusing an id right after a kill gets a new PTY, and no stale exit
+    // from the old one ends it.
     b.send(&ClientMsg::PtyKill { pid: "keep1".into() });
-    b.wait_for("the kill", |m| matches!(m, ServerMsg::PtyExit { pid, .. } if pid == "keep1").then_some(()));
+    b.send(&ClientMsg::PtyOpen { pid: "keep1".into(), cwd: repo.display().to_string(), argv: vec![], env: vec![], cols: 80, rows: 24, seen: None });
+    b.send(&ClientMsg::PtyInput { pid: "keep1".into(), data: termic_remote::b64(b"echo again-$((3+3))\r") });
+    let mut again = String::new();
+    b.wait_for("the reused id's new shell", |m| match m {
+        ServerMsg::PtyExit { pid, reason } if pid == "keep1" => panic!("a stale exit ended the new PTY: {reason}"),
+        ServerMsg::PtyData { pid, data, .. } if pid == "keep1" => {
+            again.push_str(&String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()));
+            again.contains("again-6").then_some(())
+        }
+        _ => None,
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3)); // past the old PTY's kill grace, so a stale exit would have arrived
+    b.send(&ClientMsg::PtyInput { pid: "keep1".into(), data: termic_remote::b64(b"echo still-$((4+4))\r") });
+    b.wait_for("the new shell outlives the old one's kill", |m| match m {
+        ServerMsg::PtyExit { pid, reason } if pid == "keep1" => panic!("a stale exit ended the new PTY: {reason}"),
+        ServerMsg::PtyData { pid, data, .. } if pid == "keep1" => String::from_utf8_lossy(&termic_remote::unb64(data).unwrap()).contains("still-8").then_some(()),
+        _ => None,
+    });
     e.stop();
 }

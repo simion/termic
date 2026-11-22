@@ -119,10 +119,13 @@ export function computeAgentStates(s: AppState = useApp.getState(), machines: Ma
   const states: Record<string, TaskAgentState> = {};
   for (const task of s.tasks) {
     if (task.archived) continue;
-    // A server project's task runs on the box and has no terminal tab
-    // here: its state is the box's, as its sidebar row shows it.
+    // A server project's task whose tabs this desktop has not opened (a
+    // fresh start, another desktop's agent): the box's reading of its
+    // agent, as its sidebar row shows it. Once opened, its tabs read state
+    // like local ones, below.
     const server = s.projects.find(p => p.id === task.project_id)?.server;
-    if (server) {
+    const hasLivePty = (s.tabs[task.id] ?? []).some(t => t.type === "terminal" && !!(t as TerminalTab).ptyId);
+    if (server && !hasLivePty) {
       const remote = machines.find(m => m.id === server)?.tasks.find(t => t.id === task.id)?.state;
       const state = remote === "working" || remote === "waiting" || remote === "done" || remote === "idle" ? remote : "inactive";
       const live = state !== "inactive";

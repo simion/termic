@@ -33,7 +33,6 @@ import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
 import { remoteCall, req, useRemote } from "@/lib/remote";
 import { i18n } from "@/lib/i18n";
 import { resolveRunTargets } from "@/lib/runTabs";
-import { useServerShells } from "@/components/remote/RemoteTaskView";
 import { openExternalUrl } from "@/lib/ipc";
 import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
 import type { Task } from "@/lib/types";
@@ -277,61 +276,11 @@ export function UnifiedBar() {
             palette's global commands (new task, project picker, settings)
             work with nothing selected. */}
         <CommandPaletteButton />
-        {task && proj && proj.server && (
-          <>
-            {/* A server project's task (docs/plans/server-projects.md): run,
-                prompts, send to main, sandbox and open-with act on this Mac
-                and land with their stages; archive works through the box. */}
-            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
-            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
-            {/* Run: the project's run script (Settings or the box's
-                `.termic.yaml`) in a new shell tab on the box. */}
-            <ServerRun task={task} />
-            {/* Prompts go to the agent on the box through termic-server's
-                `send` (what `termic send` uses). */}
-            <DropdownRoot>
-              <Tip content={t("unifiedBar.prompts")} side="bottom">
-                <DropdownTrigger asChild>
-                  <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="prompts-menu">
-                    <MessageSquareText className="h-4 w-4" />
-                    <span>{t("unifiedBar.prompts")}</span>
-                  </Button>
-                </DropdownTrigger>
-              </Tip>
-              <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
-                {enabledPrompts.length === 0 && (
-                  <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">{t("unifiedBar.promptsEmpty")}</div>
-                )}
-                {enabledPrompts.map(p => (
-                  <DropdownItem key={p.id} data-testid="server-prompt" onSelect={() => {
-                    const title = promptTitle(p, t);
-                    void remoteCall(proj.server!, req("send", { task: task.id, prompt: p.body }), 60_000)
-                      .then(r => {
-                        if (!r.ok) throw new Error(r.error?.message ?? "send failed");
-                        useUI.getState().pushToast(i18n.t("backend:runPrompt.sentTo", { title, label: task.name }), "success");
-                      })
-                      .catch(e => useUI.getState().pushToast(String(e), "error"));
-                  }}>
-                    <span className="min-w-0 flex-1 truncate">{promptTitle(p, t)}</span>
-                  </DropdownItem>
-                ))}
-              </DropdownMenu>
-            </DropdownRoot>
-            <Tip content={t("unifiedBar.archiveTask")} side="bottom">
-              <Button size="icon" variant="icon" onClick={() => { void confirmAndArchive(task); }} data-testid="archive-task">
-                <Archive className="h-4 w-4" />
-              </Button>
-            </Tip>
-            <ServerOpenWith serverId={proj.server} path={task.path} />
-            <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
-            <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
-              <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
-                <PanelRight className="h-4 w-4" />
-              </Button>
-            </Tip>
-          </>
-        )}
-        {task && proj && !proj.server && (
+        {/* One bar for every task. A server project's task
+            (docs/plans/server-projects.md) leaves out what acts only on
+            this Mac (the sandbox, a Secrets role) and opens its editor
+            over SSH; runs and prompts reach its tabs, which run on the box. */}
+        {task && proj && (
           <>
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             {/* Popped-out run controls (GH #54): Setup + Run/Stop live up
@@ -376,8 +325,8 @@ export function UnifiedBar() {
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
             {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
-            <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />
-            {(() => {
+            {!proj.server && <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />}
+            {!proj.server && (() => {
               if (task.docker_sandbox_enabled) {
                 return (
                   <Tip content={t("unifiedBar.sbDockerTip")} side="bottom">
@@ -419,7 +368,7 @@ export function UnifiedBar() {
                 data-testid="archive-task"
               ><Archive className="h-4 w-4" /></Button>
             </Tip>
-            <OpenWithButton task={task} />
+            {proj.server ? <ServerOpenWith serverId={proj.server} path={task.path} /> : <OpenWithButton task={task} />}
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
               <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
@@ -518,60 +467,3 @@ function ServerOpenWith({ serverId, path }: { serverId: string; path: string }) 
   );
 }
 
-/** Run for a server task: the run script, and any custom run commands,
- *  each in its own shell tab on the box. While the Run tab is open, Run is
- *  Stop, which closes it and so ends the script there (pty_kill). */
-function ServerRun({ task }: { task: Task }) {
-  const { t } = useTranslation("chrome");
-  const runTab = useServerShells(s => (s.shells[task.id] ?? []).find(id => s.meta[id]?.kind === "run"));
-  const [customs, setCustoms] = useState<ResolvedCommand[]>([]);
-  const refresh = useCallback(() => {
-    resolveCustomCommands(task.project_id).then(setCustoms).catch(() => setCustoms([]));
-  }, [task.project_id]);
-  useEffect(() => { refresh(); }, [refresh]);
-  const start = (label: string, script: string, kind?: "run") =>
-    useServerShells.getState().add(task.id, { label, input: `${script}\r`, kind });
-  const runScript = () => {
-    void resolveRunTargets(task.id).then(targets => {
-      const host = targets.find(x => x.member === "") ?? targets[0];
-      if (!host) {
-        useUI.getState().pushToast(t("task:rightPanel.noRunScript"), "info");
-        return;
-      }
-      start(t("panels:runControls.run"), host.script, "run");
-    });
-  };
-  if (runTab) {
-    return (
-      <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-stop"
-        onClick={() => useServerShells.getState().close(task.id, runTab)}>
-        <Square className="h-3.5 w-3.5" />
-        <span>{t("panels:runControls.stop")}</span>
-      </Button>
-    );
-  }
-  const button = (
-    <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-run" onClick={customs.length ? undefined : runScript}>
-      <Play className="h-4 w-4" />
-      <span>{t("panels:runControls.run")}</span>
-    </Button>
-  );
-  if (!customs.length) return button;
-  return (
-    <DropdownRoot onOpenChange={(o) => { if (o) refresh(); }}>
-      <DropdownTrigger asChild>{button}</DropdownTrigger>
-      <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
-        <DropdownItem data-testid="server-run-script" onSelect={runScript}>
-          <Play className="h-4 w-4" />
-          <span>{t("panels:runControls.run")}</span>
-        </DropdownItem>
-        <DropdownSeparator />
-        {customs.map((c, i) => (
-          <DropdownItem key={`${c.source}-${i}`} data-testid="server-run-custom" onSelect={() => start(c.label || c.command, c.command)}>
-            <span className="min-w-0 flex-1 truncate">{c.label || c.command}</span>
-          </DropdownItem>
-        ))}
-      </DropdownMenu>
-    </DropdownRoot>
-  );
-}

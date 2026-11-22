@@ -401,6 +401,22 @@ than growing a verb per feature:
   its command again. An older box without `pty_keep` hangs them up when
   the connection ends, and the desktop reports that as before. The
   desktop host refuses `pty_open`.
+- **The id on the box is a claim.** A server task's tabs are ordinary
+  desktop tabs whose PTYs run on the box (TaskView, TabBar and TerminalPane
+  draw them; `pty_spawn` routes by cwd to `server_pty_spawn`). A task's
+  default agent opens as `<task>:agent` there, any other tab as
+  `<task>:<tab>`, so an open of a running one attaches: a restarted desktop
+  finds its agent still running, and two desktops share one agent. The
+  desktop's own id (`<claim>/<8 hex>`, the `pty://` event name and the
+  PtyManager slot key) is a handle, unique per spawn: several handles may
+  share a claim for a moment (the webview does not await a kill before a
+  respawn, a spawn can be cancelled), live output reaches every handle,
+  an attach's backlog only the handle waiting for it, and the box's PTY
+  ends with the last handle's kill. A kill reports no exit to its asker.
+  Server PTYs get a PtyManager slot whose writer and master forward to the
+  box, so the CLI, the phone host and logs reach them as local ones; the
+  env is `task_spawn_env`, shared with local spawns. Quitting the desktop
+  leaves them running (cleanup only signals local pids).
 
 `server_projects.rs` keeps an index of the folders that live on a server
 (project roots and task worktrees), longest first, and the desktop's

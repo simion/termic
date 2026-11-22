@@ -545,11 +545,16 @@ export function ServerCloseDialog() {
   );
 }
 
-/** Stop a remote task's agent. Its view is closed first when it is the one
- *  on screen: an open terminal on a stopped task starts its agent again
- *  (termic-server `running`), which is how Start works. */
+/** Stop a remote task's agent. A server project's task is a desktop task
+ *  whose tabs run on the box: the local stop (its PTYs end there). A paired
+ *  computer's task is that computer's: ask it, with the view closed first,
+ *  since an open terminal there starts its agent again. */
 export async function stopRemoteAgent(machineId: string, taskId: string, machineName: string): Promise<void> {
   const app = useApp.getState();
+  if (app.tasks.some(t => t.id === taskId)) {
+    app.stopTask(taskId);
+    return;
+  }
   if (app.activeTaskId === taskId) app.setActiveTask(null);
   const remote = useRemote.getState();
   if (remote.open?.task === taskId) remote.openTask(null);

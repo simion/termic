@@ -30,7 +30,7 @@ import { ScheduledView } from "@/components/views/Scheduled";
 import { TodosView } from "@/components/views/TodosView";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
-import { RemoteTaskOverlay, RemoteTaskView, ServerCloseDialog, useServerShells } from "@/components/remote/RemoteTaskView";
+import { RemoteTaskOverlay, ServerCloseDialog } from "@/components/remote/RemoteTaskView";
 
 export function MainArea() {
   const task = useActiveTask();
@@ -61,10 +61,6 @@ export function MainArea() {
   // rest stay mounted but `display: none` (renderers paused, no paint).
   const mountedList = tasks.filter(w => mounted.has(w.id) && !w.archived);
   const activeId = task?.id ?? null;
-  // Server tasks with open shell tabs, as a string so a keystroke-free store
-  // write that changes nothing does not re-render this.
-  const withShellsKey = useServerShells(s => Object.keys(s.shells).filter(k => s.shells[k].length > 0).sort().join("\n"));
-  const withShells = useMemo(() => new Set(withShellsKey ? withShellsKey.split("\n") : []), [withShellsKey]);
 
   // No active task → show the Dashboard (the real home screen: logo,
   // Add project / Discover repos / Settings, project list) as the OVERLAY,
@@ -97,17 +93,9 @@ export function MainArea() {
             zIndex:  w.id === activeId ? 1 : 0,
           }}
         >
-          {(() => {
-            // A server project's task runs on the box: its agent terminal
-            // comes over the server's connection (one at a time), so only
-            // the active one opens it. A task with shell tabs stays mounted,
-            // hidden, so its shells live on.
-            const server = projects.find(p => p.id === w.project_id)?.server;
-            if (!server) return <TaskView task={w} />;
-            return w.id === activeId || withShells.has(w.id)
-              ? <RemoteTaskView key={w.id} machineId={server} taskId={w.id} taskPath={w.path} active={w.id === activeId} />
-              : null;
-          })()}
+          {/* A server project's task too: its terminals run on the box
+              (pty_spawn routes them there), drawn by the same view. */}
+          <TaskView task={w} />
         </div>
       ))}
       {overlay && (

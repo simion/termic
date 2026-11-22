@@ -254,8 +254,13 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
         }
         ClientMsg::PtyKill { pid } => {
-            // Hung up, not unsubscribed: the watcher sees it close and
-            // reports the exit.
+            // The asker has forgotten it, and may already be starting a new
+            // PTY under the same id (a stable `<task>:agent`): no exit goes
+            // back to it, or that late exit would end the new one. Another
+            // desktop watching it still sees it close.
+            if let Some((p, tap)) = s.taps.lock().unwrap().remove(&pid) {
+                p.unsubscribe(tap);
+            }
             if let Some(p) = s.d.ptys.lock().unwrap().remove(&pid) {
                 p.hangup();
                 let p2 = p.clone();
@@ -334,6 +339,15 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
             if !verbs::exec_allowed(&s.d, std::path::Path::new(cwd)) {
                 return exit(format!("{cwd} is not inside a project on this server"));
             }
+            // A task made before the desktop started its agents itself: its
+            // agent runs in the daemon's own PTY. It gives way, so the
+            // desktop's spawn resumes the session rather than running a
+            // second agent in the same worktree.
+            if let Some(task) = pid.strip_suffix(":agent") {
+                if s.d.live_of(task).is_some() {
+                    s.d.stop_agent(task);
+                }
+            }
             if s.d.ptys.lock().unwrap().len() >= MAX_PTYS {
                 return exit(format!("too many terminals running on this server ({MAX_PTYS})"));
             }
@@ -348,7 +362,15 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
                     env.push((k.into(), v.into()));
                 }
             }
-            let p = match pty::Pty::spawn(&wrapped, cwd, &env, Duration::from_millis(500), Arc::new(|| {})) {
+            // Output after a quiet spell wakes the state monitor, which reads
+            // a desktop-started agent (`<task>:agent`) as it does its own.
+            let d = Arc::downgrade(&s.d);
+            let notify: pty::Notify = Arc::new(move || {
+                if let Some(d) = d.upgrade() {
+                    d.poke();
+                }
+            });
+            let p = match pty::Pty::spawn(&wrapped, cwd, &env, s.d.quiet, notify) {
                 Ok(p) => p,
                 Err(e) => return exit(e),
             };
