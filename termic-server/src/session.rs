@@ -19,9 +19,8 @@ use termic_remote::conn::{MsgReader, MsgWriter};
 use termic_remote::framed::{FramedReader, FramedWriter};
 use termic_remote::wire::{self, caps, ClientMsg, HostKind, ServerMsg, TaskRow};
 
-use crate::agents;
-use crate::daemon::{Daemon, Live};
-use crate::pty::{self, TapMsg};
+use crate::daemon::Daemon;
+use crate::pty::{self, Pty, TapMsg};
 use crate::util;
 use crate::verbs;
 
@@ -50,7 +49,7 @@ struct Term {
     gen: u64,
     task_id: String,
     tab: Option<String>,
-    live: Arc<Live>,
+    pty: Arc<Pty>,
     tap: u64,
 }
 
@@ -166,19 +165,16 @@ fn ack(s: &Session, id: Option<String>, r: Result<(), String>) {
     }
 }
 
-/// A task's running agent, by id or name.
-fn running(s: &Session, task: &str, tab: Option<&str>) -> Result<(String, Arc<Live>), String> {
+/// A task's running agent, by id or name: (task id, agent id, its PTY).
+fn running(s: &Session, task: &str, tab: Option<&str>) -> Result<(String, String, Arc<Pty>), String> {
     if !matches!(tab, None | Some("agent") | Some("1") | Some("")) {
         return Err(format!("no tab \"{}\": termic-server tasks have one tab, \"agent\"", tab.unwrap_or_default()));
     }
     let t = verbs::resolve(&s.d, Some(task), None, None).map_err(|e| e.1)?;
-    // Opening a stopped task starts its agent on its last session, as
-    // opening one does on the desktop (and what Reopen is for).
-    let live = match s.d.live_of(&t.id).filter(|l| !l.pty.exited()) {
-        Some(l) => l,
-        None => s.d.spawn_agent(&t, true, None).map_err(|e| format!("{}'s agent could not start: {e}", t.name))?,
-    };
-    Ok((t.id, live))
+    // The desktop starts agents (resuming their session); this host has
+    // no agent table to start one from.
+    let pty = s.d.agent_pty(&t.id).ok_or_else(|| format!("{}'s agent is not running; open the task in Termic to start it", t.name))?;
+    Ok((t.id, t.agent, pty))
 }
 
 fn handle(s: &Arc<Session>, msg: ClientMsg) {
@@ -207,7 +203,7 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
         ClientMsg::TermClose {} => close_term(s),
         ClientMsg::TermSize { cols, rows } => {
             if let Some(t) = s.term.lock().unwrap().clone() {
-                if let Err(e) = t.live.pty.resize(rows, cols) {
+                if let Err(e) = t.pty.resize(rows, cols) {
                     error(s, e);
                 }
             }
@@ -216,14 +212,14 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             let term = s.term.lock().unwrap().clone();
             if let (Some(t), Some(bytes)) = (term, termic_remote::unb64(&data)) {
                 if bytes.len() <= MAX_KEYS {
-                    let _ = t.live.pty.input(&bytes);
+                    let _ = t.pty.input(&bytes);
                 }
             }
         }
         ClientMsg::Keys { task, tab, data, id, question } => {
             let r = (|| {
                 let bytes = termic_remote::unb64(&data).filter(|b| b.len() <= MAX_KEYS).ok_or("bad keys")?;
-                let (task_id, live) = running(s, &task, tab.as_deref())?;
+                let (task_id, _, pty) = running(s, &task, tab.as_deref())?;
                 // An answer to a question that is no longer on screen would
                 // be typed into whatever came next.
                 if let Some(q) = question {
@@ -231,12 +227,12 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                         return Err("stale".to_string());
                     }
                 }
-                live.pty.input(&bytes)
+                pty.input(&bytes)
             })();
             ack(s, id, r);
         }
         ClientMsg::Interrupt { task, tab, id } => {
-            let r = running(s, &task, tab.as_deref()).and_then(|(_, live)| live.pty.input(agents::interrupt_key(&live.agent)));
+            let r = running(s, &task, tab.as_deref()).and_then(|(_, agent, pty)| pty.input(termic_proto::interrupt_key(&agent)));
             ack(s, id, r);
         }
         ClientMsg::PtyOpen { pid, cwd, argv, env, cols, rows, seen } => pty_open(s, pid, &cwd, argv, env, cols, rows, seen),
@@ -245,6 +241,12 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             if let (Some(p), Some(bytes)) = (p, termic_remote::unb64(&data)) {
                 if bytes.len() <= MAX_KEYS {
                     let _ = p.input(&bytes);
+                    // Enter into an agent starts a turn: the monitor reads
+                    // it now, as a `send` does (its output may come inside
+                    // the quiet window and wake nothing).
+                    if pid.ends_with(":agent") && bytes.contains(&b'\r') {
+                        s.d.poke();
+                    }
                 }
             }
         }
@@ -276,8 +278,8 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
         ClientMsg::Transcript { id, task } => {
             // Reading the chat is looking at the task: "done" is seen.
             if let Ok(t) = verbs::resolve(&s.d, Some(&task), None, None) {
-                if let Some(live) = s.d.live_of(&t.id) {
-                    live.pty.mark_seen();
+                if let Some(pty) = s.d.agent_pty(&t.id) {
+                    pty.mark_seen();
                     s.d.poke();
                 }
             }
@@ -351,15 +353,6 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
             if !verbs::exec_allowed(&s.d, std::path::Path::new(cwd)) {
                 return exit(format!("{cwd} is not inside a project on this server"));
             }
-            // A task made before the desktop started its agents itself: its
-            // agent runs in the daemon's own PTY. It gives way, so the
-            // desktop's spawn resumes the session rather than running a
-            // second agent in the same worktree.
-            if let Some(task) = pid.strip_suffix(":agent") {
-                if s.d.live_of(task).is_some() {
-                    s.d.stop_agent(task);
-                }
-            }
             if s.d.ptys.lock().unwrap().len() >= MAX_PTYS {
                 return exit(format!("too many terminals running on this server ({MAX_PTYS})"));
             }
@@ -395,6 +388,9 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
         Ok(x) => x,
         Err(e) => return exit(e),
     };
+    // Someone has it open now (and a new agent PTY can be found): the
+    // monitor recomputes.
+    s.d.poke();
     // A second open of the same PTY on this connection replaces the first tap.
     if let Some((old, old_tap)) = s.taps.lock().unwrap().insert(pid.clone(), (p.clone(), tap)) {
         old.unsubscribe(old_tap);
@@ -424,6 +420,13 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
             }
         }
         s2.taps.lock().unwrap().remove(&pid);
+        // Ended by a restart onto a new build: say nothing. An "exited" here
+        // could reach the desktop before the connection drops, and it would
+        // show the agent exited instead of asking the next daemon, which
+        // answers "restarted" (pty_open above) so the desktop starts it again.
+        if s2.d.restarting.load(Ordering::SeqCst) {
+            return;
+        }
         send(&s2, ServerMsg::PtyExit { pid, reason: "exited".into() });
     });
 }
@@ -432,16 +435,18 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
 
 fn open_term(s: &Arc<Session>, task: &str, tab: Option<String>) {
     close_term(s);
-    let (task_id, live) = match running(s, task, tab.as_deref()) {
+    let (task_id, _, pty) = match running(s, task, tab.as_deref()) {
         Ok(x) => x,
         Err(e) => return send(s, ServerMsg::TermClosed { reason: e }),
     };
-    let (tap, backlog, rx) = match live.pty.subscribe() {
+    let (tap, backlog, rx) = match pty.subscribe() {
         Ok(x) => x,
         Err(e) => return send(s, ServerMsg::TermClosed { reason: e }),
     };
+    // Looking at it reads what it finished: the monitor recomputes.
+    s.d.poke();
     let gen = s.gen.fetch_add(1, Ordering::SeqCst) + 1;
-    *s.term.lock().unwrap() = Some(Term { gen, task_id: task_id.clone(), tab: tab.clone(), live, tap });
+    *s.term.lock().unwrap() = Some(Term { gen, task_id: task_id.clone(), tab: tab.clone(), pty, tap });
     s.behind.store(false, Ordering::SeqCst);
     let (rows, cols) = live_size(s);
     send(s, ServerMsg::TermReset { task: task_id, tab, cols, rows, data: termic_remote::b64(&backlog) });
@@ -451,13 +456,13 @@ fn open_term(s: &Arc<Session>, task: &str, tab: Option<String>) {
 
 /// The open terminal's PTY size (rows, cols).
 fn live_size(s: &Session) -> (u16, u16) {
-    s.term.lock().unwrap().as_ref().map(|t| t.live.pty.size()).unwrap_or((pty::ROWS, pty::COLS))
+    s.term.lock().unwrap().as_ref().map(|t| t.pty.size()).unwrap_or((pty::ROWS, pty::COLS))
 }
 
 fn close_term(s: &Session) {
     if let Some(t) = s.term.lock().unwrap().take() {
         // Dropping the tap's sender ends the forwarder.
-        t.live.pty.unsubscribe(t.tap);
+        t.pty.unsubscribe(t.tap);
     }
 }
 
@@ -504,9 +509,9 @@ fn forward(s: &Session, rx: mpsc::Receiver<TapMsg>, gen: u64) {
 fn write_loop(s: &Session, rx: mpsc::Receiver<Out>, mut w: MsgWriter) {
     let resync = |w: &mut MsgWriter| -> std::io::Result<()> {
         let Some(t) = s.term.lock().unwrap().clone() else { return Ok(()) };
-        let (data, _) = t.live.pty.tail(pty::RING_BYTES);
+        let (data, _) = t.pty.tail(pty::RING_BYTES);
         s.behind.store(false, Ordering::SeqCst);
-        let (rows, cols) = t.live.pty.size();
+        let (rows, cols) = t.pty.size();
         w.send(&ServerMsg::TermReset { task: t.task_id, tab: t.tab, cols, rows, data: termic_remote::b64(&data) })
     };
     while let Ok(item) = rx.recv() {

@@ -6,11 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use termic_proto::{
-    self as proto, send_mode, AgentEntry, AgentsData, ArchiveData, Command, DiffData, DiffStat, ErrorCode, ListData, LogsData, NewData, ProjectAddData, ProjectInfo, ProjectListData,
+    self as proto, send_mode, ArchiveData, Command, DiffData, DiffStat, ErrorCode, ListData, LogsData, NewData, ProjectAddData, ProjectInfo, ProjectListData,
     ProjectRemoveData, RenameData, Reply, ReplyData, Request, ResultData, SendData, StatusData, TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
 };
 
-use crate::agents;
 use crate::daemon::{self, fail, Daemon, Fail, AGENT_TAB, MAX_PROMPT};
 use crate::state::{Project, TaskRec};
 use crate::util;
@@ -39,22 +38,17 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
             Ok(ReplyData::Status(StatusData { task: status(d, &t) }))
         }
-        Command::New { name, prompt, prompt_ref, agent, agent_args, mode, base, checkout, from, resume, pr, project, wait, timeout_ms, cwd, .. } => {
-            if prompt_ref.is_some() {
-                return Err(fail(ErrorCode::Unsupported, "termic-server has no prompt library; pass the prompt text"));
-            }
-            if from.is_some() || resume.is_some() || pr.is_some() {
-                return Err(fail(ErrorCode::Unsupported, "termic-server does not support --from, --resume or --pr yet"));
-            }
-            new_task(d, NewArgs { name, prompt, agent, agent_args, mode, base, checkout, project, cwd, wait, timeout_ms })
-        }
+        // The desktop creates a server task (its worktree over `exec`, then
+        // `task_put`) and starts its agent: this host has no agent table.
+        Command::New { .. } => Err(fail(ErrorCode::Unsupported, "tasks on a server are started by Termic on the desktop")),
         Command::Send { task, project, prompt, prompt_ref, resume, fresh, wait, timeout_ms, tab, now, cwd } => {
             if prompt_ref.is_some() {
                 return Err(fail(ErrorCode::Unsupported, "termic-server has no prompt library; pass the prompt text"));
             }
             check_tab(tab.as_deref())?;
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
-            send(d, &t, prompt, resume, fresh, now, wait, timeout_ms)
+            let _ = (resume, fresh, now);
+            send(d, &t, prompt, wait, timeout_ms)
         }
         Command::Wait { task, project, timeout_ms, tab, cwd } => {
             check_tab(tab.as_deref())?;
@@ -88,36 +82,18 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             }
             check_tab(tab.as_deref())?;
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
-            let live = d.live_of(&t.id).ok_or_else(|| fail(ErrorCode::NotFound, format!("{} has no agent running", t.name)))?;
+            let pty = d.agent_pty(&t.id).ok_or_else(|| fail(ErrorCode::NotFound, format!("{} has no agent running", t.name)))?;
             let max = last_bytes.map(|b| b as usize).unwrap_or(crate::pty::RING_BYTES).min(crate::pty::RING_BYTES);
-            let (bytes, truncated) = live.pty.tail(max);
+            let (bytes, truncated) = pty.tail(max);
             Ok(ReplyData::Logs(LogsData { task_id: t.id, source: "agent".into(), data: String::from_utf8_lossy(&bytes).to_string(), truncated }))
         }
         Command::Diff { task, project, full, cwd } => {
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
             diff(&t, full)
         }
-        Command::Agents => {
-            let table = agents::table(&d.dir);
-            let ids: Vec<String> = table.keys().cloned().collect();
-            // Each check starts a login shell; run them side by side.
-            let checks: Vec<_> = ids
-                .iter()
-                .map(|id| {
-                    let (t, id) = (table.clone(), id.clone());
-                    std::thread::spawn(move || agents::installed(&t, &id))
-                })
-                .collect();
-            let agents = ids
-                .into_iter()
-                .zip(checks)
-                .map(|(id, h)| {
-                    let installed = h.join().unwrap_or(false);
-                    AgentEntry { id, kind: "agent".into(), enabled: true, installed: Some(installed), usable: installed, accounts: Vec::new(), default_account: None }
-                })
-                .collect();
-            Ok(ReplyData::Agents(AgentsData { agents }))
-        }
+        // The desktop's registry decides the agents; it checks one is on
+        // the box with `exec` (server_projects.rs `server_which`).
+        Command::Agents => Err(fail(ErrorCode::Unsupported, "agents on a server are chosen by Termic on the desktop")),
         Command::ProjectAdd { path, non_git, clone } => {
             if let Some(url) = clone {
                 clone_into(&path, &url)?;
@@ -209,7 +185,7 @@ pub fn resolve(d: &Daemon, task: Option<&str>, project: Option<&str>, cwd: Optio
 
 fn summary(d: &Daemon, t: &TaskRec, with_diff: bool) -> TaskSummary {
     let project = d.st.lock().unwrap().project_name(&t.project_id);
-    let live = d.live_of(&t.id);
+    let alive = d.agent_pty(&t.id).is_some();
     let diff = if with_diff { daemon::diff_stat(t).map(|s| DiffStat { files_changed: s.files_changed, insertions: s.insertions, deletions: s.deletions, untracked: s.untracked }) } else { None };
     TaskSummary {
         id: t.id.clone(),
@@ -223,7 +199,7 @@ fn summary(d: &Daemon, t: &TaskRec, with_diff: bool) -> TaskSummary {
         is_main_checkout: t.is_main_checkout,
         created: t.created.clone(),
         work_state: Some(d.view_of(&t.id).state),
-        open_tabs: Some(u32::from(live.is_some_and(|l| !l.pty.exited()))),
+        open_tabs: Some(u32::from(alive)),
         diff,
         ..Default::default()
     }
@@ -244,8 +220,7 @@ fn list(d: &Daemon, project: Option<&str>, quiet: bool) -> Result<ReplyData, Fai
 
 fn status(d: &Daemon, t: &TaskRec) -> TaskStatus {
     let s = summary(d, t, true);
-    let live = d.live_of(&t.id);
-    let alive = live.as_ref().is_some_and(|l| !l.pty.exited());
+    let alive = d.agent_pty(&t.id).is_some();
     let state = s.work_state.clone();
     TaskStatus {
         dirty_files: s.diff.as_ref().map(|x| x.files_changed + x.untracked),
@@ -261,178 +236,26 @@ fn status(d: &Daemon, t: &TaskRec) -> TaskStatus {
             state,
             is_default: true,
             live: alive,
-            queued: live.map(|l| u32::from(l.pending())).unwrap_or(0),
             ..Default::default()
         }]),
     }
 }
 
-// ───────────────────────────── new ───────────────────────────────────
-
-struct NewArgs {
-    name: String,
-    prompt: Option<String>,
-    agent: Option<String>,
-    agent_args: Vec<String>,
-    mode: Option<String>,
-    base: Option<String>,
-    checkout: Option<String>,
-    project: Option<String>,
-    cwd: Option<String>,
-    wait: bool,
-    timeout_ms: Option<u64>,
-}
-
-fn safe_ref(r: &str) -> Result<(), Fail> {
-    if r.is_empty() || r.starts_with('-') || r.len() > 200 || r.chars().any(|c| c.is_control() || c == ' ') {
-        return Err(fail(ErrorCode::BadRequest, format!("\"{r}\" is not a branch name")));
-    }
-    Ok(())
-}
-
-fn new_task(d: &Arc<Daemon>, a: NewArgs) -> Result<ReplyData, Fail> {
-    if let Some(p) = &a.prompt {
-        if p.len() > MAX_PROMPT {
-            return Err(fail(ErrorCode::BadRequest, "the prompt is too long (256 KiB at most)"));
-        }
-    }
-    let agent = a.agent.filter(|s| !s.is_empty()).unwrap_or_else(|| agents::DEFAULT_AGENT.into());
-    let table = agents::table(&d.dir);
-    if !table.contains_key(&agent) {
-        return Err(fail(ErrorCode::BadRequest, format!("unknown agent \"{agent}\" (see `termic agents`)")));
-    }
-    let main = match a.mode.as_deref() {
-        None | Some("worktree") => false,
-        Some("main") => true,
-        Some(m) => return Err(fail(ErrorCode::BadRequest, format!("unknown mode \"{m}\" (worktree or main)"))),
-    };
-    if let Some(b) = &a.base {
-        safe_ref(b)?;
-    }
-    if let Some(c) = &a.checkout {
-        safe_ref(c)?;
-    }
-    let mut name = a.name.trim().to_string();
-    if name.is_empty() {
-        name = a.checkout.clone().unwrap_or_default();
-    }
-    if name.is_empty() || name.len() > MAX_NAME || name.chars().any(|c| c.is_control()) {
-        return Err(fail(ErrorCode::BadRequest, "a task needs a name (at most 200 characters, no control characters)"));
-    }
-    let slug = util::slug(&name);
-    if slug.is_empty() && !main {
-        return Err(fail(ErrorCode::BadRequest, "the task name needs at least one letter or digit"));
-    }
-
-    let _guard = d.create.lock().unwrap();
-    let project = {
-        let st = d.st.lock().unwrap();
-        match a.project.as_deref() {
-            Some(n) => find_project(&st.projects, n).cloned().ok_or_else(|| fail(ErrorCode::NotFound, format!("no project named \"{n}\"")))?,
-            None => match a.cwd.as_deref().and_then(|c| st.projects.iter().filter(|p| daemon::path_within(c, &p.path)).max_by_key(|p| p.path.len()).cloned()) {
-                Some(p) => p,
-                None if st.projects.len() == 1 => st.projects[0].clone(),
-                None if st.projects.is_empty() => return Err(fail(ErrorCode::NotFound, "this server has no projects yet; add one with `project add <path>`")),
-                None => return Err(fail(ErrorCode::BadRequest, "this server has several projects; pass --project")),
-            },
-        }
-    };
-    if d.st.lock().unwrap().tasks.iter().any(|t| !t.archived && t.project_id == project.id && t.name.eq_ignore_ascii_case(&name)) {
-        return Err(fail(ErrorCode::Conflict, format!("a task named \"{name}\" already exists in {}", project.name)));
-    }
-
-    let (path, branch, base) = if main {
-        let branch = daemon::git(&project.path, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
-        (project.path.clone(), branch, a.base.clone().unwrap_or_default())
-    } else {
-        // Both components are slugs (or our own uuid), so the path cannot
-        // leave worktrees/.
-        let pslug = util::slug(&project.name);
-        let dir = d.worktrees_dir().join(if pslug.is_empty() { project.id.clone() } else { pslug }).join(&slug);
-        if dir.exists() {
-            return Err(fail(ErrorCode::Conflict, format!("{} already exists on the server", dir.display())));
-        }
-        if let Some(parent) = dir.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| fail(ErrorCode::Internal, format!("could not create {}: {e}", parent.display())))?;
-        }
-        let path = dir.to_string_lossy().to_string();
-        let current = daemon::git(&project.path, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|s| s.trim().to_string()).map_err(|e| fail(ErrorCode::Internal, format!("{}: {e}", project.name)))?;
-        match &a.checkout {
-            Some(br) => {
-                daemon::git(&project.path, &["worktree", "add", &path, br]).map_err(|e| fail(ErrorCode::Internal, format!("git worktree add failed: {e}")))?;
-                (path, br.clone(), a.base.clone().unwrap_or(current))
-            }
-            None => {
-                let base = a.base.clone().unwrap_or(current);
-                daemon::git(&project.path, &["worktree", "add", "-b", &slug, &path, &base]).map_err(|e| fail(ErrorCode::Internal, format!("git worktree add failed: {e}")))?;
-                (path, slug.clone(), base)
-            }
-        }
-    };
-
-    let t = TaskRec {
-        id: util::uuid(),
-        name,
-        project_id: project.id.clone(),
-        path,
-        branch,
-        base_branch: base,
-        agent,
-        agent_args: a.agent_args,
-        created: util::rfc3339(util::now_secs()),
-        archived: false,
-        is_main_checkout: main,
-    };
-    {
-        let mut st = d.st.lock().unwrap();
-        st.tasks.push(t.clone());
-        d.save(&st);
-    }
-    drop(_guard);
-    util::log(&format!("created task {} in {}", t.name, project.name));
-    let prompt = a.prompt.filter(|p| !p.trim().is_empty());
-    let spawned = d.spawn_agent(&t, false, prompt.clone());
-    d.refresh_diff(&t.id);
-    d.bump();
-    if let Err(e) = spawned {
-        // The task exists (its worktree too); say why the agent did not.
-        return Err(fail(ErrorCode::Internal, format!("created {} but its agent did not start: {e}", t.name)));
-    }
-    let wait = a.wait.then(|| wait_settled(d, &t.id, a.timeout_ms));
-    Ok(ReplyData::New(NewData { task: summary(d, &t, false), wait }))
-}
-
 // ───────────────────────────── send / wait ───────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-fn send(d: &Arc<Daemon>, t: &TaskRec, prompt: String, resume: bool, fresh: bool, now: bool, wait: bool, timeout_ms: Option<u64>) -> Result<ReplyData, Fail> {
+/// Type a prompt into the task's agent at once. Only a running one: the
+/// desktop starts agents (resuming their session), so one that is not
+/// running is started by opening the task in Termic.
+fn send(d: &Arc<Daemon>, t: &TaskRec, prompt: String, wait: bool, timeout_ms: Option<u64>) -> Result<ReplyData, Fail> {
     if prompt.trim().is_empty() {
         return Err(fail(ErrorCode::BadRequest, "nothing to send: the prompt is empty"));
     }
     if prompt.len() > MAX_PROMPT {
         return Err(fail(ErrorCode::BadRequest, "the prompt is too long (256 KiB at most)"));
     }
-    let running = d.live_of(&t.id).filter(|l| !l.pty.exited());
-    let mode = match running {
-        Some(live) => {
-            let state = d.view_of(&t.id).state;
-            // Busy (or still taking the last prompt): queue behind the turn.
-            if !now && (state == "working" || live.pending()) {
-                d.enqueue(&live, prompt, false);
-                send_mode::QUEUED
-            } else {
-                d.enqueue(&live, prompt, true);
-                send_mode::DELIVERED
-            }
-        }
-        None => {
-            if !resume && !fresh {
-                return Err(fail(ErrorCode::NotFound, format!("{}'s agent is not running; pass --resume to continue its last session or --fresh to start a new one", t.name)));
-            }
-            d.spawn_agent(t, resume, Some(prompt)).map_err(|e| fail(ErrorCode::Internal, e))?;
-            send_mode::SPAWNED
-        }
-    };
+    let pty = d.agent_pty(&t.id).ok_or_else(|| fail(ErrorCode::NotFound, format!("{}'s agent is not running; open the task in Termic to start it", t.name)))?;
+    d.type_prompt(pty, prompt);
+    let mode = send_mode::DELIVERED;
     let wait = wait.then(|| wait_settled(d, &t.id, timeout_ms));
     Ok(ReplyData::Send(SendData { task_id: t.id.clone(), mode: mode.into(), capable: true, wait }))
 }
@@ -446,15 +269,12 @@ pub fn wait_settled(d: &Daemon, task_id: &str, timeout_ms: Option<u64>) -> WaitR
     let mut seen = d.seq();
     loop {
         let state = d.view_of(task_id).state;
-        let live = d.live_of(task_id);
-        let pending = live.as_ref().is_some_and(|l| l.pending());
-        if live.as_ref().is_some_and(|l| l.lost()) {
-            return WaitResult { outcome: WaitOutcome::NotDelivered, state: Some(state), detail: Some("the agent exited before the prompt was typed in".into()) };
-        }
+        let live = d.agent_pty(task_id);
+        let pending = false;
         // The view lags a fresh prompt by one monitor pass; a pty that just
         // took input reads as working until the monitor catches up.
-        let fresh_input = live.as_ref().is_some_and(|l| {
-            let (exited, act, _, _) = l.pty.activity();
+        let fresh_input = live.as_ref().is_some_and(|p| {
+            let (exited, act, _, _) = p.activity();
             !exited && act.is_some_and(|t| t.elapsed() < d.quiet)
         });
         if !pending && !fresh_input {
@@ -530,7 +350,8 @@ fn project_info(p: &Project, tasks: &[TaskRec]) -> ProjectInfo {
         name: p.name.clone(),
         root_path: p.path.clone(),
         tasks: tasks.iter().filter(|t| !t.archived && t.project_id == p.id).count() as u32,
-        default_agent: agents::DEFAULT_AGENT.into(),
+        // The desktop's own default applies (its registry starts agents).
+        default_agent: String::new(),
         // A server project is always one repo.
         project_type: "single".into(),
         members: Vec::new(),
@@ -631,8 +452,6 @@ fn project_remove(d: &Arc<Daemon>, name: &str) -> Result<ReplyData, Fail> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn last_assistant_text_skips_sidechains_and_tool_only_turns() {
         let j = [
@@ -645,14 +464,6 @@ mod tests {
         assert_eq!(termic_remote::transcript::last_assistant_text(&j).as_deref(), Some("final"));
     }
 
-    #[test]
-    fn refs_that_look_like_flags_are_refused() {
-        assert!(safe_ref("main").is_ok());
-        assert!(safe_ref("origin/feature-x").is_ok());
-        assert!(safe_ref("--upload-pack=x").is_err());
-        assert!(safe_ref("a b").is_err());
-        assert!(safe_ref("").is_err());
-    }
 }
 
 /// Most `exec` returns: a git log or a file read, never a stream.

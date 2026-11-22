@@ -44,7 +44,6 @@ impl Env {
         std::fs::write(&agent, FAKE_AGENT).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(e.srv().join("agents.json"), json!({ "fake": [agent] }).to_string()).unwrap();
         // A repo with one commit.
         let repo = e.repo();
         std::fs::create_dir_all(&repo).unwrap();
@@ -184,6 +183,29 @@ impl Client {
     }
 }
 
+/// A task made the way the desktop makes one: its worktree (git, which the
+/// desktop runs through `exec`), the record (`task_put`), then its agent
+/// in a `<task>:agent` PTY. Returns the worktree.
+fn desk_task(a: &mut Client, e: &Env, id: &str, name: &str, branch: &str) -> PathBuf {
+    let project = a.ok(json!({"cmd":"project_list"}))["projects"][0]["id"].as_str().unwrap().to_string();
+    let path = e.srv().join("worktrees").join("repo").join(branch);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    assert!(Command::new("git").arg("-C").arg(e.repo()).args(["worktree", "add", "-q", "-b", branch]).arg(&path).arg("main").status().unwrap().success());
+    let path = path.canonicalize().unwrap();
+    a.ok(json!({"cmd":"task_put","task": id,"name": name,"project": project,"path": path,"branch": branch,"base_branch":"main","agent":"fake"}));
+    start_agent(a, e, id, &path);
+    path
+}
+
+/// The desktop starting (or restarting) a task's agent.
+fn start_agent(a: &mut Client, e: &Env, id: &str, path: &Path) {
+    let agent = e.root.join("fake-agent.sh").display().to_string();
+    a.send(&ClientMsg::PtyOpen { pid: format!("{id}:agent"), cwd: path.display().to_string(), argv: vec![agent], env: vec![], cols: 120, rows: 40, seen: None });
+}
+
+const ID1: &str = "11111111111111111111111111111111";
+const ID2: &str = "22222222222222222222222222222222";
+
 fn short(m: &ServerMsg) -> String {
     match m {
         ServerMsg::Tasks { tasks } => format!("TASKS[{}]", tasks.iter().map(|t| t.state.clone()).collect::<Vec<_>>().join(",")),
@@ -270,17 +292,12 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     assert_eq!(bad["ok"], json!(false), "a non-git dir needs non_git");
     assert_eq!(a.ok(json!({"cmd":"project_list"}))["projects"].as_array().unwrap().len(), 1);
 
-    // A task: worktree, branch, agent in a PTY.
-    let n = a.ok(json!({"cmd":"new","name":"Fix Login!","agent":"fake"}));
-    let task = &n["task"];
-    let path = PathBuf::from(task["path"].as_str().unwrap());
-    assert_eq!(task["branch"], "fix-login");
-    assert_eq!(task["base_branch"], "main");
-    assert!(path.starts_with(e.srv().join("worktrees")) && path.join("README").exists());
-    let dup = a.call(json!({"cmd":"new","name":"fix login!","agent":"fake"}));
-    assert_eq!(dup["error"]["code"], "conflict");
-    let unknown = a.call(json!({"cmd":"new","name":"x","agent":"nope"}));
-    assert_eq!(unknown["ok"], json!(false));
+    // A task: the desktop makes it (this host has no `new` and no agent
+    // table) and starts its agent in a PTY here.
+    let un = a.call(json!({"cmd":"new","name":"x","agent":"fake"}));
+    assert_eq!(un["error"]["code"], "unsupported", "{un}");
+    let path = desk_task(&mut a, &e, ID1, "Fix Login!", "fix-login");
+    assert!(path.starts_with(e.srv().join("worktrees").canonicalize().unwrap()) && path.join("README").exists());
 
     // Booted and quiet: idle, never given anything.
     let row = a.task_state("Fix Login!", |t| t.state == "idle");
@@ -330,36 +347,19 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     a.wait_for("ack k1", |m| matches!(m, ServerMsg::Ack { id, ok: true, .. } if id == "k1").then_some(()));
     a.term_until("echo: yes");
     a.task_state("Fix Login!", |t| t.state == "idle");
-    // Nobody watching: a finish is an unread done until someone looks.
-    a.send(&ClientMsg::TermClose {});
-    a.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"unwatched"}));
-    a.task_state("Fix Login!", |t| t.state == "done");
-    a.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
-    a.task_state("Fix Login!", |t| t.state == "idle");
-    // Reading its chat (a phone's transcript) is looking at it too.
-    a.send(&ClientMsg::TermClose {});
-    a.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"unwatched again"}));
-    // Its reply landed and it settled: then "done" is the current state,
-    // not a snapshot from before the send.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        let st = a.ok(json!({"cmd":"status","task":"Fix Login!"}));
-        let logs = a.ok(json!({"cmd":"logs","task":"Fix Login!"}));
-        if logs["data"].as_str().unwrap_or("").contains("echo: unwatched again") && st["task"]["work_state"] == "done" {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "never settled to done: {st}");
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    a.send(&ClientMsg::Transcript { id: "seen1".into(), task: "Fix Login!".into() });
-    a.task_state("Fix Login!", |t| t.state == "idle");
     a.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
     // An answer bound to a question that is not on screen is refused.
     a.send(&ClientMsg::Keys { task: "Fix Login!".into(), tab: None, data: termic_remote::b64(b"1"), id: Some("k2".into()), question: Some("gone".into()) });
     a.wait_for("stale ack", |m| matches!(m, ServerMsg::Ack { id, ok: false, message } if id == "k2" && message.as_deref() == Some("stale")).then_some(()));
 
-    // A second task given a prompt at birth: delivered once the agent is ready.
-    a.ok(json!({"cmd":"new","name":"second","agent":"fake","prompt":"first job","wait":true,"timeout_ms":15000}));
+    // A second task, prompted once its agent is up.
+    desk_task(&mut a, &e, ID2, "second", "second");
+    let deadline = Instant::now() + T;
+    while !a.ok(json!({"cmd":"logs","task":"second"})).to_string().contains("fake agent ready") {
+        assert!(Instant::now() < deadline, "the second agent never printed its banner");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    a.ok(json!({"cmd":"send","task":"second","prompt":"first job","wait":true,"timeout_ms":15000}));
     let logs = a.ok(json!({"cmd":"logs","task":"second"}));
     assert!(logs["data"].as_str().unwrap().contains("echo: first job"), "{}", logs["data"]);
 
@@ -371,9 +371,8 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     assert_eq!(st["task"]["tabs"][0]["kind"], "agent");
     let r = a.ok(json!({"cmd":"rename","task":"second","name":"Second Task"}));
     assert_eq!(r["old_name"], "second");
-    let ag = a.ok(json!({"cmd":"agents"}));
-    let fake = ag["agents"].as_array().unwrap().iter().find(|x| x["id"] == "fake").unwrap().clone();
-    assert_eq!(fake["installed"], json!(true));
+    // The desktop's registry decides agents; it asks the box with `exec`.
+    assert_eq!(a.call(json!({"cmd":"agents"}))["error"]["code"], "unsupported");
     let un = a.call(json!({"cmd":"apply","task":"second"}));
     assert_eq!(un["error"]["code"], "unsupported");
     let tr = {
@@ -399,11 +398,22 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     let _ = bridge.kill();
     let _ = bridge.wait();
     drop(a);
+    // Once the daemon has seen that connection end (and dropped its taps).
+    let log = e.srv().join("daemon.log");
+    let until = Instant::now() + T;
+    while !std::fs::read_to_string(&log).unwrap_or_default().contains("client disconnected") {
+        assert!(Instant::now() < until, "the daemon never noticed the dropped connection");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     b.ok(json!({"cmd":"send","task":"Fix Login!","prompt":"while you were away"}));
+    // Nobody has its terminal now (the desktop that opened it is gone): a
+    // finish is an unread done until someone looks.
+    b.task_state("Fix Login!", |t| t.state == "done");
     let (mut a2, mut bridge2) = e.bridge();
     a2.send(&ClientMsg::TermOpen { task: "Fix Login!".into(), tab: None });
     let back = a2.term_until("echo: while you were away");
     assert!(back.contains("echo: hello world"), "the backlog has the earlier turns");
+    b.task_state("Fix Login!", |t| t.state == "idle");
 
     // Archive: agent killed, worktree gone, the open terminal closed.
     let ar = a2.ok(json!({"cmd":"archive","task":"Fix Login!"}));
@@ -425,9 +435,16 @@ fn a_task_runs_end_to_end_through_the_bridge() {
     c.task_state("Second Task", |t| t.state == "inactive");
     let no = c.call(json!({"cmd":"send","task":"Second Task","prompt":"hi"}));
     assert_eq!(no["ok"], json!(false));
-    assert!(no["error"]["message"].as_str().unwrap().contains("--fresh"));
-    let s = c.ok(json!({"cmd":"send","task":"Second Task","prompt":"back again","fresh":true,"wait":true,"timeout_ms":15000}));
-    assert_eq!(s["mode"], "spawned");
+    assert!(no["error"]["message"].as_str().unwrap().contains("open the task in Termic"), "{no}");
+    // The desktop opening the task starts its agent again; then it answers.
+    let second = e.srv().join("worktrees/repo/second").canonicalize().unwrap();
+    start_agent(&mut c, &e, ID2, &second);
+    let deadline = Instant::now() + T;
+    while c.call(json!({"cmd":"logs","task":"Second Task"}))["data"]["data"].as_str().is_none_or(|d| !d.contains("fake agent ready")) {
+        assert!(Instant::now() < deadline, "the restarted agent never printed its banner");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    c.ok(json!({"cmd":"send","task":"Second Task","prompt":"back again","wait":true,"timeout_ms":15000}));
     let logs = c.ok(json!({"cmd":"logs","task":"Second Task"}));
     assert!(logs["data"].as_str().unwrap().contains("echo: back again"));
 
@@ -472,7 +489,7 @@ fn an_interrupt_reaches_the_agents_foreground_command() {
     let e = Env::new("intr");
     let (mut a, _b) = e.bridge();
     a.ok(json!({"cmd":"project_add","path": e.repo()}));
-    a.ok(json!({"cmd":"new","name":"napper","agent":"fake"}));
+    desk_task(&mut a, &e, ID1, "napper", "napper");
     a.task_state("napper", |t| t.state == "idle");
     a.send(&ClientMsg::TermOpen { task: "napper".into(), tab: None });
     a.ok(json!({"cmd":"send","task":"napper","prompt":"nap"}));
@@ -484,19 +501,22 @@ fn an_interrupt_reaches_the_agents_foreground_command() {
     a.wait_for("term_closed", |m| matches!(m, ServerMsg::TermClosed { reason } if reason == "exited").then_some(()));
     assert!(started.elapsed() < Duration::from_secs(10), "the interrupt did not land");
     a.task_state("napper", |t| t.state == "inactive");
-    // Opening a stopped task starts its agent again (the desktop's Reopen).
+    // This host never starts an agent itself: the desktop does.
     a.send(&ClientMsg::TermOpen { task: "napper".into(), tab: None });
-    a.wait_for("term_reset after a restart", |m| matches!(m, ServerMsg::TermReset { .. }).then_some(()));
-    a.task_state("napper", |t| t.state != "inactive");
+    let why = a.wait_for("term_closed for a stopped agent", |m| match m {
+        ServerMsg::TermClosed { reason } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(why.contains("open the task in Termic"), "{why}");
 }
 
 #[test]
-fn quit_restarts_onto_the_installed_build_and_resumes_running_agents() {
+fn quit_restarts_onto_the_installed_build_and_says_what_it_ended() {
     let e = Env::new("restart");
     let (mut a, mut ab) = e.bridge();
     a.ok(json!({"cmd":"project_add","path": e.repo()}));
-    a.ok(json!({"cmd":"new","name":"keeper","agent":"fake"}));
-    a.ok(json!({"cmd":"new","name":"stopped","agent":"fake"}));
+    desk_task(&mut a, &e, ID1, "keeper", "keeper");
+    desk_task(&mut a, &e, ID2, "stopped", "stopped");
     a.wait_for("both idle", |m| match m {
         ServerMsg::Tasks { tasks } => (tasks.iter().filter(|t| t.state == "idle").count() == 2).then_some(()),
         _ => None,
@@ -508,20 +528,37 @@ fn quit_restarts_onto_the_installed_build_and_resumes_running_agents() {
     assert_eq!((p["tasks_with_agents"].clone(), p["quitting"].clone()), (json!(1), json!(false)), "{p}");
     let q = a.ok(json!({"cmd":"quit","commit":true}));
     assert_eq!(q["quitting"], json!(true));
+    // Until the connection drops, nothing tells this desktop its running
+    // agent exited: it would show it exited instead of starting it again.
+    let keeper = format!("{ID1}:agent");
+    let mut told = Vec::new();
+    loop {
+        match a.rx.recv_timeout(T) {
+            Ok(ServerMsg::PtyExit { pid, reason }) => told.push((pid, reason)),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(!told.iter().any(|(p, _)| *p == keeper), "told the desktop {told:?}");
     // The daemon exits; the next bridge starts a new one.
     wait_path_gone(&e.srv().join("sock"));
     let _ = ab.wait();
     let (mut b, _bb) = e.bridge();
-    // The agent that was running is back; the one that was stopped is not.
-    b.wait_for("keeper back, stopped still stopped", |m| match m {
-        ServerMsg::Tasks { tasks } => {
-            let st = |n: &str| tasks.iter().find(|t| t.name == n).map(|t| t.state.clone()).unwrap_or_default();
-            (st("keeper") != "inactive" && !st("keeper").is_empty() && st("stopped") == "inactive").then_some(())
-        }
-        _ => None,
-    });
+    // The desktop coming back to its PTYs: the running one is reported
+    // restarted (it starts it again), the stopped one plainly ended. Once.
+    let reason_of = |b: &mut Client, id: &str| {
+        let pid = format!("{id}:agent");
+        b.send(&ClientMsg::PtyOpen { pid: pid.clone(), cwd: String::new(), argv: vec![], env: vec![], cols: 80, rows: 24, seen: Some(0) });
+        b.wait_for(&format!("exit of {pid}"), |m| match m {
+            ServerMsg::PtyExit { pid: p, reason } if *p == pid => Some(reason.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(reason_of(&mut b, ID1), termic_remote::wire::PTY_RESTARTED);
+    assert_ne!(reason_of(&mut b, ID2), termic_remote::wire::PTY_RESTARTED);
+    assert_ne!(reason_of(&mut b, ID1), termic_remote::wire::PTY_RESTARTED, "told once");
     let st: Value = serde_json::from_slice(&std::fs::read(e.srv().join("state.json")).unwrap()).unwrap();
-    assert!(st.get("resume_on_boot").is_none(), "the resume list is consumed: {st}");
+    assert!(st.get("restarted_claims").is_none(), "the list is consumed: {st}");
 }
 
 #[test]
@@ -630,4 +667,18 @@ fn task_put_records_a_desktop_made_task_inside_the_fence_only() {
         assert_eq!(r["ok"], false, "{why}: {r}");
     }
     e.stop();
+}
+
+/// The desktop types into its agent's PTY (`pty_input`, the keys of its
+/// terminal), never through `send`: the box must still read the turn as
+/// working, or a required upgrade restarts it mid-turn.
+#[test]
+fn a_turn_typed_by_the_desktop_reads_working() {
+    let e = Env::new("typed");
+    let (mut a, _b) = e.bridge();
+    a.ok(json!({"cmd":"project_add","path": e.repo()}));
+    desk_task(&mut a, &e, ID1, "typed", "typed");
+    a.task_state("typed", |t| t.state == "idle");
+    a.send(&ClientMsg::PtyInput { pid: format!("{ID1}:agent"), data: termic_remote::b64(b"nap\r") });
+    a.task_state("typed", |t| t.state == "working");
 }

@@ -148,8 +148,12 @@ Order, each step shippable on its own:
    the scattered `server_for_path` checks. New task is the one
    NewTaskDialog, agents the box lacks disabled. Delete
    `NewRemoteTaskDialog.tsx`, `verbs.rs new_task` and its CLI forward.
-5. **Shrink the box**: delete the agent table and resume, and the `new`
-   verb. `state.rs` keeps projects, tasks and organisation as shared
+5. **Shrink the box** (half done): the agent table (`agents.rs`, with
+   gemini), resume-on-boot, the box's own agent engine (`Live`, its
+   prompt queue) and the `new` and `agents` verbs are deleted; a task's
+   agent on the box is the desktop's `<task>:agent` PTY, which `send`,
+   `logs`, `stop`, `keys` and the terminal act on, and the box never
+   starts one. Left: `state.rs` keeps projects, tasks and organisation as shared
    records (see Decisions) behind a put / delete interface with change
    events, instead of the task engine's own list. It keeps `exec`, the
    PTY family, a queued-prompt drain, the hook-OSC reader and

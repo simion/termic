@@ -314,12 +314,15 @@ gets the carried build through the Install upload (renamed over the old file; th
 running daemon keeps executing it, agents untouched), once per app run
 and version. Then the daemon is restarted onto it with `quit` over the
 open connection, no new ssh: `quit` previews the agents a restart would
-stop, and commit records them (`resume_on_boot` in `state.json`), hangs
-them up, answers, and exits; the link's reconnect runs `bridge`, which
-starts the new binary, and that daemon resumes those agents in their
-sessions before any client. Agents the desktop started (every task made
-since step 4 of docs/plans/server-projects.md) come back from the
-desktop instead (`restarted`, below). Only a REQUIRED update (the server is below
+stop, and commit records the PTYs it ends (`restarted_claims` in
+`state.json`), hangs them up without telling the connected desktops
+(their PTYs did not exit, the box restarted), answers, and exits; the
+link's reconnect runs `bridge`, which starts the new binary. The box
+starts no agent itself: the desktop's reattach is answered `restarted`
+(below) and it starts each again, resuming its session. Before the
+first `tasks` snapshot of a new connection the desktop does not restart
+a box at all (`tasks_seen`): an empty list then means no news yet, and
+a restart would land mid-turn. Only a REQUIRED update (the server is below
 `compat::REQUIRES_SERVER`) restarts by itself; any other waits for
 **Restart now** or the box's next restart, and the old build keeps
 serving meanwhile. The restart waits until no agent is
@@ -460,7 +463,7 @@ are hidden for server tasks: the macOS sandbox does not reach the box.
 
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).
 It answers the same messages, keeps tasks in `~/.termic-server/state.json`,
-listens only on a 0600 unix socket in a 0700 directory, and starts agents
+listens only on a 0600 unix socket in a 0700 directory, and runs agents
 through the user's login shell so their PATH matches an interactive login.
 Its PTYs have no screen, so it offers `resize`: an open task's terminal
 fills the desktop pane and the PTY follows it (debounced, 4x20 to

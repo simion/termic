@@ -85,7 +85,6 @@ another user.
 | `sock` | The unix socket, `0600`. Connections from another uid are refused too. |
 | `daemon.pid` | The daemon's pid, and its lock (held with `flock` for the daemon's life, so a stale pid is never trusted). |
 | `state.json` | Projects and tasks and the server's id, `0600`, written atomically. A file that does not parse is moved aside, never overwritten. |
-| `agents.json` | Optional: extra agents or overrides, `{"id": ["argv", ...]}`. |
 | `daemon.log` | The log, rotated to `daemon.log.1` past 2 MiB. |
 | `worktrees/<project>/<task>/` | Task worktrees. Both parts are slugs (`a-z0-9-`), so a name can never climb out. |
 
@@ -94,23 +93,26 @@ Agent transcripts are read from where the agents write them
 
 ## Agents
 
-Built in: `claude`, `codex`, `gemini`, `opencode`, and `shell` (your login
-shell). `agents.json` adds more or replaces one, e.g.
-`{"claude": ["/opt/claude/bin/claude"], "aider": ["aider", "--no-pretty"]}`.
-
-An agent runs in its own PTY (120x40), in the task's directory, through
-your login shell so PATH matches an interactive login on the box (ssh's
-non-interactive PATH misses npm, nvm, bun and `~/.local/bin` installs):
+The box has no agent list of its own. The Termic desktop starts every
+agent, from its own registry (argv, session id, env), in a PTY it opens
+here with `pty_open`; a task's agent is the PTY named `<task>:agent`.
+The PTY runs in the task's directory through your login shell, so PATH
+matches an interactive login on the box (ssh's non-interactive PATH
+misses npm, nvm, bun and `~/.local/bin` installs):
 
 ```text
-$SHELL -lic 'exec "$@"' termic <argv...>     # bash, zsh, ksh
-$SHELL -lc  'exec $argv' <argv...>           # fish
-/bin/sh -lc 'exec "$@"' termic <argv...>     # anything else
+/bin/sh -lc 'exec "$0" "$@"' <argv...>
 ```
 
 The argv is passed as positional parameters, never pasted into shell
-code. Its environment adds `TERM=xterm-256color`, `COLORTERM=truecolor`,
-`TERMIC_TASK_ID` and `TERMIC_TASK`, and drops ssh's session variables.
+code. Its environment is the desktop's (`TERMIC_TASK_ID`, `TERMIC_TASK`,
+`TERMIC_TAB_ID`, ...) plus `TERM=xterm-256color`, `COLORTERM=truecolor`
+and `TERMIC_PTY` (its slave path, where the agent's hooks report).
+
+PTYs belong to the daemon and outlive a connection: a desktop that comes
+back attaches again with `seen`. A `quit` (a restart onto a new build)
+notes the ones it ends, and the desktop's reattach is answered
+`restarted`, so it starts them again.
 
 ## Work state
 
@@ -127,6 +129,9 @@ The desktop's vocabulary, from PTY activity and the screen:
 - **idle**: quiet, never given anything.
 - **inactive**: no agent process (it exited, or the daemon restarted).
 
+This is the floor for when no desktop is attached; a desktop reads the
+agent's hooks and title itself.
+
 The daemon re-evaluates on PTY output after a quiet spell and at the next
 quiet deadline (a condvar wait), never on a timer while everything is
 settled, and pushes a full `tasks` snapshot to clients only when something
@@ -140,19 +145,19 @@ termic-proto requests and replies, the same shapes the desktop answers:
 | Verb | Notes |
 |---|---|
 | `list`, `status` | Work state, diff stat against the base branch, one `agent` tab. |
-| `new` | `git worktree add -b <slug> <path> <base>` (base defaults to the project's current branch), or `checkout` an existing branch, or `mode: "main"` for the project's own checkout. Spawns the agent; a `prompt` is typed in once its screen settles. `wait` holds the reply until it is done. |
-| `send` | Bracketed paste (when the agent turned it on), then Enter. Queued while the agent works, delivered when it goes quiet; `now` types it at once. With no agent running, `resume` (claude `--continue`, codex `resume --last`, opencode `--continue`) or `fresh` starts one. |
+| `task_put` | Records a task the desktop made (its worktree created over `exec`); starts nothing. The path must be inside a project or `worktrees/`. |
+| `send` | Into the task's running agent at once: bracketed paste (when the agent turned it on), then Enter. An agent that is not running is refused: the desktop starts it when the task is opened. |
 | `wait` | Until done (exit 0), waiting (needs input) or the timeout, capped at 5 minutes. |
-| `archive` | SIGKILLs the agent's process group, `git worktree remove --force`, marks the task archived. The branch is kept. |
+| `archive` | SIGKILLs the task's PTYs' process groups, `git worktree remove --force`, marks the task archived. The branch is kept. |
 | `rename` | The label only; branch and directory keep their names. |
 | `logs` | The PTY ring's tail (256 KiB retained). |
 | `result` | Claude's last message, from its transcript. |
 | `diff` | Counts, commits since the base, the patch with `full`. |
-| `agents` | The table, with whether each is installed (checked in the login shell). |
 | `project_add`, `project_list`, `project_remove` | A path on the box; `~/` is expanded. `non_git` adds a plain folder (main-checkout tasks only). Removing a project archives its tasks. |
 
-Anything else answers `unsupported`, "termic-server does not support
-<verb> yet". Prompt-library references, `--from`, `--resume <id>` and
+`new` and `agents` answer `unsupported`: the desktop creates tasks and
+chooses agents. Anything else answers `unsupported`, "termic-server does
+not support <verb> yet". Prompt-library references, `--from`, `--resume <id>` and
 `--pr` are refused the same way.
 
 Stream messages: `term_open` (backlog, then live output; a client more

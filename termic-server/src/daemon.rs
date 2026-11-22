@@ -1,5 +1,6 @@
-//! The daemon's shared core: persisted projects and tasks, the live agent
-//! PTYs, the work-state monitor, and the actions verbs are built from.
+//! The daemon's shared core: persisted projects and tasks, the PTYs the
+//! desktop opens here (a task's agent is its `<task>:agent` one), the
+//! work-state monitor, and the actions verbs are built from.
 //!
 //! One monitor thread owns state transitions. It is woken by a PTY (output
 //! after a quiet spell, exit) or an action, and otherwise sleeps on a
@@ -7,7 +8,7 @@
 //! agent's quiet deadline). Nothing runs on a timer while every agent is
 //! settled. Clients wait on `seq`, bumped only when a snapshot changed.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,14 +17,11 @@ use std::time::{Duration, Instant};
 use termic_remote::screen;
 use termic_remote::wire::{Diff, Question, TabRow, TaskRow};
 
-use crate::agents;
 use crate::detect;
-use crate::pty::{self, Pty};
+use crate::pty::Pty;
 use crate::state::{Project, State, TaskRec};
 use crate::util;
 
-/// A spawned agent that printed nothing gets its first prompt after this.
-const READY_FALLBACK: Duration = Duration::from_secs(8);
 /// Between a pasted prompt and the Enter that submits it: TUIs treat an
 /// Enter inside the same read as part of the paste.
 const SUBMIT_BEAT: Duration = Duration::from_millis(250);
@@ -31,32 +29,6 @@ const SUBMIT_BEAT: Duration = Duration::from_millis(250);
 const SCREEN_BYTES: usize = 128 * 1024;
 pub const MAX_PROMPT: usize = 256 * 1024;
 
-#[derive(Default)]
-struct Queue {
-    prompts: VecDeque<String>,
-    delivering: bool,
-    /// The agent exited with prompts still queued.
-    lost: bool,
-}
-
-/// A task's running agent.
-pub struct Live {
-    pub pty: Arc<Pty>,
-    pub agent: String,
-    spawned: Instant,
-    q: Mutex<Queue>,
-}
-
-impl Live {
-    /// Prompts not yet typed into the agent (queued or being typed).
-    pub fn pending(&self) -> bool {
-        let q = self.q.lock().unwrap();
-        !q.prompts.is_empty() || q.delivering
-    }
-    pub fn lost(&self) -> bool {
-        self.q.lock().unwrap().lost
-    }
-}
 
 /// What a client sees of a task's agent, recomputed by the monitor.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,7 +45,6 @@ pub struct Daemon {
     pub name: String,
     pub quiet: Duration,
     pub st: Mutex<State>,
-    pub live: Mutex<HashMap<String, Arc<Live>>>,
     views: Mutex<HashMap<String, View>>,
     diffs: Mutex<HashMap<String, Diff>>,
     /// Bumped when anything a snapshot shows changed.
@@ -81,12 +52,12 @@ pub struct Daemon {
     seq_cv: Condvar,
     wake: Mutex<bool>,
     wake_cv: Condvar,
-    /// Serialises task creation so two `new`s cannot take one name.
-    pub create: Mutex<()>,
     /// `pty_open` PTYs by the client's id. The daemon owns them, so a
     /// shell or a script outlives the connection that opened it (a laptop
     /// asleep, a dropped network) and the next one attaches.
     pub ptys: Mutex<HashMap<String, Arc<crate::pty::Pty>>>,
+    /// A `quit` is ending every PTY to restart onto a new build.
+    pub restarting: std::sync::atomic::AtomicBool,
 }
 
 pub type Fail = (termic_proto::ErrorCode, String);
@@ -107,15 +78,14 @@ impl Daemon {
             name: util::hostname(),
             quiet,
             st: Mutex::new(st),
-            live: Mutex::new(HashMap::new()),
             views: Mutex::new(HashMap::new()),
             diffs: Mutex::new(HashMap::new()),
             seq: Mutex::new(0),
             seq_cv: Condvar::new(),
             wake: Mutex::new(false),
             wake_cv: Condvar::new(),
-            create: Mutex::new(()),
             ptys: Mutex::new(HashMap::new()),
+            restarting: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -169,65 +139,28 @@ impl Daemon {
         self.seq_cv.notify_all();
     }
 
-    pub fn live_of(&self, task_id: &str) -> Option<Arc<Live>> {
-        self.live.lock().unwrap().get(task_id).cloned()
+    /// A task's agent: the PTY the desktop started for it (`<task>:agent`),
+    /// while it runs. The desktop owns agents; this daemon never starts one.
+    pub fn agent_pty(&self, task_id: &str) -> Option<Arc<Pty>> {
+        self.ptys.lock().unwrap().get(&format!("{task_id}:agent")).filter(|p| !p.exited()).cloned()
     }
 
     pub fn view_of(&self, task_id: &str) -> View {
-        let booting = self.live.lock().unwrap().contains_key(task_id);
+        let booting = self.agent_pty(task_id).is_some();
         self.views.lock().unwrap().get(task_id).cloned().unwrap_or_else(|| unseen(booting))
     }
 
     // ───────────────────────── agents ──────────────────────────
 
-    /// Start a task's agent (replacing a dead one). `prompt` is queued and
-    /// typed in once the agent's screen settles.
-    pub fn spawn_agent(self: &Arc<Self>, t: &TaskRec, resume: bool, prompt: Option<String>) -> Result<Arc<Live>, String> {
-        let table = agents::table(&self.dir);
-        let argv = agents::agent_argv(&table, &t.agent, &t.agent_args, resume)?;
-        let env = vec![
-            ("TERM".to_string(), "xterm-256color".to_string()),
-            ("COLORTERM".to_string(), "truecolor".to_string()),
-            ("TERMIC_TASK_ID".to_string(), t.id.clone()),
-            ("TERMIC_TASK".to_string(), t.name.clone()),
-        ];
-        let d = Arc::downgrade(self);
-        let notify: pty::Notify = Arc::new(move || {
-            if let Some(d) = d.upgrade() {
-                d.poke();
-            }
-        });
-        let p = Pty::spawn(&argv, &t.path, &env, self.quiet, notify)?;
-        let live = Arc::new(Live { pty: p, agent: t.agent.clone(), spawned: Instant::now(), q: Mutex::new(Queue::default()) });
-        if let Some(text) = prompt {
-            live.q.lock().unwrap().prompts.push_back(text);
-        }
-        if let Some(old) = self.live.lock().unwrap().insert(t.id.clone(), live.clone()) {
-            old.pty.kill();
-        }
-        util::log(&format!("spawned {} for task {} (pid {:?})", t.agent, t.name, live.pty.pid));
-        self.poke();
-        Ok(live)
-    }
-
-    /// Queue a prompt for the agent; the monitor types it in when the agent
-    /// is not mid-turn. `now` types it at once whatever the agent is doing.
-    pub fn enqueue(self: &Arc<Self>, live: &Arc<Live>, text: String, now: bool) {
-        if now {
-            live.q.lock().unwrap().delivering = true;
-            let d = self.clone();
-            let l = live.clone();
-            std::thread::spawn(move || d.deliver(&l, text));
-        } else {
-            live.q.lock().unwrap().prompts.push_back(text);
-            self.poke();
-        }
+    /// Type a prompt into a task's agent, off the caller's thread.
+    pub fn type_prompt(self: &Arc<Self>, pty: Arc<Pty>, text: String) {
+        let d = self.clone();
+        std::thread::spawn(move || d.deliver(&pty, text));
     }
 
     /// Type a prompt into an agent: bracketed paste when the program asked
     /// for it, then Enter after a beat.
-    fn deliver(&self, live: &Live, text: String) {
-        let p = &live.pty;
+    fn deliver(&self, p: &Pty, text: String) {
         p.mark_prompt();
         let r = if p.bracketed() {
             // A paste-end inside the text would let it type raw keys.
@@ -241,13 +174,11 @@ impl Daemon {
             let _ = p.input(b"\r");
             p.mark_prompt();
         }
-        live.q.lock().unwrap().delivering = false;
         self.poke();
     }
 
     /// The current work state of a task, computed now.
-    /// `pty` is the task's agent terminal: the desktop's (`<task>:agent` in
-    /// `ptys`) or one this daemon started itself.
+    /// `pty` is the task's agent terminal (`<task>:agent` in `ptys`).
     fn compute(&self, pty: Option<&Arc<Pty>>, now: Instant) -> (View, Option<Instant>) {
         let blank = |s: &str| View { state: s.into(), since_ms: 0, activity: None, question: None };
         let Some(pty) = pty else { return (blank("inactive"), None) };
@@ -279,13 +210,12 @@ impl Daemon {
         (View { state: state.into(), since_ms: 0, activity, question: if state == "waiting" { question } else { None } }, deadline)
     }
 
-    /// The monitor: recompute every task's view when woken, deliver queued
-    /// prompts to settled agents, publish changes. Runs for the daemon's life.
+    /// The monitor: recompute every task's view when woken, publish
+    /// changes. Runs for the daemon's life.
     pub fn monitor(self: Arc<Self>) {
         loop {
             let now = Instant::now();
             let ids: Vec<String> = self.st.lock().unwrap().tasks.iter().filter(|t| !t.archived).map(|t| t.id.clone()).collect();
-            let lives = self.live.lock().unwrap().clone();
             // The desktop starts a task's agent itself (`<task>:agent`, a
             // daemon-owned PTY): its state is read the same way, the floor
             // for when no desktop is attached (docs/plans/server-projects.md).
@@ -298,9 +228,7 @@ impl Daemon {
             {
                 let old = self.views.lock().unwrap();
                 for id in &ids {
-                    let live = lives.get(id);
-                    let agent_pty = live.map(|l| &l.pty).or_else(|| desk.get(&format!("{id}:agent")));
-                    let (mut v, deadline) = self.compute(agent_pty, now);
+                    let (mut v, deadline) = self.compute(desk.get(&format!("{id}:agent")), now);
                     if let Some(d) = deadline {
                         soonest(d);
                     }
@@ -315,9 +243,6 @@ impl Daemon {
                     }
                     if old.get(id) != Some(&v) {
                         changed = true;
-                    }
-                    if let Some(l) = live {
-                        self.drain_queue(l, &v.state, now, &mut soonest);
                     }
                     fresh.insert(id.clone(), v);
                 }
@@ -350,32 +275,6 @@ impl Daemon {
         }
     }
 
-    fn drain_queue(self: &Arc<Self>, live: &Arc<Live>, state: &str, now: Instant, soonest: &mut impl FnMut(Instant)) {
-        let mut q = live.q.lock().unwrap();
-        if q.prompts.is_empty() || q.delivering {
-            return;
-        }
-        if state == "inactive" {
-            q.lost = true;
-            q.prompts.clear();
-            return;
-        }
-        if state != "done" && state != "idle" {
-            return;
-        }
-        let (_, _, out, _) = live.pty.activity();
-        if out.is_none() && now.duration_since(live.spawned) < READY_FALLBACK {
-            soonest(live.spawned + READY_FALLBACK);
-            return;
-        }
-        let text = q.prompts.pop_front().unwrap_or_default();
-        q.delivering = true;
-        drop(q);
-        let d = self.clone();
-        let l = live.clone();
-        std::thread::spawn(move || d.deliver(&l, text));
-    }
-
     // ───────────────────────── git ─────────────────────────────
 
     pub fn refresh_diff(self: &Arc<Self>, task_id: &str) {
@@ -397,7 +296,9 @@ impl Daemon {
     // ───────────────────────── snapshot ────────────────────────
 
     pub fn rows(&self) -> Vec<TaskRow> {
-        let live: Vec<String> = self.live.lock().unwrap().keys().cloned().collect();
+        let live: Vec<String> = self.ptys.lock().unwrap().iter()
+            .filter(|(_, p)| !p.exited())
+            .filter_map(|(c, _)| c.strip_suffix(":agent").map(str::to_string)).collect();
         let st = self.st.lock().unwrap();
         let views = self.views.lock().unwrap();
         let diffs = self.diffs.lock().unwrap();
@@ -433,41 +334,48 @@ impl Daemon {
 
     /// The question on the agent's screen right now (for stale-answer checks).
     pub fn question_now(&self, task_id: &str) -> Option<Question> {
-        let live = self.live_of(task_id)?;
-        let (tail, _) = live.pty.tail(SCREEN_BYTES);
-        let (rows, cols) = live.pty.size();
+        let pty = self.agent_pty(task_id)?;
+        let (tail, _) = pty.tail(SCREEN_BYTES);
+        let (rows, cols) = pty.size();
         screen::question(&screen::render(&tail, rows, cols))
     }
 
     // ───────────────────────── tasks ───────────────────────────
 
-    /// Stop the agent, remove the worktree (never the project's own
-    /// checkout), mark the task archived. Returns agents killed.
-    /// End a task's agent and keep the task: its worktree and session stay,
-    /// and the next send or terminal open starts the agent again.
-    pub fn stop_agent(self: &Arc<Self>, task_id: &str) -> u32 {
-        let mut stopped = 0;
-        if let Some(live) = self.live.lock().unwrap().remove(task_id) {
-            if live.pty.kill() {
-                stopped += 1;
+    /// End a task's PTYs whose claim `which` accepts, closing the taps of
+    /// whoever watches them with `why`. Returns how many were running.
+    fn end_ptys(&self, task_id: &str, which: impl Fn(&str) -> bool, why: &str) -> u32 {
+        let prefix = format!("{task_id}:");
+        let ended: Vec<Arc<Pty>> = {
+            let mut map = self.ptys.lock().unwrap();
+            let ids: Vec<String> = map.keys().filter(|c| c.strip_prefix(&prefix).is_some_and(&which)).cloned().collect();
+            ids.iter().filter_map(|c| map.remove(c)).collect()
+        };
+        let mut n = 0;
+        for p in ended {
+            if p.kill() {
+                n += 1;
             }
-            live.pty.close_taps("stopped");
+            p.close_taps(why);
         }
+        n
+    }
+
+    /// End a task's agent and keep the task: its worktree and session stay,
+    /// and the desktop starts it again (resuming) when the task is opened.
+    pub fn stop_agent(self: &Arc<Self>, task_id: &str) -> u32 {
+        let stopped = self.end_ptys(task_id, |tab| tab == "agent", "stopped");
         util::log(&format!("stopped task {task_id} ({stopped} agent ended)"));
         self.poke();
         self.bump();
         stopped
     }
 
+    /// End the task's terminals, remove the worktree (never the project's
+    /// own checkout), mark the task archived. Returns terminals killed.
     pub fn archive(self: &Arc<Self>, task_id: &str) -> Result<u32, String> {
         let t = self.st.lock().unwrap().tasks.iter().find(|t| t.id == task_id).cloned().ok_or("no such task")?;
-        let mut killed = 0;
-        if let Some(live) = self.live.lock().unwrap().remove(task_id) {
-            if live.pty.kill() {
-                killed += 1;
-            }
-            live.pty.close_taps("archived");
-        }
+        let killed = self.end_ptys(task_id, |_| true, "archived");
         if !t.is_main_checkout && !t.path.is_empty() {
             let project = self.st.lock().unwrap().project(&t.project_id).cloned();
             remove_worktree(project.as_ref(), &t.path, &self.worktrees_dir());
@@ -486,51 +394,34 @@ impl Daemon {
         Ok(killed)
     }
 
-    /// Hang up every agent (daemon stop).
+    /// Hang up every terminal (daemon stop).
     pub fn hangup_all(&self) {
-        for live in self.live.lock().unwrap().values() {
-            live.pty.hangup();
+        for p in self.ptys.lock().unwrap().values() {
+            p.hangup();
         }
     }
 
     /// (tasks with a running agent, of those the ones working).
     pub fn agent_counts(&self) -> (u32, u32) {
-        let live: Vec<String> = self.live.lock().unwrap().iter().filter(|(_, l)| !l.pty.exited()).map(|(id, _)| id.clone()).collect();
+        let live: Vec<String> = self.ptys.lock().unwrap().iter()
+            .filter(|(_, p)| !p.exited())
+            .filter_map(|(c, _)| c.strip_suffix(":agent").map(str::to_string)).collect();
         let views = self.views.lock().unwrap();
         let working = live.iter().filter(|id| views.get(*id).is_some_and(|v| v.state == "working")).count();
         (live.len() as u32, working as u32)
     }
 
-    /// Stop every agent for a restart onto a new build, noting which were
-    /// running so the next daemon resumes them in their sessions.
+    /// End every terminal for a restart onto a new build, noting their
+    /// claims so a desktop coming back starts them again (session.rs).
     pub fn stop_for_restart(&self) {
-        let ids: Vec<String> = self.live.lock().unwrap().iter().filter(|(_, l)| !l.pty.exited()).map(|(id, _)| id.clone()).collect();
+        self.restarting.store(true, std::sync::atomic::Ordering::SeqCst);
         let claims: Vec<String> = self.ptys.lock().unwrap().iter().filter(|(_, p)| !p.exited()).map(|(id, _)| id.clone()).collect();
         {
             let mut st = self.st.lock().unwrap();
-            st.resume_on_boot = ids;
             st.restarted_claims = claims;
             self.save(&st);
         }
         self.hangup_all();
-    }
-
-    /// Bring back the agents a `quit` stopped, each in its last session.
-    pub fn resume_after_restart(self: &Arc<Self>) {
-        let todo: Vec<TaskRec> = {
-            let mut st = self.st.lock().unwrap();
-            if st.resume_on_boot.is_empty() {
-                return;
-            }
-            let ids = std::mem::take(&mut st.resume_on_boot);
-            self.save(&st);
-            st.tasks.iter().filter(|t| !t.archived && ids.contains(&t.id)).cloned().collect()
-        };
-        for t in todo {
-            if let Err(e) = self.spawn_agent(&t, true, None) {
-                util::log(&format!("could not resume {} after the restart: {e}", t.name));
-            }
-        }
     }
 }
 

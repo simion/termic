@@ -177,32 +177,24 @@ pub fn hostname() -> String {
     }
 }
 
-/// A name as a branch and directory name: lowercase ASCII letters, digits
-/// and single dashes, at most 60 characters. Empty when nothing usable is
-/// left, which callers refuse. Never contains '/', '.', or a leading '-',
-/// so it cannot climb out of the directory it is joined to.
-/// The desktop's own slug (termic_proto::slugify), so a task name gives the
-/// same branch on a box as on the desktop.
-pub fn slug(name: &str) -> String {
-    termic_proto::slugify(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    // The slug the desktop names a task's branch and worktree folder with:
+    // it must never climb out of the folder it is joined to.
     fn slugs_are_safe_path_and_branch_names() {
-        assert_eq!(slug("Fix the Login bug!"), "fix-the-login-bug");
-        assert_eq!(slug("../../etc/passwd"), "etc-passwd");
-        assert_eq!(slug("--rm -rf"), "rm-rf");
-        assert_eq!(slug("a//b..c"), "a-b-c");
-        assert_eq!(slug("..."), "");
-        assert_eq!(slug("日本語"), "");
-        assert_eq!(slug("ünïcode name"), "n-code-name");
+        assert_eq!(termic_proto::slugify("Fix the Login bug!"), "fix-the-login-bug");
+        assert_eq!(termic_proto::slugify("../../etc/passwd"), "etc-passwd");
+        assert_eq!(termic_proto::slugify("--rm -rf"), "rm-rf");
+        assert_eq!(termic_proto::slugify("a//b..c"), "a-b-c");
+        assert_eq!(termic_proto::slugify("..."), "");
+        assert_eq!(termic_proto::slugify("日本語"), "");
+        assert_eq!(termic_proto::slugify("ünïcode name"), "n-code-name");
         // The desktop's rules, not a box-only variant: `_` kept.
-        assert_eq!(slug("snake_case name"), "snake_case-name");
-        for s in [slug("-x-"), slug(" a b "), slug("a\nb\0c")] {
+        assert_eq!(termic_proto::slugify("snake_case name"), "snake_case-name");
+        for s in [termic_proto::slugify("-x-"), termic_proto::slugify(" a b "), termic_proto::slugify("a\nb\0c")] {
             assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains('/') && !s.contains('.'), "{s}");
         }
     }

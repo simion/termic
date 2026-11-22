@@ -1,6 +1,5 @@
 // The whole server, unix only: included by main.rs (see there).
 
-mod agents;
 mod daemon;
 mod detect;
 mod pty;
@@ -132,7 +131,6 @@ fn run_daemon() -> i32 {
     }
     // A `quit` (the desktop restarting this daemon onto a new build) left
     // these agents running: back in their sessions, before any client.
-    d.resume_after_restart();
     {
         let d = d.clone();
         let sig = match signal_pipe() {

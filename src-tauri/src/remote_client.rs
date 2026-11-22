@@ -248,6 +248,10 @@ struct LinkState {
     upgrade_tried: Option<String>,
     /// A restart onto `update` was sent; cleared by the next connection.
     restarting: bool,
+    /// This connection's first `tasks` snapshot arrived. Until it does,
+    /// `tasks` is empty for want of news, not for want of agents, and a
+    /// restart then would land mid-turn.
+    tasks_seen: bool,
 }
 
 pub(crate) type TermSink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -311,6 +315,7 @@ impl Link {
             st.error = error;
             if state != "online" {
                 st.tasks.clear();
+                st.tasks_seen = false;
             }
         }
         changed();
@@ -481,7 +486,7 @@ fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off
         id,
         kind,
         endpoint: Mutex::new(endpoint),
-        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, update_required: false, upgrade_tried: None, restarting: false }),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, update_required: false, upgrade_tried: None, restarting: false, tasks_seen: false }),
         tx: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         term: Mutex::new(None),
@@ -823,15 +828,19 @@ fn session(l: &Arc<Link>, mut reader: MsgReader, mut writer: MsgWriter) {
 fn dispatch(l: &Link, m: ServerMsg) {
     match m {
         ServerMsg::Tasks { tasks } => {
-            let differs = {
+            let (differs, first) = {
                 let mut st = l.st.lock().unwrap();
+                let first = !std::mem::replace(&mut st.tasks_seen, true);
                 if st.tasks == tasks {
-                    false
+                    (false, first)
                 } else {
                     st.tasks = tasks;
-                    true
+                    (true, first)
                 }
             };
+            if first && !differs {
+                restart_when_settled(l);
+            }
             if differs {
                 restart_when_settled(l);
                 changed();
@@ -1576,7 +1585,7 @@ fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
 fn restart_when_settled(l: &Link) {
     {
         let mut st = l.st.lock().unwrap();
-        if st.update.is_none() || !st.update_required || st.restarting || st.tasks.iter().any(|t| t.state == "working" || t.state == "waiting") {
+        if st.update.is_none() || !st.update_required || st.restarting || !st.tasks_seen || st.tasks.iter().any(|t| t.state == "working" || t.state == "waiting") {
             return;
         }
         st.restarting = true;
@@ -1791,7 +1800,7 @@ mod tests {
             id: "x".into(),
             kind: MachineKind::Server,
             endpoint: Mutex::new(Endpoint::Server(rec)),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, update_required: false, upgrade_tried: None, restarting: false }),
+            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, update_required: false, upgrade_tried: None, restarting: false, tasks_seen: false }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),

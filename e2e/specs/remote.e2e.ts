@@ -271,9 +271,9 @@ describe("Phones and servers", () => {
   // installed there yet; wdio.conf.ts hands it to the app as
   // TERMIC_SERVER_BIN_DIR). Both need the E2E_ prefix: wdio.conf.ts drops
   // every other TERMIC_* before the workers start. Skipped otherwise: CI has no box. The box gets a scratch
-  // repo and a fake agent (an agents.json entry, the server's own way to
-  // add one), so no agent CLI or login is needed there; both are removed,
-  // and an agents.json the box already had is put back, at the end.
+  // repo and a fake agent script (run by a desktop agent entry whose
+  // command is its path there), so no agent CLI or login is needed there;
+  // both are removed at the end.
   const box = process.env.TERMIC_E2E_TEST_BOX;
   const onBox = box ? it : it.skip;
   const BOX_DIR = "termic-e2e-box";
@@ -285,9 +285,7 @@ describe("Phones and servers", () => {
     ssh(`set -e; rm -rf ~/${BOX_DIR}; mkdir -p ~/${BOX_DIR}/repo ~/.termic-server
 cd ~/${BOX_DIR}/repo && git init -q -b main && printf 'scripts:\n  setup: touch set-up-ran\n' > .termic.yaml && git add .termic.yaml && git -c user.email=e2e@termic.dev -c user.name=e2e commit -q -m init
 printf '%s\n' '#!/bin/sh' 'printf "fake agent ready\\r\\n> "' 'while IFS= read -r l; do printf "box says: %s\\r\\n> " "$l"; done' > ~/${BOX_DIR}/agent.sh
-chmod +x ~/${BOX_DIR}/agent.sh
-[ -e ~/.termic-server/agents.json ] && mv ~/.termic-server/agents.json ~/.termic-server/agents.json.e2e-bak || true
-printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.json`);
+chmod +x ~/${BOX_DIR}/agent.sh`);
     await clickPresent('[data-testid="remote-add-server"]');
     await setInputValue('[data-testid="server-ssh"]', box!);
     await setInputValue('[data-testid="server-name"]', "Test box");
@@ -433,7 +431,7 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
       await waitGone(`[data-testid="server-row-${serverId}"]`);
       expect(await browser.execute(() => window.__termic!.invoke("server_list"))).toEqual([]);
     } finally {
-      ssh(`rm -rf ~/${BOX_DIR}; rm -f ~/.termic-server/agents.json; [ -e ~/.termic-server/agents.json.e2e-bak ] && mv ~/.termic-server/agents.json.e2e-bak ~/.termic-server/agents.json || true`);
+      ssh(`rm -rf ~/${BOX_DIR}`);
     }
   });
 
@@ -464,6 +462,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     window.__termic!.invoke("remote_call", { machine: m, request: { id: "", ...r } }), serverId, request) as Promise<any>;
   const logs = async () => String((await call({ cmd: "logs", task }))?.data?.data ?? "");
   const row = () => `[data-sidebar-task-id="${task}"]`;
+  /** The task's branch, as the desktop named it (its branch prefix + slug). */
+  const taskBranch = () => browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.branch as string, task);
   const openMenu = async () => {
     await browser.execute((sel) => {
       const el = document.querySelector(sel)!;
@@ -487,8 +487,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     for (const args of [["init", "-q", "-b", "main"], ["config", "user.email", "e2e@termic.dev"], ["config", "user.name", "e2e"], ["commit", "-q", "--allow-empty", "-m", "init"]]) {
       execFileSync("git", ["-C", repo, ...args]);
     }
-    // A fake agent, the server's own way to add one (agents.json): it
-    // echoes, and asks a question when told to.
+    // A fake agent: it echoes, and asks a question when told to.
     const agent = path.join(box, "agent.sh");
     writeFileSync(agent, [
       "#!/bin/sh",
@@ -504,9 +503,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       "",
     ].join("\n"));
     chmodSync(agent, 0o755);
-    writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent], boxagent: [agent] }));
-    // The desktop's own registry starts a server task's agent now: the same
-    // fake, as a desktop agent (the box is this Mac, so the path is there).
+    // The desktop's registry starts a server task's agent: the fake, as a
+    // desktop agent (the box is this Mac, so the path is there).
     await browser.execute(async (cmd) => {
       const t = window.__termic!;
       const s = await t.ipc.settingsLoad();
@@ -537,17 +535,20 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     { timeout: 30_000, timeoutMsg: "the local server never came online" });
     const added = await call({ cmd: "project_add", path: repo });
     expect(added.ok).toBe(true);
-    const r = await call({ cmd: "new", name: "box-task", project: "repo", agent: "boxagent", prompt: "hello" });
-    expect(r.ok).toBe(true);
-    task = r.data.task.id;
-    // Mirrored into the desktop's own store (server_projects.rs): an
-    // ordinary project tagged with the server, and its task an ordinary row.
-    await browser.waitUntil(async () => browser.execute((id, sid) => {
-      const s = window.__termic!.useApp.getState();
-      const t = s.tasks.find((x: any) => x.id === id);
-      return !!t && s.projects.find((p: any) => p.id === t.project_id)?.server === sid;
-    }, task, serverId), { timeout: 30_000, timeoutMsg: "the server's task never reached the store" });
+    // The box's project is mirrored into the desktop's own store
+    // (server_projects.rs) as an ordinary project tagged with the server,
+    // and a task on it is made by the desktop, like a local one.
+    const projectId = await browser.waitUntil(async () => browser.execute((sid) =>
+      (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string | undefined, serverId),
+    { timeout: 30_000, timeoutMsg: "the server's project never reached the store" }) as string;
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    task = await createInDialog("box-task");
+    // The box records it (task_put), so its own list has it too.
+    await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).some((t: any) => t.id === task),
+      { timeout: 20_000, timeoutMsg: "the box never recorded the task" });
     await waitVisible(row());
+    await browser.waitUntil(async () => (await logs()).includes("fake agent ready"), { timeout: 20_000, timeoutMsg: "the agent never started on the box" });
+    await typeIntoAgent(task, "hello\r");
     await browser.waitUntil(async () => (await logs()).includes("box says: hello"), { timeout: 20_000, timeoutMsg: "the agent never answered" });
     // The old per-server section is gone for servers.
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="remote-machine-${id}"]`), serverId)).toBe(false);
@@ -709,9 +710,11 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
   it("runs the task's git, files, shells and scripts on the box through the normal view", async () => {
     // git_bytes (lib.rs) sends a server folder's git through termic-server's exec.
     const branches = await browser.execute((id) => window.__termic!.invoke("task_git_branches", { id, dirName: "" }), task) as string[];
-    expect(branches).toContain("box-task");
+    const br = await taskBranch();
+    expect(br).toMatch(/(^|\/)box-task$/);
+    expect(branches).toContain(br);
     const st = await browser.execute((id) => window.__termic!.invoke("task_git_status", { id }), task) as any;
-    expect(JSON.stringify(st)).toContain("box-task");
+    expect(JSON.stringify(st)).toContain(br);
     // The file tree and the editor's read come from the box too, fenced in.
     const wt = await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path, task) as string;
     writeFileSync(path.join(wt, "hello.txt"), "hi from the box\n");
@@ -890,7 +893,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     const dupId = await createInDialog("box-dup");
     const dup = await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).find((t: any) => t.id === dupId),
       { timeout: 30_000, timeoutMsg: "the duplicate never appeared on the box" }) as any;
-    expect(dup.base_branch).toBe("box-task");
+    expect(dup.base_branch).toBe(await taskBranch());
     expect(execFileSync("git", ["-C", dup.path ?? (await browser.execute((id) => (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id) as any)?.path, dupId)) as string, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim()).toMatch(/(^|\/)box-dup$/);
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), dupId);
   });
@@ -898,14 +901,15 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
   it("starts a server task from the project's 'Branch new tasks from'", async () => {
     // A desktop setting: the desktop's own creation branches from it, on the box.
     const proj = await browser.execute((sid) => window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid), serverId) as any;
-    await browser.execute((p) => window.__termic!.invoke("project_update", { p: { ...p, base_branch: "box-task" } }), proj);
+    const br = await taskBranch();
+    await browser.execute((p, b) => window.__termic!.invoke("project_update", { p: { ...p, base_branch: b } }), proj, br);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     try {
       await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), proj.id);
       const madeId = await createInDialog("box-based");
       const made = await browser.waitUntil(async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).find((t: any) => t.id === madeId),
         { timeout: 30_000, timeoutMsg: "the task never appeared on the box" }) as any;
-      expect(made.base_branch).toBe("box-task");
+      expect(made.base_branch).toBe(br);
       await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), madeId);
     } finally {
       await browser.execute((p) => window.__termic!.invoke("project_update", { p: { ...p, base_branch: "" } }), proj);
@@ -1096,9 +1100,39 @@ describeUpgrade("A server's termic-server stays current", function () {
       "",
     ].join("\n"));
     chmodSync(agent, 0o755);
-    writeFileSync(path.join(box, ".termic-server", "agents.json"), JSON.stringify({ fake: [agent] }));
+    // The desktop's registry runs it (the box is this Mac).
+    await browser.execute(async (cmd) => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      const fake = s.agents.find((a: any) => a.id === "fakeagent");
+      const caps = { ...fake.capabilities, yolo_args: [], resume_args: [], session_id_args: [], resume_id_args: [], name_args: [] };
+      s.agents = [...s.agents.filter((a: any) => a.id !== "boxagent"), { ...fake, id: "boxagent", display_name: "BoxAgent", command: cmd, args: [], builtin: false, capabilities: caps }];
+      await t.ipc.settingsSave(s);
+      await t.useApp.getState().loadAll();
+    }, agent);
     stageOld();
   });
+
+  /** A task on the box, made by this desktop with the box's fake agent. */
+  const makeTask = async (name: string) => {
+    const projectId = await browser.waitUntil(async () => browser.execute((sid) =>
+      (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string | undefined, serverId),
+    { timeout: 30_000, timeoutMsg: "the box's project never reached the store" }) as string;
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 20_000);
+    await clickPresent('[data-testid="rail-agent"]');
+    await clickWhenVisible('[role="dialog"] [data-cli="boxagent"]');
+    await clickPresent('[data-testid="rail-task"]');
+    await clickPresent('[data-testid="task-type-worktree"]');
+    await setInputValue('[data-testid="new-task-name"]', name);
+    await clickPresent('[data-testid="new-task-create"]');
+    const id = await browser.waitUntil(async () => browser.execute((n) =>
+      (window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived) as any)?.id as string | undefined, name),
+    { timeout: 60_000, timeoutMsg: `${name} never reached the store` }) as string;
+    await browser.waitUntil(async () => String((await cliRpc({ cmd: "logs", task: id }))?.data?.data ?? "").includes("fake agent ready"),
+      { timeout: 30_000, timeoutMsg: `${name}'s agent never started` });
+    return id;
+  };
 
   after(async () => {
     if (serverId) await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId).catch(() => {});
@@ -1112,16 +1146,19 @@ describeUpgrade("A server's termic-server stays current", function () {
     serverId = rec.id;
     await versionIs("0-old", "the old server never came online");
     expect((await call({ cmd: "project_add", path: repo })).ok).toBe(true);
-    const r = await call({ cmd: "new", name: "long-job", project: "repo", agent: "fake" });
-    expect(r.ok).toBe(true);
+    await makeTask("long-job");
     expect((await machine()).update ?? null).toBe(null);
     expect(readFileSync(installed, "utf8")).toContain("0-old");
   });
 
   const stateOf = async (name: string) => (await call({ cmd: "list" }))?.data?.tasks?.find((t: any) => t.name === name)?.work_state as string | undefined;
   const busy = async (halfSeconds: number) => {
-    expect((await call({ cmd: "send", task: "long-job", prompt: `busy ${halfSeconds}`, resume: true })).ok).toBe(true);
-    await browser.waitUntil(async () => (await stateOf("long-job")) === "working", { timeout: 15_000, timeoutMsg: "the agent never started its turn" });
+    // Through this desktop. A box stopped under it (stageOld) ended the
+    // agent: then --fresh starts it again (the fake has no session).
+    let r = await cliRpc({ cmd: "send", task: "long-job", prompt: `busy ${halfSeconds}` });
+    if (!r.ok) r = await cliRpc({ cmd: "send", task: "long-job", prompt: `busy ${halfSeconds}`, fresh: true });
+    if (!r.ok) throw new Error(`send failed: ${JSON.stringify(r)}`);
+    await browser.waitUntil(async () => (await stateOf("long-job")) === "working", { timeout: 15_000, timeoutMsg: "the box never read the turn as working" });
   };
   const stageNew = () => {
     mkdirSync(staged, { recursive: true });
@@ -1215,30 +1252,7 @@ describeUpgrade("A server's termic-server stays current", function () {
   });
 
   it("an agent this desktop started on the box comes back after the box restarts", async () => {
-    // The desktop's registry runs the box's fake agent (the box is this Mac).
-    await browser.execute(async (cmd) => {
-      const t = window.__termic!;
-      const s = await t.ipc.settingsLoad();
-      const fake = s.agents.find((a: any) => a.id === "fakeagent");
-      const caps = { ...fake.capabilities, yolo_args: [], resume_args: [], session_id_args: [], resume_id_args: [], name_args: [] };
-      s.agents = [...s.agents.filter((a: any) => a.id !== "boxagent"), { ...fake, id: "boxagent", display_name: "BoxAgent", command: cmd, args: [], builtin: false, capabilities: caps }];
-      await t.ipc.settingsSave(s);
-      await t.useApp.getState().loadAll();
-    }, path.join(box, "agent.sh"));
-    const projectId = await browser.waitUntil(async () => browser.execute((sid) =>
-      (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string | undefined, serverId),
-    { timeout: 30_000, timeoutMsg: "the box's project never reached the store" }) as string;
-    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
-    await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 20_000);
-    await clickPresent('[data-testid="rail-agent"]');
-    await clickWhenVisible('[role="dialog"] [data-cli="boxagent"]');
-    await clickPresent('[data-testid="rail-task"]');
-    await clickPresent('[data-testid="task-type-worktree"]');
-    await setInputValue('[data-testid="new-task-name"]', "survives-restart");
-    await clickPresent('[data-testid="new-task-create"]');
-    const id = await browser.waitUntil(async () => browser.execute(() =>
-      (window.__termic!.useApp.getState().tasks.find((t: any) => t.name === "survives-restart" && !t.archived) as any)?.id as string | undefined),
-    { timeout: 60_000, timeoutMsg: "the task never reached the store" }) as string;
+    const id = await makeTask("survives-restart");
     const agentPty = () => browser.execute((tid) => ((window.__termic!.useApp.getState().tabs[tid] ?? []).find((t: any) => t.type === "terminal" && t.is_default) as any)?.ptyId as string | undefined, id);
     await browser.waitUntil(async () => !!(await agentPty()), { timeout: 30_000, timeoutMsg: "the agent never started" });
     const before = await agentPty();

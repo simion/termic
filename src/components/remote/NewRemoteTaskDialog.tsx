@@ -49,7 +49,13 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
 
   async function load() {
     try {
-      const [p, a] = await Promise.all([remoteCall(machineId, req("project_list")), remoteCall(machineId, req("agents"))]);
+      // A server has no agent list (the desktop's registry starts its
+      // agents); its dialog only adds a project.
+      const isServer = useRemote.getState().machines.find(m => m.id === machineId)?.kind === "server";
+      const [p, a] = await Promise.all([
+        remoteCall(machineId, req("project_list")),
+        isServer ? Promise.resolve({ ok: false } as Awaited<ReturnType<typeof remoteCall>>) : remoteCall(machineId, req("agents")),
+      ]);
       const list: Project[] = p.ok ? p.data?.projects ?? [] : [];
       setProjects(list);
       setProject(cur => cur || (wanted && list.some(p => p.name === wanted) ? wanted : list[0]?.name) || "");
