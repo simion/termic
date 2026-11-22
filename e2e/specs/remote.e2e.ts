@@ -712,6 +712,27 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       { timeout: 20_000, timeoutMsg: "the CLI's send never reached the agent on the box, or logs never read it back" });
   });
 
+  it("reads a server task's result from the transcript on the box", async () => {
+    // cli_server.rs claude_transcript_file through TaskHost: the claude
+    // session file is the box's (HOME there), never this Mac's.
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid),
+      await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId));
+    const id = await createInDialog("box-chat");
+    await browser.execute((t) => window.__termic!.invoke("task_set_cli", { id: t, cli: "claude" }), id);
+    const wt = await browser.execute((t) => (window.__termic!.useApp.getState().tasks.find((x: any) => x.id === t) as any)?.path as string, id);
+    const dir = path.join(box, ".claude", "projects", wt.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "s.jsonl"), [
+      JSON.stringify({ type: "user", message: { content: "go" } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done on the box" }] } }),
+    ].join("\n") + "\n");
+    const r = await cliRpc({ cmd: "result", task: id });
+    expect(r.ok).toBe(true);
+    expect(r.data.text).toBe("done on the box");
+    expect(r.data.transcript).toBe(path.join(dir, "s.jsonl"));
+    await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), id);
+  });
+
   it("runs the task's git, files, shells and scripts on the box through the normal view", async () => {
     // git_bytes (lib.rs) sends a server folder's git through termic-server's exec.
     const branches = await browser.execute((id) => window.__termic!.invoke("task_git_branches", { id, dirName: "" }), task) as string[];

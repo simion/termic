@@ -844,36 +844,6 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
     dispatch_authenticated(req, host, sink)
 }
 
-/// A verb about a server project's task (docs/plans/server-projects.md)
-/// that only the box can answer. A server task's agent is a desktop tab
-/// whose PTY runs on the box (its slot is in PtyManager), so send, wait,
-/// logs, stop and diff take the local path; `result` reads the agent's
-/// transcript, a file on the box, until file reads go through TaskHost.
-fn forward_to_server(req: &Request, host: &dyn CliHost) -> Option<Reply> {
-    let (task, project, timeout_ms) = match &req.cmd {
-        Command::LastResult { task, project, .. } => (task.as_deref()?, project.as_deref(), None),
-        _ => return None,
-    };
-    let (projects, tasks) = host.projects_tasks();
-    let t = resolve_by_name(&projects, &tasks, task, project).ok()?;
-    let server = projects.iter().find(|p| p.id == t.project_id)?.server.clone()?;
-    let mut fwd = serde_json::to_value(req).ok()?;
-    let o = fwd.as_object_mut()?;
-    o.insert("task".into(), serde_json::Value::String(t.id.clone()));
-    o.remove("project");
-    o.remove("cwd");
-    o.remove("from_task");
-    o.remove("profile");
-    // A send or wait that waits for the turn gets its own timeout plus slack.
-    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(300_000)) + std::time::Duration::from_secs(30);
-    let mut reply = match crate::remote_client::call(&server, fwd, Some(wait)) {
-        Ok(v) => serde_json::from_value::<Reply>(v).unwrap_or_else(|e| Reply::err(&req.id, ErrorCode::Internal, format!("unexpected answer from the server: {e}"))),
-        Err(e) => Reply::err(&req.id, ErrorCode::Internal, e),
-    };
-    reply.id = req.id.clone();
-    Some(reply)
-}
-
 /// The post-auth verb dispatch, shared by the socket path (behind
 /// `auth_gate`) and the MCP endpoint (which authenticates at the HTTP
 /// layer with its own token and setting; see mcp_server). Callers MUST
@@ -891,9 +861,6 @@ pub(crate) fn dispatch_authenticated(
             Some(node) => node.forward(req, sink),
             None => Reply::err(&req.id, ErrorCode::Unsupported, "pairing is not available in this app"),
         };
-    }
-    if let Some(reply) = forward_to_server(req, host) {
-        return reply;
     }
     match &req.cmd {
         Command::PeerList | Command::PeerPair { .. } | Command::PeerUnpair { .. } | Command::PeerRename { .. } => {
@@ -2655,18 +2622,17 @@ fn handle_logs(
 
 use termic_remote::transcript::{claude_project_dir_name, last_assistant_text};
 
-fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
-        .map(|e| e.path())
+/// Where a task's files are: this computer, or its server's box
+/// (task_host.rs), so a server task's transcript is read where its agent
+/// wrote it.
+fn files_of(host: &dyn CliHost, t: &Task) -> crate::task_host::Host {
+    let (projects, _) = host.projects_tasks();
+    projects.iter().find(|p| p.id == t.project_id).map(crate::task_host::Host::for_project).unwrap_or(crate::task_host::Host::Local)
 }
 
 /// The claude session transcript of `t`, or why there is none. Shared by
 /// `result` (the last message) and the remote transcript (every turn).
-fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto::ErrorBody> {
+fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<(PathBuf, crate::task_host::Host), proto::ErrorBody> {
     let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
     // Transcript layout is agent-specific; claude's JSONL is the one
     // reader shipped (docs/plans/cli.md: the RESULT.md file drop stays
@@ -2680,7 +2646,9 @@ fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto
             ),
         ));
     }
-    let Some(home) = host.home_dir() else {
+    let fs = files_of(host, t);
+    let home = if fs.is_server() { fs.home() } else { host.home_dir() };
+    let Some(home) = home else {
         return Err(err(ErrorCode::Internal, "no home directory".into()));
     };
     let dir = home.join(".claude").join("projects").join(claude_project_dir_name(&t.path));
@@ -2694,7 +2662,7 @@ fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto
         .max_by_key(|p| p.is_default)
         .and_then(|p| p.session_id.clone())
         .map(|s| dir.join(format!("{s}.jsonl")))
-        .filter(|f| f.is_file());
+        .filter(|f| fs.is_file(f));
     // Main-checkout tasks SHARE their cwd with the user's own claude
     // sessions and any sibling main-checkout task; newest-in-dir would
     // happily serve someone else's conversation as this task's result.
@@ -2705,9 +2673,10 @@ fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<PathBuf, proto
             "this task shares the project checkout, so its transcript cannot be identified. Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.".into(),
         ));
     }
-    pinned.or_else(|| newest_jsonl(&dir)).ok_or_else(|| {
+    let file = pinned.or_else(|| fs.newest_with_ext(&dir, "jsonl")).ok_or_else(|| {
         err(ErrorCode::NotFound, "no claude session transcript found for this task (has the agent replied yet?)".into())
-    })
+    })?;
+    Ok((file, fs))
 }
 
 /// Why a task in the project's own checkout shows no chat (phones, the
@@ -2718,6 +2687,10 @@ pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String
     let (projects, tasks) = host.projects_tasks();
     let t = resolve_by_name(&projects, &tasks, task, None).map_err(|e| e.message)?.clone();
     if matches!(t.cli.as_str(), "codex" | "agy" | "antigravity") {
+        // shortcut: their readers (termic_remote::transcript::other_agent) read this computer's files; a server task's chat waits for them to take a TaskHost.
+        if files_of(host, &t).is_server() {
+            return Err("This agent's chat on a server is not shown yet. The Terminal tab shows it.".into());
+        }
         let home = host.home_dir().ok_or("no home directory")?;
         // The id the agent reported for the task's tab (agent_hooks.rs):
         // Codex's session, agy's conversation.
@@ -2733,7 +2706,8 @@ pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String
     // This answers a person on a phone, not an agent: the CLI's advice
     // (write RESULT.md) is no use to them.
     let file = claude_transcript_file(host, &t).map_err(|e| if t.is_main_checkout && e.code == ErrorCode::Unsupported { SHARED_CHECKOUT_CHAT.to_string() } else { e.message })?;
-    let jsonl = std::fs::read_to_string(&file).map_err(|e| format!("could not read the transcript ({e})"))?;
+    let (file, fs) = file;
+    let jsonl = fs.read_to_string(&file).map_err(|e| format!("could not read the transcript ({e})"))?;
     Ok((t.id, termic_remote::transcript::parse_claude_jsonl(&jsonl)))
 }
 
@@ -2750,11 +2724,11 @@ fn handle_result(
         Ok(t) => t.clone(),
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    let file = match claude_transcript_file(host, &t) {
+    let (file, fs) = match claude_transcript_file(host, &t) {
         Ok(f) => f,
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    let jsonl = match std::fs::read_to_string(&file) {
+    let jsonl = match fs.read_to_string(&file) {
         Ok(s) => s,
         Err(e) => {
             return Reply::err(

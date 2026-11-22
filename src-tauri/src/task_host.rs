@@ -100,6 +100,45 @@ impl Host {
         }
     }
 
+    /// The box user's home (a server); this computer's otherwise.
+    pub(crate) fn home(&self) -> Option<PathBuf> {
+        match self {
+            Host::Local => dirs::home_dir(),
+            Host::Server { .. } => self.sh("printf %s \"$HOME\"", &[]).ok().filter(|h| !h.is_empty()).map(PathBuf::from),
+        }
+    }
+
+    pub(crate) fn is_file(&self, p: &Path) -> bool {
+        match self {
+            Host::Local => p.is_file(),
+            Host::Server { .. } => self.sh("[ -f \"$1\" ] && echo y || true", &[&p.to_string_lossy()]).is_ok_and(|o| o.trim() == "y"),
+        }
+    }
+
+    /// The most recently modified `*.<ext>` file directly in `dir`.
+    pub(crate) fn newest_with_ext(&self, dir: &Path, ext: &str) -> Option<PathBuf> {
+        match self {
+            Host::Local => std::fs::read_dir(dir)
+                .ok()?
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == ext))
+                .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+                .map(|e| e.path()),
+            Host::Server { .. } => {
+                let o = self.sh("ls -t \"$1\"/*.\"$2\" 2>/dev/null | head -n 1", &[&dir.to_string_lossy(), ext]).ok()?;
+                let line = o.lines().next()?.trim();
+                (!line.is_empty()).then(|| PathBuf::from(line))
+            }
+        }
+    }
+
+    pub(crate) fn read_to_string(&self, p: &Path) -> Result<String, String> {
+        match self {
+            Host::Local => std::fs::read_to_string(p).map_err(|e| e.to_string()),
+            Host::Server { .. } => self.sh("cat -- \"$1\"", &[&p.to_string_lossy()]),
+        }
+    }
+
     /// Copy what `pattern` matches in `repo` into the same place in `wt`
     /// (a project's "files to copy" on a box: `.env` and friends). Local
     /// projects keep `copy_matching`, which also handles the cases a glob

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use termic_proto::{
     self as proto, send_mode, ArchiveData, Command, DiffData, DiffStat, ErrorCode, ListData, LogsData, NewData, ProjectAddData, ProjectInfo, ProjectListData,
-    ProjectRemoveData, RenameData, Reply, ReplyData, Request, ResultData, SendData, StatusData, TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
+    ProjectRemoveData, RenameData, Reply, ReplyData, Request, SendData, StatusData, TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
 };
 
 use crate::daemon::{self, fail, Daemon, Fail, AGENT_TAB, MAX_PROMPT};
@@ -72,10 +72,8 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
             let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
             rename(d, &t, &name)
         }
-        Command::LastResult { task, project, cwd } => {
-            let t = resolve(d, task.as_deref(), project.as_deref(), cwd.as_deref())?;
-            last_result(&t)
-        }
+        // The desktop reads the transcript itself, through `exec`.
+        Command::LastResult { .. } => Err(fail(ErrorCode::Unsupported, "Termic on the desktop reads a server task's result")),
         Command::Logs { task, project, shell, tab, last_bytes, cwd } => {
             if shell {
                 return Err(fail(ErrorCode::Unsupported, "termic-server tasks have no aux terminal; omit --shell"));
@@ -324,16 +322,6 @@ pub fn claude_transcript(t: &TaskRec) -> Option<std::path::PathBuf> {
         .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
         .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
         .map(|e| e.path())
-}
-
-fn last_result(t: &TaskRec) -> Result<ReplyData, Fail> {
-    if t.agent != "claude" {
-        return Err(fail(ErrorCode::Unsupported, "results are available for claude tasks"));
-    }
-    let path = claude_transcript(t).ok_or_else(|| fail(ErrorCode::NotFound, format!("no claude transcript for {} yet", t.name)))?;
-    let text = std::fs::read_to_string(&path).map_err(|e| fail(ErrorCode::Internal, e.to_string()))?;
-    let msg = termic_remote::transcript::last_assistant_text(&text).ok_or_else(|| fail(ErrorCode::NotFound, "the agent has not said anything yet"))?;
-    Ok(ReplyData::LastResult(ResultData { task_id: t.id.clone(), agent: t.agent.clone(), transcript: path.to_string_lossy().to_string(), text: msg }))
 }
 
 fn diff(t: &TaskRec, full: bool) -> Result<ReplyData, Fail> {
