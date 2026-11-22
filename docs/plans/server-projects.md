@@ -128,11 +128,12 @@ Order, each step shippable on its own:
    the scattered `server_for_path` checks. New task is the one
    NewTaskDialog, agents the box lacks disabled. Delete
    `NewRemoteTaskDialog.tsx`, `verbs.rs new_task` and its CLI forward.
-5. **Shrink the box**: delete the agent table and resume, the task list
-   in `state.rs`, the task half of `mirror()`, and the `new`, `rename`,
-   `list` verbs. It keeps `exec`, the PTY family, a queued-prompt drain
-   and `detect.rs` as the state floor for when no desktop is attached
-   (a desktop's own reading wins when one is).
+5. **Shrink the box**: delete the agent table and resume, and the `new`
+   verb. `state.rs` keeps projects, tasks and organisation as shared
+   records (see Decisions) behind a put / delete interface with change
+   events, instead of the task engine's own list. It keeps `exec`, the
+   PTY family, a queued-prompt drain, the hook-OSC reader and
+   `detect.rs` as the fallback for agents without hooks.
 6. **One stream host**: the shared session loop of `session.rs` and
    `remote_server.rs` in `termic-remote` behind a host trait.
 
@@ -157,6 +158,43 @@ agent's state. The daemon keeps them in the ring for a reconnect, and
 can read the same OSCs itself for an exact state with nobody attached.
 `detect.rs` stays only as the fallback for agents without hooks. Codex
 trusts hooks per machine, so its trust step runs on the box too.
+
+## Decisions, 2026-11-22
+
+- **The server knows processes, not tasks.** Its surface: `exec`,
+  daemon-owned PTYs (open, attach, input, resize, kill, a ring), the
+  queued-prompt drain, reading hook OSCs out of PTY output for a state
+  with nobody attached, the folder fence. No agent registry, argv,
+  resume, worktree creation, slugs or task verbs. What both sides must
+  compute identically lives in `termic-proto` / `termic-remote`, called
+  by both, never copied.
+- **`TaskHost` is the seam.** One trait in the desktop: `run`,
+  `spawn_pty`, file read / write / list / exists / mkdir, `which`, and
+  `caps` (sandbox, Docker, keychain, reveal in Finder...). `LocalHost` is
+  today's code behind it; `RemoteHost` is one server connection over
+  `exec` and the PTY family. Every task operation is `host_for(task)` and
+  one implementation. The UI gates on host caps, not on `project.server`.
+  A server PTY emits the same `pty://` events, so TaskView, TabBar and
+  NewTaskDialog need no remote branch.
+- **No invisible local server.** Running termic-server on the Mac for
+  local tasks would give one transport and agents that survive an app
+  restart, at the price of a daemon (CLAUDE.md), moving the sandbox,
+  Docker, secrets and macOS permissions into it, and a hop on every
+  terminal byte. `LocalHost` in process is that server without the
+  process boundary; if surviving a restart becomes a goal, swap it
+  behind the trait.
+- **A box looks the same to every desktop that reaches it.** Several
+  laptops (the same Unix user on the box, so one daemon) share one view:
+  the box stores records, as plain data with no logic: projects, tasks
+  (id, name, branch, worktree, agent, PTY ids, archived), organisation
+  (groups, pins, order, folder colours) and project settings that affect
+  the work (setup, run and archive scripts, base branch). Desktops write
+  them through a put / delete interface; every connected desktop gets the
+  change and mirrors it (`server_projects.rs`). Last write wins per
+  field. What stays per desktop is how it is viewed: collapsed folders,
+  the open task, tab layout, splits, the profile it shows in. This
+  replaces the earlier stage-1 rule that the desktop owns a server
+  project's organisation and stops reading the box's order.
 
 ## Not a goal: a phone without a desktop
 
