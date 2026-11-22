@@ -420,6 +420,11 @@ chmod +x ~/${BOX_DIR}/agent.sh`);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     await waitGone(`[data-sidebar-task-id="${task}"]`, 30_000);
     await browser.waitUntil(() => ssh(`test -d '${wt}' && echo yes || echo no`).trim() === "no", { timeout: 30_000, timeoutMsg: "the worktree stayed on the box after archive" });
+    // Nothing of it keeps running there: archive ends every terminal the
+    // task had on the box (its agent and its shells), not just one. The
+    // [a] keeps pgrep from matching the shell that runs it.
+    await browser.waitUntil(() => ssh(`pgrep -f '${BOX_DIR}/[a]gent.sh' >/dev/null && echo yes || echo no`).trim() === "no",
+      { timeout: 15_000, timeoutMsg: "the task's agent kept running on the box after archive" });
   });
 
   onBox("removes the server", async () => {
