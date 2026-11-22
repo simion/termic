@@ -22,6 +22,7 @@
 
 pub mod compat;
 pub mod conn;
+pub mod pty;
 pub mod framed;
 mod pb;
 pub mod screen;

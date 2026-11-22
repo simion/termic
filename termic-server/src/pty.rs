@@ -88,6 +88,12 @@ impl Pty {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        // Where agent hooks write their OSCs: this terminal, as on the
+        // desktop (docs/agent-hooks.md "Transport"). Set last, so a value
+        // from the desktop's env (its own slave path) never wins.
+        if let Some(path) = pair.master.as_raw_fd().and_then(termic_remote::pty::slave_path) {
+            cmd.env("TERMIC_PTY", path);
+        }
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("could not start {prog}: {e}"))?;
         // The slave must close here or the reader never sees EOF.
         drop(pair.slave);

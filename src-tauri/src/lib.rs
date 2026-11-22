@@ -4661,28 +4661,11 @@ fn pty_attached(state: State<'_, PtyManager>, id: String) {
 }
 
 
-/// Resolve the slave device path (`/dev/ttysNNN`) for a pty master, so it can be
-/// handed to agent hooks as `TERMIC_PTY`.
-///
-/// `ptsname` returns a pointer to a STATIC buffer and has no `_r` variant on
-/// macOS, so two concurrent spawns could otherwise read each other's result.
-/// The lock is held across the call and the copy, which is the whole critical
-/// section.
+/// The slave device path (`/dev/ttysNNN`) of a pty master, handed to agent
+/// hooks as `TERMIC_PTY` (termic_remote::pty, shared with termic-server).
 #[cfg(unix)]
 pub(crate) fn pty_slave_path(master: &Box<dyn portable_pty::MasterPty + Send>) -> Option<String> {
-    use std::os::unix::io::RawFd;
-    static PTSNAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let fd: RawFd = master.as_raw_fd()?;
-    let _guard = PTSNAME_LOCK.lock().ok()?;
-    // SAFETY: `fd` is a live pty master owned by the caller for the duration of
-    // this call, and the returned pointer is copied before the lock is dropped.
-    unsafe {
-        let p = libc::ptsname(fd);
-        if p.is_null() {
-            return None;
-        }
-        Some(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
-    }
+    termic_remote::pty::slave_path(master.as_raw_fd()?)
 }
 
 #[cfg(not(unix))]

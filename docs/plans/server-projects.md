@@ -195,6 +195,22 @@ trusts hooks per machine, so its trust step runs on the box too.
   the open task, tab layout, splits, the profile it shows in. This
   replaces the earlier stage-1 rule that the desktop owns a server
   project's organisation and stops reading the box's order.
+- **Several desktops at once.** Every write goes to the box, which
+  applies it and pushes the change to every connected desktop at once; a
+  connect gets the full snapshot. No offline edits: a server's projects
+  are read-only on a disconnected laptop, so nothing piles up to merge.
+  Two writes to one field: arrival order, last wins. Starting a task's
+  agent is a compare-and-set on the box ("set its agent PTY only if
+  none"), so two laptops opening one stopped task start one agent and the
+  other attaches. Two desktops on one agent terminal both see it and both
+  type (a shared tmux session); the most recently active one sizes it
+  (tmux `window-size latest`). An archive on one closes the task on the
+  other with who archived it.
+- **Upgrades.** A desktop that needs a primitive the box lacks (`pty_keep`,
+  the records store) treats the box as below its floor: a required
+  upgrade, restarted once agents settle (compat.rs), whatever the box's
+  version string says. No released Termic carries termic-server yet, so
+  every box in the wild is a development build.
 
 ## Not a goal: a phone without a desktop
 

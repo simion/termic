@@ -17,3 +17,7 @@ vt100 = "0.15"
 # Reads Antigravity's conversation files (transcript.rs), which are SQLite.
 # Bundled: no system library to find on a server or a Windows desktop.
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+# ptsname (pty.rs): the slave path agent hooks write to, on the desktop and on a box.
+libc = "0.2"
