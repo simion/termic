@@ -77,6 +77,71 @@ a program in the task's folder. Instead of a verb per feature:
   projects mirror into that profile; the sidebar's projects header has an
   Add a server button, and the Add project dialog links to it.
 
+## Finishing it: what is still duplicated, and the order to remove it
+
+Reviewed 2026-11-22 (read-only architecture review of the branch). The
+first termic-server landed as a self-contained task engine, before this
+plan; stages 1 and 4 replaced its organisation, stages 2 and 3 its git,
+files, scripts and shells. What still runs on the bespoke engine, with
+the drift already found:
+
+- **The primary agent, its registry, argv and resume.** `agents.rs`
+  `BUILTIN` (claude, codex, gemini, opencode, shell) against the
+  desktop's `default_agents()` (11 agents, no gemini) and
+  `spawnArgsForCli`; the box resumes with `--continue` and knows no
+  session ids, accounts, YOLO args or env.
+- **Task creation.** `verbs.rs new_task` against `task_create_sync`; the
+  two slug functions differ (`util.rs slug` drops `_`, caps at 60), so
+  one name gives two branch names. `--from`, `--resume`, `--pr` refused.
+- **Work state.** `detect.rs` (quiet window and literal strings) against
+  hooks and `classifyAgentTitle`, both inside one RemoteTaskView.
+- **The task view and New task.** `RemoteTaskView.tsx` (own tab strip,
+  `useServerShells`) and `NewRemoteTaskDialog.tsx`, plus about a dozen
+  `project.server` branches (MainArea, useShortcuts, NewTabPalette,
+  UnifiedBar, Sidebar, ProjectActionsMenuItems).
+- **Copy-paste.** `last_assistant_text`, `claude_project_dir_name`,
+  `interrupt_key` (the box's copy misses next-claude, cursor, grok).
+- **Two task stores** (`state.rs TaskRec`, reconciled by `mirror()`) and
+  two stream hosts (`session.rs`, `remote_server.rs`).
+
+Why a shared engine crate is not the answer: half the engine (spawn
+argv, title classification, the prompt queue) lives in the webview, so a
+box could not link it. The thin host is, with one piece the stages above
+missed: **`pty_open` PTYs belong to the connection** (`session.rs`) and
+die with it, so only the daemon's own agent PTY outlives a sleeping
+laptop. That is the reason the agent never moved.
+
+Order, each step shippable on its own:
+
+1. **Share the copies**: `last_assistant_text`, `interrupt_key`, the slug
+   move into `termic-remote` / `termic-proto`.
+2. **Daemon-owned PTYs**: move the PTY map from `Session` to `Daemon`,
+   add `pty_attach` by id (`pty.rs` already keeps a ring and
+   subscribers). Raise `compat::REQUIRES_SERVER`.
+3. **The agent as an ordinary tab**: spawn it with the desktop's argv,
+   session id and env through `pty_spawn`; draw server tasks with
+   TaskView and TabBar. Delete RemoteTaskView's server half,
+   `useServerShells`, `useBoxAgents` and the `project.server` branches it
+   leaves behind (paired computers keep their small overlay).
+4. **Task creation over `exec`**, through a `TaskHost` seam that replaces
+   the scattered `server_for_path` checks. New task is the one
+   NewTaskDialog, agents the box lacks disabled. Delete
+   `NewRemoteTaskDialog.tsx`, `verbs.rs new_task` and its CLI forward.
+5. **Shrink the box**: delete the agent table and resume, the task list
+   in `state.rs`, the task half of `mirror()`, and the `new`, `rename`,
+   `list` verbs. It keeps `exec`, the PTY family, a queued-prompt drain
+   and `detect.rs` as the state floor for when no desktop is attached
+   (a desktop's own reading wins when one is).
+6. **One stream host**: the shared session loop of `session.rs` and
+   `remote_server.rs` in `termic-remote` behind a host trait.
+
+Accepted trade-off: with the laptop asleep, a server task's state is the
+cruder floor, and a phone cannot create a task straight on a box. If
+phone-to-box without a desktop becomes a goal, the box gets the agent
+table pushed to it then. Open risk in step 3: agent hooks on the box
+have no transport back to the desktop yet, so server agents read state
+from titles (and the floor) until one exists.
+
 ## Stages
 
 1. Model + organization: `Project.server`, server projects listed in
