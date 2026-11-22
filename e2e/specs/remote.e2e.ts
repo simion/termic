@@ -812,11 +812,34 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await pressOutside();
     await waitGone('[data-testid="aux-terminal"]');
     expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, task)).toBe(true);
+    // On the agent it asks: the agent runs on the box past any tab.
+    // Cancel keeps everything; Close view leaves the agent running there.
     await pressOutside();
+    await waitVisible('[data-testid="server-close-dialog"]');
+    await snap("remote-server-close-ask.png");
+    await clickPresent('[data-testid="server-close-cancel"]');
+    await waitGone('[data-testid="server-close-dialog"]');
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, task)).toBe(true);
+    await pressOutside();
+    await clickPresent('[data-testid="server-close-view"]');
     await browser.waitUntil(() => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task),
-      { timeout: 5_000, timeoutMsg: "⌘W on the agent did not close the server task's view" });
+      { timeout: 5_000, timeoutMsg: "Close view did not close the server task's view" });
+    expect(["working", "idle", "waiting", "done"]).toContain(await browser.execute((id, sid) =>
+      window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.tasks.find((t: any) => t.id === id)?.state, task, serverId));
     await clickPresent(row());
     // It comes back on the tab it last showed (the file opened earlier).
+    await clickPresent('[data-testid="server-tab-agent"]');
+    await waitVisible('[data-testid="remote-terminal"]');
+    // Stop agent: the view closes (an open terminal would start it again)
+    // and the box stops it; opening the task starts it in its session.
+    const boxState = () => browser.execute((id, sid) =>
+      window.__termic!.useRemote.getState().machines.find((m: any) => m.id === sid)?.tasks.find((t: any) => t.id === id)?.state as string, task, serverId);
+    await pressOutside();
+    await clickPresent('[data-testid="server-close-stop"]');
+    await browser.waitUntil(async () => (await boxState()) === "inactive", { timeout: 15_000, timeoutMsg: "Stop agent did not stop it on the box" });
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task)).toBe(true);
+    await clickPresent(row());
+    await browser.waitUntil(async () => (await boxState()) !== "inactive", { timeout: 15_000, timeoutMsg: "opening the stopped task did not start its agent" });
     await clickPresent('[data-testid="server-tab-agent"]');
     await waitVisible('[data-testid="remote-terminal"]');
     // Send to main runs on the box: the task's committed edit and its

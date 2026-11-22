@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { RemoteSidebarSection } from "@/components/remote/RemoteMachines";
+import { agentName, stopRemoteAgent, useBoxAgents, useServerShells } from "@/components/remote/RemoteTaskView";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
@@ -3049,6 +3050,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Task actions menu — controlled so a right-click on the row can
   // open the same menu the kebab button triggers.
   const [menuOpen, setMenuOpen] = useState(false);
+  // The box's installed agents, for the menu's New: read once the menu opens.
+  const boxAgents = useBoxAgents(serverId, !!serverId && menuOpen);
   // Task rename
   const [taskRenaming, setTaskRenaming] = useState<string | null>(null);
   const taskRenameInputRef = useRef<HTMLInputElement | null>(null);
@@ -3575,64 +3578,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               // the trigger highlighted with a focus ring is just noise.
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
-              {/* A server project's task (docs/plans/server-projects.md): what
-                  works on it today. The rest acts on this Mac (agent, sandbox,
-                  resume, schedules, duplicate) and joins as it runs on the box. */}
-              {serverId ? (
-                <>
-                  <DropdownItem
-                    className="items-center [&>svg]:mt-0"
-                    data-testid="task-menu-pin"
-                    onSelect={() => {
-                      const next = !w.pinned;
-                      setTaskPinned(w.id, next);
-                      taskSetPinned(w.id, next).catch(e => {
-                        setTaskPinned(w.id, !next);
-                        useUI.getState().pushToast(String(e), "error");
-                      });
-                    }}
-                  >
-                    {w.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-                    <span>{w.pinned ? t("unpinTask") : t("pinTask")}</span>
-                  </DropdownItem>
-                  <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => setTaskRenaming(w.name)}>
-                    <Pencil className="h-4 w-4" />
-                    <span>{t("rename", { ns: "common" })}</span>
-                  </DropdownItem>
-                  {w.branch && (
-                    <DropdownItem className="items-center [&>svg]:mt-0" onSelect={() => copyToClipboard(w.branch, `"${w.branch}"`)}>
-                      <Copy className="h-4 w-4" />
-                      <span>{t("copyBranch")}</span>
-                    </DropdownItem>
-                  )}
-                  {!w.is_main_checkout && w.branch && (
-                    <DropdownItem
-                      className="items-center [&>svg]:mt-0"
-                      data-testid={`task-duplicate-${w.id}`}
-                      // The server's New task dialog, starting from this branch.
-                      onSelect={() => requestAnimationFrame(() => {
-                        const p = useApp.getState().projects.find(x => x.id === w.project_id);
-                        if (p?.server) useRemote.getState().setDialog({ newTaskOn: p.server, newTaskProject: p.name, newTaskBase: w.branch });
-                      })}
-                    >
-                      <GitBranchPlus className="h-4 w-4" />
-                      <span>{t("duplicateWorktree")}</span>
-                    </DropdownItem>
-                  )}
-                  {groupMenu}
-                  <DropdownSeparator />
-                  <DropdownItem
-                    className="items-center [&>svg]:mt-0"
-                    onSelect={async () => {
-                      if (taskRenaming !== null) return;
-                      await confirmAndArchive(w);
-                    }}
-                  >
-                    <Archive className="h-4 w-4" />
-                    <span>{t("archiveTask")}</span>
-                  </DropdownItem>
-                </>
-              ) : (<>
+              {/* One menu for every task. A server project's task
+                  (docs/plans/server-projects.md) leaves out what acts only on
+                  this Mac (sandbox, YOLO, resume override, schedules, the CLI
+                  briefing) and gains what only a box has (its path there, Stop
+                  and Start of an agent that outlives any tab). */}
+              <>
               {/* Leads the menu: "what else can I put in this task" is the
                   question people bring to a task row (GH #197). A submenu,
                   not a flat section, so the row's own actions stay one
@@ -3646,6 +3597,28 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 </DropdownSubTrigger>
                 <DropdownSubContent>
+                  {serverId ? (
+                    <>
+                      <DropdownItem
+                        className="items-center [&>svg]:mt-0"
+                        data-testid={`task-new-shell-${w.id}`}
+                        onSelect={() => { setActive(w.id); useServerShells.getState().add(w.id); }}
+                      >
+                        <SquareChevronRight className="h-4 w-4" />
+                        <span>{t("remote:task.terminal")}</span>
+                      </DropdownItem>
+                      {boxAgents.map(id => (
+                        <DropdownItem
+                          key={id}
+                          className="items-center [&>svg]:mt-0"
+                          onSelect={() => { setActive(w.id); useServerShells.getState().add(w.id, { label: agentName(id), input: `${id}\r`, agent: id }); }}
+                        >
+                          <span className={cn("flex h-4 w-4 items-center justify-center", CLI_BRAND_COLOR[resolveIconId(id, [])])}><CliIcon cli={resolveIconId(id, [])} className="h-4 w-4" /></span>
+                          <span>{agentName(id)}</span>
+                        </DropdownItem>
+                      ))}
+                    </>
+                  ) : (
                   <NewTabMenuItems
                     taskId={w.id}
                     onSpawnCli={(cli) => spawnIntoTask({
@@ -3681,10 +3654,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     }}
                     onMore={() => { setMenuOpen(false); setView("history", { projectId: w.project_id }); }}
                   />
+                  )}
                 </DropdownSubContent>
               </DropdownSub>
               <DropdownSeparator />
-              {spotlightAvailable && (
+              {spotlightAvailable && !serverId && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   onSelect={async () => {
@@ -3703,7 +3677,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <span>{isSpotlighted ? t("stopSpotlight") : t("startSpotlight")}</span>
                 </DropdownItem>
               )}
-              <DropdownItem
+              {!serverId && <DropdownItem
                 // items-center + no top-nudge: these rows are single-line
                 // so the default two-line layout offsets the icon visually.
                 className="items-center [&>svg]:mt-0"
@@ -3717,12 +3691,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     : effectiveSandboxMode(w) === "off" ? t("sandboxSettings")
                     : sandboxModeText(effectiveSandboxMode(w), tChrome).shortLabel}
                 </span>
-              </DropdownItem>
+              </DropdownItem>}
               {/* Per-task YOLO toggle. Disabled (auto-on) under Enforcing
                   OR Docker mode - whichever cage mechanism, it's the real
                   boundary there. Red when on without EITHER cage
                   (dangerous). */}
-              <DropdownItem
+              {!serverId && <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 disabled={isTaskCaged(w)}
                 onSelect={() => {
@@ -3751,7 +3725,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     ? t("yoloAutoEnforceFs")
                     : w.yolo ? t("yoloOn") : t("yoloOff")}
                 </span>
-              </DropdownItem>
+              </DropdownItem>}
               {/* Pin (GH #458): a pinned task stays listed whatever the sidebar
                   query or the project's filter says. Mirrors the store first,
                   like the YOLO toggle, so the row reacts before the write. */}
@@ -3780,7 +3754,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               {/* Custom-command tasks carry an editable launch
                   script (agent / shell tasks resolve their command
                   from the registry, so there's nothing to edit). */}
-              {w.cli === "custom" && (
+              {w.cli === "custom" && !serverId && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   onSelect={() => useUI.getState().openEditCommand(w.id)}
@@ -3806,7 +3780,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   tabs don't resume an agent session). Lets a task
                   resume a named session instead of termic's auto-managed
                   uuid, e.g. `--resume {WORKSPACE_NAME}`. */}
-              {w.cli !== "custom" && w.cli !== "shell" && (
+              {w.cli !== "custom" && w.cli !== "shell" && !serverId && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   onSelect={() => useUI.getState().openResumeOverride(w.id)}
@@ -3824,23 +3798,33 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <span>{t("copyBranch")}</span>
                 </DropdownItem>
               )}
+              {serverId && w.path && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-copy-path-${w.id}`}
+                  onSelect={() => copyToClipboard(w.path, w.path)}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span>{t("remote:task.copyPath")}</span>
+                </DropdownItem>
+              )}
               {/* Paste-ready briefing that teaches ANOTHER agent to drive
                   THIS task over the CLI, so two agents can hand each other
                   work. See lib/agentBriefing for why the block steers both
                   sides off `--wait` and onto prompting each other. */}
-              <DropdownItem
+              {!serverId && <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 onSelect={() => { void copyAgentBriefing(w, project?.name); }}
               >
                 <Waypoints className="h-4 w-4" />
                 <span>{t("copyBriefing")}</span>
-              </DropdownItem>
+              </DropdownItem>}
               {/* Schedule (GH #300): this task becomes a schedule's parent, or
                   edits the one it already is. Only for an agent that can say
                   it finished, or a run could never end. Disabled on a Docker
                   task rather than hidden, with the reason on it: its runs must
                   never quietly fall back to the host. */}
-              {workDoneCapable(w.cli) && (w.schedule ? (
+              {workDoneCapable(w.cli) && !serverId && (w.schedule ? (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   data-testid={`task-schedule-${w.id}`}
@@ -3879,7 +3863,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   // Defer one frame so the dropdown's focus-teardown
                   // doesn't steal focus from the dialog's autofocused name
                   // input (see ProjectActionsMenuItems for the full why).
-                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewTask(w.project_id, {
+                  onSelect={() => requestAnimationFrame(() => serverId
+                    // The server's New task dialog, starting from this branch.
+                    ? useRemote.getState().setDialog({ newTaskOn: serverId, newTaskProject: project?.name, newTaskBase: w.branch })
+                    : useUI.getState().openNewTask(w.project_id, {
                     baseBranch: w.branch,
                     // Keep the member subset too — the dialog defaults
                     // all-in. Legacy composition records predate repo_path:
@@ -3889,6 +3876,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       ? (w.composition ?? []).map(m => m.repo_path!)
                       : undefined,
                   }))}
+                  data-testid={`task-duplicate-${w.id}`}
                 >
                   <GitBranchPlus className="h-4 w-4" />
                   <span>{t("duplicateWorktree")}</span>
@@ -3899,7 +3887,26 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   the memory, keep the session. Opening the task again
                   respawns with resume — same lifecycle as restarting
                   termic, scoped to one task. */}
-              {isMounted && (
+              {serverId ? (remoteState === "inactive" ? (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-start-agent-${w.id}`}
+                  // Opening a stopped server task starts its agent in its session.
+                  onSelect={() => setActive(w.id)}
+                >
+                  <Play className="h-4 w-4" />
+                  <span>{t("remote:task.startAgent")}</span>
+                </DropdownItem>
+              ) : remoteState && remoteState !== "unknown" ? (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-stop-agent-${w.id}`}
+                  onSelect={() => void stopRemoteAgent(serverId, w.id, useRemote.getState().machines.find(m => m.id === serverId)?.name ?? serverId)}
+                >
+                  <CircleStop className="h-4 w-4" />
+                  <span>{t("remote:task.stopAgent")}</span>
+                </DropdownItem>
+              ) : null) : isMounted && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   onSelect={() => {
@@ -3921,7 +3928,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Archive className="h-4 w-4" />
                 <span>{t("archiveTask")}</span>
               </DropdownItem>
-              </>)}
+              </>
             </DropdownMenu>
           </DropdownRoot>
           {/* `translate3d(0,0,0)` pins it to its own compositing layer for

@@ -28,6 +28,8 @@ const MarkdownPane = lazy(() => import("@/components/task/MarkdownPane").then(m 
 const DiffPane = lazy(() => import("@/components/task/DiffPane").then(m => ({ default: m.DiffPane })));
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Button } from "@/components/ui/Button";
+import { AppDialog } from "@/components/ui/Dialog";
+import i18n from "i18next";
 import { useUI } from "@/store/ui";
 import { usePrefs, currentTerminalStack, currentTerminalTheme } from "@/store/prefs";
 import { cn } from "@/lib/utils";
@@ -501,4 +503,60 @@ function RemoteTerminal({ machineId, machineName, taskId, tabId, ownsSize }: { m
       </div>
     </div>
   );
+}
+
+export type ServerCloseChoice = "close" | "stop" | "cancel";
+
+/** ⌘W on a remote agent's tab: the agent runs on the other machine past
+ *  any tab, so closing asks what is meant. Three outcomes, dismissal the
+ *  harmless one (like ScratchCloseDialog). */
+export const useServerClose = create<{
+  req: { task: string; machine: string; resolve: (c: ServerCloseChoice) => void } | null;
+  ask: (task: string, machine: string) => Promise<ServerCloseChoice>;
+}>((set) => ({
+  req: null,
+  ask: (task, machine) => new Promise(resolve => set({
+    req: { task, machine, resolve: c => { set({ req: null }); resolve(c); } },
+  })),
+}));
+
+export function ServerCloseDialog() {
+  const { t } = useTranslation("remote");
+  const req = useServerClose(s => s.req);
+  if (!req) return null;
+  return (
+    <AppDialog
+      open
+      onOpenChange={v => { if (!v) req.resolve("cancel"); }}
+      title={t("task.closeTitle", { task: req.task })}
+      className="max-w-lg"
+      onCloseAutoFocus={e => e.preventDefault()}
+    >
+      <p data-testid="server-close-dialog" className="text-[13.5px] leading-relaxed text-[var(--color-fg-dim)]">
+        {t("task.closeBody", { machine: req.machine })}
+      </p>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="ghost" type="button" data-testid="server-close-cancel" onClick={() => req.resolve("cancel")}>{t("common:cancel")}</Button>
+        <Button variant="ghost" type="button" data-testid="server-close-stop" onClick={() => req.resolve("stop")}
+          className="text-[var(--color-err)] hover:bg-[var(--color-err)]/12">{t("task.stopAgent")}</Button>
+        <Button variant="primary" type="button" data-testid="server-close-view" autoFocus onClick={() => req.resolve("close")}>{t("task.closeView")}</Button>
+      </div>
+    </AppDialog>
+  );
+}
+
+/** Stop a remote task's agent. Its view is closed first when it is the one
+ *  on screen: an open terminal on a stopped task starts its agent again
+ *  (termic-server `running`), which is how Start works. */
+export async function stopRemoteAgent(machineId: string, taskId: string, machineName: string): Promise<void> {
+  const app = useApp.getState();
+  if (app.activeTaskId === taskId) app.setActiveTask(null);
+  const remote = useRemote.getState();
+  if (remote.open?.task === taskId) remote.openTask(null);
+  try {
+    const r = await remoteCall(machineId, req("stop", { task: taskId }));
+    if (!r.ok) throw new Error(r.error?.message ?? "stop failed");
+  } catch (e) {
+    useUI.getState().pushToast(i18n.t("remote:task.stopFailed", { machine: machineName, error: String(e) }), "error");
+  }
 }

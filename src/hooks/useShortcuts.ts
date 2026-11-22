@@ -52,7 +52,7 @@ import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { taskHasOpenAgent } from "@/lib/taskBoardState";
 import { sidebarTaskOrder } from "@/lib/taskGroups";
 import type { TerminalTab } from "@/lib/types";
-import { useServerShells } from "@/components/remote/RemoteTaskView";
+import { stopRemoteAgent, useServerClose, useServerShells } from "@/components/remote/RemoteTaskView";
 import { useRemote } from "@/lib/remote";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
@@ -917,20 +917,34 @@ export function closeInnermost(): void {
     if (bottomId) state.closeBottomTab(taskId, bottomId);
     return;
   }
-  // A paired computer's task, drawn over the main area: close that view.
+  // A remote agent runs on the other machine past any tab, so ⌘W on it
+  // asks: close the view, stop the agent, or neither.
+  const askAndClose = (machineId: string, remoteTask: string, taskName: string, closeView: () => void) => {
+    const m = useRemote.getState().machines.find(x => x.id === machineId);
+    const machineName = m?.name ?? machineId;
+    void useServerClose.getState().ask(taskName, machineName).then(c => {
+      if (c === "close") closeView();
+      else if (c === "stop") void stopRemoteAgent(machineId, remoteTask, machineName);
+    });
+  };
+  // A paired computer's task, drawn over the main area.
   const remote = useRemote.getState();
-  if (remote.open) { remote.openTask(null); return; }
-  // A server task, wherever focus sits: close the shell or file tab on
-  // screen. On the agent, close the task's view instead: the agent runs on
-  // the box past any tab, so there is nothing to close but the view.
+  if (remote.open) {
+    const open = remote.open;
+    const name = remote.machines.find(m => m.id === open.machine)?.tasks.find(t => t.id === open.task)?.name ?? open.task;
+    askAndClose(open.machine, open.task, name, () => useRemote.getState().openTask(null));
+    return;
+  }
+  // A server task, wherever focus sits: the shell or file tab on screen
+  // closes; on the agent, ask.
   const task = taskId ? state.tasks.find(t => t.id === taskId) : undefined;
-  const onServer = !!task && !!state.projects.find(p => p.id === task.project_id)?.server;
-  if (taskId && (onServer || (document.activeElement as HTMLElement | null)?.closest?.('[data-testid="remote-task-view"]'))) {
+  const server = task ? state.projects.find(p => p.id === task.project_id)?.server : undefined;
+  if (taskId && task && server) {
     const shells = useServerShells.getState();
     const view = shells.view[taskId] ?? "agent";
     if ((shells.shells[taskId] ?? []).includes(view)) shells.close(taskId, view);
     else if (view !== "agent") state.closeTab(taskId, view);
-    else state.setActiveTask(null);
+    else askAndClose(server, taskId, task.name, () => useApp.getState().setActiveTask(null));
     return;
   }
   if (inSplitPane() && taskId) {
