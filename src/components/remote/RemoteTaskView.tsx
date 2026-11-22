@@ -11,21 +11,13 @@
 // already has a terminal answering those, and a duplicate answer arrives as
 // typed garbage.
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Archive, Monitor, Play, Plus, Server, SquareTerminal, X } from "lucide-react";
-import { AuxTerminal } from "@/components/task/AuxTerminal";
+import { Archive, Monitor, Play, Server, SquareTerminal, X } from "lucide-react";
 import { useApp } from "@/store/app";
-import { classifyAgentTitle } from "@/lib/agents";
-import { confirmAndArchive } from "@/lib/archiveTask";
-import { MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
-import type { Tab } from "@/lib/types";
-const EditorPane = lazy(() => import("@/components/task/EditorPane").then(m => ({ default: m.EditorPane })));
-const MarkdownPane = lazy(() => import("@/components/task/MarkdownPane").then(m => ({ default: m.MarkdownPane })));
-const DiffPane = lazy(() => import("@/components/task/DiffPane").then(m => ({ default: m.DiffPane })));
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Button } from "@/components/ui/Button";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -53,69 +45,9 @@ export function RemoteTaskOverlay() {
   );
 }
 
-/** A shell started to run something: its tab label, the line it types, and
- *  "run" for the Run script (the bar's Stop closes that one). */
-type ShellMeta = { label?: string; input?: string; kind?: "run" | "setup"; agent?: string };
-
-/** A server task's open shell tabs and which tab shows, by task id: kept
- *  here so they outlive switching to another task (MainArea keeps the view
- *  mounted, hidden, while it has shells). */
-export const useServerShells = create<{
-  shells: Record<string, string[]>;
-  view: Record<string, string>;
-  /** A shell started to run something (Run): its tab label and the line it types. */
-  meta: Record<string, ShellMeta>;
-  add: (task: string, meta?: ShellMeta) => void;
-  close: (task: string, id: string) => void;
-  show: (task: string, id: string) => void;
-}>((set) => ({
-  shells: {},
-  view: {},
-  meta: {},
-  add: (task, meta) => set(s => {
-    const id = `shell-${Date.now()}`;
-    return {
-      shells: { ...s.shells, [task]: [...(s.shells[task] ?? []), id] },
-      view: { ...s.view, [task]: id },
-      meta: meta ? { ...s.meta, [id]: meta } : s.meta,
-    };
-  }),
-  close: (task, id) => set(s => ({
-    shells: { ...s.shells, [task]: (s.shells[task] ?? []).filter(x => x !== id) },
-    view: s.view[task] === id ? { ...s.view, [task]: "agent" } : s.view,
-  })),
-  show: (task, id) => set(s => (s.view[task] === id ? s : { view: { ...s.view, [task]: id } })),
-}));
-
-/** The agents installed on each server (its `agents` reply, usable ones
- *  only), by machine id: the tab strip's agent buttons and ⌘T's palette
- *  offer only these, never the desktop's own list. */
-const useBoxAgentStore = create<{ byMachine: Record<string, string[]> }>(() => ({ byMachine: {} }));
-const NO_AGENTS: string[] = [];
-const asked = new Set<string>();
-export function loadBoxAgents(machineId: string) {
-  if (asked.has(machineId)) return;
-  asked.add(machineId);
-  remoteCall(machineId, req("agents")).then(r => {
-    const list = r.ok ? (r.data?.agents ?? []) as { id: string; kind: string; usable?: boolean }[] : [];
-    const ids = list.filter(a => a.kind === "agent" && a.usable && a.id !== "shell").map(a => a.id);
-    useBoxAgentStore.setState(s => ({ byMachine: { ...s.byMachine, [machineId]: ids } }));
-    if (!r.ok) asked.delete(machineId);
-  }).catch(() => asked.delete(machineId));
-}
-export function useBoxAgents(machineId: string | undefined, enabled = true): string[] {
-  useEffect(() => { if (machineId && enabled) loadBoxAgents(machineId); }, [machineId, enabled]);
-  return useBoxAgentStore(s => (machineId ? s.byMachine[machineId] : undefined) ?? NO_AGENTS);
-}
-
-const NO_SHELLS: string[] = [];
-const NO_TABS: Tab[] = [];
-const isFileTab = (t: Tab) => t.type === "edit" || t.type === "diff";
-
-/** `taskPath`: a server project's task (its worktree on the box). Its view
- *  gets shell tabs beside the agent: each is an AuxTerminal, whose PTY
- *  runs on the box (termic-server pty_open via lib.rs `pty_spawn`). */
-export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: { machineId: string; taskId: string; taskPath?: string; active?: boolean }) {
+/** A task on a paired computer, shown here (server tasks are ordinary
+ *  tasks and open in TaskView). */
+export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskId: string }) {
   const { t } = useTranslation("remote");
   const machine = useMachine(machineId);
   const task = machine?.tasks.find(x => x.id === taskId);
@@ -125,45 +57,6 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   // The tab whose terminal is open: picked in the strip, else the task's
   // default agent tab (null asks the host for that one).
   const [picked, setPicked] = useState<string | null>(null);
-  const shells = useServerShells(s => s.shells[taskId] ?? NO_SHELLS);
-  const view = useServerShells(s => s.view[taskId] ?? "agent");
-  // A server task's file and diff tabs (opened from the right panel), from
-  // the same store TaskView renders a local task's from.
-  const appTask = useApp(s => (taskPath ? s.tasks.find(t => t.id === taskId) : undefined));
-  const fileTabs = useApp(s => (taskPath ? s.tabs[taskId] ?? NO_TABS : NO_TABS)).filter(isFileTab);
-  const activeStoreTab = useApp(s => s.activeTab[taskId]);
-  // Opening a file makes its tab the active one: show it.
-  useEffect(() => {
-    if (activeStoreTab && fileTabs.some(t => t.id === activeStoreTab)) useServerShells.getState().show(taskId, activeStoreTab);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeStoreTab, taskId]);
-  // A closed file tab that was showing falls back to the agent.
-  useEffect(() => {
-    if (view !== "agent" && !shells.includes(view) && !fileTabs.some(t => t.id === view)) useServerShells.getState().show(taskId, "agent");
-  }, [view, shells, fileTabs, taskId]);
-  const meta = useServerShells(s => s.meta);
-  // An extra agent's state, read from its terminal title the way a local
-  // agent tab's is (classifyAgentTitle): working, waiting, or nothing.
-  const [titleState, setTitleState] = useState<Record<string, string>>({});
-  // Which tab is on screen, for the callback below (it outlives renders).
-  const shownRef = useRef<string | null>(null);
-  shownRef.current = active ? view : null;
-  const onAgentTitle = (shell: string, agent: string) => (title: string) => {
-    const w = classifyAgentTitle(agent, title);
-    const st = w === "busy" ? "working" : w === "attention" ? "waiting" : "idle";
-    setTitleState(m => {
-      // Finished while its tab was not on screen: "done" until it is shown.
-      const next = st === "idle" && m[shell] === "working" && shownRef.current !== shell ? "done" : st === "idle" && m[shell] === "done" ? "done" : st;
-      return m[shell] === next ? m : { ...m, [shell]: next };
-    });
-  };
-  // Showing a finished agent's tab reads it.
-  useEffect(() => {
-    if (active && titleState[view] === "done") setTitleState(m => ({ ...m, [view]: "idle" }));
-  }, [active, view, titleState]);
-  // The box's installed agents, for "another agent".
-  const boxAgents = useBoxAgents(machineId, !!taskPath);
-  const setView = (id: string) => useServerShells.getState().show(taskId, id);
 
   if (!machine) {
     return <Gone message={t("task.gone", { machine: "" })} onClose={close} />;
@@ -184,7 +77,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
           leave out, so nobody types into the wrong computer. A server task
           sits under the app's own top bar (name, Archive, Run), so it gets
           only the "On <server>" mark, at the end of its tab strip. */}
-      {!taskPath && <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
         <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-4 w-4" /></span>
         <span className="truncate text-[14px] font-medium text-[var(--color-fg)]">{task.name}</span>
         <StateGlyph state={task.state} />
@@ -199,8 +92,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
             // A server project's task is a desktop task too: its archive
             // (the same confirm as the sidebar's) runs the archive script,
             // archives on the box and clears it as the active task here.
-            if (appTask) void confirmAndArchive(appTask);
-            else void archive(machine.name, machineId, task, close, t);
+            void archive(machine.name, machineId, task, close, t);
           }}>
             <Archive className="h-3.5 w-3.5" />
             {t("task.archive")}
@@ -209,7 +101,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
             <X className="h-4 w-4" />
           </button>
         </div>
-      </div>}
+      </div>
 
       {/* The task's tabs, as its own strip lists them: another agent, a
           shell, the run output. Only when there is a choice. */}
@@ -248,124 +140,14 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
         </div>
       )}
 
-      {taskPath && (
-        <div role="tablist" data-testid="server-task-tabs" className="termic-tabstrip flex h-9 shrink-0 items-stretch overflow-x-auto no-scrollbar border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2">
-          {["agent", ...shells].map((id, i) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={view === id}
-              data-testid={`server-tab-${id === "agent" ? "agent" : "shell"}`}
-              onClick={() => setView(id)}
-              className={serverTab(view === id)}
-            >
-              {id === "agent"
-                ? <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-3.5 w-3.5" /></span>
-                : <SquareTerminal className="h-3.5 w-3.5 shrink-0" />}
-              <span className="truncate">{id === "agent" ? t("task.agentTab") : meta[id]?.label ?? t("task.shellTab", { n: i })}</span>
-              {meta[id]?.agent && <StateGlyph state={titleState[id] ?? "idle"} size={12} />}
-              {id !== "agent" && (
-                <span
-                  role="button"
-                  aria-label={t("task.closeShell")}
-                  onClick={(e) => { e.stopPropagation(); useServerShells.getState().close(taskId, id); }}
-                  className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
-                ><X className="h-3 w-3" /></span>
-              )}
-            </button>
-          ))}
-          {fileTabs.map(ft => (
-            <button
-              key={ft.id}
-              type="button"
-              role="tab"
-              aria-selected={view === ft.id}
-              data-testid="server-tab-file"
-              data-path={"path" in ft ? ft.path : undefined}
-              onClick={() => { setView(ft.id); useApp.getState().setActiveTabId(taskId, ft.id); }}
-              className={serverTab(view === ft.id)}
-            >
-              <span className="truncate">{ft.title}</span>
-              <span
-                role="button"
-                aria-label={t("task.closeShell")}
-                onClick={(e) => { e.stopPropagation(); useApp.getState().closeTab(taskId, ft.id); }}
-                className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
-              ><X className="h-3 w-3" /></span>
-            </button>
-          ))}
-          <button
-            type="button"
-            data-testid="server-new-shell"
-            aria-label={t("task.newShell")}
-            title={t("task.newShell")}
-            disabled={!online}
-            onClick={() => useServerShells.getState().add(taskId)}
-            className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center self-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
-          ><Plus className="h-4 w-4" /></button>
-          {/* Another agent beside the task's own, in a tab on the box: the
-              box's usable agents, each started by its command. Its state is
-              not tracked (termic-server runs one agent per task). */}
-          {boxAgents.map(id => (
-            <button
-              key={id}
-              type="button"
-              data-testid={`server-new-agent-${id}`}
-              title={t("task.newAgent", { agent: agentName(id) })}
-              aria-label={t("task.newAgent", { agent: agentName(id) })}
-              disabled={!online}
-              onClick={() => useServerShells.getState().add(taskId, { label: agentName(id), input: `${id}\r`, agent: id })}
-              className={cn(
-                "flex h-8 shrink-0 items-center justify-center self-center rounded-md hover:bg-[var(--color-hover)] disabled:opacity-40",
-                CLI_BRAND_COLOR[resolveIconId(id, [])] ? cn("w-8", CLI_BRAND_COLOR[resolveIconId(id, [])]) : "px-2 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-              )}
-            >
-              {/* No logo for this agent (gemini): its name, since the generic
-                  glyph read as "new shell". */}
-              {CLI_BRAND_COLOR[resolveIconId(id, [])] ? <CliIcon cli={resolveIconId(id, [])} className="h-4 w-4" /> : agentName(id)}
-            </button>
-          ))}
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 pr-3 text-[12px] text-[var(--color-fg-dim)]">
-            <MIcon className="h-3.5 w-3.5 shrink-0" />
-            <span data-testid="remote-task-location">{t("task.on", { machine: machine.name })}</span>
-            <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-[var(--color-ok)]" : "bg-[var(--color-fg-faint)]")} />
-          </div>
-        </div>
-      )}
-
       <div className="relative min-h-0 flex-1">
-        <div className="absolute inset-0" style={{ display: view === "agent" ? undefined : "none" }}>
-          {online && active && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
+        <div className="absolute inset-0">
+          {online && <RemoteTerminal key={tabId ?? "default"} machineId={machineId} machineName={machine.name} taskId={task.id} tabId={tabId} ownsSize={machine.caps.includes("resize")} />}
         </div>
-        {appTask && fileTabs.map(ft => (
-          <div key={ft.id} className="absolute inset-0" style={{ display: view === ft.id ? undefined : "none" }}>
-            <Suspense fallback={null}>
-              {ft.type === "diff"
-                ? <DiffPane task={appTask} tab={ft} />
-                : MARKDOWN_EXT_RE.test(ft.path)
-                  ? <MarkdownPane task={appTask} tab={ft} visible={active && view === ft.id} ownsFind={active && view === ft.id} active={active && view === ft.id} />
-                  : <EditorPane task={appTask} tab={ft} active={active && view === ft.id} />}
-            </Suspense>
-          </div>
-        ))}
-        {taskPath && shells.map(id => (
-          <div key={id} className="absolute inset-0" style={{ display: view === id ? undefined : "none" }}>
-            <AuxTerminal taskId={task.id} tabId={id} taskPath={taskPath} active={active && view === id} initialInput={meta[id]?.input}
-              onTitle={meta[id]?.agent ? onAgentTitle(id, meta[id]!.agent!) : undefined} />
-          </div>
-        ))}
       </div>
     </div>
   );
 }
-
-/** A server task's tab, drawn like a local tab (TabBar): full height, an
- *  accent underline on the active one. */
-const serverTab = (active: boolean) => cn(
-  "group flex h-full min-w-[120px] max-w-[220px] shrink-0 items-center gap-1.5 border-b-2 px-3.5 text-[12.5px] select-none",
-  active ? "border-[var(--color-accent)] font-medium text-[var(--color-fg)]" : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-);
 
 async function archive(machineName: string, machineId: string, task: RemoteTask, close: () => void, t: (k: string, o?: Record<string, unknown>) => string) {
   const ok = await useUI.getState().askConfirm({

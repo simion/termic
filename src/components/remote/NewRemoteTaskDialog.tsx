@@ -4,7 +4,6 @@
 
 import { useApp } from "@/store/app";
 import { resolveSetupScript } from "@/lib/runTabs";
-import { useServerShells } from "./RemoteTaskView";
 import { i18n } from "@/lib/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -123,24 +122,6 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
       onClose();
       const id = r.data?.task?.id;
       if (!id) return;
-      // A server project's task lands in the store (server_projects.rs):
-      // open it as the active task in the sidebar, like a local one.
-      if (useApp.getState().projects.some(p => p.server === machineId)) {
-        for (let i = 0; i < 40 && !useApp.getState().tasks.some(t => t.id === id); i++) {
-          await useApp.getState().loadAll();
-          if (useApp.getState().tasks.some(t => t.id === id)) break;
-          await new Promise(res => setTimeout(res, 250));
-        }
-        if (useApp.getState().tasks.some(t => t.id === id)) {
-          useApp.getState().setActiveTask(id);
-          // The project's setup script (Settings or the box's .termic.yaml)
-          // runs in a shell tab on the box, as a local task's setup tab does.
-          void resolveSetupScript(id).then(script => {
-            if (script) useServerShells.getState().add(id, { label: i18n.t("backend:runTabs.setup"), input: `${script}\r`, kind: "setup" });
-          }).catch(() => {});
-          return;
-        }
-      }
       openTask({ machine: machineId, task: id });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

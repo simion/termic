@@ -138,11 +138,11 @@ Order, each step shippable on its own:
    only (paired computers keep it whole). The phone host's relay of server
    terminals is gone (their slots are local). Not on a box yet: git-crypt,
    profile customizations written into the worktree.
-3. **The agent as an ordinary tab**: spawn it with the desktop's argv,
-   session id and env through `pty_spawn`; draw server tasks with
-   TaskView and TabBar. Delete RemoteTaskView's server half,
-   `useServerShells`, `useBoxAgents` and the `project.server` branches it
-   leaves behind (paired computers keep their small overlay).
+3. **The agent as an ordinary tab** (done, apart from hook config on the
+   box): spawned with the desktop's argv, session id and env through
+   `pty_spawn`; server tasks draw with TaskView and TabBar. RemoteTaskView
+   is the paired-computer overlay only (`useServerShells`, `useBoxAgents`
+   and its server tabs are deleted).
 4. **Task creation over `exec`**, through a `TaskHost` seam that replaces
    the scattered `server_for_path` checks. New task is the one
    NewTaskDialog, agents the box lacks disabled. Delete
