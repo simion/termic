@@ -27,6 +27,12 @@ pub fn version() -> String {
     option_env!("TERMIC_SERVER_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
 }
 
+/// A task id as this box mints them (a uuid, hyphenated or not): it names
+/// state and PTY claims, so nothing else is taken.
+pub fn valid_task_id(id: &str) -> bool {
+    (32..=36).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

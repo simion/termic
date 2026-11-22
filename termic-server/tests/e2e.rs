@@ -599,3 +599,35 @@ fn a_shell_outlives_its_connection_and_the_next_one_attaches() {
     });
     e.stop();
 }
+
+#[test]
+fn task_put_records_a_desktop_made_task_inside_the_fence_only() {
+    let e = Env::new("put");
+    let (mut a, _bridge) = e.bridge();
+    let p = a.ok(json!({"cmd":"project_add","path": e.repo()}));
+    let pid = p["project"]["id"].as_str().unwrap().to_string();
+    let repo = e.repo().canonicalize().unwrap().display().to_string();
+    let id = "0123456789abcdef0123456789abcdef";
+    // A main-checkout task at the project's root: recorded, listed, no agent.
+    let r = a.ok(json!({"cmd":"task_put","task": id,"name":"desk-made","project": pid,"path": repo,"branch":"main","agent":"claude","is_main_checkout": true}));
+    assert_eq!(r["task"]["id"], id);
+    let list = a.ok(json!({"cmd":"list"}));
+    let t = list["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).expect("listed");
+    assert_eq!(t["name"], "desk-made");
+    assert_ne!(t["work_state"], "working", "task_put starts nothing");
+    // Again with the same id: an update, not a second task.
+    a.ok(json!({"cmd":"task_put","task": id,"name":"renamed","project": pid,"path": repo,"branch":"main","agent":"claude"}));
+    let list = a.ok(json!({"cmd":"list"}));
+    assert_eq!(list["tasks"].as_array().unwrap().iter().filter(|t| t["id"] == id).count(), 1);
+    // Refused: a path outside every project and worktree, an unknown
+    // project, an id that is not a uuid.
+    for (bad, why) in [
+        (json!({"cmd":"task_put","task": id,"name":"x","project": pid,"path":"/","branch":"main","agent":"claude"}), "outside"),
+        (json!({"cmd":"task_put","task": id,"name":"x","project":"nope","path": repo,"branch":"main","agent":"claude"}), "project"),
+        (json!({"cmd":"task_put","task":"../evil","name":"x","project": pid,"path": repo,"branch":"main","agent":"claude"}), "uuid"),
+    ] {
+        let r = a.call(bad);
+        assert_eq!(r["ok"], false, "{why}: {r}");
+    }
+    e.stop();
+}

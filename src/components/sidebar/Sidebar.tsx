@@ -28,7 +28,7 @@ import { usePendingTasks } from "@/store/pendingTasks";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
 import { Expand } from "@/components/ui/Expand";
-import { useRemote } from "@/lib/remote";
+import { useRemote, openNewTaskOnServer } from "@/lib/remote";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { reportBug } from "@/lib/reportBug";
@@ -1754,12 +1754,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // its own handler for a prevented event.
                                   onPointerDown={p.server ? (e) => {
                                     e.preventDefault();
-                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                    void openNewTaskOnServer(p.server!, p.name);
                                   } : undefined}
                                   onKeyDown={p.server ? (e) => {
                                     if (e.key !== "Enter" && e.key !== " ") return;
                                     e.preventDefault();
-                                    useRemote.getState().setDialog({ newTaskOn: p.server!, newTaskProject: p.name });
+                                    void openNewTaskOnServer(p.server!, p.name);
                                   } : undefined}
                                   // Icon-only, so there's no text for e2e to
                                   // match on. Keyed by project id because the
@@ -3845,10 +3845,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   // Defer one frame so the dropdown's focus-teardown
                   // doesn't steal focus from the dialog's autofocused name
                   // input (see ProjectActionsMenuItems for the full why).
-                  onSelect={() => requestAnimationFrame(() => serverId
-                    // The server's New task dialog, starting from this branch.
-                    ? useRemote.getState().setDialog({ newTaskOn: serverId, newTaskProject: project?.name, newTaskBase: w.branch })
-                    : useUI.getState().openNewTask(w.project_id, {
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewTask(w.project_id, {
                     baseBranch: w.branch,
                     // Keep the member subset too — the dialog defaults
                     // all-in. Legacy composition records predate repo_path:

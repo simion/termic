@@ -131,6 +131,15 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
         }
         Command::ProjectRemove { name } => project_remove(d, &name),
         Command::Exec { cwd, argv, env, stdin, timeout_ms } => exec(d, &cwd, &argv, &env, stdin.as_deref(), timeout_ms),
+        Command::TaskPut { task, name, project, path, branch, base_branch, agent, is_main_checkout } => {
+            task_put(d, TaskRec {
+                id: task, name, project_id: project, path, branch, base_branch, agent,
+                agent_args: Vec::new(),
+                created: util::rfc3339(util::now_secs()),
+                archived: false,
+                is_main_checkout,
+            })
+        }
         // The desktop restarting this daemon onto the build it just
         // installed: preview counts the agents that would restart; commit
         // stops them (noted for the next daemon to resume), answers, and
@@ -652,6 +661,37 @@ const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 /// Whether `dir` is inside a registered project or one of this server's
 /// worktrees: the only places `exec` runs (docs/plans/server-projects.md).
+/// A task the desktop made itself, recorded here as plain data (no agent
+/// started): its folder must be one this box lets a desktop work in, and
+/// its project one the box has. An existing record keeps its creation time.
+fn task_put(d: &Arc<Daemon>, mut t: TaskRec) -> Result<ReplyData, Fail> {
+    if !util::valid_task_id(&t.id) {
+        return Err(fail(ErrorCode::BadRequest, "a task id is a uuid"));
+    }
+    if !exec_allowed(d, std::path::Path::new(&t.path)) {
+        return Err(fail(ErrorCode::BadRequest, format!("{} is not inside a project or worktree on this server", t.path)));
+    }
+    {
+        let mut st = d.st.lock().unwrap();
+        if !st.projects.iter().any(|p| p.id == t.project_id) {
+            return Err(fail(ErrorCode::NotFound, "no such project on this server"));
+        }
+        match st.tasks.iter_mut().find(|x| x.id == t.id) {
+            Some(x) => {
+                t.created = x.created.clone();
+                *x = t.clone();
+            }
+            None => st.tasks.push(t.clone()),
+        }
+        d.save(&st);
+    }
+    util::log(&format!("recorded task {}", t.name));
+    d.refresh_diff(&t.id);
+    d.poke();
+    d.bump();
+    Ok(ReplyData::New(NewData { task: summary(d, &t, false), wait: None }))
+}
+
 pub(crate) fn exec_allowed(d: &Daemon, dir: &std::path::Path) -> bool {
     let Ok(dir) = dir.canonicalize() else { return false };
     let mut roots: Vec<std::path::PathBuf> = d.st.lock().unwrap().projects.iter().map(|p| std::path::PathBuf::from(&p.path)).collect();

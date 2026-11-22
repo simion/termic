@@ -1099,20 +1099,34 @@ pub(crate) fn pty_resize(pid: &str, cols: u16, rows: u16) -> Result<(), String> 
     link(&machine)?.send(ClientMsg::PtyResize { pid: remote, cols, rows })
 }
 
+/// How long the box's PTY outlives its last handle's kill, for a spawn under
+/// the same claim to attach instead. A terminal pane's spawn effect kills and
+/// respawns on a re-run (a rename re-runs it): without this, that re-run
+/// would end a server agent the user never asked to stop.
+const KILL_GRACE: Duration = Duration::from_millis(1500);
+
 /// Drop a handle; the box's PTY ends with the last one. A kill that races a
 /// respawn (the webview does not await it) or a cancelled spawn leaves the
-/// other handle, and with it the running process, alone.
+/// other handle, and with it the running process, alone; a spawn under the
+/// same claim within `KILL_GRACE` of the last kill attaches to it.
 pub(crate) fn pty_kill(pid: &str) -> Result<(), String> {
     let Some((machine, remote)) = remote_of(pid) else { return Ok(()) };
-    let last = {
+    let still_held = |map: &HashMap<String, RemotePty>| map.values().any(|p| p.machine == machine && p.remote == remote);
+    {
         let mut map = ptys().lock().unwrap();
         map.remove(pid);
-        !map.values().any(|p| p.machine == machine && p.remote == remote)
-    };
-    if !last {
-        return Ok(());
+        if still_held(&map) {
+            return Ok(());
+        }
     }
-    link(&machine)?.send(ClientMsg::PtyKill { pid: remote })
+    let l = link(&machine)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(KILL_GRACE);
+        if !ptys().lock().unwrap().values().any(|p| p.machine == machine && p.remote == remote) {
+            let _ = l.send(ClientMsg::PtyKill { pid: remote });
+        }
+    });
+    Ok(())
 }
 
 /// A message that answers by id (a transcript, keys or an interrupt with an

@@ -127,6 +127,17 @@ Order, each step shippable on its own:
    against the desktop's registry); the box's state reading covers a
    desktop-started agent for when no desktop has it open. Left: writing
    the hook config on the box, deleting RemoteTaskView's server half.
+4. Done: `task_host.rs` (local or the box through exec) carries task
+   creation's own filesystem steps; `task_create_sync` and
+   `task_open_repo` make a server project's task with the desktop's code
+   (worktree in the box's worktrees folder, the fence's), record it there
+   with `task_put` (plain data, starts nothing), and the ordinary
+   NewTaskDialog opens for server projects (agents by `server_which`, no
+   isolation or secrets panes). A server's own New task opens it through
+   `openNewTaskOnServer`; NewRemoteTaskDialog is a server's Add project
+   only (paired computers keep it whole). The phone host's relay of server
+   terminals is gone (their slots are local). Not on a box yet: git-crypt,
+   profile customizations written into the worktree.
 3. **The agent as an ordinary tab**: spawn it with the desktop's argv,
    session id and env through `pty_spawn`; draw server tasks with
    TaskView and TabBar. Delete RemoteTaskView's server half,

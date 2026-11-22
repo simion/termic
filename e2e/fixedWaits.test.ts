@@ -84,8 +84,9 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "downgraded. Nothing fires for a restart or an upload that never happens",
   },
   "task.e2e.ts": {
-    count: 1,
-    why: "a negative: hovering an unlinked task draws no spawn link",
+    count: 2,
+    why: "negatives: hovering an unlinked task draws no spawn link, and a rename "
+      + "must NOT respawn the agent's PTY. Nothing fires for either",
   },
 };
 

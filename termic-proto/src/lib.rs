@@ -910,6 +910,26 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
     },
+    /// Record a task on a termic-server, as plain data: the desktop made its
+    /// worktree itself (git through `exec`) and starts its agent itself
+    /// (`pty_open`), and the box keeps the record so every desktop that
+    /// reaches it sees the task (docs/plans/server-projects.md). Inserts or
+    /// updates by `id`; starts nothing. termic-server only, like `exec`.
+    TaskPut {
+        /// The task's id (not `id`: that is the request's own, which the
+        /// command is flattened beside).
+        task: String,
+        name: String,
+        /// The box's project id.
+        project: String,
+        path: String,
+        branch: String,
+        #[serde(default)]
+        base_branch: String,
+        agent: String,
+        #[serde(default)]
+        is_main_checkout: bool,
+    },
     /// This machine, the machines paired with it, and the unpaired ones in
     /// sight on the LAN (v22, docs/peers.md).
     PeerList,

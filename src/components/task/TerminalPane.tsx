@@ -1108,6 +1108,12 @@ const captureArmedRef = useRef(false);
     }
   }, []);
 
+  // The task's name, read through a ref: a rename must never re-run the
+  // spawn effect below, which kills and respawns the PTY (it restarted the
+  // agent, and on a server ended it). TERMIC_WORKSPACE_NAME keeps the name
+  // the agent started with; its id is what the CLI and hooks use.
+  const taskNameRef = useRef(task.name);
+  taskNameRef.current = task.name;
   useEffect(() => {
     let cancelled = false;
     let outputActivity: ReturnType<typeof createPtyOutputActivity> | undefined;
@@ -1653,7 +1659,7 @@ const captureArmedRef = useRef(false);
     const wdDebug = (() => { try { return localStorage.getItem("debugWorkDone") === "1"; } catch { return false; } })();
     const wdlog = (msg: string, extra?: unknown) => {
       if (!wdDebug) return;
-      const tag = `[work-done ${task.name}/${tab.cli}]`;
+      const tag = `[work-done ${taskNameRef.current}/${tab.cli}]`;
       if (extra !== undefined) console.log(tag, msg, extra);
       else console.log(tag, msg);
     };
@@ -1780,7 +1786,7 @@ const captureArmedRef = useRef(false);
         if (settleIsStale(armedAt, submitAtRef.current)) {
           settleTimer = null;
           wdlog(`settle dropped, a submit came after it was armed (${reason})`);
-          logWorkState("settle-drop", `task="${task.name}" cli=${tab.cli} armedAgoMs=${Date.now() - armedAt} why=${reason}`);
+          logWorkState("settle-drop", `task="${taskNameRef.current}" cli=${tab.cli} armedAgoMs=${Date.now() - armedAt} why=${reason}`);
           return;
         }
         wdlog(`settle fired → workState=done`);
@@ -2292,7 +2298,7 @@ const captureArmedRef = useRef(false);
       const provesHooks = !hookSeenRef.current;
       if (!hookSeenRef.current) {
         hookSeenRef.current = true;
-        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via OSC 777)`);
+        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} (via OSC 777)`);
       }
       logWorkState("hook-osc", `cli=${tab.cli} osc=777 body=${JSON.stringify(data.slice(0, 120))}`);
       const body = parts.slice(2).join(";") || parts[1] || "";
@@ -2303,7 +2309,7 @@ const captureArmedRef = useRef(false);
       const trusted = parts[1] === HOOK_OSC_TITLE;
       // Kept for Settings (the "Recent hook reports" list), where "did the
       // hook fire at all" is answerable without opening the log file.
-      if (trusted) recordHook(tab.cli, body, tab.id, `${task.name} / ${tab.title || tab.cli}`);
+      if (trusted) recordHook(tab.cli, body, tab.id, `${taskNameRef.current} / ${tab.title || tab.cli}`);
       // READY shares this OSC id and the trusted title with the attention
       // signal, and is told apart by its body alone. It is NOT attention: it
       // reports that the agent is past its own startup and a typed message
@@ -2332,7 +2338,7 @@ const captureArmedRef = useRef(false);
         dbg("osc777-ready", body.slice(0, 200));
         if (!hookSeenRef.current) {
           hookSeenRef.current = true;
-          logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via ready)`);
+          logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} (via ready)`);
         }
         // A "working" that no hook started has nothing left to end it. Before
         // the hooks are proven, the submit-window heuristic can promote a tab
@@ -2408,7 +2414,7 @@ const captureArmedRef = useRef(false);
           : null;
         if (holder) {
           logWorkState("session-foreign",
-            `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`
+            `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} id=${reported}`
             + ` holder=${JSON.stringify(holder.taskName)}`);
           useUI.getState().pushToast(
             `That ${agentDisplayName(tab.cli)} conversation belongs to "${holder.taskName}", so Termic did not save it to this tab.`
@@ -2419,7 +2425,7 @@ const captureArmedRef = useRef(false);
         }
         if (live?.sessionId !== reported) {
           logWorkState("session-reported",
-            `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`);
+            `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} id=${reported}`);
           useApp.getState().setTabSessionId(task.id, tab.id, reported);
         }
         return false;
@@ -2484,12 +2490,12 @@ const captureArmedRef = useRef(false);
           const parked = live?.delegatedWork?.label === "usage_limit";
           if (atUsageLimit(usage)) {
             if (live?.workState === "working" && !live.delegatedWork) {
-              logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+              logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
                 + " window at 100% while working: parked as delegated until it resets");
               patchTab(task.id, tab.id, { delegatedWork: USAGE_LIMIT_WORK, delegatedSince: Date.now() });
             }
           } else if (parked) {
-            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} window reset: unparked`);
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} window reset: unparked`);
             patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
           }
         }
@@ -2531,10 +2537,10 @@ const captureArmedRef = useRef(false);
       // work the first one is the one being asked.
       if (!hookSeenRef.current) {
         hookSeenRef.current = true;
-        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
           + " first hook delivered; fallbacks stand down for this pty");
       }
-      logWorkState("hook-osc", `cli=${tab.cli} osc=${origin};${sub} task=${JSON.stringify(task.name)}`);
+      logWorkState("hook-osc", `cli=${tab.cli} osc=${origin};${sub} task=${JSON.stringify(taskNameRef.current)}`);
       wdlog(`${origin} ${sub}`);
       dbg("osc133", sub);
       if (sub === "C") {
@@ -2555,14 +2561,14 @@ const captureArmedRef = useRef(false);
           // The working EDGE clears delegated work, but a parked tab never
           // left `working`, so there is no edge: the heartbeat is the signal.
           if (live?.delegatedWork?.label === "usage_limit") {
-            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} working again: unparked`);
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} working again: unparked`);
             patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
           }
           const term = termRef.current;
           if (live?.unread?.reason === "attention" && term
             && Date.now() - attnMarkedAtRef.current > ATTENTION_ECHO_MS
             && !permissionPromptShown(tab.cli, visibleTailRows(term, PERMISSION_PROMPT_TAIL_ROWS))) {
-            logWorkState("attention-cleared", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+            logWorkState("attention-cleared", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
               + " working again with no permission prompt on screen");
             useApp.getState().clearAttention(task.id, tab.id);
           }
@@ -2633,7 +2639,7 @@ const captureArmedRef = useRef(false);
       // everything it decided, because "the badge was wrong" is answerable
       // from this and unanswerable without it.
       logWorkState("hook-delegated",
-        `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+        `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
         + ` held=${delegatedChipText(work)} verdict=${verdict}`
         + ` agentOwned=${isAgentOwned(work)} humanAsked=${humanAsked}`
         + ` was=[${prev?.ids.join(",") ?? ""}] now=[${work.ids.join(",")}]`);
@@ -2708,7 +2714,7 @@ const captureArmedRef = useRef(false);
       if (hooksOwnStateRef.current) {
         if (!native133LoggedRef.current) {
           native133LoggedRef.current = true;
-          logWorkState("native-133-ignored", `cli=${tab.cli} task=${JSON.stringify(task.name)} sub=${sub}`
+          logWorkState("native-133-ignored", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} sub=${sub}`
             + " the agent's own 133 marks are ignored while termic hooks own its state");
         }
         return false;
@@ -3017,7 +3023,7 @@ const captureArmedRef = useRef(false);
             ...Object.fromEntries(
               extraPorts.map(np => [np.name, String(np.port)]),
             ),
-            TERMIC_WORKSPACE_NAME: task.name,
+            TERMIC_WORKSPACE_NAME: taskNameRef.current,
             COLORFGBG: currentColorFgBg(),
             // Settings > Appearance > Share shell history. Read via
             // getState() rather than a subscription: this is consumed once
@@ -3103,7 +3109,7 @@ const captureArmedRef = useRef(false);
         // Find it: python3 -c 'import tempfile; print(tempfile.gettempdir())'
         if (ptyDebugOn) {
           const safe = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
-          const file = `termic-pty-${safe(task.name)}-${tab.cli}-${ptyId}.log`;
+          const file = `termic-pty-${safe(taskNameRef.current)}-${tab.cli}-${ptyId}.log`;
           const t0 = Date.now();
           debugLogRef.current = (tag: string, content: string) => {
             const elapsed = Date.now() - t0;
@@ -3120,7 +3126,7 @@ const captureArmedRef = useRef(false);
           // minted that uuid, so the pairing is exact, not inferred): replay
           // the two side by side and a done we fired while the transcript
           // was still mid-turn is a fact with a timestamp.
-          dbg("spawn", `task=${task.name} cli=${tab.cli} ptyId=${ptyId} file=${file}`
+          dbg("spawn", `task=${taskNameRef.current} cli=${tab.cli} ptyId=${ptyId} file=${file}`
             + ` t0=${t0} t0iso=${new Date(t0).toISOString()}`
             + ` session=${sessionUuid ?? "none"} resume=${decision.kind} cwd=${task.path}`);
         }
@@ -3144,7 +3150,7 @@ const captureArmedRef = useRef(false);
         // (codex, opencode) resumes through `captureResumeOverride`, which
         // decideResume never sees and reports as `fresh`.
         logWorkState("spawn",
-          `task=${JSON.stringify(task.name)} cli=${tab.cli} base=${base}`
+          `task=${JSON.stringify(taskNameRef.current)} cli=${tab.cli} base=${base}`
           + ` inherited=${base !== tab.cli} hooksInstalled=${hooksOwnStateRef.current}`
           + ` hookProven=${hookSeenRef.current}`
           + ` mainCheckout=${!!task.is_main_checkout} primary=${isPrimaryTab}`
@@ -3351,7 +3357,7 @@ const captureArmedRef = useRef(false);
           // first question to ask of a session that never comes back.
           if (lastSpawnWasResumeRef.current) {
             logWorkState("resume-exit",
-              `task=${JSON.stringify(task.name)} cli=${tab.cli} code=${code}`
+              `task=${JSON.stringify(taskNameRef.current)} cli=${tab.cli} code=${code}`
               + ` afterMs=${Date.now() - spawnStartedAtRef.current} fastExit=${fastExit}`
               + ` storedId=${resumeShape.usedStoredSessionId}`);
           }
@@ -3666,7 +3672,7 @@ const captureArmedRef = useRef(false);
   // `gen` in the deps array is what makes the Restart button work: it
   // bumps, the effect tears down, the effect runs again, fresh PTY.
   // a shell's role too: switching it respawns that shell.
-  }, [task.id, task.path, task.port, task.name, tab.id, tab.cli, (tab as TerminalTab).secretsRole, patchTab, markAttention, gen]);
+  }, [task.id, task.path, task.port, tab.id, tab.cli, (tab as TerminalTab).secretsRole, patchTab, markAttention, gen]);
 
   // Refit + focus when the tab becomes active OR when its task
   // becomes the active task (e.g., clicking a task in the

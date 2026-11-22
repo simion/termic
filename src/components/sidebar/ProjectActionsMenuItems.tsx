@@ -17,7 +17,7 @@ import { usePrefs } from "@/store/prefs";
 import { SandboxIcon, DockerSandboxIcon, sandboxPickerLabelT } from "@/components/SandboxIcon";
 import { selectionToFields } from "@/lib/types";
 import { useUI } from "@/store/ui";
-import { useRemote } from "@/lib/remote";
+import { useRemote, openNewTaskOnServer } from "@/lib/remote";
 import { defaultCliFirst, isTerminalEntry, visibleCliIds } from "@/lib/agents";
 import { importQuickWorktree, readNewTaskMode, writeNewTaskMode, type NewTaskMode } from "@/lib/quickTask";
 import { launcherLastUsed, launcherVisibilityOf, pinnedFirst, recordLauncherUse, splitLauncher } from "@/lib/launcherUsage";
@@ -377,7 +377,7 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
 
   if (server?.server) {
     return (
-      <DropdownItem data-testid={`project-server-new-task-${projectId}`} onSelect={() => setRemoteDialog({ newTaskOn: server.server!, newTaskProject: server.name })}>
+      <DropdownItem data-testid={`project-server-new-task-${projectId}`} onSelect={() => void openNewTaskOnServer(server.server!, server.name)}>
         <TerminalSquare className="h-4 w-4" />
         {t("ctxNewTask")}
       </DropdownItem>

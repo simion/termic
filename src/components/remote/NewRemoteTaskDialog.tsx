@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { cn } from "@/lib/utils";
-import { nameFromPrompt, remoteCall, req, useMachine, useRemote } from "@/lib/remote";
+import { nameFromPrompt, openNewTaskOnServer, remoteCall, req, useMachine, useRemote } from "@/lib/remote";
 import { agentName } from "./RemoteTaskView";
 
 interface Project { id: string; name: string; root_path: string; tasks: number; default_agent: string }
@@ -80,8 +80,21 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
       const dest = url ? `~/${url.replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop() || "repo"}` : path;
       const r = await remoteCall(machineId, req("project_add", { path: dest, ...(url ? { clone: url } : {}) }), url ? 600_000 : undefined);
       if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
-      await load();
       const added = r.data?.project?.name ?? r.data?.name;
+      // A server's project is a desktop project (server_projects.rs): once
+      // the mirror has it, its tasks start from the ordinary New task
+      // dialog, like a local project's. Paired computers keep this form.
+      if (machine?.kind === "server" && added) {
+        for (let i = 0; i < 40 && !useApp.getState().projects.some(p => p.server === machineId && p.name === added); i++) {
+          await useApp.getState().loadAll();
+          if (useApp.getState().projects.some(p => p.server === machineId && p.name === added)) break;
+          await new Promise(res => setTimeout(res, 250));
+        }
+        onClose();
+        await openNewTaskOnServer(machineId, added);
+        return;
+      }
+      await load();
       if (added) setProject(added);
       // Close the path field only once the new project is picked: closing
       // it first showed the old project selected until the list reloaded.

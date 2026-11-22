@@ -28,7 +28,7 @@ import { prBadgeAppearance, type PrBadgeState } from "@/lib/prBadgeAppearance";
 import { prNounShort, prRef } from "@/lib/forge";
 import type { ForgeProvider } from "@/lib/types";
 import { openPath, peerUnpair } from "@/lib/ipc";
-import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask } from "@/lib/remote";
+import { joinableGroups, layoutRemote, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
  *  with the label, a fold, and its actions on the right. */
@@ -122,7 +122,7 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
   };
   return (
     <>
-      {server && online && <Item testId="server-menu-new-task" onSelect={() => setDialog({ newTaskOn: m.id })}>{t("sidebar.newTaskItem")}</Item>}
+      {server && online && <Item testId="server-menu-new-task" onSelect={() => void openNewTaskOnServer(m.id)}>{t("sidebar.newTaskItem")}</Item>}
       {server && online && <Item testId="server-menu-add-project" onSelect={() => setDialog({ newTaskOn: m.id, newTaskAdding: true })}>{t("sidebar.addProject")}</Item>}
       {!online && !off && <Item testId="server-menu-reconnect" onSelect={() => void remoteReconnect()}>{t("sidebar.reconnect")}</Item>}
       {off
@@ -242,7 +242,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
         )}
         {online && (
           <Tip content={t("sidebar.newTask", { name: m.name })}>
-            <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => setDialog({ newTaskOn: m.id })} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
+            <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => void openNewTaskOnServer(m.id)} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
           </Tip>
         )}
         <MachineSwitch m={m} />
@@ -344,7 +344,7 @@ const MachineSection = memo(function MachineSection({ m }: { m: MachineView }) {
                 type="button"
                 data-testid={`remote-new-task-${m.id}`}
                 aria-label={t("sidebar.newTask", { name: m.name })}
-                onClick={() => setDialog({ newTaskOn: m.id })}
+                onClick={() => void openNewTaskOnServer(m.id)}
                 className="rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] group-hover:opacity-100"
               >
                 <Plus className="h-3.5 w-3.5" />

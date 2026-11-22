@@ -59,6 +59,7 @@ mod push;
 mod remote_client;
 mod remote_server;
 mod server_projects;
+mod task_host;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
 pub mod customizations;
@@ -4779,6 +4780,7 @@ fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, Strin
         env.retain(|(e, _)| *e != k);
         env.push((k, v));
     }
+    dlog(&format!("[server-pty] spawn {id}"));
     remote_client::pty_open(server, &id, &claim, &args.cwd, argv, env, args.cols, args.rows)?;
     // A slot like a local PTY's, so everything that finds, reads, types into
     // or sizes a terminal (the CLI's logs / send / attach, the phone host)
@@ -4823,6 +4825,7 @@ pub(crate) fn server_pty_output(app: &AppHandle, pid: &str, data: &[u8]) {
 
 /// A server PTY ended: its slot goes, as a local PTY's waiter reaps it.
 pub(crate) fn server_pty_gone(app: &AppHandle, pid: &str) {
+    dlog(&format!("[server-pty] gone {pid}"));
     tauri::Manager::state::<PtyManager>(app).inner.lock().remove(pid);
 }
 
@@ -5750,6 +5753,7 @@ fn pty_resize(
 #[tauri::command]
 fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> {
     if remote_client::pty_machine(&pty_id).is_some() {
+        dlog(&format!("[server-pty] kill {pty_id}"));
         // Its slot goes now: the box sends no exit for a kill it was asked for.
         state.inner.lock().remove(&pty_id);
         return remote_client::pty_kill(&pty_id);
@@ -7721,8 +7725,17 @@ fn task_open_repo(
     // takes the defaults.
     task.drop_role_unless_keychain_blocked();
     seed_task_role(&mut task);
+    // A server project's main-checkout task is recorded on the box too, like
+    // a worktree task (task_create_sync), or the mirror archives it.
+    if let Some(server) = &proj.server {
+        server_projects::put_task(server, &task)?;
+    }
     save_task(&task).map_err(|e| e.to_string())?;
-    if let Ok(pdir) = profile_dir(&proj.profile) {
+    if proj.server.is_some() {
+        server_projects::refresh_paths();
+    }
+    // Customizations are written into the checkout here, so not on a server.
+    if let (None, Ok(pdir)) = (&proj.server, profile_dir(&proj.profile)) {
         let _ = customizations::ensure_builtin_skills(&pdir);
         let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), effective_customization_mode(&proj), &task.cli);
     }
@@ -7781,6 +7794,30 @@ fn slot_occupant(wt_path: &Path) -> Option<std::fs::FileType> {
 /// or `ls-files` alone dying on a corrupt/locked index). And when git
 /// can't run here, the `worktree add` that follows can't succeed anyway.
 /// `advice` is appended to every refusal ("pick a different name…").
+/// `clear_orphan_or_refuse` wherever the task's files live (task_host): a
+/// server's slot is checked and cleared on the box, by the same rules
+/// (a link is unlinked, a non-directory refused, a registered worktree
+/// refused, an orphan removed).
+fn clear_orphan_on(host: &task_host::Host, repo: &Path, wt_path: &Path, advice: &str) -> Result<(), String> {
+    if !host.is_server() {
+        return clear_orphan_or_refuse(repo, wt_path, advice);
+    }
+    match host.slot(wt_path) {
+        task_host::Slot::Empty => Ok(()),
+        task_host::Slot::Link => host.remove_link(wt_path)
+            .map_err(|e| format!("link at {} couldn't be removed: {e}.{advice}", wt_path.display())),
+        task_host::Slot::Other => Err(format!("something that isn't a directory sits at {}.{advice}", wt_path.display())),
+        task_host::Slot::Dir => {
+            let listed = git(&["worktree", "list", "--porcelain"], repo).map_err(|e| e.to_string())?;
+            if worktree_listed(&listed, wt_path) {
+                return Err(format!("a worktree already lives at {}.{advice}", wt_path.display()));
+            }
+            host.remove_dir_all(wt_path)
+                .map_err(|e| format!("orphan directory at {} couldn't be removed: {e}.{advice}", wt_path.display()))
+        }
+    }
+}
+
 fn clear_orphan_or_refuse(repo: &Path, wt_path: &Path, advice: &str) -> Result<(), String> {
     let ftype = match slot_occupant(wt_path) {
         Some(f) => f,
@@ -8248,9 +8285,22 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // The PROJECT's profile owns the worktrees base. Reading the root's here
     // was a real bug: a second profile's seeded `~/termic/profiles/<slug>/tasks`
     // would be written to settings and then never used.
-    let wt_root = project_tasks_root(&globals.default_tasks_path, &proj)?;
-    fs::create_dir_all(&wt_root).map_err(|e| e.to_string())?;
+    // Where its files live (task_host): a server project's worktrees go in
+    // the box's own worktrees folder, the one its exec fence allows, under
+    // the project's slug, as termic-server always laid them out.
+    let host = task_host::Host::for_project(&proj);
+    let wt_root = match &proj.server {
+        Some(server) => {
+            let pslug = slugify(&proj.name);
+            task_host::server_worktrees_root(server, &repo)?.join(if pslug.is_empty() { proj.id.clone() } else { pslug })
+        }
+        None => project_tasks_root(&globals.default_tasks_path, &proj)?,
+    };
+    host.create_dir_all(&wt_root)?;
     let wt_path = wt_root.join(&slug);
+    if let Some(server) = &proj.server {
+        server_projects::note_server_path(&wt_root, server);
+    }
 
     // Clean stale worktree metadata (refs to dirs the user removed manually,
     // or leftovers from a previous failed create) so `git worktree add` has
@@ -8259,8 +8309,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
 
     // Already-claimed target: a live worktree or git-tracked dir refuses,
     // a failed-create orphan is removed (fail-closed on git errors).
-    clear_orphan_or_refuse(
-        &repo, &wt_path,
+    clear_orphan_on(
+        &host, &repo, &wt_path,
         " Pick a different task name, or move the tasks path outside the repo.",
     )?;
 
@@ -8292,7 +8342,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             let p = PathBuf::from(&s);
             if p.is_absolute() { p } else { repo.join(p) }
         });
-    let has_git_crypt = common_gitdir
+    // Not on a server: bridging the key is a local symlink into the gitdir.
+    let has_git_crypt = !host.is_server() && common_gitdir
         .as_ref()
         .map(|p| p.join("git-crypt").exists())
         .unwrap_or(false);
@@ -8460,7 +8511,11 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         emit_create_progress(&app, &task_id, format!("Copying {} file pattern(s): {}", copy_patterns.len(), copy_patterns.join(", ")));
     }
     for pat in &copy_patterns {
-        copy_matching(&repo, &wt_path, pat);
+        if host.is_server() {
+            host.copy_matching_on_box(&repo, &wt_path, pat);
+        } else {
+            copy_matching(&repo, &wt_path, pat);
+        }
     }
 
     // Link the project's agent config dirs (`.claude/` and friends) into the
@@ -8469,15 +8524,20 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // (Settings.worktree_symlink_paths); each entry is linked only when it
     // exists in the repo and the checkout/copy didn't already provide it.
     for name in &globals.worktree_symlink_paths {
-        let existed = wt_path.join(name).exists();
-        link_config_dir(&repo, &wt_path, name);
-        if !existed && wt_path.join(name).exists() {
+        let existed = host.exists(&wt_path.join(name));
+        if host.is_server() {
+            host.link_on_box(&repo, &wt_path, name);
+        } else {
+            link_config_dir(&repo, &wt_path, name);
+        }
+        if !existed && host.exists(&wt_path.join(name)) {
             emit_create_progress(&app, &task_id, format!("Linked {name}."));
         }
     }
 
-    // Profile customizations (skills, personas, mcp)
-    if let Ok(pdir) = profile_dir(&proj.profile) {
+    // Profile customizations (skills, personas, mcp): written into the
+    // worktree here, so not on a server yet.
+    if let (false, Ok(pdir)) = (host.is_server(), profile_dir(&proj.profile)) {
         let _ = customizations::ensure_builtin_skills(&pdir);
         let cli_hint = args.cli.as_deref().unwrap_or(&proj.default_cli);
         let _ = customizations::reconcile_customizations(&pdir, &wt_path, effective_customization_mode(&proj), cli_hint);
@@ -8627,7 +8687,16 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // takes the defaults.
     task.drop_role_unless_keychain_blocked();
     seed_task_role(&mut task);
+    // A server project's task is recorded on the box too, as plain data, so
+    // every desktop that reaches it lists it (task_put) and the box reads
+    // its agent's state; the desktop starts that agent itself.
+    if let Some(server) = &proj.server {
+        server_projects::put_task(server, &task)?;
+    }
     save_task(&task).map_err(|e| e.to_string())?;
+    if proj.server.is_some() {
+        server_projects::refresh_paths();
+    }
     drop(port_guard);
     emit_create_progress(&app, &task_id, format!("Worktree ready (port {port})."));
 

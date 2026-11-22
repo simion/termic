@@ -399,3 +399,31 @@ pub(crate) async fn server_which(project_id: String, programs: Vec<String>) -> R
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// A folder on `server` this desktop made before any task there names it
+/// (a project's worktrees folder, ahead of its first task), so `git_bytes`
+/// routes it to the box.
+pub(crate) fn note_server_path(dir: &std::path::Path, server: &str) {
+    let d = dir.to_string_lossy().to_string();
+    let mut p = paths().write().unwrap();
+    if !p.iter().any(|(x, _)| *x == d) {
+        p.push((d, server.to_string()));
+        p.sort_by_key(|(x, _)| std::cmp::Reverse(x.len()));
+    }
+}
+
+/// Record a task the desktop made on its server (termic-server `task_put`).
+pub(crate) fn put_task(server: &str, t: &Task) -> Result<(), String> {
+    let req = json!({
+        "cmd": "task_put",
+        "task": t.id,
+        "name": t.name,
+        "project": t.project_id,
+        "path": t.path,
+        "branch": t.branch,
+        "base_branch": t.base_branch,
+        "agent": t.cli,
+        "is_main_checkout": t.is_main_checkout,
+    });
+    data(crate::remote_client::call(server, req, Some(std::time::Duration::from_secs(30)))?, "new").map(|_| ())
+}

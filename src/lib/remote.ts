@@ -532,3 +532,19 @@ export function useServerDetectedClis(projectId: string | undefined, isServer: b
   }, [projectId, isServer, enabled, agents]);
   return isServer ? map : {};
 }
+
+/** New task on a server: the ordinary New task dialog for one of its
+ *  projects (the named one, else the first), which creates the task with
+ *  the desktop's own code on the box (task_host). With no project there
+ *  yet, the server's Add project dialog, which then opens it. */
+export async function openNewTaskOnServer(serverId: string, projectName?: string | null, baseBranch?: string | null): Promise<void> {
+  const { useApp } = await import("@/store/app");
+  const { useUI } = await import("@/store/ui");
+  const mine = useApp.getState().projects.filter(p => p.server === serverId);
+  const p = (projectName && mine.find(x => x.name === projectName)) || mine[0];
+  if (!p) {
+    useRemote.getState().setDialog({ newTaskOn: serverId, newTaskAdding: true });
+    return;
+  }
+  requestAnimationFrame(() => useUI.getState().openNewTask(p.id, baseBranch ? { baseBranch } : undefined));
+}

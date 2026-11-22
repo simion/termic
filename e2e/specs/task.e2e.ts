@@ -4871,3 +4871,28 @@ describe("open the task folder in another app", () => {
     expect(opens()).toEqual([]);
   });
 });
+
+describe("renaming a task", () => {
+  it("keeps its agent running: a rename never respawns the terminal", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const id = await openTask("rename-keeps-agent");
+    try {
+      await waitForAgentReady(id);
+      const before = await browser.execute((t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.ptyId as string | undefined, id);
+      expect(before).toBeTruthy();
+      // As an agent renames its own task (`termic rename`): mid-session.
+      expect((await cliRpc({ cmd: "rename", task: id, name: "renamed-keeps-agent" })).ok).toBe(true);
+      await browser.waitUntil(() => browser.execute((t) => window.__termic!.useApp.getState().tasks.find((x: any) => x.id === t)?.name === "renamed-keeps-agent", id),
+        { timeout: 10_000, timeoutMsg: "the rename never reached the store" });
+      // A negative: a respawn would replace the PTY within a frame or two of
+      // the store update. Nothing fires for one that never happens.
+      await browser.pause(1500);
+      const after = await browser.execute((t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.ptyId as string | undefined, id);
+      expect(after).toBe(before);
+      expect(await browser.execute((p) => window.__termic!.invoke("pty_alive", { id: p }), after)).toBe(true);
+    } finally {
+      await archiveTask(id);
+    }
+  });
+});
