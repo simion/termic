@@ -93,7 +93,19 @@ export function RemoteSection() {
       <Card
         icon={<Smartphone className="h-4 w-4" />}
         title={t("phones.title")}
-        lead={t("phones.lead")}
+        lead={<>
+          {t("phones.lead")}
+          <span data-testid="phone-app-links" className="mt-1 block text-[var(--color-fg-faint)]">
+            <Trans
+              t={t}
+              i18nKey="phones.getApp"
+              components={{
+                ios: <StoreLink id="phone-get-ios" url={IOS_APP_URL} />,
+                android: <StoreLink id="phone-get-android" url={ANDROID_APP_URL} />,
+              }}
+            />
+          </span>
+        </>}
         action={
           <Button variant={phones.length === 0 ? "primary" : "secondary"} size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
             <Plus className="h-3.5 w-3.5" />
@@ -104,18 +116,7 @@ export function RemoteSection() {
         {phones.length > 0 ? (
           <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
         ) : (
-          // Whoever paired a phone has the app: the links live only here
-          // and in the Connect a phone dialog.
-          <Empty>
-            <Trans
-              t={t}
-              i18nKey="phones.empty"
-              components={{
-                ios: <StoreLink id="phone-get-ios" url={IOS_APP_URL} />,
-                android: <StoreLink id="phone-get-android" url={ANDROID_APP_URL} />,
-              }}
-            />
-          </Empty>
+          <Empty>{t("phones.empty")}</Empty>
         )}
       </Card>
 

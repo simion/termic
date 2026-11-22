@@ -179,8 +179,10 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
   return (
     <div data-testid="remote-task-view" data-task={task.id} className="flex h-full min-h-0 flex-col">
       {/* The task, and where it runs: the one thing a remote view must never
-          leave out, so nobody types into the wrong computer. */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
+          leave out, so nobody types into the wrong computer. A server task
+          sits under the app's own top bar (name, Archive, Run), so it gets
+          only the "On <server>" mark, at the end of its tab strip. */}
+      {!taskPath && <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
         <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-4 w-4" /></span>
         <span className="truncate text-[14px] font-medium text-[var(--color-fg)]">{task.name}</span>
         <StateGlyph state={task.state} />
@@ -205,7 +207,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
             <X className="h-4 w-4" />
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* The task's tabs, as its own strip lists them: another agent, a
           shell, the run output. Only when there is a choice. */}
@@ -245,7 +247,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
       )}
 
       {taskPath && (
-        <div role="tablist" data-testid="server-task-tabs" className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border-soft)] px-2">
+        <div role="tablist" data-testid="server-task-tabs" className="termic-tabstrip flex h-9 shrink-0 items-stretch overflow-x-auto no-scrollbar border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2">
           {["agent", ...shells].map((id, i) => (
             <button
               key={id}
@@ -254,15 +256,12 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               aria-selected={view === id}
               data-testid={`server-tab-${id === "agent" ? "agent" : "shell"}`}
               onClick={() => setView(id)}
-              className={cn(
-                "group flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px]",
-                view === id ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
-              )}
+              className={serverTab(view === id)}
             >
               {id === "agent"
                 ? <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-3.5 w-3.5" /></span>
                 : <SquareTerminal className="h-3.5 w-3.5 shrink-0" />}
-              <span>{id === "agent" ? t("task.agentTab") : meta[id]?.label ?? t("task.shellTab", { n: i })}</span>
+              <span className="truncate">{id === "agent" ? t("task.agentTab") : meta[id]?.label ?? t("task.shellTab", { n: i })}</span>
               {meta[id]?.agent && <StateGlyph state={titleState[id] ?? "idle"} size={12} />}
               {id !== "agent" && (
                 <span
@@ -283,10 +282,7 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               data-testid="server-tab-file"
               data-path={"path" in ft ? ft.path : undefined}
               onClick={() => { setView(ft.id); useApp.getState().setActiveTabId(taskId, ft.id); }}
-              className={cn(
-                "group flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px]",
-                view === ft.id ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
-              )}
+              className={serverTab(view === ft.id)}
             >
               <span className="truncate">{ft.title}</span>
               <span
@@ -304,8 +300,8 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
             title={t("task.newShell")}
             disabled={!online}
             onClick={() => useServerShells.getState().add(taskId)}
-            className="rounded p-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
-          ><Plus className="h-3.5 w-3.5" /></button>
+            className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center self-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40"
+          ><Plus className="h-4 w-4" /></button>
           {/* Another agent beside the task's own, in a tab on the box: the
               box's usable agents, each started by its command. Its state is
               not tracked (termic-server runs one agent per task). */}
@@ -318,9 +314,21 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
               aria-label={t("task.newAgent", { agent: agentName(id) })}
               disabled={!online}
               onClick={() => useServerShells.getState().add(taskId, { label: agentName(id), input: `${id}\r`, agent: id })}
-              className={cn("rounded p-1 hover:bg-[var(--color-hover)] disabled:opacity-40", CLI_BRAND_COLOR[resolveIconId(id, [])])}
-            ><CliIcon cli={resolveIconId(id, [])} className="h-3.5 w-3.5" /></button>
+              className={cn(
+                "flex h-8 shrink-0 items-center justify-center self-center rounded-md hover:bg-[var(--color-hover)] disabled:opacity-40",
+                CLI_BRAND_COLOR[resolveIconId(id, [])] ? cn("w-8", CLI_BRAND_COLOR[resolveIconId(id, [])]) : "px-2 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              )}
+            >
+              {/* No logo for this agent (gemini): its name, since the generic
+                  glyph read as "new shell". */}
+              {CLI_BRAND_COLOR[resolveIconId(id, [])] ? <CliIcon cli={resolveIconId(id, [])} className="h-4 w-4" /> : agentName(id)}
+            </button>
           ))}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 pr-3 text-[12px] text-[var(--color-fg-dim)]">
+            <MIcon className="h-3.5 w-3.5 shrink-0" />
+            <span data-testid="remote-task-location">{t("task.on", { machine: machine.name })}</span>
+            <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-[var(--color-ok)]" : "bg-[var(--color-fg-faint)]")} />
+          </div>
         </div>
       )}
 
@@ -349,6 +357,13 @@ export function RemoteTaskView({ machineId, taskId, taskPath, active = true }: {
     </div>
   );
 }
+
+/** A server task's tab, drawn like a local tab (TabBar): full height, an
+ *  accent underline on the active one. */
+const serverTab = (active: boolean) => cn(
+  "group flex h-full min-w-[120px] max-w-[220px] shrink-0 items-center gap-1.5 border-b-2 px-3.5 text-[12.5px] select-none",
+  active ? "border-[var(--color-accent)] font-medium text-[var(--color-fg)]" : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+);
 
 async function archive(machineName: string, machineId: string, task: RemoteTask, close: () => void, t: (k: string, o?: Record<string, unknown>) => string) {
   const ok = await useUI.getState().askConfirm({

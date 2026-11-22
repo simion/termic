@@ -801,6 +801,24 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       if (!closed) break;
     }
     await waitGone('[data-testid="aux-terminal"]');
+    // ⌘W with focus outside the view (the sidebar, the page) still acts on a
+    // server task: the shell on screen first, then, on the agent, the view.
+    const pressOutside = () => browser.execute(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    await clickPresent('[data-testid="server-new-shell"]');
+    await waitVisible('[data-testid="aux-terminal"]', 20_000);
+    await pressOutside();
+    await waitGone('[data-testid="aux-terminal"]');
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, task)).toBe(true);
+    await pressOutside();
+    await browser.waitUntil(() => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task),
+      { timeout: 5_000, timeoutMsg: "⌘W on the agent did not close the server task's view" });
+    await clickPresent(row());
+    // It comes back on the tab it last showed (the file opened earlier).
+    await clickPresent('[data-testid="server-tab-agent"]');
+    await waitVisible('[data-testid="remote-terminal"]');
     // Send to main runs on the box: the task's committed edit and its
     // untracked files land in the box repo's main checkout, uncommitted.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="send-to-main"]'))).toBe(true);
@@ -992,7 +1010,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       // From the view's own Archive button, as a user does: the desktop
       // archive, so the task also stops being the active one here.
       await clickPresent(row());
-      await clickPresent('[data-testid="remote-task-archive"]');
+      // The top bar's Archive: a server task has no second header of its own.
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-task-archive"]'))).toBe(false);
+      await clickPresent('[data-testid="archive-task"]');
       await browser.waitUntil(async () => {
         await browser.execute(() => (document.querySelector('[data-testid="confirm-ok"]') as HTMLElement | null)?.click());
         return browser.execute((id) => window.__termic!.useApp.getState().activeTaskId !== id, task);
