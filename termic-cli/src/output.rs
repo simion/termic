@@ -956,6 +956,7 @@ mod tests {
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
             spawned_by: None,
+            org: None,
         }
     }
 

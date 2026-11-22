@@ -257,6 +257,76 @@ fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
+/// A task's organisation as every desktop on a box shares it (the box keeps
+/// it opaque, task_put `org`): its name, pin, order and group.
+pub(crate) fn org_of(t: &Task) -> Value {
+    json!({ "name": t.name, "pinned": t.pinned, "order": t.order, "group": t.group })
+}
+
+fn apply_org(t: &mut Task, org: &Value) {
+    if let Some(n) = org.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty()) {
+        t.name = n.to_string();
+    }
+    t.pinned = org.get("pinned").and_then(Value::as_bool).unwrap_or(false);
+    t.order = org.get("order").and_then(Value::as_u64).map(|v| v as u32);
+    t.group = org.get("group").cloned().and_then(|g| serde_json::from_value(g).ok());
+}
+
+/// The organisation last sent to (or taken from) the box, per task, with
+/// when it was written: a save that changed none of it sends nothing, one
+/// the mirror made from the box's record is not sent straight back, and a
+/// box record older than it (a resync already under way when this desktop
+/// wrote) does not undo it.
+fn pushed() -> &'static Mutex<std::collections::HashMap<String, (Value, i64)>> {
+    static P: OnceLock<Mutex<std::collections::HashMap<String, (Value, i64)>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Record `org` as written at `at`; returns that time.
+fn note_pushed(task: &str, org: Value, at: i64) -> i64 {
+    pushed().lock().unwrap().insert(task.to_string(), (org, at));
+    at
+}
+
+/// The box's record for a task, when it is newer than what this desktop
+/// last wrote or took for it (last write wins). A desktop that knows
+/// nothing of the task yet takes the box's.
+fn newer_box_org<'a>(task: &str, bt: &'a Value) -> Option<&'a Value> {
+    let org = bt.get("org").filter(|o| o.is_object())?;
+    let at = org.get("at").and_then(Value::as_i64).unwrap_or(0);
+    match pushed().lock().unwrap().get(task) {
+        Some((_, mine)) if at <= *mine => None,
+        _ => Some(org),
+    }
+}
+
+/// Every write of a task record (lib.rs `save_task`): a server task whose
+/// organisation changed has it sent to its box, off the caller's thread,
+/// so the other desktops there file it the same way. Last write wins.
+pub(crate) fn push_org_if_changed(t: &Task) {
+    if t.archived {
+        return;
+    }
+    let Some(server) = server_for_path(std::path::Path::new(&t.path)) else { return };
+    let org = org_of(t);
+    {
+        let m = pushed().lock().unwrap();
+        if m.get(&t.id).is_some_and(|(o, _)| *o == org) {
+            return;
+        }
+    }
+    let t = t.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = put_task(&server, &t) {
+            crate::dlog(&format!("[server-projects] {server}: could not share {}'s organisation: {e}", t.name));
+        }
+    });
+}
+
 /// The pure part of a sync: what to change in `projects` (in place) and
 /// which task records to write. Returns (projects changed, tasks to save).
 fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &mut Vec<Project>, tasks: &[Task]) -> (bool, Vec<Task>) {
@@ -310,11 +380,19 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
                 n.branch = s(bt, "branch");
                 n.project_id = project_id;
                 n.archived = false;
-                if n.path != t.path || n.branch != t.branch || n.project_id != t.project_id || t.archived {
+                // What a desktop last filed it as on the box wins (another
+                // desktop may have renamed, pinned or grouped it). A box
+                // record without one leaves the desktop's own.
+                if let Some(org) = newer_box_org(&n.id, bt) {
+                    apply_org(&mut n, org);
+                    note_pushed(&n.id, org_of(&n), org.get("at").and_then(Value::as_i64).unwrap_or(0));
+                }
+                if n.path != t.path || n.branch != t.branch || n.project_id != t.project_id || t.archived || org_of(&n) != org_of(t) {
                     out.push(n);
                 }
             }
-            None => out.push(Task {
+            None => {
+                let mut n = Task {
                 id,
                 name: s(bt, "name"),
                 project_id,
@@ -326,7 +404,13 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
                 is_main_checkout: bt.get("is_main_checkout").and_then(Value::as_bool).unwrap_or(false),
                 profile: profile.clone(),
                 ..Default::default()
-            }),
+                };
+                if let Some(org) = newer_box_org(&n.id, bt) {
+                    apply_org(&mut n, org);
+                    note_pushed(&n.id, org_of(&n), org.get("at").and_then(Value::as_i64).unwrap_or(0));
+                }
+                out.push(n);
+            }
         }
     }
     // Tasks of this server's projects that left the box: archived, kept.
@@ -375,6 +459,36 @@ mod tests {
     }
 
     #[test]
+    fn the_boxs_organisation_wins_and_a_box_without_one_keeps_the_desktops() {
+        let mut projects = vec![];
+        let path = "/home/u/.termic-server/worktrees/bot/t1";
+        let (_, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[bt("t1", "bot", path)], &mut projects, &[]);
+        let mine = out[0].clone();
+        // Another desktop renamed, pinned and grouped it on the box.
+        let mut theirs = bt("t1", "bot", path);
+        theirs["org"] = json!({"name": "their name", "pinned": true, "order": 3, "group": {"id": "g1", "color": "teal"}, "at": now_ms() + 1});
+        let (_, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[theirs.clone()], &mut projects, &[mine.clone()]);
+        assert_eq!(out.len(), 1);
+        let t = &out[0];
+        assert_eq!((t.name.as_str(), t.pinned, t.order), ("their name", true, Some(3)));
+        assert_eq!(t.group.as_ref().map(|g| g.id.as_str()), Some("g1"));
+        // Applied once: the same record again changes nothing, and nothing
+        // is queued to go back (the push cache holds what came in).
+        let (_, again) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[theirs], &mut projects, &[t.clone()]);
+        assert!(again.is_empty());
+        assert_eq!(pushed().lock().unwrap().get("t1").map(|(o, _)| o.clone()), Some(org_of(t)));
+        // This desktop writes after that; a resync still carrying the box's
+        // older record does not undo it.
+        let mut mine = t.clone();
+        mine.pinned = false;
+        note_pushed("t1", org_of(&mine), now_ms() + 10_000);
+        let mut stale = bt("t1", "bot", path);
+        stale["org"] = json!({"name": "their name", "pinned": true, "order": 3, "group": {"id": "g1", "color": "teal"}, "at": 1});
+        let (_, out) = mirror("box", &[bp("p1", "bot", "/home/u/bot")], &[stale], &mut projects, &[mine]);
+        assert!(out.is_empty(), "an older box record does not overwrite a newer local write");
+    }
+
+    #[test]
     fn another_servers_and_local_projects_are_left_alone() {
         let mut projects = vec![
             Project { id: "local".into(), name: "app".into(), root_path: "/Users/u/app".into(), ..Default::default() },
@@ -419,6 +533,9 @@ pub(crate) fn note_server_path(dir: &std::path::Path, server: &str) {
 
 /// Record a task the desktop made on its server (termic-server `task_put`).
 pub(crate) fn put_task(server: &str, t: &Task) -> Result<(), String> {
+    let at = note_pushed(&t.id, org_of(t), now_ms());
+    let mut org = org_of(t);
+    org["at"] = json!(at);
     let req = json!({
         "cmd": "task_put",
         "task": t.id,
@@ -429,6 +546,7 @@ pub(crate) fn put_task(server: &str, t: &Task) -> Result<(), String> {
         "base_branch": t.base_branch,
         "agent": t.cli,
         "is_main_checkout": t.is_main_checkout,
+        "org": org,
     });
     data(crate::remote_client::call(server, req, Some(std::time::Duration::from_secs(30)))?, "new").map(|_| ())
 }

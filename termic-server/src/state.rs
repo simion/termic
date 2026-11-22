@@ -35,6 +35,9 @@ pub struct TaskRec {
     pub created: String,
     pub archived: bool,
     pub is_main_checkout: bool,
+    /// The desktops' organisation of it (task_put `org`), opaque here.
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    pub org: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -136,6 +139,7 @@ mod tests {
             created: "2026-10-18T12:00:00Z".into(),
             archived: false,
             is_main_checkout: false,
+            org: serde_json::json!({"name": "fix", "pinned": true}),
         });
         st.save(&d).unwrap();
         let back = State::load(&d).unwrap();

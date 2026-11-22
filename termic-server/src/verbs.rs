@@ -105,13 +105,14 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
         }
         Command::ProjectRemove { name } => project_remove(d, &name),
         Command::Exec { cwd, argv, env, stdin, timeout_ms } => exec(d, &cwd, &argv, &env, stdin.as_deref(), timeout_ms),
-        Command::TaskPut { task, name, project, path, branch, base_branch, agent, is_main_checkout } => {
+        Command::TaskPut { task, name, project, path, branch, base_branch, agent, is_main_checkout, org } => {
             task_put(d, TaskRec {
                 id: task, name, project_id: project, path, branch, base_branch, agent,
                 agent_args: Vec::new(),
                 created: util::rfc3339(util::now_secs()),
                 archived: false,
                 is_main_checkout,
+                org: org.unwrap_or(serde_json::Value::Null),
             })
         }
         // The desktop restarting this daemon onto the build it just
@@ -199,6 +200,7 @@ fn summary(d: &Daemon, t: &TaskRec, with_diff: bool) -> TaskSummary {
         work_state: Some(d.view_of(&t.id).state),
         open_tabs: Some(u32::from(alive)),
         diff,
+        org: (!t.org.is_null()).then(|| t.org.clone()),
         ..Default::default()
     }
 }
@@ -305,6 +307,11 @@ fn rename(d: &Arc<Daemon>, t: &TaskRec, name: &str) -> Result<ReplyData, Fail> {
         }
         let x = st.tasks.iter_mut().find(|x| x.id == t.id).ok_or_else(|| fail(ErrorCode::NotFound, "the task is gone"))?;
         x.name = name.to_string();
+        // The organisation's name too, or the next desktop sync would put
+        // the old one back (last write wins).
+        if let Some(o) = x.org.as_object_mut() {
+            o.insert("name".into(), serde_json::Value::String(name.to_string()));
+        }
         let x = x.clone();
         d.save(&st);
         x
@@ -478,6 +485,9 @@ fn task_put(d: &Arc<Daemon>, mut t: TaskRec) -> Result<ReplyData, Fail> {
         match st.tasks.iter_mut().find(|x| x.id == t.id) {
             Some(x) => {
                 t.created = x.created.clone();
+                if t.org.is_null() {
+                    t.org = x.org.clone();
+                }
                 *x = t.clone();
             }
             None => st.tasks.push(t.clone()),

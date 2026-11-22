@@ -464,6 +464,17 @@ custom run commands from Run's menu, and Archive (the archive script
 runs in the worktree on the box first). The sandbox controls
 are hidden for server tasks: the macOS sandbox does not reach the box.
 
+**Several desktops on one box** see the same projects and tasks (the box's
+records) and the same sidebar organisation. A task's name, pin, order and
+group go to the box on every write of the task record that changes them
+(`save_task` -> `server_projects::push_org_if_changed`, a `task_put` with
+`org`), stamped with the write time; the box keeps `org` opaque, puts pin,
+order and group in its `tasks` snapshot, and so every connected desktop
+resyncs. The mirror takes the box's `org` only when it is newer than what
+that desktop last wrote or took (`newer_box_org`): a resync already under
+way when you pin something does not unpin it. Folders, colours of the
+project and anything else stay per desktop.
+
 `termic-server` itself: [termic-server/README.md](../termic-server/README.md).
 It answers the same messages, keeps tasks in `~/.termic-server/state.json`,
 listens only on a 0600 unix socket in a 0700 directory, and runs agents

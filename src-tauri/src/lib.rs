@@ -2735,6 +2735,8 @@ fn save_task(w: &Task) -> Result<()> {
     // the agent cache its loop waits on: wake it now rather than on its 4 s
     // fallback (remote_server.rs STATE_REFRESH).
     cli_server::global_agent_cache().nudge();
+    // A server task's name, pin, order or group, shared through its box.
+    server_projects::push_org_if_changed(w);
     Ok(())
 }
 fn delete_task_file(id: &str) -> Result<()> {

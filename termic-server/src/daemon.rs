@@ -15,7 +15,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use termic_remote::screen;
-use termic_remote::wire::{Diff, Question, TabRow, TaskRow};
+use termic_remote::wire::{Diff, Question, RowGroup, TabRow, TaskRow};
 
 use crate::detect;
 use crate::pty::Pty;
@@ -322,8 +322,19 @@ impl Daemon {
                     since_ms: (v.since_ms > 0).then_some(v.since_ms),
                     activity: v.activity,
                     question: v.question,
-                    // No sidebar here to file tasks in: no groups, folders,
-                    // pins or PRs, and clients order by name.
+                    // How a desktop last filed it (task_put `org`): in the
+                    // snapshot, so another desktop's pin or group is a change
+                    // every connected desktop syncs. No folders or PRs here.
+                    pinned: t.org.get("pinned").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                    order: t.org.get("order").and_then(serde_json::Value::as_u64).map(|o| o as u32),
+                    group: t.org.get("group").and_then(|g| {
+                        Some(RowGroup {
+                            id: g.get("id")?.as_str()?.to_string(),
+                            name: g.get("name").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                            color: g.get("color").and_then(serde_json::Value::as_str).map(str::to_string),
+                            collapsed: false,
+                        })
+                    }),
                     ..Default::default()
                 }
             })

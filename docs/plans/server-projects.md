@@ -147,16 +147,19 @@ Order, each step shippable on its own:
    the scattered `server_for_path` checks. New task is the one
    NewTaskDialog, agents the box lacks disabled. Delete
    `NewRemoteTaskDialog.tsx`, `verbs.rs new_task` and its CLI forward.
-5. **Shrink the box** (half done): the agent table (`agents.rs`, with
+5. **Shrink the box** (done): the agent table (`agents.rs`, with
    gemini), resume-on-boot, the box's own agent engine (`Live`, its
    prompt queue) and the `new` and `agents` verbs are deleted; a task's
    agent on the box is the desktop's `<task>:agent` PTY, which `send`,
    `logs`, `stop`, `keys` and the terminal act on, and the box never
-   starts one. Left: `state.rs` keeps projects, tasks and organisation as shared
-   records (see Decisions) behind a put / delete interface with change
-   events, instead of the task engine's own list. It keeps `exec`, the
-   PTY family, a queued-prompt drain, the hook-OSC reader and
-   `detect.rs` as the fallback for agents without hooks.
+   starts one. `state.rs` keeps projects (`project_add` / `project_remove`),
+   tasks (`task_put`, `archive`) and each task's organisation (`org`:
+   name, pin, order, group, opaque to the box, last write wins by its `at`
+   stamp) as shared records; the `tasks` snapshot carries pin, order and
+   group, so a change any desktop makes is a snapshot change every
+   connected desktop resyncs (`server_projects.rs` `push_org_if_changed`
+   and `newer_box_org`). The box keeps `exec`, the PTY family, the
+   hook-OSC reader and `detect.rs` as the fallback state.
 6. **One stream host**: the shared session loop of `session.rs` and
    `remote_server.rs` in `termic-remote` behind a host trait.
 
@@ -300,8 +303,8 @@ What keeps it possible, all cheap now:
    agent registry into the `agents.json` the daemon already reads
    (replacing `BUILTIN`), later the task-creation rules. One source of
    truth, carried to the box, so a phone could create a task there.
-4. Names, groups and pins are pushed to the box (rename already is), so a
-   direct client sees the desktop's organisation.
+4. Names, groups and pins are on the box (done, step 5), so a direct
+   client sees the desktop's organisation.
 5. One stream host (step 6), so the box speaks the phone's protocol with
    the desktop's code.
 6. Pairing records leave room for "a phone's key on server X".

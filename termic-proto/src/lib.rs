@@ -929,6 +929,12 @@ pub enum Command {
         agent: String,
         #[serde(default)]
         is_main_checkout: bool,
+        /// The desktop's organisation of the task (name, pin, order, group),
+        /// opaque to the box: kept and handed back in `list` (`org`), so
+        /// every desktop that reaches it files the task the same way. Last
+        /// write wins. Absent: the box keeps what it had.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<serde_json::Value>,
     },
     /// This machine, the machines paired with it, and the unpaired ones in
     /// sight on the LAN (v22, docs/peers.md).
@@ -1932,6 +1938,10 @@ pub struct TaskSummary {
     /// not reported the task's tabs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<CollectedProp>,
+    /// A termic-server task's organisation as a desktop last wrote it
+    /// (`task_put`'s `org`). Desktops never send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -2982,6 +2992,7 @@ mod tests {
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
             spawned_by: None,
+            org: None,
         };
         for data in [
             ReplyData::Hello(HelloData {

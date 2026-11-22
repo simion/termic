@@ -944,6 +944,28 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute((t) => window.__termic!.invoke("task_archive", { id: t }), dupId);
   });
 
+  it("shares its organisation through the box with every desktop there", async () => {
+    // server_projects.rs push_org_if_changed: this desktop's name, pin and
+    // group are on the box's record.
+    const rec = async () => ((await call({ cmd: "list" }))?.data?.tasks ?? []).find((t: any) => t.id === task);
+    await browser.waitUntil(async () => {
+      const o = (await rec())?.org;
+      return o?.pinned === true && o?.name === "renamed-here" && !!o?.group;
+    }, { timeout: 15_000, timeoutMsg: "this desktop's organisation never reached the box" });
+    // Another desktop renames, unpins and ungroups it there (its task_put).
+    const r = await rec();
+    const pid = ((await call({ cmd: "project_list" }))?.data?.projects ?? []).find((p: any) => p.name === r.project)?.id;
+    const put = await call({ cmd: "task_put", task, name: "renamed-elsewhere", project: pid, path: r.path, branch: r.branch, base_branch: r.base_branch, agent: r.agent,
+      org: { name: "renamed-elsewhere", pinned: false, order: null, group: null, at: Date.now() + 1000 } });
+    expect(put.ok).toBe(true);
+    // The box's snapshot changed, so this desktop resyncs and files it so too.
+    await browser.waitUntil(async () => browser.execute(async (id) => {
+      await window.__termic!.useApp.getState().loadAll();
+      const x = window.__termic!.useApp.getState().tasks.find((y: any) => y.id === id) as any;
+      return x?.name === "renamed-elsewhere" && !x.pinned && !x.group;
+    }, task), { timeout: 15_000, timeoutMsg: "another desktop's organisation never reached this one" });
+  });
+
   it("starts a server task from the project's 'Branch new tasks from'", async () => {
     // A desktop setting: the desktop's own creation branches from it, on the box.
     const proj = await browser.execute((sid) => window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid), serverId) as any;

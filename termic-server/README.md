@@ -145,7 +145,7 @@ termic-proto requests and replies, the same shapes the desktop answers:
 | Verb | Notes |
 |---|---|
 | `list`, `status` | Work state, diff stat against the base branch, one `agent` tab. |
-| `task_put` | Records a task the desktop made (its worktree created over `exec`); starts nothing. The path must be inside a project or `worktrees/`. |
+| `task_put` | Records a task the desktop made (its worktree created over `exec`); starts nothing. The path must be inside a project or `worktrees/`. `org` (the desktops' name, pin, order and group for it) is kept opaque and handed back in `list`; pin, order and group are in the `tasks` snapshot. |
 | `send` | Into the task's running agent at once: bracketed paste (when the agent turned it on), then Enter. An agent that is not running is refused: the desktop starts it when the task is opened. |
 | `wait` | Until done (exit 0), waiting (needs input) or the timeout, capped at 5 minutes. |
 | `archive` | SIGKILLs the task's PTYs' process groups, `git worktree remove --force`, marks the task archived. The branch is kept. |

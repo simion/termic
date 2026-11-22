@@ -4171,6 +4171,7 @@ fn summarize(
             .as_deref()
             .and_then(|pid| tasks.iter().find(|t| t.id == pid))
             .map(|t| qualified(projects, t)),
+        org: None,
     }
 }
 
