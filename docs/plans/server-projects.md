@@ -157,6 +157,15 @@ can read the same OSCs itself for an exact state with nobody attached.
 `detect.rs` stays only as the fallback for agents without hooks. Codex
 trusts hooks per machine, so its trust step runs on the box too.
 
+## Not a goal: a phone without a desktop
+
+Decided 2026-11-22. The phone is a companion to the desktop. Adding a
+server, installing termic-server, adding projects and creating tasks stay
+desktop actions, so the desktop can own the task engine and the box stays
+a thin host. A standalone phone would need one engine shared by desktop
+and box (a Rust crate holding what today lives partly in the webview),
+which is not worth it for this.
+
 ## Later: a phone straight to a server (prepare, do not build)
 
 The phone would connect the way the desktop does, `ssh host termic-server
