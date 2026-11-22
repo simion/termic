@@ -182,6 +182,11 @@ pub enum ServerMsg {
         /// What the host lets this client do: "drive" or "reply".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grant: Option<String>,
+        /// The oldest Termic desktop this host works with (compat.rs). A
+        /// client older than this says so and updates itself; a host from
+        /// before minimums sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        needs: Option<String>,
     },
     /// Every task and its state. A full snapshot on connect and on every
     /// change, never a delta: a client that misses one gets the next.
@@ -484,7 +489,7 @@ mod tests {
         let row = TaskRow { id: "1".into(), name: "fix".into(), project: "api".into(), agent: "claude".into(), state: "working".into(), ..Default::default() };
         let cases: Vec<(ServerMsg, Value)> = vec![
             (
-                ServerMsg::Welcome { v: 1, id: "i".into(), name: "Mac".into(), version: "1.18.0".into(), kind: HostKind::Desktop, caps: vec!["tasks".into()], grant: Some("drive".into()) },
+                ServerMsg::Welcome { v: 1, id: "i".into(), name: "Mac".into(), version: "1.18.0".into(), kind: HostKind::Desktop, caps: vec!["tasks".into()], grant: Some("drive".into()), needs: None },
                 json!({"t":"welcome","v":1,"id":"i","name":"Mac","version":"1.18.0","kind":"desktop","caps":["tasks"],"grant":"drive"}),
             ),
             (

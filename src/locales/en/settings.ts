@@ -454,7 +454,7 @@ export default {
       label: "Address",
       code: "Code",
     },
-    versionMismatch: "Runs a different Termic version. Update both to talk to each other.",
+    versionMismatch: "Runs a Termic too old to work with this one. Update Termic on that computer.",
   },
 
   appearance: {

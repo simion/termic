@@ -1041,10 +1041,10 @@ describeUpgrade("A server's termic-server stays current", function () {
   const call = (request: Record<string, unknown>) => browser.execute((m, r) =>
     window.__termic!.invoke("remote_call", { machine: m, request: { id: "", ...r } }), serverId, request) as Promise<any>;
   /** The box runs an old build: the daemon stopped, the installed binary a wrapper. */
-  const stageOld = () => {
+  const stageOld = (version = "0-old") => {
     try { server("stop"); } catch { /* not running */ }
     mkdirSync(path.dirname(installed), { recursive: true });
-    writeFileSync(installed, `#!/bin/sh\nTERMIC_SERVER_FAKE_VERSION=0-old exec "${bin}" "$@"\n`);
+    writeFileSync(installed, `#!/bin/sh\nTERMIC_SERVER_FAKE_VERSION=${version} exec "${bin}" "$@"\n`);
     chmodSync(installed, 0o755);
   };
   /** Off and on again: a fresh connection, which is when the upgrade runs. */
@@ -1159,5 +1159,46 @@ describeUpgrade("A server's termic-server stays current", function () {
     await browser.waitUntil(() => readFileSync(installed).subarray(0, 2).toString() !== "#!", { timeout: 40_000, timeoutMsg: "the old build was never replaced" });
     await versionIs(newVersion(), "a settled server was not restarted onto the new build");
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="server-update-${id}"]`), serverId)).toBe(false);
+  });
+
+  it("an older server that still works is upgraded quietly, and restarts only when asked", async () => {
+    // Both far above compat::REQUIRES_SERVER: the old one still works with
+    // this desktop. The carried build is a wrapper too, so it can report a
+    // newer version than this debug binary does.
+    const [oldV, newV] = ["900.0.0+old", "900.0.1+new"];
+    stageOld(oldV);
+    mkdirSync(staged, { recursive: true });
+    const carried = path.join(staged, `termic-server-${triple}`);
+    writeFileSync(carried, `#!/bin/sh\nTERMIC_SERVER_FAKE_VERSION=${newV} exec "${bin}" "$@"\n`);
+    chmodSync(carried, 0o755);
+    writeFileSync(path.join(staged, "termic-server-version.txt"), `${newV}\n`);
+    await reconnect();
+    await waitVisible(`[data-testid="server-update-${serverId}"]`, 40_000);
+    expect(await browser.execute((id) => document.querySelector(`[data-testid="server-update-${id}"]`)!.getAttribute("data-required"), serverId)).toBe("false");
+    expect(readFileSync(installed, "utf8")).toContain(newV);
+    expect((await machine()).update_required).toBe(false);
+    // No agent is mid-turn, so a required update would restart at once:
+    // a negative, outlasting the restart a required update sends straight
+    // after the install. Nothing fires for a restart that never happens.
+    await browser.pause(4000);
+    expect((await machine()).version).toBe(oldV);
+    await snap("remote-server-update-optional.png");
+    await clickPresent(`[data-testid="server-restart-${serverId}"]`);
+    await versionIs(newV, "Restart now did not move the server onto the installed build");
+    await waitGone(`[data-testid="server-update-${serverId}"]`);
+  });
+
+  it("never downgrades a server that is newer than the build this app carries", async () => {
+    // The server now runs 900.0.1; carry an older build.
+    const carried = path.join(staged, `termic-server-${triple}`);
+    writeFileSync(carried, `#!/bin/sh\nTERMIC_SERVER_FAKE_VERSION=900.0.0+old exec "${bin}" "$@"\n`);
+    writeFileSync(path.join(staged, "termic-server-version.txt"), "900.0.0+old\n");
+    await reconnect();
+    await versionIs("900.0.1+new", "the newer server did not come back online");
+    // A negative: no install may start. Nothing fires for an upload that
+    // never happens.
+    await browser.pause(3000);
+    expect(readFileSync(installed, "utf8")).toContain("900.0.1+new");
+    expect((await machine()).update ?? null).toBe(null);
   });
 });

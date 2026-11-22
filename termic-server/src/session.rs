@@ -100,6 +100,7 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
         kind: HostKind::Server,
         caps: [caps::CALL, caps::TASKS, caps::TERMINAL, caps::KEYS, caps::TRANSCRIPT, caps::RESIZE, caps::PTY].map(String::from).to_vec(),
         grant: Some("drive".into()),
+        needs: Some(termic_remote::compat::REQUIRES_DESKTOP.into()),
     };
     if writer.send(&welcome).is_err() {
         return;

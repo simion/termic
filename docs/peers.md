@@ -321,10 +321,13 @@ computer is followed.
 - Waits are clamped to the MCP cap there (5 minutes): loop `wait`. While
   a streamed verb runs remotely, the local app heartbeats the CLI so its
   30 s socket timeout never fires.
-- Both machines must speak the SAME CLI protocol to call each other (a
-  field the other side does not know would be dropped silently). A
-  mismatch is refused with both versions named. Pairing itself only
-  needs the same peer protocol.
+- A machine calls another when each is at least the other's
+  `REQUIRES_DESKTOP` (`termic-remote/src/compat.rs`, `peer_compatible`),
+  not when both run the same release or CLI protocol: most releases
+  change nothing on the wire, and the release skill raises the floor when
+  one does. A machine too old to send its version falls back to the old
+  rule, the same CLI protocol. A refusal names both versions and which
+  machine to update. Pairing itself only needs the same peer protocol.
 - A machine that moved (new DHCP lease) is not gone: on a connection
   failure the app re-queries discovery, waits up to 2 s for a fresh
   sighting, and retries once at the new address.
@@ -476,7 +479,7 @@ off.
   machine (`e2e/specs/peers.e2e.ts`). Two real machines, the Windows
   firewall prompt and the macOS Local Network prompt have no automated
   coverage: they need the manual pass.
-- Two machines on different CLI protocol versions can pair but not call
-  each other until both update.
+- A machine below the other's floor can pair but not call it until it
+  updates.
 - A response lost after B stored the pair leaves B paired and A not; B's
   next call is refused and shows "no longer paired", unpair and re-pair.

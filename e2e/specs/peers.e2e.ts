@@ -23,6 +23,12 @@ import { execFile } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { ed25519 } from "@noble/curves/ed25519";
 import { dataDir } from "../../wdio.conf.js";
+import { readFileSync } from "node:fs";
+
+// The fake machine runs this release: paired computers are judged by a
+// version floor (termic_remote::compat::REQUIRES_DESKTOP), so a made-up
+// version would read as too old.
+const FAKE_VERSION = (JSON.parse(readFileSync(path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..", "package.json"), "utf8")) as { version: string }).version;
 import {
   waitForText,
   cliBinary, clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible,
@@ -135,7 +141,7 @@ function newFake(name: string): Fake {
 async function fakeAsks(app: number, fake: Fake) {
   const hello = JSON.parse((await req(app, "GET", `${PREFIX}/hello`)).body);
   return req(app, "POST", `${PREFIX}/pair/request`, {
-    from: { id: fake.id, name: fake.name, version: "0.0.0-e2e", proto: hello.proto, pv: 2, port: fake.port },
+    from: { id: fake.id, name: fake.name, version: FAKE_VERSION, proto: hello.proto, pv: 2, port: fake.port },
   });
 }
 
@@ -143,7 +149,7 @@ async function fakePairs(app: number, fake: Fake, code: string) {
   const hello = JSON.parse((await req(app, "GET", `${PREFIX}/hello`)).body);
   const a = spake("A", code, fake.id, hello.id);
   const start = await req(app, "POST", `${PREFIX}/pair/start`, {
-    from: { id: fake.id, name: fake.name, version: "0.0.0-e2e", proto: hello.proto, pv: 2, port: fake.port },
+    from: { id: fake.id, name: fake.name, version: FAKE_VERSION, proto: hello.proto, pv: 2, port: fake.port },
     msg: a.msg.toString("base64"),
   });
   const base = { appId: hello.id as string, proto: hello.proto as number, start: start.status };
@@ -320,7 +326,7 @@ function serveStream(server: http.Server, remote: Fake, onCall: (req: any) => un
         const send = (msg: unknown) => frame(sealFrame(tx!, sn++, msg));
         hostSaw.push(m);
         if (m.t === "hello") {
-          send({ t: "welcome", v: 1, id: remote.id, name: remote.name, version: "0.0.0-e2e", kind: "desktop", caps: ["call", "tasks", "terminal", "keys", "transcript"], grant: "drive" });
+          send({ t: "welcome", v: 1, id: remote.id, name: remote.name, version: FAKE_VERSION, kind: "desktop", caps: ["call", "tasks", "terminal", "keys", "transcript"], grant: "drive" });
           if ((m.caps ?? []).includes("tasks")) {
             send({ t: "tasks", tasks: baseTasks() });
             pushTasks = (tasks) => send({ t: "tasks", tasks });
@@ -653,7 +659,7 @@ describe("LAN pairing", () => {
             res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(out) });
             res.end(out);
           };
-          const who = { id: remote.id, name: remote.name, version: "0.0.0-e2e", proto, pv: 2, port: remote.port };
+          const who = { id: remote.id, name: remote.name, version: FAKE_VERSION, proto, pv: 2, port: remote.port };
           const body = raw ? JSON.parse(raw) : {};
           switch (q.url) {
             case `${PREFIX}/hello`: return send(200, who);

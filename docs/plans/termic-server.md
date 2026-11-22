@@ -69,8 +69,10 @@ four builds, their version and `termic-server-SHA256SUMS`;
 `curl -fsSL https://termic.dev/install-server.sh | sh` (the website repo)
 installs into `~/.termic/bin` after checking the sha256, and Add a Termic
 server shows that command beside Install. Updates are the desktop's: on
-every connect it moves the box onto the build it carries, newer or older,
-and restarts the daemon once no agent is mid-turn.
+every connect it moves an older box onto the build it carries (never a
+newer one down), and restarts the daemon by itself once no agent is
+mid-turn only when the box is below the desktop's floor
+(`termic-remote/src/compat.rs`); otherwise the restart is the user's.
 
 Decided against: the daemon updating itself from the latest release. The
 desktop's version decides what a box runs (the user's call, 2026-11-21);

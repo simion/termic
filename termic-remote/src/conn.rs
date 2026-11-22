@@ -200,7 +200,7 @@ mod tests {
     }
 
     fn welcome() -> ServerMsg {
-        ServerMsg::Welcome { v: 1, id: HOST.into(), name: "Mac".into(), version: "t".into(), kind: HostKind::Desktop, caps: vec![], grant: None }
+        ServerMsg::Welcome { v: 1, id: HOST.into(), name: "Mac".into(), version: "t".into(), kind: HostKind::Desktop, caps: vec![], grant: None, needs: None }
     }
 
     /// Run a host on loopback that accepts with `keys`, sends a welcome and

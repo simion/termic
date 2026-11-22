@@ -127,6 +127,7 @@ export default {
     unpairComputer: "Unpair...",
     noServerProjects: "No projects on this server yet",
     updateReady: "Update installed. Restarts by itself once no agent is mid-turn.",
+    updateOptional: "Update installed. The running version still works; restart when you like.",
     restartServer: "Restart now",
     offline: "Offline",
     connecting: "Connecting",

@@ -196,8 +196,8 @@ function ServerUpdate({ m }: { m: MachineView }) {
   const { t } = useTranslation("remote");
   const [busy, setBusy] = useState(false);
   return (
-    <div data-testid={`server-update-${m.id}`} className="mx-2 mb-1 mt-0.5 flex items-center gap-2 text-[11.5px] text-[var(--color-fg-dim)]">
-      <span className="min-w-0 flex-1">{t("sidebar.updateReady")}</span>
+    <div data-testid={`server-update-${m.id}`} data-required={m.update_required ? "true" : "false"} className="mx-2 mb-1 mt-0.5 flex items-center gap-2 text-[11.5px] text-[var(--color-fg-dim)]">
+      <span className="min-w-0 flex-1">{m.update_required ? t("sidebar.updateReady") : t("sidebar.updateOptional")}</span>
       <button
         type="button"
         data-testid={`server-restart-${m.id}`}

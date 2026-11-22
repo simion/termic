@@ -49,6 +49,18 @@ use crate::{dlog, mdns};
 /// carries. Two machines on different peer protocols cannot pair at all;
 /// two on different CLI protocols can pair but not call each other.
 pub(crate) const PV: u32 = 2;
+
+/// Whether a Termic at `version` works with this one as a paired computer:
+/// at least termic_remote::compat::REQUIRES_DESKTOP, not the same release
+/// (most releases change nothing on the wire). A machine whose version is
+/// unknown or unreadable falls back to the old rule, the same CLI
+/// protocol. The other machine applies its own floor to this one.
+pub(crate) fn peer_compatible(version: Option<&str>, proto: Option<u32>) -> bool {
+    match version.filter(|v| termic_remote::compat::core(v).is_some()) {
+        Some(v) => termic_remote::compat::at_least(v, termic_remote::compat::REQUIRES_DESKTOP),
+        None => proto.is_none_or(|p| p == proto::PROTOCOL_VERSION),
+    }
+}
 const PREFIX: &str = "/termic-peer/v1";
 /// The remote-control stream (remote_server.rs, docs/remote.md).
 pub(crate) const STREAM_PATH: &str = "/termic-peer/v1/stream";
@@ -909,7 +921,7 @@ impl Node {
                 port: x.port,
                 version: x.version.clone(),
                 proto: x.proto,
-                proto_ok: x.proto == proto::PROTOCOL_VERSION,
+                proto_ok: peer_compatible(Some(&x.version), Some(x.proto)),
                 pairing: x.pairing,
             })
             .collect();
@@ -1927,7 +1939,7 @@ impl Node {
         src: IpAddr,
     ) -> Option<crate::remote_server::StreamClient> {
         use termic_remote::wire::{ClientKind, ClientMsg};
-        let ClientMsg::Hello { name, kind, grant, port, caps, .. } = hello else { return None };
+        let ClientMsg::Hello { name, kind, grant, port, caps, app_version, .. } = hello else { return None };
         let wants_tasks = caps.iter().any(|c| c == termic_remote::wire::caps::TASKS);
         self.backoff_reset();
         if let Some(rec) = self.by_id(client_id) {
@@ -1935,7 +1947,7 @@ impl Node {
                 return None;
             }
             self.touch(&rec.id, Some(src), *port, grant.as_deref().and_then(Grant::parse));
-            return Some(crate::remote_server::StreamClient { id: rec.id.clone(), name: rec.display_name(), kind: ClientKind::Computer, grant: rec.grant, wants_tasks });
+            return Some(crate::remote_server::StreamClient { id: rec.id.clone(), name: rec.display_name(), kind: ClientKind::Computer, grant: rec.grant, wants_tasks, version: app_version.clone() });
         }
         let known_phone = {
             let mut s = self.store.lock().unwrap();
@@ -1954,7 +1966,7 @@ impl Node {
                 return None;
             }
             self.ui.changed();
-            return Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks });
+            return Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks, version: None });
         }
         // A new phone, which can only have opened under the pending key.
         if *kind != ClientKind::Phone {
@@ -1986,7 +1998,7 @@ impl Node {
         if let Some(me) = self.arc() {
             me.debug_offer_phone_pairing();
         }
-        Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks })
+        Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks, version: None })
     }
 
     /// A handshake failed: the same growing delay as a refused call.
@@ -2029,15 +2041,20 @@ impl Node {
         let cmd = sanitize(&req.cmd);
         let cmd = match client.kind {
             ClientKind::Computer => {
-                if let Some(v) = proto_v.filter(|v| *v != proto::PROTOCOL_VERSION) {
+                if !peer_compatible(client.version.as_deref(), proto_v) {
+                    let theirs = match (client.version.as_deref(), proto_v) {
+                        (Some(v), _) => format!("Termic {v}"),
+                        (None, Some(p)) => format!("an older Termic (CLI protocol {p})"),
+                        (None, None) => "an older Termic".into(),
+                    };
                     return Reply::err(
                         &req.id,
                         ErrorCode::Unsupported,
                         format!(
-                            "{us} runs Termic {} (CLI protocol {}) and the calling machine speaks protocol {v}. \
-                             Update the older one so both run the same version.",
+                            "{us} runs Termic {} and needs {} or later on the calling machine, which runs {theirs}. \
+                             Update Termic there.",
                             self.version,
-                            proto::PROTOCOL_VERSION,
+                            termic_remote::compat::REQUIRES_DESKTOP,
                         ),
                     );
                 }
@@ -2306,7 +2323,7 @@ fn peer_view(p: &PeerRecord, sightings: &[mdns::Sighting]) -> PeerView {
             .or_else(|| p.socket().map(|a| a.to_string())),
         version: seen.map(|s| s.version.clone()).or_else(|| p.version.clone()),
         proto,
-        proto_ok: proto.is_none_or(|v| v == proto::PROTOCOL_VERSION),
+        proto_ok: peer_compatible(seen.map(|s| s.version.as_str()).or(p.version.as_deref()), proto),
         grant: p.grant,
         their_grant: p.their_grant,
         revoked_by_peer: p.revoked_by_peer,
@@ -3308,6 +3325,10 @@ mod tests {
 
     /// Open a stream to `m` as `client_id` holding `key`.
     fn stream_as(m: &Machine, client_id: &str, key: &[u8; 32], kind: ClientKind, caps: &[&str]) -> std::io::Result<Connected> {
+        stream_as_version(m, client_id, key, kind, caps, None)
+    }
+
+    fn stream_as_version(m: &Machine, client_id: &str, key: &[u8; 32], kind: ClientKind, caps: &[&str], app_version: Option<&str>) -> std::io::Result<Connected> {
         let target = addr(m);
         let mut s = TcpStream::connect(&target)?;
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -3318,7 +3339,7 @@ mod tests {
             name: "client".into(),
             kind,
             caps: caps.iter().map(|c| c.to_string()).collect(),
-            app_version: None,
+            app_version: app_version.map(String::from),
             grant: None,
             port: None,
         };
@@ -3759,6 +3780,32 @@ mod tests {
         let err = reply.error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
         assert!(err.message.contains("protocol"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_paired_computer_is_judged_by_its_version_floor_not_an_exact_match() {
+        let (a, b) = (machine("A"), machine("B"));
+        pair(&a, &b, Grant::Drive, Grant::Drive);
+        let key = a.node.find("B").unwrap().key().unwrap();
+        let req = serde_json::json!({ "id": "x", "cmd": "list", "project": null, "quiet": true });
+        let call = |version: &str, proto: u32| {
+            let mut c = stream_as_version(&b, &a.node.self_id(), &key, ClientKind::Computer, &[], Some(version)).unwrap();
+            c.writer.send(&ClientMsg::Call { id: "c".into(), req: req.clone(), proto: Some(proto) }).unwrap();
+            let ServerMsg::Reply { reply, .. } = next_non_tasks(&mut c) else { panic!() };
+            serde_json::from_value::<Reply>(reply).unwrap()
+        };
+        // At the floor, on an older CLI protocol: still served.
+        let r = call(termic_remote::compat::REQUIRES_DESKTOP, proto::PROTOCOL_VERSION - 1);
+        assert!(r.ok, "{:?}", r.error);
+        // Below it: refused, naming both versions.
+        let r = call("0.0.1", proto::PROTOCOL_VERSION);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("0.0.1") && err.message.contains(termic_remote::compat::REQUIRES_DESKTOP), "{}", err.message);
+        assert!(peer_compatible(Some("1.99.0"), Some(1)));
+        assert!(!peer_compatible(Some("0.0.1"), Some(proto::PROTOCOL_VERSION)));
+        assert!(peer_compatible(None, Some(proto::PROTOCOL_VERSION)));
+        assert!(!peer_compatible(Some("dev"), Some(1)));
     }
 
     #[test]

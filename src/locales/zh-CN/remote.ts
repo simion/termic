@@ -126,6 +126,7 @@ export default {
     unpairComputer: "取消配对...",
     noServerProjects: "这台服务器上还没有项目",
     updateReady: "更新已安装。没有智能体在执行时会自动重启。",
+    updateOptional: "更新已安装。当前版本仍可使用,方便时再重启。",
     restartServer: "立即重启",
     offline: "离线",
     connecting: "正在连接",

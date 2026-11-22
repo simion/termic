@@ -20,6 +20,7 @@
 //!
 //! Nothing here knows about tasks or PTYs; the app and the server do.
 
+pub mod compat;
 pub mod conn;
 pub mod framed;
 mod pb;

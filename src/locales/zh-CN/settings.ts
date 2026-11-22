@@ -453,7 +453,7 @@ export default {
       label: "地址",
       code: "代码",
     },
-    versionMismatch: "运行的 Termic 版本不同。请将两边都更新后再互相通信。",
+    versionMismatch: "运行的 Termic 版本太旧,无法与这台配合使用。请在那台电脑上更新 Termic。",
   },
 
   appearance: {

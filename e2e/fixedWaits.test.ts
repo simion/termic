@@ -77,9 +77,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "real number of waits",
   },
   "remote.e2e.ts": {
-    count: 1,
-    why: "a negative: a resync of the box must not undo a pin and a name the "
-      + "desktop set, so the store is read after the resync window",
+    count: 3,
+    why: "negatives: a resync of the box must not undo a pin and a name the "
+      + "desktop set, so the store is read after the resync window; an optional "
+      + "server update must NOT restart the box, and a newer box must NOT be "
+      + "downgraded. Nothing fires for a restart or an upload that never happens",
   },
   "task.e2e.ts": {
     count: 1,

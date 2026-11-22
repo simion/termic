@@ -78,9 +78,12 @@ pub(crate) struct MachineView {
     /// The window label of the profile it belongs to: only that window's
     /// sidebar lists it ("main" for the root profile).
     pub profile: String,
-    /// A server's newer termic-server, installed and waiting for a restart
-    /// (agents were running, so the user is asked first).
+    /// A server's newer termic-server, installed and waiting for a restart.
     pub update: Option<String>,
+    /// That update is one this desktop needs: the server restarts onto it
+    /// by itself once no agent is mid-turn. Otherwise it is the user's
+    /// call (Restart now), and the old build keeps working meanwhile.
+    pub update_required: bool,
 }
 
 /// A server, as `servers.json` stores it.
@@ -238,6 +241,9 @@ struct LinkState {
     /// A server's newer build, installed and waiting for a restart with
     /// agents running (auto_upgrade).
     update: Option<String>,
+    /// The installed update is one this desktop needs (the running server
+    /// is older than compat::REQUIRES_SERVER): restart onto it by itself.
+    update_required: bool,
     /// The bundled build an upgrade was tried for: once per app run.
     upgrade_tried: Option<String>,
     /// A restart onto `update` was sent; cleared by the next connection.
@@ -291,6 +297,7 @@ impl Link {
             ssh,
             profile: st.profile.clone(),
             update: st.update.clone(),
+            update_required: st.update_required,
         }
     }
 
@@ -474,7 +481,7 @@ fn new_link(id: String, kind: MachineKind, name: String, endpoint: Endpoint, off
         id,
         kind,
         endpoint: Mutex::new(endpoint),
-        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, upgrade_tried: None, restarting: false }),
+        st: Mutex::new(LinkState { state: if off { "disconnected" } else { "connecting" }.into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name, profile, update: None, update_required: false, upgrade_tried: None, restarting: false }),
         tx: Mutex::new(None),
         pending: Mutex::new(HashMap::new()),
         term: Mutex::new(None),
@@ -545,16 +552,49 @@ fn run_link(l: Arc<Link>) {
 
 type Connection = (ServerMsg, MsgReader, MsgWriter);
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Why this desktop (at `ours`) cannot work with the host it reached, as
+/// one sentence with the fix, or None when it can (termic_remote::compat:
+/// a minimum per side, not a 1:1 match). A paired computer is checked both
+/// ways. A server older than this desktop needs is not refused here: it is
+/// upgraded (auto_upgrade). A server newer than this desktop is never
+/// downgraded; when it needs a newer desktop, the desktop updates.
+fn incompatible(peer: bool, name: &str, version: &str, needs: Option<&str>, ours: &str) -> Option<String> {
+    use termic_remote::compat::{at_least, REQUIRES_DESKTOP};
+    if let Some(n) = needs.filter(|n| !at_least(ours, n)) {
+        let what = if peer { format!("{name} runs Termic {version}") } else { format!("termic-server on {name} is {version}") };
+        return Some(format!("{what}, which needs Termic {n} or later here. Update Termic on this computer (it runs {ours})."));
+    }
+    if peer && !at_least(version, REQUIRES_DESKTOP) {
+        return Some(format!("{name} runs Termic {version}, and this Termic needs {REQUIRES_DESKTOP} or later there. Update Termic on {name}."));
+    }
+    None
+}
+
 fn connect(l: &Link, endpoint: &Endpoint) -> Result<Connection, String> {
     match endpoint {
         Endpoint::Peer { id } => {
             let node = crate::peers::node().ok_or("pairing is not running")?;
             let (c, sock) = connect_peer(&node, id, true)?;
+            if let ServerMsg::Welcome { name, version, needs, .. } = &c.0 {
+                if let Some(why) = incompatible(true, name, version, needs.as_deref(), APP_VERSION) {
+                    let _ = sock.shutdown(std::net::Shutdown::Both);
+                    return Err(why);
+                }
+            }
             *l.sock.lock().unwrap() = Some(sock);
             Ok(c)
         }
         Endpoint::Server(rec) => {
-            let (c, child) = connect_server(rec)?;
+            let (c, mut child) = connect_server(rec)?;
+            if let ServerMsg::Welcome { name, version, needs, .. } = &c.0 {
+                if let Some(why) = incompatible(false, name, version, needs.as_deref(), APP_VERSION) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(why);
+                }
+            }
             *l.child.lock().unwrap() = Some(child);
             Ok(c)
         }
@@ -1329,28 +1369,64 @@ fn bundled_version(app: Option<&tauri::AppHandle>) -> Option<String> {
     binary_dirs(app).iter().find_map(|d| std::fs::read_to_string(d.join("termic-server-version.txt")).ok()).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// On connecting to a server: keep its termic-server the build this app
-/// carries, newer or older (the desktop's version decides). A different
-/// build is replaced over ssh (the running daemon keeps going on the old
-/// file), then the daemon restarts onto it by itself once no agent is
-/// mid-turn (restart_when_settled); the row offers Restart now meanwhile.
-/// A server started with its own command is the user's to manage.
+#[derive(Debug, PartialEq)]
+enum Upgrade {
+    /// Already the carried build, or newer than it (another desktop on a
+    /// newer Termic put it there): never downgraded.
+    None,
+    /// Older than the carried build but still works with this desktop:
+    /// installed quietly, restarted when the user chooses.
+    Optional,
+    /// Older than this desktop needs (compat::REQUIRES_SERVER), or a
+    /// version it cannot read: installed, then restarted by itself once no
+    /// agent is mid-turn.
+    Required,
+}
+
+/// What to do about a server running `have` when this desktop carries
+/// `want` and needs at least `floor`. Versions compare by
+/// `major.minor.patch`; the same core with a different build hash is a
+/// different build of the same release (a dev build), replaced quietly.
+fn upgrade_plan(have: &str, want: &str, floor: &str) -> Upgrade {
+    use termic_remote::compat::{at_least, core};
+    if have == want {
+        return Upgrade::None;
+    }
+    if !at_least(have, floor) {
+        return Upgrade::Required;
+    }
+    match (core(have), core(want)) {
+        (Some(h), Some(w)) if h > w => Upgrade::None,
+        _ => Upgrade::Optional,
+    }
+}
+
+/// On connecting to a server: bring its termic-server up to the build this
+/// app carries when it is older (upgrade_plan), never down. The new build
+/// is copied over ssh (the running daemon keeps going on the old file).
+/// One this desktop needs restarts the daemon by itself once no agent is
+/// mid-turn (restart_when_settled); any other waits for the user's Restart
+/// now, or the server's next restart. A server started with its own
+/// command is the user's to manage.
 fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
     if rec.command.is_some() {
         return;
     }
     let Some(want) = bundled_version(APP.get()) else { return };
-    {
+    let required = {
         let mut st = l.st.lock().unwrap();
-        if st.version.as_deref() == Some(want.as_str()) {
+        let plan = upgrade_plan(st.version.as_deref().unwrap_or(""), &want, termic_remote::compat::REQUIRES_SERVER);
+        if plan == Upgrade::None {
             st.update = None;
+            st.update_required = false;
             return;
         }
         if st.update.as_deref() == Some(want.as_str()) || st.upgrade_tried.as_deref() == Some(want.as_str()) {
             return;
         }
         st.upgrade_tried = Some(want.clone());
-    }
+        plan == Upgrade::Required
+    };
     let (l, dest) = (l.clone(), rec.ssh.clone());
     // Off the link's thread: the session starts at once, the upload beside it.
     std::thread::spawn(move || {
@@ -1365,20 +1441,24 @@ fn auto_upgrade(l: &Arc<Link>, rec: &ServerRecord) {
                 return;
             }
         }
-        l.st.lock().unwrap().update = Some(want);
+        {
+            let mut st = l.st.lock().unwrap();
+            st.update = Some(want);
+            st.update_required = required;
+        }
         changed();
         restart_when_settled(&l);
     });
 }
 
-/// With an update installed, restart the server onto it as soon as no
-/// agent is mid-turn (working, or waiting on a question): the agents come
-/// back in their sessions, so a settled one loses nothing. Called after the
-/// install and on every change to the server's task rows.
+/// With a required update installed, restart the server onto it as soon
+/// as no agent is mid-turn (working, or waiting on a question): the agents
+/// come back in their sessions, so a settled one loses nothing. Called
+/// after the install and on every change to the server's task rows.
 fn restart_when_settled(l: &Link) {
     {
         let mut st = l.st.lock().unwrap();
-        if st.update.is_none() || st.restarting || st.tasks.iter().any(|t| t.state == "working" || t.state == "waiting") {
+        if st.update.is_none() || !st.update_required || st.restarting || st.tasks.iter().any(|t| t.state == "working" || t.state == "waiting") {
             return;
         }
         st.restarting = true;
@@ -1440,6 +1520,47 @@ pub(crate) async fn server_install(app: tauri::AppHandle, ssh: String) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_is_upgraded_only_when_older_and_restarted_only_when_needed() {
+        let floor = "1.25.0";
+        let want = "1.27.0+bbb";
+        assert_eq!(upgrade_plan(want, want, floor), Upgrade::None);
+        // Newer than the carried build: another desktop's; never downgraded.
+        assert_eq!(upgrade_plan("1.28.0+ccc", want, floor), Upgrade::None);
+        // Older but still works: quiet.
+        assert_eq!(upgrade_plan("1.25.0+aaa", want, floor), Upgrade::Optional);
+        assert_eq!(upgrade_plan("1.26.3", want, floor), Upgrade::Optional);
+        // Same release, another build (dev): quiet.
+        assert_eq!(upgrade_plan("1.27.0+aaa", want, floor), Upgrade::Optional);
+        // Below the floor, or unreadable: required.
+        assert_eq!(upgrade_plan("1.24.9+aaa", want, floor), Upgrade::Required);
+        assert_eq!(upgrade_plan("0-old", want, floor), Upgrade::Required);
+        assert_eq!(upgrade_plan("", want, floor), Upgrade::Required);
+    }
+
+    #[test]
+    fn versions_that_cannot_work_together_say_which_side_to_update() {
+        // A host needing a newer desktop: update this one.
+        let e = incompatible(true, "Laptop", "1.30.0", Some("1.29.0"), "1.28.0").unwrap();
+        assert!(e.contains("Update Termic on this computer") && e.contains("1.29.0"), "{e}");
+        let e = incompatible(false, "box", "1.30.0+x", Some("1.29.0"), "1.28.0").unwrap();
+        assert!(e.starts_with("termic-server on box is 1.30.0+x"), "{e}");
+        // A paired computer older than this desktop needs: update that one.
+        let old = "0.0.1";
+        let e = incompatible(true, "Laptop", old, None, "9.0.0").unwrap();
+        assert!(e.contains("Update Termic on Laptop"), "{e}");
+        // An old server is upgraded, not refused.
+        assert_eq!(incompatible(false, "box", old, None, "9.0.0"), None);
+        assert_eq!(incompatible(true, "Laptop", APP_VERSION, Some(APP_VERSION), APP_VERSION), None);
+    }
+
+    #[test]
+    fn this_build_works_with_itself() {
+        use termic_remote::compat::{at_least, REQUIRES_DESKTOP, REQUIRES_SERVER};
+        assert!(at_least(APP_VERSION, REQUIRES_SERVER), "REQUIRES_SERVER {REQUIRES_SERVER} is above this app's {APP_VERSION}");
+        assert!(at_least(APP_VERSION, REQUIRES_DESKTOP), "REQUIRES_DESKTOP {REQUIRES_DESKTOP} is above this app's {APP_VERSION}");
+    }
 
     #[test]
     fn a_server_pty_holds_its_output_until_the_pane_listens() {
@@ -1510,7 +1631,7 @@ mod tests {
             id: "x".into(),
             kind: MachineKind::Server,
             endpoint: Mutex::new(Endpoint::Server(rec)),
-            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, upgrade_tried: None, restarting: false }),
+            st: Mutex::new(LinkState { state: "connecting".into(), error: None, version: None, grant: None, caps: Vec::new(), tasks: Vec::new(), name: "nowhere".into(), profile: "main".into(), update: None, update_required: false, upgrade_tried: None, restarting: false }),
             tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             term: Mutex::new(None),

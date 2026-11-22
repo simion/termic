@@ -282,6 +282,25 @@ is saved until it passes:
    sha256, runs its `version`, and renames it into `~/.termic/bin`.
 4. **Connect** and load tasks.
 
+**Versions that work together** (`termic-remote/src/compat.rs`). A
+minimum per side, never a 1:1 match: most releases change nothing on the
+wire, and an exact match would make every release a breaking one for
+every server and paired computer. `REQUIRES_SERVER` is the oldest
+termic-server this desktop works with; `REQUIRES_DESKTOP` the oldest
+desktop this build works with, both as a paired computer and as the
+desktop driving a termic-server built from the same tree. A host's
+welcome carries its `needs` (its `REQUIRES_DESKTOP`); the connecting
+desktop checks itself against it and the host's version against its own
+floor (`remote_client::incompatible`) and, on a mismatch, refuses with
+one sentence naming which machine to update. A paired computer's calls
+are judged the same way on the host (`peers::peer_compatible`, from the
+`app_version` in its hello), falling back to the old equal-CLI-protocol
+rule only for a Termic too old to send a version. Versions compare by
+`major.minor.patch`; a `+hash` build suffix is ignored, and an
+unreadable version counts as older than every floor. The release skill
+checks the wire diff each release and proposes a bump; a floor never
+exceeds the app's own version (`this_build_works_with_itself`).
+
 **Keeping termic-server current** (`remote_client::auto_upgrade`).
 `scripts/build-termic-server.mjs` stamps each build with the app's
 version plus a hash of every source file it is built from
@@ -289,21 +308,26 @@ version plus a hash of every source file it is built from
 version next to the builds (`termic-server-version.txt`), where the app
 reads it: it cannot run a Linux build to ask. Unchanged code hashes the
 same, so a release that did not touch the server restarts nothing. On
-every connect, a server whose welcome carries another version gets the
-carried build through the Install upload (renamed over the old file; the
+every connect, a server whose welcome carries an OLDER version than the
+carried build (`upgrade_plan`, see "Versions that work together" below)
+gets the carried build through the Install upload (renamed over the old file; the
 running daemon keeps executing it, agents untouched), once per app run
 and version. Then the daemon is restarted onto it with `quit` over the
 open connection, no new ssh: `quit` previews the agents a restart would
 stop, and commit records them (`resume_on_boot` in `state.json`), hangs
 them up, answers, and exits; the link's reconnect runs `bridge`, which
 starts the new binary, and that daemon resumes those agents in their
-sessions before any client. The restart waits until no agent is
+sessions before any client. Only a REQUIRED update (the server is below
+`compat::REQUIRES_SERVER`) restarts by itself; any other waits for
+**Restart now** or the box's next restart, and the old build keeps
+serving meanwhile. The restart waits until no agent is
 mid-turn (no row working or waiting, `restart_when_settled`, checked
 after the install and on every change to the server's rows), since an
 in-flight turn is what a restart loses; meanwhile the server's row says
 the update is installed and offers **Restart now** (`server-update-<id>`).
-The desktop's version decides, older or newer: the box runs the build of
-the desktop that last connected to it. There is no self-update on the box, by
+A box is never downgraded: a desktop on an older Termic connects to the
+newer server as it is, unless the server's floor refuses it. There is no
+self-update on the box, by
 decision: a box chasing the latest release would fight a desktop that is
 not on it (docs/plans/termic-server.md). A
 server added with its own `command` is left alone. Who else can send a

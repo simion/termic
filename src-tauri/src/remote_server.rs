@@ -70,6 +70,9 @@ pub(crate) struct StreamClient {
     /// Asked for task snapshots in its hello (`caps: ["tasks"]`). A one-off
     /// `--peer` call does not, and costs the host no task list or diffs.
     pub wants_tasks: bool,
+    /// A computer's app version from its hello (None from a phone, or a
+    /// Termic too old to send one): peers::peer_compatible reads it.
+    pub version: Option<String>,
 }
 
 impl StreamClient {
@@ -169,6 +172,7 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
         kind: HostKind::Desktop,
         caps: caps_list,
         grant: Some(client.grant.as_str().to_string()),
+        needs: Some(termic_remote::compat::REQUIRES_DESKTOP.into()),
     };
     if writer.send(&welcome).is_err() {
         return;

@@ -99,9 +99,12 @@ export interface MachineView {
   caps: string[];
   tasks: RemoteTask[];
   ssh: string | null;
-  /** A newer termic-server, installed and waiting for a restart because
-   *  agents were running (remote_client::auto_upgrade). */
+  /** A newer termic-server, installed and waiting for a restart
+   *  (remote_client::auto_upgrade). */
   update?: string | null;
+  /** That update is one this desktop needs: the server restarts onto it by
+   *  itself once no agent is mid-turn. Otherwise Restart now is optional. */
+  update_required?: boolean;
 }
 
 export interface ServerRecord {
