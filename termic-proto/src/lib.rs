@@ -3518,3 +3518,75 @@ mod tests {
         }
     }
 }
+
+/// A task name as a branch and worktree-directory name: lowercase ASCII
+/// alphanumerics, `-` and `_`, dash runs collapsed, no leading or trailing
+/// dash, and never a Windows reserved device name (the slug is a directory,
+/// and a task named on a Mac must still check out on Windows). A name with
+/// no ASCII alphanumerics slugifies to "" and the caller refuses it.
+/// One function for the desktop and termic-server, so one name gives one
+/// branch on either; mirrored character for character by `slugify` in
+/// src/lib/utils.ts (`utils.test.ts` and `slugify_collapses_dash_runs`).
+pub fn slugify(s: &str) -> String {
+    let mapped: String = s
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let mut out = String::with_capacity(mapped.len());
+    let mut prev_dash = false;
+    for c in mapped.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push(c);
+            }
+            prev_dash = true;
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    let reserved = matches!(out.as_str(), "con" | "prn" | "aux" | "nul")
+        || (out.len() == 4
+            && (out.starts_with("com") || out.starts_with("lpt"))
+            && matches!(out.as_bytes()[3], b'1'..=b'9'));
+    if reserved { format!("{out}-1") } else { out }
+}
+
+/// The key that interrupts an agent's turn without quitting it: Esc for the
+/// TUIs that take it (claude, codex, opencode, cursor, grok), Ctrl+C for the
+/// rest. Shared by the desktop's stream host and termic-server.
+pub fn interrupt_key(agent: &str) -> &'static [u8] {
+    match agent {
+        "claude" | "next-claude" | "codex" | "opencode" | "cursor" | "grok" => b"\x1b",
+        _ => b"\x03",
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+
+    #[test]
+    fn slugify_is_path_and_branch_safe() {
+        assert_eq!(slugify("Fix the Login bug!"), "fix-the-login-bug");
+        assert_eq!(slugify("../../etc/passwd"), "etc-passwd");
+        assert_eq!(slugify("--rm -rf"), "rm-rf");
+        assert_eq!(slugify("snake_case name"), "snake_case-name");
+        assert_eq!(slugify("日本語"), "");
+        assert_eq!(slugify("CON"), "con-1");
+        assert_eq!(slugify("lpt3"), "lpt3-1");
+        for s in [slugify("-x-"), slugify(" a b "), slugify("a\nb\0c")] {
+            assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains('/') && !s.contains(".."), "{s}");
+        }
+    }
+
+    #[test]
+    fn interrupt_keys_per_agent() {
+        assert_eq!(interrupt_key("claude"), b"\x1b");
+        assert_eq!(interrupt_key("grok"), b"\x1b");
+        assert_eq!(interrupt_key("shell"), b"\x03");
+    }
+}

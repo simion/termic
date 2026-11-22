@@ -503,29 +503,8 @@ fn last_result(t: &TaskRec) -> Result<ReplyData, Fail> {
     }
     let path = claude_transcript(t).ok_or_else(|| fail(ErrorCode::NotFound, format!("no claude transcript for {} yet", t.name)))?;
     let text = std::fs::read_to_string(&path).map_err(|e| fail(ErrorCode::Internal, e.to_string()))?;
-    let msg = last_assistant_text(&text).ok_or_else(|| fail(ErrorCode::NotFound, "the agent has not said anything yet"))?;
+    let msg = termic_remote::transcript::last_assistant_text(&text).ok_or_else(|| fail(ErrorCode::NotFound, "the agent has not said anything yet"))?;
     Ok(ReplyData::LastResult(ResultData { task_id: t.id.clone(), agent: t.agent.clone(), transcript: path.to_string_lossy().to_string(), text: msg }))
-}
-
-/// The last non-sidechain assistant message with text (cli_server.rs).
-fn last_assistant_text(jsonl: &str) -> Option<String> {
-    for line in jsonl.lines().rev() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") || v.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
-            continue;
-        }
-        let text = match v.pointer("/message/content") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Array(blocks)) => {
-                blocks.iter().filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text")).filter_map(|b| b.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n")
-            }
-            _ => continue,
-        };
-        if !text.trim().is_empty() {
-            return Some(text);
-        }
-    }
-    None
 }
 
 fn diff(t: &TaskRec, full: bool) -> Result<ReplyData, Fail> {
@@ -654,7 +633,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
         ]
         .join("\n");
-        assert_eq!(last_assistant_text(&j).as_deref(), Some("final"));
+        assert_eq!(termic_remote::transcript::last_assistant_text(&j).as_deref(), Some("final"));
     }
 
     #[test]

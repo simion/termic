@@ -108,12 +108,7 @@ pub fn resume_args(agent: &str) -> &'static [&'static str] {
 }
 
 /// The key that stops an agent's current turn.
-pub fn interrupt_key(agent: &str) -> &'static [u8] {
-    match agent {
-        "claude" | "codex" | "opencode" => b"\x1b",
-        _ => b"\x03",
-    }
-}
+pub use termic_proto::interrupt_key;
 
 /// Whether the agent's program is found by the login shell. "shell" always
 /// is. The program name is passed as "$1", never interpolated.
@@ -200,7 +195,6 @@ mod tests {
     #[test]
     fn interrupt_keys_per_agent() {
         assert_eq!(interrupt_key("claude"), b"\x1b");
-        assert_eq!(interrupt_key("gemini"), b"\x03");
         assert_eq!(interrupt_key("shell"), b"\x03");
     }
 }

@@ -502,12 +502,7 @@ fn screen_of(s: &Session, pty: &str) -> Option<Vec<String>> {
 
 /// The key that stops an agent's turn without quitting it. Claude, Codex
 /// and opencode take Esc; others (gemini, a shell) take Ctrl-C.
-fn interrupt_key(agent: &str) -> &'static [u8] {
-    match agent {
-        "claude" | "next-claude" | "codex" | "opencode" | "cursor" | "grok" => b"\x1b",
-        _ => b"\x03",
-    }
-}
+use termic_proto::interrupt_key;
 
 /// A task (id or name) and its terminal PTY: `tab` names a strip tab by
 /// id, otherwise the default agent tab.

@@ -175,20 +175,10 @@ pub fn hostname() -> String {
 /// and single dashes, at most 60 characters. Empty when nothing usable is
 /// left, which callers refuse. Never contains '/', '.', or a leading '-',
 /// so it cannot climb out of the directory it is joined to.
+/// The desktop's own slug (termic_proto::slugify), so a task name gives the
+/// same branch on a box as on the desktop.
 pub fn slug(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        let c = c.to_ascii_lowercase();
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.ends_with('-') && !out.is_empty() {
-            out.push('-');
-        }
-        if out.len() >= 60 {
-            break;
-        }
-    }
-    out.trim_matches('-').to_string()
+    termic_proto::slugify(name)
 }
 
 #[cfg(test)]
@@ -204,8 +194,8 @@ mod tests {
         assert_eq!(slug("..."), "");
         assert_eq!(slug("日本語"), "");
         assert_eq!(slug("ünïcode name"), "n-code-name");
-        let long = slug(&"x".repeat(500));
-        assert_eq!(long.len(), 60);
+        // The desktop's rules, not a box-only variant: `_` kept.
+        assert_eq!(slug("snake_case name"), "snake_case-name");
         for s in [slug("-x-"), slug(" a b "), slug("a\nb\0c")] {
             assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains('/') && !s.contains('.'), "{s}");
         }

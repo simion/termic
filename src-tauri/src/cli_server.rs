@@ -2654,45 +2654,7 @@ fn handle_logs(
 
 // ───────────────────────────── result ────────────────────────────────
 
-/// Claude Code's transcript-directory name for a cwd: every character
-/// that is not ASCII alphanumeric becomes '-'. Verified against the
-/// live layout ("/Users/x/.config/dotfiles" -> "-Users-x--config-dotfiles").
-fn claude_project_dir_name(cwd: &str) -> String {
-    cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
-}
-
-/// The agent's last message out of a Claude Code JSONL transcript: the
-/// last "assistant" line carrying non-empty text content (tool-use-only
-/// turns are skipped).
-fn last_assistant_text(jsonl: &str) -> Option<String> {
-    for line in jsonl.lines().rev() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-            continue;
-        }
-        // Sidechain lines are a subagent's internal conversation
-        // interleaved in the same transcript; their last message is not
-        // the agent's answer.
-        if v.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
-            continue;
-        }
-        let Some(content) = v.pointer("/message/content") else { continue };
-        let text = match content {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Array(blocks) => blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => continue,
-        };
-        if !text.trim().is_empty() {
-            return Some(text);
-        }
-    }
-    None
-}
+use termic_remote::transcript::{claude_project_dir_name, last_assistant_text};
 
 fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)

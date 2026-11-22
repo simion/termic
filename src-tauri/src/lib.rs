@@ -19197,36 +19197,7 @@ fn unique_task_name(base: &str, tasks: &[Task], project_id: &str) -> String {
 ///
 /// Mirrors `slugify` in src/lib/utils.ts character for character; `utils.test.ts`
 /// and `slugify_collapses_dash_runs` pin the pair against one case list.
-fn slugify(s: &str) -> String {
-    let mapped: String = s
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    let mut out = String::with_capacity(mapped.len());
-    let mut prev_dash = false;
-    for c in mapped.chars() {
-        if c == '-' {
-            if !prev_dash {
-                out.push(c);
-            }
-            prev_dash = true;
-        } else {
-            out.push(c);
-            prev_dash = false;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    // Windows cannot create a directory with a reserved device name, and the
-    // slug is a worktree directory. On every OS, so a task named on a Mac
-    // still checks out on a teammate's Windows machine. Mirrored in utils.ts.
-    let reserved = matches!(out.as_str(), "con" | "prn" | "aux" | "nul")
-        || (out.len() == 4
-            && (out.starts_with("com") || out.starts_with("lpt"))
-            && matches!(out.as_bytes()[3], b'1'..=b'9'));
-    if reserved { format!("{out}-1") } else { out }
-}
+use termic_proto::slugify;
 
 /// Recursively copy a file or directory. `fs::copy` ONLY handles files, so
 /// the previous implementation silently dropped directory patterns like
