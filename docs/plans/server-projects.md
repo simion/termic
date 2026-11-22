@@ -137,6 +137,38 @@ Order, each step shippable on its own:
 6. **One stream host**: the shared session loop of `session.rs` and
    `remote_server.rs` in `termic-remote` behind a host trait.
 
+### Step 3, as found in the code (2026-11-22)
+
+- **Hooks need nothing new on the desktop.** The OSC contract is parsed
+  in the webview (`src/lib/agentHooks.ts`, TerminalPane's
+  `registerOscHandler`), so a server PTY's output, arriving as the same
+  `pty://` events, is read exactly like a local one. The box sets
+  `TERMIC_PTY` (done, 4f67a62b); left is writing the hook config there.
+- **The spawn already routes.** TerminalPane -> `ipc.ptySpawn` ->
+  `pty_spawn` -> `server_pty_spawn` by cwd. What differs is the env:
+  `pty_spawn` builds it inline (task ports, `TERMIC_TASK_ID`,
+  `TERMIC_TASK`, `TERMIC_TAB_ID`, `configure_terminal_env`'s terminal
+  claims, MCP env), `server_pty_spawn` forwards only the webview's
+  overlay. One `spawn_env()` both call, with the local-only entries
+  (`TERMIC_CLI` and its help, sandbox, Docker, Secrets, accounts, the
+  history shim, `TERMIC_PTY`) left to the local host. A registry command
+  that is an absolute local path runs as its basename on a box.
+- **Server PTYs are not in `PtyManager`.** They live in
+  `remote_client`'s own map, so the CLI (`logs`, `send`), the phone host
+  (`remote_server` `find_role_pty` / `find_tab_pty`) and feeds never see
+  them. They get a slot there whose I/O is the server connection, so
+  every PTY consumer has one path.
+- **Frontend branches to delete** once TaskView draws server tasks:
+  MainArea (RemoteTaskView), UnifiedBar (prompts via `send`, server Run,
+  `useServerShells`), NewTabPalette, useShortcuts (Cmd+W server branch),
+  Sidebar (`remoteState`), `cliAgentState.ts` (server rows), RightPanel.
+- **The agent claim.** Opening a task whose agent is not running starts
+  it through a compare-and-set on the box, so two desktops start one.
+- **Tasks made by the old engine** have their agent in the daemon's own
+  PTY: on first open under the new path it is stopped there and resumed
+  by the desktop's spawn (its session id unknown, so the agent's
+  cwd-based resume).
+
 Accepted trade-off: with the laptop asleep, a server task's state is the
 cruder floor, and a phone cannot create a task straight on a box. If
 phone-to-box without a desktop becomes a goal, the box gets the agent
