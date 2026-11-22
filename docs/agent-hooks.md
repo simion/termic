@@ -712,8 +712,8 @@ hooks are installed on this computer. codex's trust step runs there too:
 the hooks are pushed first, then `codex app-server` on the box is piped
 one initialize + hooks/list (a login shell, so its PATH finds codex), and
 the hashes it reports go into the staged `config.toml` pushed after.
-The agents with a second config slot (agy, copilot, grok, muse) are not
-installed there yet and keep the fallback state.
+The agents with a second config slot (agy, copilot, grok, muse) have that
+file staged and pushed with the rest (`slot_rel`).
 
 ### Working and done are termic's own bodies, not OSC 133
 

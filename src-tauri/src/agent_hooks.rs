@@ -7113,13 +7113,22 @@ fn servers_synced() -> &'static std::sync::Mutex<std::collections::HashSet<Strin
     S.get_or_init(Default::default)
 }
 
-/// Whether an agent's hooks can be installed on a box from here: one whose
-/// whole install is files in its config dir (codex's trust entry included,
-/// its hashes asked of `codex app-server` on the box). The slot agents
-/// write a second config, so they keep the fallback state there (detect.rs)
-/// for now.
+/// Whether an agent's hooks can be installed on a box from here: any with
+/// hooks, since every install is files in its config dir (codex's trust
+/// entry, its hashes asked of `codex app-server` on the box, and the slot
+/// agents' second config, staged with the rest: `slot_rel`).
 fn server_installable(base: &str) -> bool {
-    config_slot(base).is_none() && !hooks_for(base).is_empty()
+    !hooks_for(base).is_empty()
+}
+
+/// The second config file a slot agent's install writes, relative to its
+/// config dir (install_config_slot), so the box install pulls and pushes it.
+fn slot_rel(base: &str) -> Option<&'static str> {
+    Some(match config_slot(base)? {
+        ConfigSlot::Json { rel, .. } => rel,
+        ConfigSlot::MuseManaged => "settings.json",
+        ConfigSlot::GrokToml => "config.toml",
+    })
 }
 
 /// Bring the hooks of every agent the user has them for on this computer up
@@ -7168,9 +7177,13 @@ fn sync_one_on_server(
 ) -> Result<(), String> {
     let remote = format!("{}/{}", home.trim_end_matches('/'), state_dir(base)?);
     let mut rels: Vec<String> = vec![settings_rel(base).to_string(), SCRIPT_DIR.to_string()];
-    // codex's trust entries live in its config.toml.
+    // codex's trust entries live in its config.toml; a slot agent's
+    // second config is its own file.
     if base == "codex" {
         rels.push("config.toml".into());
+    }
+    if let Some(r) = slot_rel(base).filter(|r| !rels.iter().any(|x| x == r)) {
+        rels.push(r.to_string());
     }
     rels.extend(plugin_companions(base).into_iter().map(|(r, _)| r.to_string()));
     let rel_args: Vec<&str> = rels.iter().map(String::as_str).collect();
@@ -7245,9 +7258,12 @@ mod server_tests {
     }
 
     #[test]
-    fn only_file_only_installs_go_to_a_server() {
+    fn every_agent_with_hooks_installs_on_a_server_with_its_slot_file() {
         assert!(server_installable("claude"));
         assert!(server_installable("codex"));
-        assert!(!server_installable("grok"));
+        assert!(server_installable("grok"));
+        assert_eq!(slot_rel("grok"), Some("config.toml"));
+        assert_eq!(slot_rel("agy"), Some("antigravity-cli/settings.json"));
+        assert_eq!(slot_rel("claude"), None);
     }
 }

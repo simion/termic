@@ -526,11 +526,14 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // claude's hooks on this Mac (the e2e agent home), so the box gets them;
     // codex's too where codex is installed (its trust step runs codex).
     await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "claude" }));
+    // grok writes a second config (its status line in config.toml).
+    await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "grok" }));
     if (codexHere) await browser.execute(() => window.__termic!.invoke("agent_hooks_install", { agentId: "codex" }));
   });
 
   after(async () => {
     await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "claude" })).catch(() => {});
+    await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "grok" })).catch(() => {});
     if (codexHere) await browser.execute(() => window.__termic!.invoke("agent_hooks_remove", { agentId: "codex" })).catch(() => {});
     if (serverId) await browser.execute((id) => window.__termic!.invoke("server_remove", { id }), serverId).catch(() => {});
     await browser.execute(() => window.__termic!.useRemote.getState().openTask(null)).catch(() => {});
@@ -586,6 +589,13 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       expect(c.startsWith(`${box}/.claude/termic-hooks/`)).toBe(true);
       expect(statSync(c).mode & 0o111).toBeGreaterThan(0);
     }
+  });
+
+  it("installs a slot agent's second config on the box too (grok's status line)", async () => {
+    const home = path.join(box, ".grok");
+    await browser.waitUntil(() => existsSync(path.join(home, "config.toml")) && readFileSync(path.join(home, "config.toml"), "utf8").includes(`${home}/termic-hooks/`),
+      { timeout: 30_000, timeoutMsg: "grok's status line never reached the box" });
+    expect(readFileSync(path.join(home, "hooks", "termic.json"), "utf8")).toContain(`${home}/termic-hooks/`);
   });
 
   (codexHere ? it : it.skip)("trusts codex's hooks on the box, as codex there reports", async () => {
