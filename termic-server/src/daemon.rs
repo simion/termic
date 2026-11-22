@@ -505,9 +505,11 @@ impl Daemon {
     /// running so the next daemon resumes them in their sessions.
     pub fn stop_for_restart(&self) {
         let ids: Vec<String> = self.live.lock().unwrap().iter().filter(|(_, l)| !l.pty.exited()).map(|(id, _)| id.clone()).collect();
+        let claims: Vec<String> = self.ptys.lock().unwrap().iter().filter(|(_, p)| !p.exited()).map(|(id, _)| id.clone()).collect();
         {
             let mut st = self.st.lock().unwrap();
             st.resume_on_boot = ids;
+            st.restarted_claims = claims;
             self.save(&st);
         }
         self.hangup_all();

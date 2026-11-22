@@ -1213,4 +1213,45 @@ describeUpgrade("A server's termic-server stays current", function () {
     expect(readFileSync(installed, "utf8")).toContain("900.0.1+new");
     expect((await machine()).update ?? null).toBe(null);
   });
+
+  it("an agent this desktop started on the box comes back after the box restarts", async () => {
+    // The desktop's registry runs the box's fake agent (the box is this Mac).
+    await browser.execute(async (cmd) => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      const fake = s.agents.find((a: any) => a.id === "fakeagent");
+      const caps = { ...fake.capabilities, yolo_args: [], resume_args: [], session_id_args: [], resume_id_args: [], name_args: [] };
+      s.agents = [...s.agents.filter((a: any) => a.id !== "boxagent"), { ...fake, id: "boxagent", display_name: "BoxAgent", command: cmd, args: [], builtin: false, capabilities: caps }];
+      await t.ipc.settingsSave(s);
+      await t.useApp.getState().loadAll();
+    }, path.join(box, "agent.sh"));
+    const projectId = await browser.waitUntil(async () => browser.execute((sid) =>
+      (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string | undefined, serverId),
+    { timeout: 30_000, timeoutMsg: "the box's project never reached the store" }) as string;
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 20_000);
+    await clickPresent('[data-testid="rail-agent"]');
+    await clickWhenVisible('[role="dialog"] [data-cli="boxagent"]');
+    await clickPresent('[data-testid="rail-task"]');
+    await clickPresent('[data-testid="task-type-worktree"]');
+    await setInputValue('[data-testid="new-task-name"]', "survives-restart");
+    await clickPresent('[data-testid="new-task-create"]');
+    const id = await browser.waitUntil(async () => browser.execute(() =>
+      (window.__termic!.useApp.getState().tasks.find((t: any) => t.name === "survives-restart" && !t.archived) as any)?.id as string | undefined),
+    { timeout: 60_000, timeoutMsg: "the task never reached the store" }) as string;
+    const agentPty = () => browser.execute((tid) => ((window.__termic!.useApp.getState().tabs[tid] ?? []).find((t: any) => t.type === "terminal" && t.is_default) as any)?.ptyId as string | undefined, id);
+    await browser.waitUntil(async () => !!(await agentPty()), { timeout: 30_000, timeoutMsg: "the agent never started" });
+    const before = await agentPty();
+    await typeIntoAgent(id, "first\r");
+    await browser.waitUntil(async () => String((await cliRpc({ cmd: "logs", task: id }))?.data?.data ?? "").includes("box says: first"),
+      { timeout: 20_000, timeoutMsg: "the agent never answered" });
+    // Restart the box (what an upgrade does): its PTYs end, and the new
+    // daemon tells this desktop they were restarted, not that they exited.
+    await browser.execute((sid) => window.__termic!.invoke("server_restart", { machine: sid }), serverId);
+    await browser.waitUntil(async () => { const p = await agentPty(); return !!p && p !== before; },
+      { timeout: 60_000, timeoutMsg: "the agent was not started again after the restart" });
+    await typeIntoAgent(id, "again\r");
+    await browser.waitUntil(async () => String((await cliRpc({ cmd: "logs", task: id }))?.data?.data ?? "").includes("box says: again"),
+      { timeout: 30_000, timeoutMsg: "the restarted agent never answered" });
+  });
 });

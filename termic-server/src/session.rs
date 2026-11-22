@@ -334,7 +334,19 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
         // `seen` means "attach": a PTY that ended while the client was away
         // (a server restart) is not started again, or a run script would
         // run twice.
-        None if seen.is_some() => return exit("ended while this computer was away".into()),
+        None if seen.is_some() => {
+            // Ended by a restart onto a new build: the desktop starts it
+            // again (resuming an agent's session). Once.
+            let restarted = {
+                let mut st = s.d.st.lock().unwrap();
+                let hit = st.restarted_claims.iter().position(|c| *c == pid).map(|i| st.restarted_claims.remove(i));
+                if hit.is_some() {
+                    s.d.save(&st);
+                }
+                hit.is_some()
+            };
+            return exit(if restarted { wire::PTY_RESTARTED.into() } else { "ended while this computer was away".into() });
+        }
         None => {
             if !verbs::exec_allowed(&s.d, std::path::Path::new(cwd)) {
                 return exit(format!("{cwd} is not inside a project on this server"));

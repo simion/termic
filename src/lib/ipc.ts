@@ -1286,8 +1286,9 @@ export const ptyAttached = (ptyId: string) => invoke<void>("pty_attached", { id:
  *  dead id, so delivery confirmation re-checks with this). */
 export const ptyAlive = (ptyId: string) => invoke<boolean>("pty_alive", { id: ptyId });
 /** Listen for PTY exit. Rust emits `PtyExit { code: Option<i32> }`. */
-export function onPtyExit(ptyId: string, cb: (code: number | null) => void): Promise<UnlistenFn> {
-  return listen<{ code: number | null }>(`pty-exit://${ptyId}`, ev => cb(ev.payload.code));
+/** `restarted`: a server PTY its box ended on a restart onto a new build. */
+export function onPtyExit(ptyId: string, cb: (code: number | null, restarted: boolean) => void): Promise<UnlistenFn> {
+  return listen<{ code: number | null; restarted?: boolean }>(`pty-exit://${ptyId}`, ev => cb(ev.payload.code, !!ev.payload.restarted));
 }
 
 // ───────────────────────────── settings & discovery ─────────────────────────────

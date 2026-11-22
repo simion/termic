@@ -15,6 +15,11 @@ use serde_json::Value;
 /// additive contract exists to avoid.
 pub const VERSION: u32 = 1;
 
+/// A `pty_exit` reason: the host restarted onto a new build and ended this
+/// PTY. A client that started it starts it again (an agent resumes its
+/// session) rather than showing it exited.
+pub const PTY_RESTARTED: &str = "restarted";
+
 /// What a host can do, named in `welcome.caps`. A client only uses what is
 /// listed.
 pub mod caps {

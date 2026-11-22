@@ -4171,7 +4171,13 @@ pub struct PtyManager {
 pub(crate) struct PtyChunk { pub(crate) data: Vec<u8> }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct PtyExit { pub(crate) code: Option<i32> }
+pub(crate) struct PtyExit {
+    pub(crate) code: Option<i32>,
+    /// A server PTY its box ended on a restart onto a new build: the pane
+    /// starts it again instead of showing it exited.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) restarted: bool,
+}
 
 /// Truth about how the agent actually got spawned - not just whether
 /// the task WANTED to be sandboxed but whether the cage actually
@@ -5662,7 +5668,7 @@ fn pty_spawn(
                 buf_w.1.wait(&mut b);
             }
         }
-        emit_to_window(&app_w, window_w.as_deref(), &format!("pty-exit://{}", id_w), PtyExit { code });
+        emit_to_window(&app_w, window_w.as_deref(), &format!("pty-exit://{}", id_w), PtyExit { code, restarted: false });
         // Drop this PID from the sandbox's PID set so the path watcher
         // stops counting denies from anything that happened to inherit
         // this PID after exit (rare but possible on macOS).

@@ -317,7 +317,9 @@ open connection, no new ssh: `quit` previews the agents a restart would
 stop, and commit records them (`resume_on_boot` in `state.json`), hangs
 them up, answers, and exits; the link's reconnect runs `bridge`, which
 starts the new binary, and that daemon resumes those agents in their
-sessions before any client. Only a REQUIRED update (the server is below
+sessions before any client. Agents the desktop started (every task made
+since step 4 of docs/plans/server-projects.md) come back from the
+desktop instead (`restarted`, below). Only a REQUIRED update (the server is below
 `compat::REQUIRES_SERVER`) restarts by itself; any other waits for
 **Restart now** or the box's next restart, and the old build keeps
 serving meanwhile. The restart waits until no agent is
@@ -397,8 +399,12 @@ than growing a verb per feature:
   it had open there, with `seen` (bytes of output it already has), and the
   box attaches and sends only the rest, its first `pty_data` carrying `at`
   (where that backlog starts). `seen` also means attach only: a PTY that
-  ended meanwhile (a server restart) answers `pty_exit` instead of running
-  its command again. An older box without `pty_keep` hangs them up when
+  ended meanwhile answers `pty_exit` instead of running its command
+  again. One a `quit` ended (a restart onto a new build) answers it with
+  the reason `restarted` (`wire::PTY_RESTARTED`, from `restarted_claims`
+  in `state.json`), once: the desktop's pane then starts it again, an
+  agent resuming its session, instead of showing it exited. Without it
+  every upgrade left each server agent on its exited banner. An older box without `pty_keep` hangs them up when
   the connection ends, and the desktop reports that as before. The
   desktop host refuses `pty_open`.
 - **The id on the box is a claim.** A server task's tabs are ordinary

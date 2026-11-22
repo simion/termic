@@ -51,6 +51,11 @@ pub struct State {
     /// Tasks whose agent a `quit` stopped: the next daemon resumes them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resume_on_boot: Vec<String>,
+    /// Desktop PTYs (their claims) a `quit` ended: a desktop coming back to
+    /// one is told "restarted", and starts it again instead of showing it
+    /// exited (session.rs `pty_open`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub restarted_claims: Vec<String>,
 }
 
 pub fn state_path(dir: &Path) -> PathBuf {

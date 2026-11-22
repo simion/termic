@@ -31,11 +31,12 @@ pub(crate) fn init(handle: tauri::AppHandle) {
             }
             crate::remote_client::PtyEvent::Exit(reason) => {
                 crate::server_pty_gone(&h, pid);
+                let restarted = reason == termic_remote::wire::PTY_RESTARTED;
                 // A refusal or a dropped link reads in the pane before it ends.
-                if reason != "exited" {
+                if reason != "exited" && !restarted {
                     let _ = h.emit(&format!("pty://{pid}"), crate::PtyChunk { data: format!("\r\n[{reason}]\r\n").into_bytes() });
                 }
-                let _ = h.emit(&format!("pty-exit://{pid}"), crate::PtyExit { code: None });
+                let _ = h.emit(&format!("pty-exit://{pid}"), crate::PtyExit { code: None, restarted });
             }
         }));
     }

@@ -3331,9 +3331,15 @@ const captureArmedRef = useRef(false);
             if (!cancelled) setSudoOffer(show);
           });
         }
-        const unlistenExit = await ipc.onPtyExit(ptyId, (code) => {
+        const unlistenExit = await ipc.onPtyExit(ptyId, (code, restarted) => {
           activity.dispose();
           ptyRef.current = null;
+          // Its server restarted onto a new build (an upgrade): start it
+          // again, an agent resuming its session, as after an app restart.
+          if (restarted && !isRunTab) {
+            setGen(g => g + 1);
+            return;
+          }
           // Run/setup tabs (GH #54): surface a non-zero exit as "failed" on
           // the tab pill. code === null means the process was killed (Stop
           // button, app quit) rather than actually failing, so that's left
