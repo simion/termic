@@ -26,9 +26,11 @@ pub(crate) fn init(handle: tauri::AppHandle) {
         let h = handle.clone();
         crate::remote_client::set_pty_sink(Box::new(move |pid, e| match e {
             crate::remote_client::PtyEvent::Data(data) => {
+                crate::server_pty_output(&h, pid, &data);
                 let _ = h.emit(&format!("pty://{pid}"), crate::PtyChunk { data });
             }
             crate::remote_client::PtyEvent::Exit(reason) => {
+                crate::server_pty_gone(&h, pid);
                 // A refusal or a dropped link reads in the pane before it ends.
                 if reason != "exited" {
                     let _ = h.emit(&format!("pty://{pid}"), crate::PtyChunk { data: format!("\r\n[{reason}]\r\n").into_bytes() });
@@ -39,6 +41,10 @@ pub(crate) fn init(handle: tauri::AppHandle) {
     }
     *app().lock().unwrap() = Some(handle);
     refresh_paths();
+}
+
+pub(crate) fn app_handle() -> Option<tauri::AppHandle> {
+    app().lock().unwrap().clone()
 }
 
 /// Folders that live on a server, longest first: each server project's

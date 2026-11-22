@@ -4488,10 +4488,49 @@ fn configure_terminal_env(cmd: &mut CommandBuilder) {
     for key in FOREIGN_TERMINAL_ENV {
         cmd.env_remove(key);
     }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "iTerm.app");
-    cmd.env("TERM_PROGRAM_VERSION", "3.5.0");
+    for (k, v) in TERMINAL_CLAIMS {
+        cmd.env(k, v);
+    }
+}
+
+/// The terminal Termic claims to be, so agents emit the OSCs it parses.
+const TERMINAL_CLAIMS: [(&str, &str); 4] = [
+    ("TERM", "xterm-256color"),
+    ("COLORTERM", "truecolor"),
+    ("TERM_PROGRAM", "iTerm.app"),
+    ("TERM_PROGRAM_VERSION", "3.5.0"),
+];
+
+/// The env a task's spawn gets wherever it runs, on this computer or on a
+/// server (docs/plans/server-projects.md, step 3): the task's identity
+/// (TERMIC_TASK carries the NAME, as setup and run scripts always received;
+/// TERMIC_TASK_ID the unambiguous handle), a multi-repo task's sibling
+/// ports, the agent's own tab (GH #358, so `termic prop` writes where it
+/// runs) and the terminal claims. What only makes sense here (TERMIC_CLI,
+/// the sandbox, accounts, TERMIC_PTY) stays in `pty_spawn`.
+pub(crate) fn task_spawn_env(args: &SpawnArgs) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(wid) = args.task_id.as_deref() {
+        if let Some(task) = load_tasks_all().into_iter().find(|w| w.id == wid) {
+            // Multi-repo: sibling ports, so the agent (or anything run in
+            // this PTY) can `curl localhost:$TERMIC_PORT_API`. Same scheme
+            // as the script-stream spawn.
+            for (i, m) in task.composition.iter().enumerate() {
+                let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
+                let sanitized: String = m.dir_name.chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+                    .collect();
+                env.push((format!("TERMIC_PORT_{sanitized}"), p.to_string()));
+            }
+            env.push(("TERMIC_TASK".into(), task.name.clone()));
+        }
+        env.push(("TERMIC_TASK_ID".into(), wid.to_string()));
+    }
+    if let Some(tab) = agent_tab_id(args) {
+        env.push(("TERMIC_TAB_ID".into(), tab.to_string()));
+    }
+    env.extend(TERMINAL_CLAIMS.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env
 }
 
 /// Per-spawn opt-in sent by the frontend (Settings > Appearance > Share
@@ -4680,6 +4719,21 @@ fn agent_tab_id(args: &SpawnArgs) -> Option<&str> {
     args.role.as_ref().filter(|r| r.kind == "agent").and_then(|r| r.tab_id.as_deref())
 }
 
+/// The argv a spawn built for this computer runs as on a box. The program
+/// is looked up there by name (termic-server runs it through the login
+/// shell's PATH), so a registry entry pointing at an absolute path here
+/// becomes its basename. A shell running a command (`zsh -lic "<run
+/// script>"`) runs under the box's own login shell with the same flags,
+/// since the box may not have this computer's shell.
+fn server_argv(cmd: &str, args: &[String]) -> Vec<String> {
+    let name = Path::new(cmd).file_name().and_then(|n| n.to_str()).unwrap_or(cmd).to_string();
+    if matches!(name.as_str(), "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh") {
+        return ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" \"$@\"", "sh"].iter().map(|s| s.to_string())
+            .chain(args.iter().cloned()).collect();
+    }
+    std::iter::once(name).chain(args.iter().cloned()).collect()
+}
+
 /// A terminal in a server project's folder runs on the box (termic-server
 /// `pty_open`); its output arrives as the same `pty://` events, so the panes
 /// need no remote branch. A bare login shell becomes the box's own login
@@ -4688,11 +4742,109 @@ fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, Strin
     let shell_only = Path::new(&args.cmd).file_name().and_then(|n| n.to_str())
         .is_some_and(|n| matches!(n, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh"))
         && args.args.iter().all(|a| matches!(a.as_str(), "-l" | "-i" | "--login" | "-il" | "-li"));
-    let argv = if shell_only { Vec::new() } else { std::iter::once(args.cmd.clone()).chain(args.args.iter().cloned()).collect() };
+    let argv = if shell_only { Vec::new() } else { server_argv(&args.cmd, &args.args) };
     let id = Uuid::new_v4().to_string();
-    let env: Vec<(String, String)> = args.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // The webview's overlay, then what every task spawn gets (as locally,
+    // the task env applied after the overlay wins).
+    let mut env: Vec<(String, String)> = args.env.iter()
+        .filter(|(k, _)| k.as_str() != SHARE_HISTORY_ENV)
+        .map(|(k, v)| (k.clone(), v.clone())).collect();
+    for (k, v) in task_spawn_env(args) {
+        env.retain(|(e, _)| *e != k);
+        env.push((k, v));
+    }
     remote_client::pty_open(server, &id, &args.cwd, argv, env, args.cols, args.rows)?;
+    // A slot like a local PTY's, so everything that finds, reads, types into
+    // or sizes a terminal (the CLI's logs / send / attach, the phone host)
+    // has one path: its writer and master forward to the server, and the
+    // feed fills from the server's output (server_projects' sink).
+    if let Some(app) = server_projects::app_handle() {
+        let state = tauri::Manager::state::<PtyManager>(&app);
+        state.inner.lock().insert(id.clone(), PtySlot {
+            writer: Arc::new(Mutex::new(Box::new(RemotePtyWriter { machine: server.to_string(), pid: id.clone() }))),
+            master: Box::new(RemotePtyMaster { machine: server.to_string(), pid: id.clone(), size: Mutex::new((args.rows, args.cols)) }),
+            child_pid: None,
+            sandbox: None,
+            shell: None,
+            keychain: None,
+            task_id: args.task_id.clone(),
+            role: args.role.clone(),
+            feed: args.role.as_ref().map(|_| Arc::new(PtyFeed::new())),
+            owner: args.owner.clone(),
+            docker_container: None,
+            out_bytes: Arc::new(AtomicU64::new(0)),
+            seq: next_pty_seq(),
+            attached: Arc::new(AtomicBool::new(true)),
+            out_buf: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
+        });
+    }
     Ok(SpawnResult { id, sandbox: SandboxStatus { active: false, proxy_active: false, warning: String::new() }, account: None })
+}
+
+/// A server PTY's output reached this desktop: its slot's feed and byte
+/// count, as a local PTY's reader thread does.
+pub(crate) fn server_pty_output(app: &AppHandle, pid: &str, data: &[u8]) {
+    let state = tauri::Manager::state::<PtyManager>(app);
+    let map = state.inner.lock();
+    if let Some(slot) = map.get(pid) {
+        slot.out_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+        if let Some(feed) = &slot.feed {
+            feed.push(data);
+        }
+    }
+}
+
+/// A server PTY ended: its slot goes, as a local PTY's waiter reaps it.
+pub(crate) fn server_pty_gone(app: &AppHandle, pid: &str) {
+    tauri::Manager::state::<PtyManager>(app).inner.lock().remove(pid);
+}
+
+/// Typing into a server PTY through its slot (the CLI's `send` and attach).
+struct RemotePtyWriter {
+    machine: String,
+    pid: String,
+}
+
+impl Write for RemotePtyWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        remote_client::pty_input(&self.machine, &self.pid, buf).map_err(std::io::Error::other)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A server PTY's size through its slot: a resize goes to the server.
+struct RemotePtyMaster {
+    machine: String,
+    pid: String,
+    size: Mutex<(u16, u16)>,
+}
+
+impl portable_pty::MasterPty for RemotePtyMaster {
+    fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
+        *self.size.lock() = (size.rows, size.cols);
+        remote_client::pty_resize(&self.machine, &self.pid, size.cols, size.rows).map_err(anyhow::Error::msg)
+    }
+    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+        let (rows, cols) = *self.size.lock();
+        Ok(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+    }
+    fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, anyhow::Error> {
+        Err(anyhow::anyhow!("a server PTY's output arrives over its connection"))
+    }
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        Ok(Box::new(RemotePtyWriter { machine: self.machine.clone(), pid: self.pid.clone() }))
+    }
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<libc::pid_t> {
+        None
+    }
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        None
+    }
 }
 
 #[tauri::command]
@@ -5106,26 +5258,11 @@ fn pty_spawn(
     // Multi-repo: expose sibling ports so the agent (or anything the
     // user runs in this PTY) can `curl localhost:$TERMIC_PORT_API`
     // without hardcoding. Same scheme as the script-stream spawn.
-    let mut task_name: Option<String> = None;
-    if let Some(wid) = args.task_id.as_deref() {
-        if let Some(task) = load_tasks_all().into_iter().find(|w| w.id == wid) {
-            for (i, m) in task.composition.iter().enumerate() {
-                let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
-                let sanitized: String = m.dir_name.chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
-                    .collect();
-                cmd.env(format!("TERMIC_PORT_{sanitized}"), p.to_string());
-            }
-            // Reused below for TERMIC_TASK, saving a third load_tasks
-            // disk scan per spawn.
-            task_name = Some(task.name.clone());
-        }
+    for (k, v) in task_spawn_env(&args) {
+        cmd.env(k, v);
     }
-    // Task identity + control-plane advertisement (docs/plans/cli.md,
-    // "Agents as users"). TERMIC_TASK carries the task NAME, matching
-    // what setup/run scripts have always received; TERMIC_TASK_ID is
-    // the unambiguous handle (names can repeat across projects), and
-    // the CLI resolves either. TERMIC_CLI is the absolute path of the
+    // Control-plane advertisement (docs/plans/cli.md, "Agents as users").
+    // TERMIC_CLI is the absolute path of the
     // bundled binary, injected only while "Enable CLI" is on so the
     // advertisement is never a lie; an ENFORCING-caged agent still sees
     // it, runs it, and gets the explicit "control plane unavailable"
@@ -5133,12 +5270,6 @@ fn pty_spawn(
     // allowed through by contract (observe, never block). The TOKEN is
     // deliberately never here: pty_spawn hands this env to every child,
     // caged included (cli_server.rs).
-    if let Some(wid) = args.task_id.as_deref() {
-        cmd.env("TERMIC_TASK_ID", wid);
-        if let Some(name) = &task_name {
-            cmd.env("TERMIC_TASK", name);
-        }
-    }
     let inherits_customizations = spawn_task.as_ref().map(|t| {
         load_projects_all()
             .into_iter()
@@ -5154,13 +5285,6 @@ fn pty_spawn(
                 cmd.env(k, v);
             }
         }
-    }
-    // The agent's OWN tab (GH #358), so `termic prop` writes where the agent
-    // runs without it having to discover its tab id. Only agent tabs carry a
-    // role with a tab id; the Docker branch gets the same through its env
-    // overlay (`agent_tab_env`).
-    if let Some(tab) = agent_tab_id(&args) {
-        cmd.env("TERMIC_TAB_ID", tab);
     }
     if load_settings_inner().cli_enabled {
         if let Ok(cli) = cli_server::bundled_cli_path() {
@@ -5583,9 +5707,7 @@ fn pty_spawn(
 
 #[tauri::command]
 fn pty_write(state: State<'_, PtyManager>, pty_id: String, data: Vec<u8>) -> Result<(), String> {
-    if let Some(m) = remote_client::pty_machine(&pty_id) {
-        return remote_client::pty_input(&m, &pty_id, &data);
-    }
+    // A server PTY's slot writes to the server (RemotePtyWriter).
     pty_write_inner(&state, &pty_id, &data)
 }
 
@@ -5596,9 +5718,7 @@ fn pty_resize(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    if let Some(m) = remote_client::pty_machine(&pty_id) {
-        return remote_client::pty_resize(&m, &pty_id, cols, rows);
-    }
+    // A server PTY's slot sizes it on the server (RemotePtyMaster).
     pty_resize_inner(&state, &pty_id, rows, cols)
 }
 
@@ -40279,5 +40399,32 @@ mod schedule_record_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod server_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn a_spawn_built_here_runs_by_name_on_a_box() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // A registry entry pointing at a local path: its basename on the box.
+        assert_eq!(server_argv("/Users/u/.local/bin/claude", &s(&["--resume", "x"])), s(&["claude", "--resume", "x"]));
+        assert_eq!(server_argv("codex", &[]), s(&["codex"]));
+        // A shell running a command: the box's own login shell, same flags.
+        let run = server_argv("/bin/zsh", &s(&["-lic", "npm run dev"]));
+        assert_eq!(run[..4], s(&["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" \"$@\"", "sh"])[..]);
+        assert_eq!(run[4..], s(&["-lic", "npm run dev"])[..]);
+    }
+
+    #[test]
+    fn every_task_spawn_claims_the_terminal_termic_parses() {
+        let args: SpawnArgs = serde_json::from_value(serde_json::json!({ "cwd": "/tmp", "cmd": "x", "args": [] })).unwrap();
+        let env = task_spawn_env(&args);
+        for (k, v) in TERMINAL_CLAIMS {
+            assert!(env.iter().any(|(ek, ev)| ek == k && ev == v), "{k} missing");
+        }
+        assert!(!env.iter().any(|(k, _)| k == "TERMIC_TASK_ID"), "no task, no id");
     }
 }
