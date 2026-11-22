@@ -287,12 +287,14 @@ describe("settings rail", () => {
     ["general", "General", "Repos directory"],
     ["appearance", "Appearance", "Terminal font"],
     ["agents", "Agents & Terminals", "Copy on select"],
-    // Agent access, right under Agents: the CLI and MCP on one page. Its
-    // marker is the MCP master toggle, the tab it opens on.
-    ["cli", "Agent access", "Enable MCP endpoint"],
-    // Remote (docs/remote.md): phones, servers and other computers, under
-    // Agent access.
-    ["remote", "Remote", "Add a server"],
+    // MCP & CLI, right under Agents: how agents on this computer drive
+    // Termic, one page. Its marker is the MCP master toggle, the tab it
+    // opens on.
+    ["cli", "MCP & CLI", "Enable MCP endpoint"],
+    // Remote control (docs/remote.md): phones and other computers.
+    ["remote", "Remote control", "Mobile remote control"],
+    // Servers: where a project's tasks run over SSH, its own page.
+    ["servers", "Servers", "Add a server"],
     ["tasks", "Tasks", "Branch prefix"],
     ["notifications", "Notifications", "Desktop notifications"],
     ["prompts", "Prompts", "Prompts"],
@@ -711,7 +713,7 @@ describe("settings rail", () => {
     const badgeOf = (title: string) => browser.execute((tt) =>
       [...document.querySelectorAll("h1")].find((h) => h.textContent === tt)
         ?.parentElement?.querySelector("span")?.textContent ?? null, title);
-    await clickRail("Agent access");
+    await clickRail("MCP & CLI");
     await waitForText("Enable MCP endpoint");
     expect(await badgeOf("MCP endpoint")).toBe(null);
     await clickPresent('[data-testid="access-tab-cli"]');
@@ -729,7 +731,7 @@ describe("settings rail", () => {
     // The seeded profile enables the endpoint, so the section must show
     // the real bound URL (mcp_status reads the live handle) plus a
     // registration command per client.
-    await clickRail("Agent access");
+    await clickRail("MCP & CLI");
     await waitForText("Connect an agent");
     // One client at a time, Claude Code first, its command folded away.
     expect(await paneText()).toContain("Add to Claude Code");
@@ -790,7 +792,7 @@ describe("settings rail", () => {
   // Agent access is two tabs: MCP first, and the CLI. Pairing other
   // computers lives in Remote now, with phones and servers.
   it("opens on MCP, keeps the CLI on its own tab, and has no pairing", async () => {
-    await clickRail("Agent access");
+    await clickRail("MCP & CLI");
     await waitForText("Enable MCP endpoint");
     const order = () => browser.execute(() => {
       const p = (document.querySelector('[data-testid="settings-pane"]') as HTMLElement).innerText;
@@ -820,7 +822,7 @@ describe("settings rail", () => {
     // Task PTYs carry TERMIC_CLI / TERMIC_TASK_ID (lib.rs), so an unsandboxed
     // agent can spawn sibling tasks. The page has to say so: it is the least
     // guessable thing the CLI does.
-    await clickRail("Agent access");
+    await clickRail("MCP & CLI");
     await clickPresent('[data-testid="access-tab-cli"]');
     await waitForText("Agents can drive it too");
     const pane = await paneText();
@@ -832,7 +834,7 @@ describe("settings rail", () => {
     // index.css turns selection off app-wide, so these copy-me commands have to
     // opt back in. Read off the command text, not the `data-selectable`
     // attribute, so only losing selectability fails.
-    await clickRail("Agent access");
+    await clickRail("MCP & CLI");
     await clickPresent('[data-testid="access-tab-cli"]');
     await waitForText("Getting started");
     const selectable = await browser.execute(() => {
@@ -1295,7 +1297,9 @@ describe("settings navigation", () => {
       "Task settings",
       "Notification settings",
       "Sandbox settings",
-      "Agent access settings",
+      "MCP & CLI settings",
+      "Remote control settings",
+      "Servers settings",
     ]) {
       expect(labels.some((l) => l.includes(needle))).toBe(true);
     }

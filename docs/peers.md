@@ -14,7 +14,7 @@ stream: [remote.md](remote.md). This page covers discovery, pairing two
 computers, the credential and the grants.
 
 **Off by default.** Nothing listens, nothing is advertised, until the
-user turns on Settings > Remote > Pair computers > "Share on this network"
+user turns on Settings > Remote control > "Share on this network"
 (`lan_sharing_enabled`). Turning it off unbinds the listener, sends an
 mDNS goodbye, and cancels any pairing in progress.
 
@@ -343,16 +343,25 @@ in `termic --help`, `TERMIC_CLI_HELP`, the MCP instructions and
 
 ## UI
 
-Settings > Remote, between Mobile remote control and Servers: one page for everything
-that reaches this computer or that it reaches (docs/remote.md). It used
-to sit at the top of Agent access's MCP tab, because agents reach another
-machine through this Termic's MCP tools; it moved because phones come in
-on the same listener. "Share on this network" is therefore a page-level
-row above all three cards (`ShareToggle`), not part of Pair computers.
+Settings > Remote control, under Mobile remote control: the page for what
+drives this computer over the network (docs/remote.md). Settings has three
+neighbouring sections for three questions: MCP & CLI (how agents on this
+computer drive Termic), Remote control (phones and other computers) and
+Servers (where a project's tasks run over SSH). Pair computers used to sit
+at the top of the MCP tab, because agents reach another machine through
+this Termic's tools; it moved because phones come in on the same listener.
+"Share on this network" is therefore a page-level row above both cards
+(`ShareToggle`), not part of Pair computers.
+
+Pair a computer is enabled once an agent can reach a paired computer at
+all: Claude Code or Codex has Termic's MCP server, or the termic CLI is
+on PATH (`termic --peer` needs no MCP), or the person says they wired
+another agent themselves.
 Turning sharing on still turns the MCP endpoint on with it (turning
 sharing off leaves MCP alone). The switch follows `peer_status`, not the
 settings copy, because Connect a phone and Pair a computer turn sharing
-on from their own buttons. The old `peers` settings tab id opens Remote.
+on from their own buttons. The old `peers` settings tab id opens Remote
+control.
 
 The MCP endpoint's network address sits folded under "Network address
 (advanced)", open only when it is already off loopback, with a line pointing here: it used to read as THE way to

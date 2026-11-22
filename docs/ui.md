@@ -29,9 +29,9 @@ the inheritance override. See [customizations.md](customizations.md).
 
 Left rail + one content pane (`components/settings/Settings.tsx`). Three bands, hairline-separated, then the per-project list:
 
-1. **Opened by choice** (General, Appearance, Agents & Terminals)
+1. **Opened by choice** (General, Appearance, Agents & Terminals, then MCP & CLI, Remote control, Servers: how agents here drive Termic, what drives it over the network, and where a project's tasks run when not here)
 2. **Set once** (Tasks, Notifications, Prompts, Shortcuts, Profiles, Sync)
-3. **The perimeter**, what the app is allowed to do (Sandbox, Termic CLI)
+3. **The perimeter**, what the app is allowed to do (Sandbox, Secrets, Docker Sandbox)
 4. `PROJECTS`, the only band with a label, because it is a dynamic list needing an empty state
 
 The bands are what the app looks like and runs, then how it behaves while you work, then what it is allowed to do. Sandbox sits low because of the last one, not because it matters least. General leads by convention rather than by that rule: it is app-level and set-once, but every settings UI opens on General and fighting that expectation costs more than the inconsistency does.

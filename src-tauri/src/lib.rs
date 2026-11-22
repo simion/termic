@@ -24796,7 +24796,7 @@ pub struct Settings {
     /// one and then keeps it across restarts.
     #[serde(default)]
     pub mcp_port: u16,
-    /// "Share on this network" (Settings > Agent access, docs/peers.md):
+    /// "Share on this network" (Settings > Remote control, docs/peers.md):
     /// binds the peer listener on every interface and advertises this
     /// machine over mDNS so other Termic instances can ask to pair. Default
     /// OFF; applied live both ways by settings_save, and re-read per request

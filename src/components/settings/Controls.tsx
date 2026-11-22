@@ -22,7 +22,7 @@ let patchChain: Promise<unknown> = Promise.resolve();
  *  hook's cache. Two reasons. Within one section, a second save (toggle,
  *  then a text field) would otherwise spread the object captured by the
  *  first render and revert the first save. Across sections, a page may now
- *  render more than one section using this hook (Settings -> Agent access holds
+ *  render more than one section using this hook (Settings -> MCP & CLI holds
  *  two), and each has its own snapshot: without re-reading, whichever saves
  *  last spreads its mount-time copy over the whole file and silently reverts
  *  the other's change on disk while both keep rendering their own local

@@ -1,6 +1,6 @@
 // After a pairing completes, on BOTH machines (docs/peers.md): who it is,
 // what pairing means, and what the other machine is for. Global rather than
-// part of Settings > Agent access, because the machine that showed the code
+// part of Settings > Remote control, because the machine that showed the code
 // may be on any screen when the other side types it.
 //
 // Driven by the backend's `peer://pairing` event, sent once per completed

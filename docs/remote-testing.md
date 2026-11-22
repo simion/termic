@@ -39,7 +39,7 @@ webview-only changes.
 On both machines: Settings > **Remote** > Pair computers, and pair
 them (one shows a code, the other enters it; details in
 [peers.md](peers.md)). Make sure **Allow paired phones and computers to
-connect** is on in Settings > Remote. Then, on machine A, look at machine
+connect** is on in Settings > Remote control. Then, on machine A, look at machine
 B's section at the bottom of the sidebar.
 
 Check, with tasks running on B:
@@ -85,7 +85,7 @@ ssh <box> 'cd termic-server-build && sed -i "/^workspace = /d" termic-*/Cargo.to
   && mkdir -p ~/.termic/bin && cp target/release/termic-server ~/.termic/bin/'
 ```
 
-Then Settings > Remote > **Add a server**, type what you would after
+Then Settings > Servers > **Add a server**, type what you would after
 `ssh` (`alice@192.168.1.20` or a `~/.ssh/config` name) and Connect.
 
 Check:
@@ -113,7 +113,7 @@ npx expo start              # scan the Expo QR with Expo Go (iPhone or Android)
 The phone must reach this computer: same Wi-Fi, or Tailscale on both. An
 iPhone asks for Local Network the first time; allow it.
 
-On the desktop: Settings > Remote > **Connect a phone**, scan its code
+On the desktop: Settings > Remote control > **Connect a phone**, scan its code
 with the app (or Copy link instead and paste it in the app). The code
 works once, for 5 minutes.
 

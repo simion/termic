@@ -1,4 +1,4 @@
-// The pieces every area of Settings > Remote is built from (phones, paired
+// The pieces Settings > Remote control and Servers are built from (phones, paired
 // computers, servers), so the three read as one page: a Card with its icon,
 // title, one-line lead and action; device rows inside it; an empty state.
 

@@ -2,12 +2,12 @@
 // other machines' tasks in the sidebar (docs/remote.md).
 export default {
   rail: {
-    label: "Remote",
-    hint: "Phones, servers",
+    label: "Remote control",
+    servers: "Servers",
   },
   section: {
-    title: "Remote",
-    lead: "Control this computer from your phone, pair it with your other computers, and run agents on your own servers.",
+    title: "Remote control",
+    lead: "Control this computer from your phone, and pair it with your other computers so their agents can work across both.",
   },
   phones: {
     title: "Mobile remote control",
@@ -60,7 +60,8 @@ export default {
     copied: "Link copied. It works once, within 5 minutes.",
   },
   servers: {
-    title: "Servers",
+    sectionTitle: "Servers",
+    title: "Your servers",
     lead: "A dev box running termic-server, such as a Linux box at home or a cloud server: your repos are cloned there and your agents run there, so they keep working while this computer sleeps or is closed.",
     how1: "You give Termic a machine you can already reach with ssh. It copies one small program there, termic-server, into your home folder: no sudo, no Termic app, nothing else changes.",
     how2: "Your agents run on that machine, each task in its own git worktree there, like tasks here.",

@@ -11,7 +11,7 @@ import { useTranslation, Trans } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
-  PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon, Smartphone,
+  PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon, Server, Smartphone,
   FolderCog, RefreshCw, ScrollText, Compass, CalendarClock, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
@@ -660,6 +660,7 @@ export function CommandPalette() {
       ["sandbox", "commandPalette.cmd.linkSandbox", ShieldCheck],
       ["cli", "commandPalette.cmd.linkCli", SquareTerminal],
       ["remote", "commandPalette.cmd.linkRemote", Smartphone],
+      ["servers", "commandPalette.cmd.linkServers", Server],
     ];
     for (const [tab, labelKey, icon] of settingsLinks) {
       cmds.push({

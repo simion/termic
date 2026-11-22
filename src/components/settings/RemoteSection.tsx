@@ -1,9 +1,11 @@
-// Settings > Remote (docs/remote.md): everything that reaches this computer
-// or that it reaches, in order of how much it is used. Phones paired with it
-// (with where to get the app), other Termic computers (PeersSection,
-// docs/peers.md), then servers it runs agents on over SSH. Phones and
-// computers come in on one listener, so its switch ("Share on this
-// network") lives once, in Pair computers.
+// Settings > Remote control (docs/remote.md): what drives this Termic over
+// the network. Phones paired with it (with where to get the app), then
+// other Termic computers (PeersSection, docs/peers.md). Both come in on one
+// listener, so its switch ("Share on this network") lives once, at the top.
+//
+// Settings > Servers (ServersSection below) is the other half of what used
+// to be one page: a server is where a project's tasks RUN (an SSH box), not
+// something that controls this computer, so it sits with its own section.
 //
 // Phones come from `peer_status` (re-read on `peer://changed`, never
 // polled); servers from the remote store, which the backend keeps current.
@@ -77,8 +79,6 @@ export function RemoteSection() {
   const { t } = useTranslation("remote");
   const [status, refresh] = usePhones();
   const setDialog = useRemote(s => s.setDialog);
-  const machines = useRemote(s => s.machines);
-  const servers = useMemo(() => machines.filter(m => m.kind === "server"), [machines]);
   const phones = status?.phones ?? [];
 
   return (
@@ -121,7 +121,19 @@ export function RemoteSection() {
       </Card>
 
       <div data-testid="settings-peers"><PeersSection /></div>
+    </div>
+  );
+}
 
+/** Settings > Servers: the SSH boxes this computer runs projects on. */
+export function ServersSection() {
+  const { t } = useTranslation("remote");
+  const setDialog = useRemote(s => s.setDialog);
+  const machines = useRemote(s => s.machines);
+  const servers = useMemo(() => machines.filter(m => m.kind === "server"), [machines]);
+  return (
+    <div className="flex flex-col gap-6" data-testid="servers-section">
+      <SectionTitle title={t("servers.sectionTitle")} />
       <Card
         icon={<Server className="h-4 w-4" />}
         title={t("servers.title")}

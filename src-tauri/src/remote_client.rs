@@ -1052,7 +1052,7 @@ fn local_ids(machine: &str, remote: &str) -> Vec<String> {
 pub(crate) fn pty_open(machine: &str, pid: &str, remote: &str, cwd: &str, argv: Vec<String>, env: Vec<(String, String)>, cols: u16, rows: u16) -> Result<(), String> {
     let l = link(machine)?;
     if !l.st.lock().unwrap().caps.iter().any(|c| c == wire::caps::PTY) {
-        return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Remote", server_name(machine)));
+        return Err(format!("{} runs an older termic-server without terminals: update it from Settings, Servers", server_name(machine)));
     }
     let shared = {
         let mut map = ptys().lock().unwrap();

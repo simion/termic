@@ -24,7 +24,7 @@ import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
 import { DockerSection } from "./DockerSection";
-import { RemoteSection } from "./RemoteSection";
+import { RemoteSection, ServersSection } from "./RemoteSection";
 
 // Lazy: it pulls in the prefs registry and the sync module, neither of which
 // belongs on the app-start path (Settings itself is imported by App).
@@ -110,17 +110,18 @@ export function Settings() {
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
         <RailItem icon={<Terminal className="h-4 w-4" />} label={t("rail.agents")} tabId="agents"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
-        {/* One rail item for every way an agent reaches Termic: the CLI
-            and MCP, each a tab of the same page. Right under
-            Agents: it is about what agents can do, which is where people look
-            for it; under the sandbox pages it read as a security setting. */}
-        <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} hint={t("rail.cliHint")} tabId="cli"
+        {/* Three rail items, three questions. MCP & CLI: how agents on this
+            computer drive Termic (each a tab of one page; under Agents,
+            where people look for it). Remote control: what drives it over
+            the network, phones and other computers, sharing one listener.
+            Servers: where a project's tasks run when not here. */}
+        <RailItem icon={<Bot className="h-4 w-4" />} label={t("rail.cli")} tabId="cli"
           active={tab === "cli" || tab === "mcp"} onClick={() => openSettings("mcp")} />
-        {/* Phones, servers and other computers: everything that reaches this
-            computer or that it reaches (docs/remote.md). "peers" is an old
-            tab id that lands here. */}
-        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} hint={tr("rail.hint")} tabId="remote"
+        {/* "peers" is an old tab id that lands on Remote control. */}
+        <RailItem icon={<Smartphone className="h-4 w-4" />} label={tr("rail.label")} tabId="remote"
           active={tab === "remote" || tab === "peers"} onClick={() => openSettings("remote")} />
+        <RailItem icon={<Server className="h-4 w-4" />} label={tr("rail.servers")} tabId="servers"
+          active={tab === "servers"} onClick={() => openSettings("servers")} />
 
         <RailDivider />
 
@@ -183,7 +184,7 @@ export function Settings() {
         })}
         {servers.map(m => (
           <div key={m.id} data-testid={`settings-rail-server-${m.id}`}>
-            <button type="button" onClick={() => openSettings("remote")}
+            <button type="button" onClick={() => openSettings("servers")}
               className="mt-4 flex w-full items-center gap-1.5 px-2 pb-1 text-left text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]">
               <Server className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{m.name}</span>
             </button>
@@ -208,7 +209,8 @@ export function Settings() {
           {tab === "secrets"     && <Suspense fallback={null}><SecretsSection /></Suspense>}
           {tab === "docker"      && <DockerSection />}
           {(tab === "remote" || tab === "peers") && <RemoteSection />}
-          {/* Agent access: the CLI and MCP are two presentations of the
+          {tab === "servers" && <ServersSection />}
+          {/* MCP & CLI: the CLI and MCP are two presentations of the
               same verbs (docs/ideas/mcp.md). */}
           {(tab === "cli" || tab === "mcp") && <AgentAccessSection tab={tab} />}
           {tab === "appearance"  && <AppearanceSection />}
@@ -291,8 +293,8 @@ function RailDivider() {
   return <div className="mx-2.5 my-2 h-px bg-[var(--color-border-soft)]" />;
 }
 
-function RailItem({ icon, label, hint, badge, tabId, active, onClick }: {
-  icon?: React.ReactNode; label: string; hint?: string; badge?: string; tabId?: string; active: boolean; onClick: () => void;
+function RailItem({ icon, label, badge, tabId, active, onClick }: {
+  icon?: React.ReactNode; label: string; badge?: string; tabId?: string; active: boolean; onClick: () => void;
 }) {
   return (
     <button
@@ -309,11 +311,6 @@ function RailItem({ icon, label, hint, badge, tabId, active, onClick }: {
       <FolderGit2 className="hidden" /> {/* keep lucide tree-shake happy when we later add per-section icons */}
       {icon}
       <span className="truncate">{label}</span>
-      {/* A faded second name, for a label that renamed something people
-          know by another word ("Agent access" is where MCP and the CLI went). */}
-      {hint && (
-        <span className="ml-auto shrink-0 text-[11px] font-normal text-[var(--color-fg-faint)]">{hint}</span>
-      )}
       {badge && (
         <span className="ml-auto shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">
           {badge}

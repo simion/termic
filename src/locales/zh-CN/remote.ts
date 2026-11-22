@@ -1,12 +1,12 @@
 // 远程控制:与这台电脑配对的手机、通过 SSH 连接的服务器,以及侧边栏中其他机器的任务(docs/remote.md)。
 export default {
   rail: {
-    label: "远程",
-    hint: "手机、服务器",
+    label: "远程控制",
+    servers: "服务器",
   },
   section: {
-    title: "远程",
-    lead: "用手机遥控这台电脑、与你的其他电脑配对、在你自己的服务器上运行代理。",
+    title: "远程控制",
+    lead: "用手机遥控这台电脑,并与你的其他电脑配对,让它们的代理可以跨两台电脑工作。",
   },
   phones: {
     title: "手机遥控",
@@ -59,7 +59,8 @@ export default {
     copied: "链接已复制。它只能使用一次,5 分钟内有效。",
   },
   servers: {
-    title: "服务器",
+    sectionTitle: "服务器",
+    title: "你的服务器",
     lead: "运行 termic-server 的开发机,例如家里的 Linux 主机或云服务器:你的仓库克隆在那里,代理也在那里运行,这台电脑休眠或合上时它们也会继续工作。",
     how1: "你给 Termic 一台已经能用 ssh 访问的机器。它会把一个小程序 termic-server 复制到那里的主目录:不需要 sudo,不需要 Termic 应用,其他什么都不改。",
     how2: "你的代理在那台机器上运行,每个任务在那里有自己的 git worktree,和这里的任务一样。",

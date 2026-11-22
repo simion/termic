@@ -9,7 +9,7 @@ private repository and is never part of this one.
 
 ## What the user gets
 
-1. **A phone that controls this computer's agents.** Settings > Remote >
+1. **A phone that controls this computer's agents.** Settings > Remote control >
    Connect a phone shows a QR code; the phone app scans it. The phone sees
    the tasks (filed as the sidebar files them), answers an agent's
    question as a card with the agent's own options (Claude, Codex,
@@ -89,7 +89,7 @@ the phone app's private repository, not here.
 
 ## Security
 
-- The listener is on only while sharing is on (Settings > Remote), and
+- The listener is on only while sharing is on (Settings > Remote control), and
   answers only paired phones and computers; an unknown key is refused.
 - A pairing code works once, for five minutes, and every new phone raises
   an OS notification, so a photographed QR code cannot pair silently.

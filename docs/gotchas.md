@@ -493,7 +493,7 @@ colour alone.
 
 ### The settings Toggle froze too, on `left` and `background-color`
 
-Settings > Remote: Connect a phone turns sharing on from its dialog, the
+Settings > Remote control: Connect a phone turns sharing on from its dialog, the
 page reads the new value from `peer_status`, and the "Allow paired phones"
 switch got `aria-checked="true"` and an inline `left: 18px` while
 `getComputedStyle` kept `left: 2px` and the off track colour, permanently

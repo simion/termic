@@ -1,4 +1,4 @@
-// Pair computers, in Settings > Remote (LAN pairing, docs/peers.md), and
+// Pair computers, in Settings > Remote control (LAN pairing, docs/peers.md), and
 // the "Share on this network" switch above all three cards. Off by
 // default: turning it on runs a second listener on the network and
 // advertises this Termic over mDNS, so another Termic can ask to pair.
@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
-  PEER_CHANGED_EVENT, mcpInstallClient, mcpStatus, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair, settingsLoad,
+  PEER_CHANGED_EVENT, cliInstallStatus, mcpInstallClient, mcpStatus, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair, settingsLoad,
 } from "@/lib/ipc";
 import type { McpStatus, NearbyView, PeerGrant, PeerStatus, PeerView } from "@/lib/types";
 import { PEER_ROLES } from "./PeerRoles";
@@ -132,7 +132,7 @@ function useSharing(status: PeerStatus | null, refresh: () => void, onSaved?: ()
   return { enabled, drawn, save };
 }
 
-/** "Share on this network", on top of Settings > Remote: it governs phones
+/** "Share on this network", on top of Settings > Remote control: it governs phones
  *  and computers alike, so it belongs to neither card. */
 export function ShareToggle() {
   const { t } = useTranslation("settings");
@@ -151,22 +151,27 @@ export function ShareToggle() {
   );
 }
 
-/** Pair computers, the second card of Settings > Remote: the paired list
+/** Pair computers, the second card of Settings > Remote control: the paired list
  *  and nothing else on the page. Pairing (nearby computers, by address) is
  *  a dialog, opened when the person wants to pair; this computer's name
  *  and the agent setup are one quiet footer line. */
 export function PeersSection() {
   const { t } = useTranslation("settings");
   const [status, refresh] = usePeerStatus();
-  // Whether Claude Code or Codex has Termic's MCP server. Pairing is
-  // useless without it (an agent reaches the other computer only through
-  // the peer tools), so Pair stays disabled until one does, or the person
-  // says they wired another agent themselves.
+  // Whether an agent can reach a paired computer at all: through Termic's
+  // MCP server (Claude Code or Codex has it) or through the termic CLI on
+  // PATH (`termic --peer`, which needs no MCP). Pairing is useless with
+  // neither, so Pair stays disabled until one holds, or the person says
+  // they wired another agent themselves.
   const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [cliOnPath, setCliOnPath] = useState(false);
   const [otherAgent, setOtherAgent] = useState(false);
-  const readMcp = useCallback(() => { mcpStatus().then(setMcp).catch(() => setMcp(null)); }, []);
+  const readMcp = useCallback(() => {
+    mcpStatus().then(setMcp).catch(() => setMcp(null));
+    cliInstallStatus().then(s => setCliOnPath(!!s.path && s.on_path)).catch(() => setCliOnPath(false));
+  }, []);
   useEffect(() => { readMcp(); }, [readMcp]);
-  const agentReady = otherAgent || mcp?.claude_registered === true || mcp?.codex_registered === true;
+  const agentReady = otherAgent || cliOnPath || mcp?.claude_registered === true || mcp?.codex_registered === true;
   const { enabled, save } = useSharing(status, refresh, readMcp);
   const [dialog, setDialog] = useState(false);
 
@@ -189,7 +194,7 @@ export function PeersSection() {
           </Button>
         }
         footer={enabled && status ? (
-          <SelfLine status={status} mcp={mcp} ready={agentReady} onMcpChanged={readMcp} onOther={() => setOtherAgent(true)} onChanged={refresh} />
+          <SelfLine status={status} mcp={mcp} ready={agentReady} viaCli={cliOnPath} onMcpChanged={readMcp} onOther={() => setOtherAgent(true)} onChanged={refresh} />
         ) : undefined}
       >
         {/* Pairs stay listed while sharing is off, so one can still be unpaired. */}
@@ -214,8 +219,8 @@ export function PeersSection() {
 /** The card's footer: this computer's name and address (renamed in a
  *  popover), the agent setup on the right, and any network trouble under
  *  it, only when there is some. */
-function SelfLine({ status, mcp, ready, onMcpChanged, onOther, onChanged }: {
-  status: PeerStatus; mcp: McpStatus | null; ready: boolean; onMcpChanged: () => void; onOther: () => void; onChanged: () => void;
+function SelfLine({ status, mcp, ready, viaCli, onMcpChanged, onOther, onChanged }: {
+  status: PeerStatus; mcp: McpStatus | null; ready: boolean; viaCli: boolean; onMcpChanged: () => void; onOther: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation("settings");
   const selfName = status.self_name;
@@ -287,7 +292,7 @@ function SelfLine({ status, mcp, ready, onMcpChanged, onOther, onChanged }: {
               )}
             >
               {ready ? <Check className="h-3.5 w-3.5 text-[var(--color-ok)]" /> : <TriangleAlert className="h-3.5 w-3.5" />}
-              {!ready ? t("peers.agent.shortMissing") : clients ? t("peers.agent.short", { clients }) : t("peers.agent.shortOther")}
+              {!ready ? t("peers.agent.shortMissing") : clients ? t("peers.agent.short", { clients }) : viaCli ? t("peers.agent.shortCli") : t("peers.agent.shortOther")}
               <ChevronDown className="h-3 w-3" />
             </button>
           </PopoverTrigger>

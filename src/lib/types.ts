@@ -989,7 +989,7 @@ export interface Settings {
   mcp_bind_address?: string;
   /** Port the MCP listener binds; 0 means chosen automatically. */
   mcp_port?: number;
-  /** "Share on this network" (Settings > Agent access): advertise this
+  /** "Share on this network" (Settings > Remote control): advertise this
    *  Termic over mDNS and run the peer listener so another Termic on the
    *  LAN can pair with it. Default off. See docs/peers.md. */
   lan_sharing_enabled?: boolean;

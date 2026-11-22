@@ -7,7 +7,7 @@
 //! - **Discovery** is `mdns.rs` (`_termic._tcp`). It only finds; nothing it
 //!   says is trusted, and pairing works without it (pair by address).
 //! - **The peer listener** is one TCP port on every interface, bound only
-//!   while LAN sharing is on (Settings > Agent access). Its surface:
+//!   while LAN sharing is on (Settings > Remote control). Its surface:
 //!   `hello` (what the advertisement already says), the three pairing steps,
 //!   and two SEALED endpoints, `call` and `unpair`. An unpaired machine gets
 //!   the first four and nothing else: it can ask to pair, which puts a dialog
@@ -197,7 +197,7 @@ fn permitted(
                     "{us} only lets this machine reply to its tasks that contacted it \
                      (send, naming the task id from the message you are answering). \
                      To do more, the person at {us} changes what this machine may do \
-                     in Settings > Agent access."
+                     in Settings > Remote control."
                 )
             };
             let Command::Send { task: Some(task), project, resume, fresh, .. } = cmd else {
@@ -1134,7 +1134,7 @@ impl Node {
 
     fn open_pair_mode_for(self: &Arc<Self>, requested_by: Option<String>) -> Result<PairModeView, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let code = pc::new_code();
         let until = Instant::now() + PAIR_MODE_TTL;
@@ -1380,7 +1380,7 @@ impl Node {
     /// its name, for "Type the code shown on <name>".
     pub(crate) fn request_pair(&self, target: &str) -> Result<String, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let target = target.trim();
         if target.is_empty() {
@@ -1415,7 +1415,7 @@ impl Node {
     /// requests. Both sides let the other drive (Settings narrows it).
     pub(crate) fn pair(self: &Arc<Self>, target: &str, code: &str) -> Result<PairingView, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let target = target.trim();
         if target.is_empty() {
@@ -1624,7 +1624,7 @@ impl Node {
             return Reply::err(
                 &req.id,
                 ErrorCode::Unsupported,
-                "Sharing on this network is off on this machine (Settings > Agent access), so it cannot reach paired machines.",
+                "Sharing on this network is off on this machine (Settings > Remote control), so it cannot reach paired machines.",
             );
         }
         let rec = match self.find(sel) {
@@ -1777,7 +1777,7 @@ impl Node {
     /// Reopening replaces the key, so an old photo of the code is useless.
     pub(crate) fn start_phone_pairing(self: &Arc<Self>) -> Result<PhonePairingView, String> {
         let Some(port) = self.port() else {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         };
         let bound = self.runtime.lock().unwrap().as_ref().map(|r| r.addr);
         let addresses: Vec<String> = match bound {
@@ -2292,7 +2292,7 @@ fn find_in<'a>(peers: &'a [PeerRecord], sel: &str) -> Result<&'a PeerRecord, Str
     match hits.as_slice() {
         [one] => Ok(one),
         [] if peers.is_empty() => Err(format!(
-            "no paired machine called {sel}: this machine is not paired with any (Settings > Agent access, or `termic peer pair`)"
+            "no paired machine called {sel}: this machine is not paired with any (Settings > Remote control, or `termic peer pair`)"
         )),
         [] => Err(format!(
             "no paired machine called {sel} (paired: {})",

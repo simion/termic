@@ -162,7 +162,7 @@ forwarded from a viewer (the agent already has a terminal answering).
 
 ## Pairing a phone
 
-Settings > Remote (phones, then servers, then other computers) >
+Settings > Remote control (phones, then other computers) >
 **Mobile remote control** > **Connect a phone**, or Connect a phone in the sidebar's
 REMOTE + menu, shows a QR code.
 The card and the dialog's first step link the app: iPhone through the
@@ -264,7 +264,7 @@ contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Remote > Servers > **Add a server** (also in
+Settings > Servers > **Add a server** (also in
 the sidebar's REMOTE + menu) is a checklist; nothing
 is saved until it passes:
 
@@ -365,10 +365,11 @@ the server's dialog with the project picked; archive goes to the box.
 Server projects are not config-synced (another machine has its own
 servers). The sidebar has two top-level sections, each a filled header with a
 fold: PROJECTS (this computer's) and REMOTE (`RemoteSidebarSection` in
-`RemoteMachines.tsx`), the sidebar's half of Settings > Remote. REMOTE
+`RemoteMachines.tsx`), the sidebar's half of Settings > Remote control and
+Servers. REMOTE
 always shows (outside the compact rail), so its + menu is the one way
 in from the sidebar: Add a server, Connect a phone, Pair a computer
-(which opens Settings > Remote). Under it, servers first (one row per
+(which opens Settings > Remote control). Under it, servers first (one row per
 server with its state, New task and a menu, right-click too, for New
 task, Add project, Server settings and Remove, and its projects drawn
 under it by the sidebar's own `renderProject`), then paired computers

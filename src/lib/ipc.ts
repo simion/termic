@@ -1361,7 +1361,7 @@ export const mcpRegenerateToken = () => invoke<void>("mcp_regenerate_token");
 export const mcpInstallClient  = (client: "claude" | "codex") =>
   invoke<string>("mcp_install_client", { client });
 // ───────────────────────── LAN peers ─────────────────────────
-// Settings > Agent access and the global pairing dialog (docs/peers.md).
+// Settings > Remote control and the global pairing dialog (docs/peers.md).
 // Whether sharing is on comes from `settings.lan_sharing_enabled`.
 export const peerStatus        = () => invoke<PeerStatus>("peer_status");
 /** Rename this machine as others see it. Empty goes back to the default. */

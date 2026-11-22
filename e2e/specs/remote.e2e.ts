@@ -133,17 +133,30 @@ describe("Phones and servers", () => {
     }).catch(() => {});
   });
 
-  it("opens with no phone and no server", async () => {
+  it("opens with no phone and no server, servers in a section of their own", async () => {
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
-    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
-    // One page, in order of use: phones, then paired computers, then servers.
+    // Remote control is what drives this computer over the network: phones,
+    // then paired computers. Servers (where projects run) are not on it.
     expect(await browser.execute(() => {
       const top = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().top;
-      return top("remote-connect-phone") < top("settings-peers") && top("settings-peers") < top("remote-add-server");
+      return top("remote-connect-phone") < top("settings-peers");
     })).toBe(true);
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-add-server"]'))).toBe(false);
+    // The rail: MCP & CLI, Remote control, Servers, in that order.
+    expect(await browser.execute(() => {
+      const t = ["cli", "remote", "servers"].map(id => document.querySelector(`[data-rail-item="${id}"]`)?.getBoundingClientRect().top ?? -1);
+      return t.every(x => x >= 0) && t[0] < t[1] && t[1] < t[2];
+    })).toBe(true);
+    await clickPresent('[data-rail-item="servers"]');
+    await waitVisible('[data-testid="servers-section"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
     // Servers say what they are and how they work, in three steps.
     expect(await browser.execute(() => document.querySelectorAll('[data-testid="servers-how"] li').length)).toBe(3);
+    await snap("settings-servers-empty.png");
+    await clickPresent('[data-rail-item="remote"]');
+    await waitVisible('[data-testid="remote-section"]');
+    await snap("settings-remote-control.png");
     // The phone card is open, with where to get the app on each platform.
     await waitVisible('[data-testid="remote-connect-phone"]');
     expect(await browser.execute(() => document.querySelector('[data-testid="phone-get-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/SqxhPr6a");
@@ -249,7 +262,7 @@ describe("Phones and servers", () => {
     await waitGone('[data-testid="project-mode-repo"]');
     await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
     await waitGone('[data-testid="server-ssh"]');
-    await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("servers"));
   });
 
   it("checks a server before saving it, and explains a failure in one sentence", async () => {
@@ -430,7 +443,7 @@ chmod +x ~/${BOX_DIR}/agent.sh`);
   onBox("removes the server", async () => {
     try {
       await dropBoxProjects();
-      await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("servers"));
       await clickPresent(`[data-testid="server-remove-${serverId}"]`);
       await clickPresent('[data-testid="confirm-ok"]');
       await waitGone(`[data-testid="server-row-${serverId}"]`);
@@ -567,8 +580,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // The old per-server section is gone for servers.
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="remote-machine-${id}"]`), serverId)).toBe(false);
     await snap("remote-local-server-row.png");
-    // Settings > Remote with the server listed, under the phone and computers.
-    await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+    // Settings > Servers with the server listed.
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("servers"));
     await waitVisible(`[data-testid="server-row-${serverId}"]`);
     await browser.execute((id) => document.querySelector(`[data-testid="server-row-${id}"]`)!.scrollIntoView({ block: "center" }), serverId);
     await snap("remote-settings-with-server.png");

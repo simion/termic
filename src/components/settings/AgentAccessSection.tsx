@@ -1,6 +1,6 @@
-// Agent access: every way an agent reaches Termic, one tab at a time: MCP
-// and the CLI. Tab ids are settings tabs ("mcp", "cli"). Pairing other
-// computers moved to Settings > Remote with phones and servers.
+// MCP & CLI: how agents on this computer drive Termic, one tab at a time.
+// Tab ids are settings tabs ("mcp", "cli"). Phones and other computers are
+// Settings > Remote control; servers, Settings > Servers.
 
 import { useTranslation } from "react-i18next";
 import { Plug, SquareTerminal } from "lucide-react";

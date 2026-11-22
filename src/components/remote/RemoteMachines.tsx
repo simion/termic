@@ -129,7 +129,7 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
       {off
         ? <Item testId="machine-menu-connect" onSelect={() => switchTo(true)}>{t("sidebar.connect")}</Item>
         : <Item testId="machine-menu-disconnect" onSelect={() => switchTo(false)}>{t("sidebar.disconnect")}</Item>}
-      <Item testId="server-menu-settings" onSelect={() => openSettings("remote")}>{server ? t("sidebar.serverSettings") : t("sidebar.pairingSettings")}</Item>
+      <Item testId="server-menu-settings" onSelect={() => openSettings(server ? "servers" : "remote")}>{server ? t("sidebar.serverSettings") : t("sidebar.pairingSettings")}</Item>
       <Sep />
       {server
         ? <Item testId="server-menu-remove" danger onSelect={() => void remove()}>{t("sidebar.removeServer")}</Item>
