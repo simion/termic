@@ -81,9 +81,9 @@ export function RemoteSidebarSection({ projects, renderProject }: { projects: Pr
             </DropdownTrigger>
           </Tip>
           <DropdownMenu>
-            <DropdownItem data-testid="sidebar-add-server" onSelect={() => setDialog({ serverDialog: true })}><Server className="h-4 w-4" />{t("sidebar.addServer")}</DropdownItem>
             <DropdownItem data-testid="sidebar-connect-phone" onSelect={() => setDialog({ phoneDialog: true })}><Smartphone className="h-4 w-4" />{t("phones.connect")}</DropdownItem>
             <DropdownItem data-testid="sidebar-pair-computer" onSelect={() => openSettings("remote")}><Monitor className="h-4 w-4" />{t("sidebar.pairComputer")}</DropdownItem>
+            <DropdownItem data-testid="sidebar-add-server" onSelect={() => setDialog({ serverDialog: true })}><Server className="h-4 w-4" />{t("sidebar.addServer")}</DropdownItem>
           </DropdownMenu>
         </DropdownRoot>
       </SidebarSectionHeader>

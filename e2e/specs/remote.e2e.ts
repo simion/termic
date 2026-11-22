@@ -155,8 +155,11 @@ describe("Phones and servers", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await waitVisible('[data-testid="remote-section-header"]');
     await openAddRemote();
-    expect(await browser.execute(() => ["sidebar-add-server", "sidebar-connect-phone", "sidebar-pair-computer"]
-      .every(id => !!document.querySelector(`[data-testid="${id}"]`)))).toBe(true);
+    // In order of use, the same as Settings > Remote.
+    expect(await browser.execute(() => {
+      const top = (id: string) => document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect().top ?? NaN;
+      return top("sidebar-connect-phone") < top("sidebar-pair-computer") && top("sidebar-pair-computer") < top("sidebar-add-server");
+    })).toBe(true);
     await snap("remote-sidebar-add-menu.png");
     await clickPresent('[data-testid="sidebar-connect-phone"]');
     await waitVisible('[data-testid="phone-qr"]');
@@ -222,11 +225,21 @@ describe("Phones and servers", () => {
     await expect(phone(link, phoneId, "My iPhone")).rejects.toThrow("closed 4001");
   });
 
+  it("opens Pair computers in settings from the sidebar's REMOTE section", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await openAddRemote();
+    await clickPresent('[data-testid="sidebar-pair-computer"]');
+    await waitVisible('[data-testid="settings-peers"]');
+    await browser.execute(() => document.querySelector('[data-testid="settings-peers"]')!.scrollIntoView({ block: "start" }));
+    await snap("remote-sidebar-pair.png");
+  });
+
   it("opens Add a server from the sidebar's REMOTE section too", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await openAddRemote();
     await clickPresent('[data-testid="sidebar-add-server"]');
     await waitVisible('[data-testid="server-ssh"]');
+    await snap("remote-sidebar-server.png");
     await browser.execute(() => window.__termic!.useRemote.getState().setDialog({ serverDialog: false }));
     await waitGone('[data-testid="server-ssh"]');
     // And from Add project: the link closes it and opens the server dialog.
@@ -525,6 +538,12 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // The old per-server section is gone for servers.
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="remote-machine-${id}"]`), serverId)).toBe(false);
     await snap("remote-local-server-row.png");
+    // Settings > Remote with the server listed, under the phone and computers.
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("remote"));
+    await waitVisible(`[data-testid="server-row-${serverId}"]`);
+    await browser.execute((id) => document.querySelector(`[data-testid="server-row-${id}"]`)!.scrollIntoView({ block: "center" }), serverId);
+    await snap("remote-settings-with-server.png");
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
   it("files the server's projects under it in REMOTE, with a menu to manage it", async () => {

@@ -259,7 +259,7 @@ contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Remote > Servers > **Add a Termic server** (also in
+Settings > Remote > Servers > **Add a server** (also in
 the sidebar's REMOTE + menu) is a checklist; nothing
 is saved until it passes:
 
