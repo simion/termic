@@ -329,7 +329,7 @@ export default {
       badAddress: "That is not an IP address, so nothing was changed.",
       badPort: "The port has to be a number from 1 to 65535, or empty.",
       advanced: "Network address (advanced)",
-      pairInstead: "To link this computer with another Termic, pair them in Settings > Remote, Other computers, instead: no token leaves either computer, and each decides what the other may do. This is for an MCP client on another device that is not Termic, or a private network you trust, such as Tailscale.",
+      pairInstead: "To link this computer with another Termic, pair them in Settings > Remote, Pair computers, instead: no token leaves either computer, and each decides what the other may do. This is for an MCP client on another device that is not Termic, or a private network you trust, such as Tailscale.",
       exposed: "Other devices on your network can reach this address. The token is still required, but it is sent unencrypted, and anyone who has it can create tasks and run agents on this computer. Your firewall may ask to allow Termic.",
     },
     connect: "Connect an agent",
@@ -356,7 +356,7 @@ export default {
   },
 
   peers: {
-    title: "Other computers",
+    title: "Pair computers",
     lead: "Another computer where you use the Termic app, such as your laptop and your desktop. Once paired, agents on either one can start and drive tasks on the other.",
     pair: {
       title: "Pair a computer",

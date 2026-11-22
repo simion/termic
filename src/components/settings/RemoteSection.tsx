@@ -1,9 +1,9 @@
 // Settings > Remote (docs/remote.md): everything that reaches this computer
-// or that it reaches. Phones paired with it (with where to get the app),
-// servers it runs agents on over SSH, and other Termic computers
-// (PeersSection, docs/peers.md). Phones and computers come in on one
-// listener, so its switch ("Share on this network") lives once, in
-// Other computers.
+// or that it reaches, in order of how much it is used. Phones paired with it
+// (with where to get the app), other Termic computers (PeersSection,
+// docs/peers.md), then servers it runs agents on over SSH. Phones and
+// computers come in on one listener, so its switch ("Share on this
+// network") lives once, in Pair computers.
 //
 // Phones come from `peer_status` (re-read on `peer://changed`, never
 // polled); servers from the remote store, which the backend keeps current.
@@ -107,6 +107,8 @@ export function RemoteSection() {
         )}
       </Card>
 
+      <div data-testid="settings-peers"><PeersSection /></div>
+
       <Card
         icon={<Server className="h-4 w-4" />}
         title={t("servers.title")}
@@ -136,7 +138,6 @@ export function RemoteSection() {
         )}
       </Card>
 
-      <div data-testid="settings-peers" className="mt-4"><PeersSection /></div>
     </div>
   );
 }

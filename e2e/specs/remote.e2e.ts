@@ -137,12 +137,12 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-phones"]'))).toBe(false);
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-servers"]'))).toBe(false);
-    // One page: phones first, then servers, then other computers.
+    // One page, in order of use: phones, then paired computers, then servers.
     expect(await browser.execute(() => {
       const top = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().top;
-      return top("remote-connect-phone") < top("remote-add-server") && top("remote-add-server") < top("settings-peers");
+      return top("remote-connect-phone") < top("settings-peers") && top("settings-peers") < top("remote-add-server");
     })).toBe(true);
-    // Termic servers say what they are and how they work, in three steps.
+    // Servers say what they are and how they work, in three steps.
     expect(await browser.execute(() => document.querySelectorAll('[data-testid="servers-how"] li').length)).toBe(3);
     // The phone card is open, with where to get the app on each platform.
     await waitVisible('[data-testid="remote-connect-phone"]');

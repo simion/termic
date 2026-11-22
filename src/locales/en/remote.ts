@@ -3,14 +3,14 @@
 export default {
   rail: {
     label: "Remote",
-    hint: "Servers, phones",
+    hint: "Phones, servers",
   },
   section: {
     title: "Remote",
-    lead: "Three ways to reach beyond this computer: your phone, Termic servers, and your other computers with Termic.",
+    lead: "Three ways to reach beyond this computer, most used first: control it from your phone, pair it with your other computers, and run agents on your own servers.",
   },
   phones: {
-    title: "Phones",
+    title: "Mobile remote control",
     ios: "iPhone (TestFlight)",
     android: "Android (Google Play)",
     lead: "Your phone as a remote control for this computer: answer agents, send prompts, watch their terminals. Nothing runs on the phone.",
@@ -59,8 +59,8 @@ export default {
     copied: "Link copied. It works once, within 5 minutes.",
   },
   servers: {
-    title: "Termic servers",
-    lead: "Run your agents on another machine, such as a Linux box at home or a cloud server, so they keep working while this computer sleeps or is closed.",
+    title: "Servers",
+    lead: "A dev box running termic-server, such as a Linux box at home or a cloud server: your repos are cloned there and your agents run there, so they keep working while this computer sleeps or is closed.",
     how1: "You give Termic a machine you can already reach with ssh. It copies one small program there, termic-server, into your home folder: no sudo, no Termic app, nothing else changes.",
     how2: "Your agents run on that machine, each task in its own git worktree there, like tasks here.",
     how3: "This computer connects through your own ssh and shows that machine's projects and tasks in your sidebar, under Remote. Close the laptop and they keep going; open it and they are there.",

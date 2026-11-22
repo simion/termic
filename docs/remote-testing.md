@@ -36,7 +36,7 @@ webview-only changes.
 
 ## 1. Paired computers (two desktops)
 
-On both machines: Settings > **Remote** > Other computers, and pair
+On both machines: Settings > **Remote** > Pair computers, and pair
 them (one shows a code, the other enters it; details in
 [peers.md](peers.md)). Make sure **Allow paired phones and computers to
 connect** is on in Settings > Remote. Then, on machine A, look at machine

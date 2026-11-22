@@ -391,7 +391,7 @@ describe("LAN pairing", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings()).catch(() => {});
   });
 
-  it("opens Other computers with sharing off and nothing listening", async () => {
+  it("opens Pair computers with sharing off and nothing listening", async () => {
     await setSharing(false);
     // Open the page FIRST, then turn MCP off behind it: the next case shows
     // sharing still turns MCP on when the page's own copy says it is on

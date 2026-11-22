@@ -158,7 +158,7 @@ forwarded from a viewer (the agent already has a terminal answering).
 ## Pairing a phone
 
 Settings > Remote (phones, then servers, then other computers) >
-**Phones** > **Connect a phone**, or Connect a phone in the sidebar's
+**Mobile remote control** > **Connect a phone**, or Connect a phone in the sidebar's
 REMOTE + menu, shows a QR code.
 The card and the dialog's first step link the app: iPhone through the
 public TestFlight link (open to anyone, no invite), Android through
@@ -259,7 +259,7 @@ contacts and protocol-version refusal. `/call` is gone.
 
 ## Servers
 
-Settings > Remote > Termic servers > **Add a Termic server** (also in
+Settings > Remote > Servers > **Add a Termic server** (also in
 the sidebar's REMOTE + menu) is a checklist; nothing
 is saved until it passes:
 

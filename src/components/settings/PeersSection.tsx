@@ -1,4 +1,4 @@
-// Other computers, in Settings > Remote (LAN pairing, docs/peers.md). Off by
+// Pair computers, in Settings > Remote (LAN pairing, docs/peers.md). Off by
 // default: turning it on runs a second listener on the network and
 // advertises this Termic over mDNS, so another Termic can ask to pair.
 // Paired phones come in on the same listener, so this switch is theirs too.
