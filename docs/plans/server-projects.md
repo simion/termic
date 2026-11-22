@@ -142,6 +142,48 @@ table pushed to it then. Open risk in step 3: agent hooks on the box
 have no transport back to the desktop yet, so server agents read state
 from titles (and the floor) until one exists.
 
+### Agent hooks on the box
+
+Hooks are not a socket back to the desktop: each one writes an OSC into
+the agent's own terminal (`$TERMIC_PTY`, docs/agent-hooks.md
+"Transport"), which is why they already work inside Docker. So on a box:
+the desktop's installer writes the agents' hook config there (through
+`exec`, which means the installer goes through `TaskHost` with the rest
+of step 4), and the agent is spawned with `TERMIC_PTY` set to its slave
+path on the box. The OSCs then ride the PTY stream the desktop already
+reads, and its existing parser gives a server agent exactly a local
+agent's state. The daemon keeps them in the ring for a reconnect, and
+can read the same OSCs itself for an exact state with nobody attached.
+`detect.rs` stays only as the fallback for agents without hooks. Codex
+trusts hooks per machine, so its trust step runs on the box too.
+
+## Later: a phone straight to a server (prepare, do not build)
+
+The phone would connect the way the desktop does, `ssh host termic-server
+bridge`, with its own key: no new port on the box. Pairing goes through
+the desktop, which already has ssh: the phone makes a key (Keychain), and
+the desktop adds its public half to the box's `authorized_keys` with a
+forced command, `command="~/.termic/bin/termic-server bridge",
+no-port-forwarding,no-pty`, so the key can do nothing but talk to
+termic-server. Unpairing deletes that line. A QR printed by the server
+was considered and dropped: it needs a network listener and a pairing
+store on the box, more to protect for nothing sshd does not already give.
+
+What keeps it possible, all cheap now:
+
+1. ssh + `bridge` stays the only way into a server.
+2. The box serves a client with no desktop: daemon-owned PTYs (step 2),
+   hooks on the box, the queued-prompt drain.
+3. The desktop pushes config instead of the box having its own: its
+   agent registry into the `agents.json` the daemon already reads
+   (replacing `BUILTIN`), later the task-creation rules. One source of
+   truth, carried to the box, so a phone could create a task there.
+4. Names, groups and pins are pushed to the box (rename already is), so a
+   direct client sees the desktop's organisation.
+5. One stream host (step 6), so the box speaks the phone's protocol with
+   the desktop's code.
+6. Pairing records leave room for "a phone's key on server X".
+
 ## Stages
 
 1. Model + organization: `Project.server`, server projects listed in
