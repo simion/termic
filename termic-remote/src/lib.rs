@@ -24,6 +24,7 @@ pub mod compat;
 pub mod conn;
 pub mod pty;
 pub mod framed;
+pub mod outbox;
 mod pb;
 pub mod screen;
 pub mod seal;

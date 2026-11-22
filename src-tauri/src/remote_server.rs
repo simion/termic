@@ -23,13 +23,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use termic_proto::{ErrorCode, Reply, Request};
 use termic_remote::conn::{self, MsgReader, MsgWriter};
+use termic_remote::outbox::Outbox;
 use termic_remote::wire::{self, caps, ClientKind, ClientMsg, Diff, HostKind, ServerMsg, RowGroup, RowPr, RowProfile, RowProp, TabRow, TaskRow};
 use termic_remote::ws;
 
@@ -41,10 +42,6 @@ use crate::peers::{Grant, Node};
 /// ping every 20 s; a phone that was backgrounded and frozen by iOS is
 /// noticed here and its terminal tap released.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
-/// Terminal bytes queued for one client beyond which it is "behind": live
-/// output for it is dropped and it gets the ring again once the queue
-/// drains. 1 MiB is ~4 full 256 KiB backlogs, seconds of a busy TUI.
-const BEHIND_BYTES: usize = 1024 * 1024;
 /// The retained output a resync replays (the whole PTY ring).
 const BACKLOG_BYTES: usize = 256 * 1024;
 /// How long the state watcher waits for the agent cache to change before
@@ -81,16 +78,6 @@ impl StreamClient {
     }
 }
 
-enum Out {
-    Msg(ServerMsg),
-    /// Terminal output and its raw length (for the behind accounting).
-    Term(Vec<u8>, usize),
-    Resync,
-    /// The connection ended: the writer closes the socket and returns. Its
-    /// own Arc<Session> holds a sender, so the queue never closes by itself.
-    Stop,
-}
-
 /// The open terminal of a connection.
 #[derive(Clone)]
 struct TermState {
@@ -108,9 +95,7 @@ struct Session {
     host: Arc<dyn CliHost>,
     node: Arc<Node>,
     client: StreamClient,
-    out: mpsc::Sender<Out>,
-    queued: Arc<AtomicUsize>,
-    behind: Arc<AtomicBool>,
+    out: Outbox,
     term: Arc<Mutex<Option<TermState>>>,
     /// The server whose terminal this client has open, when the task lives
     /// on a server (server_projects.rs): input, size and close go there.
@@ -177,21 +162,23 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     if writer.send(&welcome).is_err() {
         return;
     }
-    let (tx, rx) = mpsc::channel::<Out>();
+    let (out, rx) = Outbox::new();
     let s = Arc::new(Session {
         host: host.clone(),
         node: node.clone(),
         client: client.clone(),
-        out: tx,
-        queued: Arc::new(AtomicUsize::new(0)),
-        behind: Arc::new(AtomicBool::new(false)),
+        out,
         term: Arc::new(Mutex::new(None)),
         done: Arc::new(AtomicBool::new(false)),
     });
 
     let writer_thread = {
         let s = s.clone();
-        std::thread::spawn(move || write_loop(&s, rx, writer))
+        let mut writer = writer;
+        std::thread::spawn(move || {
+            s.out.write_loop(rx, &mut writer, || term_reset(&s));
+            writer.close(1000, "");
+        })
     };
     let state_thread = (client.drives() && client.wants_tasks).then(|| {
         let s = s.clone();
@@ -212,7 +199,7 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     }
     s.done.store(true, Ordering::SeqCst);
     close_term(&s);
-    let _ = s.out.send(Out::Stop);
+    s.out.stop();
     drop(s);
     let _ = writer_thread.join();
     if let Some(t) = state_thread {
@@ -245,7 +232,7 @@ fn seen_by_phone(s: &Session, task: &str) {
 }
 
 fn send(s: &Session, msg: ServerMsg) {
-    let _ = s.out.send(Out::Msg(msg));
+    s.out.send(msg);
 }
 
 fn error(s: &Session, message: impl Into<String>) {
@@ -352,7 +339,7 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
         }
         ClientMsg::Resync {} => {
-            let _ = s.out.send(Out::Resync);
+            s.out.resync();
         }
         // Extra PTYs run on a termic-server; the desktop does not offer
         // `pty` (a phone or a paired machine opens no shell here).
@@ -487,7 +474,7 @@ fn open_term(s: &Arc<Session>, task: &str, tab: Option<&str>) {
     };
     let (rows, cols) = s.host.pty_size(&pty_id).unwrap_or((24, 80));
     *s.term.lock().unwrap() = Some(TermState { task_id: task_id.clone(), tab: tab.map(str::to_string), pty_id: pty_id.clone(), tx: att.tx.clone(), restore: keep });
-    s.behind.store(false, Ordering::SeqCst);
+    s.out.caught_up();
     send(s, ServerMsg::TermReset { task: task_id, tab: tab.map(str::to_string), cols, rows, data: termic_remote::b64(&att.backlog) });
     let s2 = s.clone();
     std::thread::spawn(move || forward_term(&s2, att.rx, pty_id, (rows, cols)));
@@ -519,15 +506,7 @@ fn forward_term(s: &Session, rx: mpsc::Receiver<crate::PtyTapMsg>, pty_id: Strin
                         send(s, ServerMsg::TermResize { cols: now.1, rows: now.0 });
                     }
                 }
-                if s.behind.load(Ordering::SeqCst) {
-                    continue;
-                }
-                let n = bytes.len();
-                if s.queued.fetch_add(n, Ordering::SeqCst) + n > BEHIND_BYTES {
-                    s.behind.store(true, Ordering::SeqCst);
-                    continue;
-                }
-                let _ = s.out.send(Out::Term(bytes, n));
+                s.out.term(bytes);
             }
             Ok(crate::PtyTapMsg::Detach(reason)) => {
                 if reason != CLOSE_TAP {
@@ -549,37 +528,12 @@ fn forward_term(s: &Session, rx: mpsc::Receiver<crate::PtyTapMsg>, pty_id: Strin
 
 // ───────────────────────────── writing ───────────────────────────────
 
-fn write_loop(s: &Session, rx: mpsc::Receiver<Out>, mut w: MsgWriter) {
-    let resync = |w: &mut MsgWriter| -> std::io::Result<()> {
-        let Some(t) = s.term.lock().unwrap().clone() else { return Ok(()) };
-        let (rows, cols) = s.host.pty_size(&t.pty_id).unwrap_or((24, 80));
-        let data = s.host.pty_logs(&t.pty_id, BACKLOG_BYTES).map(|(b, _)| b).unwrap_or_default();
-        s.behind.store(false, Ordering::SeqCst);
-        w.send(&ServerMsg::TermReset { task: t.task_id, tab: t.tab, cols, rows, data: termic_remote::b64(&data) })
-    };
-    while let Ok(item) = rx.recv() {
-        let r = match item {
-            Out::Msg(m) => w.send(&m),
-            Out::Term(bytes, n) => {
-                s.queued.fetch_sub(n, Ordering::SeqCst);
-                if s.behind.load(Ordering::SeqCst) {
-                    Ok(())
-                } else {
-                    w.send(&ServerMsg::TermData { data: termic_remote::b64(&bytes) })
-                }
-            }
-            Out::Resync => resync(&mut w),
-            Out::Stop => break,
-        };
-        if r.is_err() {
-            break;
-        }
-        // Caught up after falling behind: the latest screen, not a replay.
-        if s.behind.load(Ordering::SeqCst) && s.queued.load(Ordering::SeqCst) == 0 && resync(&mut w).is_err() {
-            break;
-        }
-    }
-    w.close(1000, "");
+/// The open terminal's current screen, for a client that fell behind.
+fn term_reset(s: &Session) -> Option<ServerMsg> {
+    let t = s.term.lock().unwrap().clone()?;
+    let (rows, cols) = s.host.pty_size(&t.pty_id).unwrap_or((24, 80));
+    let data = s.host.pty_logs(&t.pty_id, BACKLOG_BYTES).map(|(b, _)| b).unwrap_or_default();
+    Some(ServerMsg::TermReset { task: t.task_id, tab: t.tab, cols, rows, data: termic_remote::b64(&data) })
 }
 
 // ───────────────────────────── state ─────────────────────────────────

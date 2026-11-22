@@ -17,6 +17,7 @@ use std::time::Duration;
 use termic_proto::{ErrorCode, Reply, Request};
 use termic_remote::conn::{MsgReader, MsgWriter};
 use termic_remote::framed::{FramedReader, FramedWriter};
+use termic_remote::outbox::Outbox;
 use termic_remote::wire::{self, caps, ClientMsg, HostKind, ServerMsg, TaskRow};
 
 use crate::daemon::Daemon;
@@ -26,23 +27,12 @@ use crate::verbs;
 
 /// Clients ping every 20 s; this much silence means the other end is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
-/// Terminal bytes queued for one client beyond which it is "behind".
-const BEHIND_BYTES: usize = 1024 * 1024;
 /// Calls in flight per connection.
 const MAX_CALLS: usize = 32;
 /// Keystrokes per message.
 const MAX_KEYS: usize = 64 * 1024;
 /// `pty_open` PTYs the daemon keeps running at once, across connections.
 const MAX_PTYS: usize = 64;
-
-enum Out {
-    Msg(ServerMsg),
-    Term(Vec<u8>, usize),
-    Resync,
-    /// The connection ended. The writer holds the session (and with it
-    /// its own sender), so it is told rather than left to notice.
-    Stop,
-}
 
 #[derive(Clone)]
 struct Term {
@@ -55,9 +45,7 @@ struct Term {
 
 struct Session {
     d: Arc<Daemon>,
-    out: mpsc::Sender<Out>,
-    queued: AtomicUsize,
-    behind: AtomicBool,
+    out: Outbox,
     term: Mutex<Option<Term>>,
     gen: AtomicU64,
     calls: AtomicUsize,
@@ -106,12 +94,10 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
         return;
     }
     util::log(&format!("client connected: {name}"));
-    let (tx, rx) = mpsc::channel();
+    let (out, rx) = Outbox::new();
     let s = Arc::new(Session {
         d: d.clone(),
-        out: tx,
-        queued: AtomicUsize::new(0),
-        behind: AtomicBool::new(false),
+        out,
         term: Mutex::new(None),
         gen: AtomicU64::new(0),
         calls: AtomicUsize::new(0),
@@ -120,7 +106,8 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
     });
     let writer_thread = {
         let s = s.clone();
-        std::thread::spawn(move || write_loop(&s, rx, writer))
+        let mut writer = writer;
+        std::thread::spawn(move || s.out.write_loop(rx, &mut writer, || term_reset(&s)))
     };
     let state_thread = wants_tasks.then(|| {
         let s = s.clone();
@@ -139,14 +126,14 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
     if let Some(t) = state_thread {
         let _ = t.join();
     }
-    let _ = s.out.send(Out::Stop);
+    s.out.stop();
     let _ = writer_thread.join();
     kill();
     util::log(&format!("client disconnected: {name}"));
 }
 
 fn send(s: &Session, msg: ServerMsg) {
-    let _ = s.out.send(Out::Msg(msg));
+    s.out.send(msg);
 }
 
 fn error(s: &Session, message: impl Into<String>) {
@@ -273,7 +260,7 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
             }
         }
         ClientMsg::Resync {} => {
-            let _ = s.out.send(Out::Resync);
+            s.out.resync();
         }
         ClientMsg::Transcript { id, task } => {
             // Reading the chat is looking at the task: "done" is seen.
@@ -447,7 +434,7 @@ fn open_term(s: &Arc<Session>, task: &str, tab: Option<String>) {
     s.d.poke();
     let gen = s.gen.fetch_add(1, Ordering::SeqCst) + 1;
     *s.term.lock().unwrap() = Some(Term { gen, task_id: task_id.clone(), tab: tab.clone(), pty, tap });
-    s.behind.store(false, Ordering::SeqCst);
+    s.out.caught_up();
     let (rows, cols) = live_size(s);
     send(s, ServerMsg::TermReset { task: task_id, tab, cols, rows, data: termic_remote::b64(&backlog) });
     let s2 = s.clone();
@@ -476,16 +463,7 @@ fn forward(s: &Session, rx: mpsc::Receiver<TapMsg>, gen: u64) {
                 if s.done.load(Ordering::SeqCst) {
                     return;
                 }
-                if s.behind.load(Ordering::SeqCst) {
-                    continue;
-                }
-                let n = bytes.len();
-                if s.queued.fetch_add(n, Ordering::SeqCst) + n > BEHIND_BYTES {
-                    s.queued.fetch_sub(n, Ordering::SeqCst);
-                    s.behind.store(true, Ordering::SeqCst);
-                    continue;
-                }
-                let _ = s.out.send(Out::Term(bytes, n));
+                s.out.term(bytes);
             }
             // In order with the output around it: the same queue.
             Ok(TapMsg::Resize(rows, cols)) => {
@@ -506,36 +484,12 @@ fn forward(s: &Session, rx: mpsc::Receiver<TapMsg>, gen: u64) {
     }
 }
 
-fn write_loop(s: &Session, rx: mpsc::Receiver<Out>, mut w: MsgWriter) {
-    let resync = |w: &mut MsgWriter| -> std::io::Result<()> {
-        let Some(t) = s.term.lock().unwrap().clone() else { return Ok(()) };
-        let (data, _) = t.pty.tail(pty::RING_BYTES);
-        s.behind.store(false, Ordering::SeqCst);
-        let (rows, cols) = t.pty.size();
-        w.send(&ServerMsg::TermReset { task: t.task_id, tab: t.tab, cols, rows, data: termic_remote::b64(&data) })
-    };
-    while let Ok(item) = rx.recv() {
-        let r = match item {
-            Out::Msg(m) => w.send(&m),
-            Out::Term(bytes, n) => {
-                s.queued.fetch_sub(n, Ordering::SeqCst);
-                if s.behind.load(Ordering::SeqCst) {
-                    Ok(())
-                } else {
-                    w.send(&ServerMsg::TermData { data: termic_remote::b64(&bytes) })
-                }
-            }
-            Out::Resync => resync(&mut w),
-            Out::Stop => break,
-        };
-        if r.is_err() {
-            break;
-        }
-        // Caught up after falling behind: the latest screen, not a replay.
-        if s.behind.load(Ordering::SeqCst) && s.queued.load(Ordering::SeqCst) == 0 && resync(&mut w).is_err() {
-            break;
-        }
-    }
+/// The open terminal's current screen, for a client that fell behind.
+fn term_reset(s: &Session) -> Option<ServerMsg> {
+    let t = s.term.lock().unwrap().clone()?;
+    let (data, _) = t.pty.tail(pty::RING_BYTES);
+    let (rows, cols) = t.pty.size();
+    Some(ServerMsg::TermReset { task: t.task_id, tab: t.tab, cols, rows, data: termic_remote::b64(&data) })
 }
 
 // ───────────────────────────── state ─────────────────────────────────

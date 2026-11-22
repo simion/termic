@@ -160,8 +160,16 @@ Order, each step shippable on its own:
    connected desktop resyncs (`server_projects.rs` `push_org_if_changed`
    and `newer_box_org`). The box keeps `exec`, the PTY family, the
    hook-OSC reader and `detect.rs` as the fallback state.
-6. **One stream host**: the shared session loop of `session.rs` and
-   `remote_server.rs` in `termic-remote` behind a host trait.
+6. **One stream host** (done): what the two hosts' session loops shared
+   line for line, the outgoing queue, its back-pressure and the writer
+   that resyncs a client that fell behind, is `termic-remote`'s
+   `outbox.rs`, used by `session.rs` and `remote_server.rs`. The copies
+   had already drifted: the desktop's never uncounted a dropped chunk, so
+   a phone that fell behind once never caught up. What stays per host is
+   host logic, not a copy: the desktop's snapshot is built from its store
+   (folders, PRs, profiles), the box's from its records; their verbs
+   differ. A trait over those would be an indirection with one
+   implementation each.
 
 ### Step 3, as found in the code (2026-11-22)
 
