@@ -424,9 +424,10 @@ describe("LAN pairing", () => {
     // The old "peers" tab lands on Remote, with phones and servers.
     await waitVisible('[data-testid="remote-section"]');
     expect(await browser.execute(() => document.querySelector('[data-rail-item="remote"]')!.className.includes("color-sel"))).toBe(true);
-    // Off is off, and short: with nothing paired the section stops at its
-    // toggle.
-    for (const gone of ["peers-address-input", "peers-self-name", "peers-paired-empty"]) {
+    // Off is off, and short: the card is its empty state, with no footer
+    // and no pairing controls until Pair a computer is clicked.
+    await waitVisible('[data-testid="peers-paired-empty"]');
+    for (const gone of ["peers-address-input", "peers-self-name", "peers-self-address", "peers-nearby-empty", "peers-pair-dialog"]) {
       expect(await browser.execute((id) => !!document.querySelector(`[data-testid="${id}"]`), gone)).toBe(false);
     }
     expect(await browser.execute(() => {
@@ -448,7 +449,7 @@ describe("LAN pairing", () => {
     await waitFor("MCP binds",
       async (): Promise<{ url: string | null }> => browser.execute(() => window.__termic!.invoke("mcp_status")) as never,
       v => !!v.url);
-    await waitVisible('[data-testid="peers-agent-setup"]');
+    await waitVisible('[data-testid="peers-agent-status"]');
     const s = await waitFor("the listener binds", status, v => v.port !== null);
     appPort = s.port;
     expect(s.addresses).toEqual([`127.0.0.1:${appPort}`]);
@@ -464,13 +465,18 @@ describe("LAN pairing", () => {
     expect(await browser.execute(() => document.querySelector('[data-testid="peers-self-address"]')!.textContent))
       .not.toContain(`:${appPort}:`);
     await waitForAttr('[data-testid="peers-paired-empty"]', "data-testid", "peers-paired-empty");
-    // Pairing is one list: nearby computers, each with a Pair button.
-    await waitVisible('[data-testid="peers-nearby-empty"]');
-    await browser.execute(() => document.querySelector('[data-testid="peers-nearby-empty"]')!.scrollIntoView({ block: "center" }));
+    await browser.execute(() => document.querySelector('[data-testid="settings-peers"]')!.scrollIntoView({ block: "center" }));
     await snap("peers-on.png");
+    // Nearby computers show only once the person asks to pair: a dialog.
+    await clickPresent('[data-testid="peers-pair-open"]');
+    await waitVisible('[data-testid="peers-nearby-empty"]');
+    await snap("peers-pair-dialog.png");
+    await browser.keys("Escape");
+    await waitGone('[data-testid="peers-pair-dialog"]');
   });
 
   it("renames this machine, and the new name is what others see", async () => {
+    await clickPresent('[data-testid="peers-self-edit"]');
     await setInputValue('[data-testid="peers-self-name"]', "E2E Studio");
     await browser.keys("Enter");
     await waitFor("the name is saved", status, v => v.self_name === "E2E Studio");
@@ -542,6 +548,11 @@ describe("LAN pairing", () => {
 
     const row = `[data-testid="peer-row-${incoming.id}"]`;
     await waitForAttr(row, "data-grant", "drive");
+    // One compact row: the role picked in the dialog shows on it, and the
+    // rest is behind the chevron.
+    expect(await browser.execute((id) => (document.querySelector(`[data-testid="peer-role-${id}"]`) as HTMLSelectElement).value, incoming.id)).toBe("worker");
+    expect(await browser.execute((id) => !!document.querySelector(`[data-testid="peer-note-${id}"]`), incoming.id)).toBe(false);
+    await clickPresent(`[data-testid="peer-expand-${incoming.id}"]`);
     await waitForAttr(`[data-testid="peer-their-grant-${incoming.id}"]`, "data-their-grant", "drive");
     await snap("peers-paired-list.png");
   });
@@ -608,6 +619,7 @@ describe("LAN pairing", () => {
 
   it("keeps a note of what a paired machine is for, and the CLI's peer list carries it", async () => {
     const input = `[data-testid="peer-note-${incoming.id}"]`;
+    if (!await browser.execute((sel) => !!document.querySelector(sel), input)) await clickPresent(`[data-testid="peer-expand-${incoming.id}"]`);
     await setInputValue(input, "  Windows builds and   installer tests ");
     await browser.keys("Enter");
     // Saved as one tidy line.
@@ -628,6 +640,15 @@ describe("LAN pairing", () => {
   });
 
   it("unpairs from Settings after a confirmation, and the old key stops working", async () => {
+    // A Radix menu opens on pointerdown, which a scripted click never sends.
+    await browser.waitUntil(() => browser.execute((id) => {
+      if (document.querySelector(`[data-testid="peer-unpair-${id}"]`)) return true;
+      const el = document.querySelector(`[data-testid="peer-menu-${id}"]`) as HTMLElement;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      return !!document.querySelector(`[data-testid="peer-unpair-${id}"]`);
+    }, incoming.id), { timeout: 10_000, timeoutMsg: "the paired computer's menu never opened" });
     await clickPresent(`[data-testid="peer-unpair-${incoming.id}"]`);
     await clickPresent('[data-testid="confirm-ok"]');
     await waitFor("the pair is gone", status, v => !v.peers.some((p: any) => p.id === incoming.id));
@@ -702,6 +723,8 @@ describe("LAN pairing", () => {
     after(() => { server?.close(); });
 
     it("pairs by address with the code the other machine shows, and refuses a wrong one", async () => {
+      await clickPresent('[data-testid="peers-pair-open"]');
+      await waitVisible('[data-testid="peers-pair-dialog"]');
       // Pair is locked until a coding agent has Termic's MCP server. The
       // test machine may have neither, so take the "added it myself" way.
       if (await browser.execute(() => document.querySelector('[data-testid="peers-agent-setup"]')?.getAttribute("data-ready") === "false")) {
@@ -726,6 +749,9 @@ describe("LAN pairing", () => {
       await waitVisible(dialog("outgoing"));
       await snap("peers-outgoing-dialog.png");
       await clickPresent('[data-testid="peer-pair-skip"]');
+      // A successful pair closes the pair dialog.
+      await waitGone('[data-testid="peers-pair-dialog"]');
+      await clickPresent(`[data-testid="peer-expand-${remote.id}"]`);
       await waitForAttr(`[data-testid="peer-their-grant-${remote.id}"]`, "data-their-grant", "drive");
       // Paired computers work together: the app lets it drive here too.
       await waitForAttr(`[data-testid="peer-row-${remote.id}"]`, "data-grant", "drive");

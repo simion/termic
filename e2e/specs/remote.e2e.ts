@@ -146,8 +146,8 @@ describe("Phones and servers", () => {
     expect(await browser.execute(() => document.querySelectorAll('[data-testid="servers-how"] li').length)).toBe(3);
     // The phone card is open, with where to get the app on each platform.
     await waitVisible('[data-testid="remote-connect-phone"]');
-    expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/SqxhPr6a");
-    expect(await browser.execute(() => document.querySelector('[data-testid="phone-app-android"]')?.getAttribute("data-url"))).toBe("https://play.google.com/store/apps/details?id=dev.termic.remote");
+    expect(await browser.execute(() => document.querySelector('[data-testid="phone-get-ios"]')?.getAttribute("data-url"))).toBe("https://testflight.apple.com/join/SqxhPr6a");
+    expect(await browser.execute(() => document.querySelector('[data-testid="phone-get-android"]')?.getAttribute("data-url"))).toBe("https://play.google.com/store/apps/details?id=dev.termic.remote");
     await snap("remote-settings-empty.png");
   });
 

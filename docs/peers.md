@@ -347,26 +347,34 @@ Settings > Remote, between Mobile remote control and Servers: one page for every
 that reaches this computer or that it reaches (docs/remote.md). It used
 to sit at the top of Agent access's MCP tab, because agents reach another
 machine through this Termic's MCP tools; it moved because phones come in
-on the same listener, and its switch is theirs too. Turning sharing on
-still turns the MCP endpoint on with it (turning sharing off leaves MCP
-alone). Off with nothing paired, Pair computers is its toggle and one
-line. The switch follows `peer_status`, not the settings copy, because
-Connect a phone turns sharing on from its own dialog. The old `peers`
-settings tab id opens Remote.
+on the same listener. "Share on this network" is therefore a page-level
+row above all three cards (`ShareToggle`), not part of Pair computers.
+Turning sharing on still turns the MCP endpoint on with it (turning
+sharing off leaves MCP alone). The switch follows `peer_status`, not the
+settings copy, because Connect a phone and Pair a computer turn sharing
+on from their own buttons. The old `peers` settings tab id opens Remote.
 
 The MCP endpoint's network address sits folded under "Network address
 (advanced)", open only when it is already off loopback, with a line pointing here: it used to read as THE way to
 reach another machine, with one all-powerful token sent in the clear.
 
-Pair computers: the toggle with a plain warning; the
-pairing-mode panel (the code in large type, a countdown, wrong codes so
-far, Stop pairing) or its "Pair a computer" button; Nearby with "Ready to
-pair" rows first, each asking for the code inline and submitting at four
-digits; this
-computer's name, address and any bind or discovery error, plus a
-platform hint; paired computers (inline rename, "What it is for" with
-role presets, online or last seen, "May do on this computer", "Lets this
-computer", Unpair behind a confirm); Pair by address (address and code).
+Pair computers is a card like the other two (`RemoteCard.tsx`), and shows
+only what is needed: the paired list, or "No computer is paired yet."
+Everything for pairing waits behind **Pair a computer**, which turns
+sharing on if it is off and opens a dialog: Nearby with "Ready to pair"
+rows first, each asking for the code inline and submitting at four
+digits; refresh; "Not listed? Pair by address"; the network-blocked
+banner; and the agent setup, loud, while no agent has Termic's MCP. A
+successful pair closes it. Each paired computer is one compact two-line
+row (online dot, inline rename, online or last seen and the address, a
+warning such as "needs a Termic update" in place of the tail), with a
+role select (Just a pair / Orchestrator / Worker, or "Own note" for a
+hand-written one), the grant select, a menu (Edit note, Unpair behind a
+confirm) and a chevron that opens what it calls itself, what it lets
+this computer do, and the note; a hand-written note opens it by itself.
+While sharing is on, the card's footer is one line: this computer's
+name (renamed in a popover) and address, any bind or discovery error,
+and the agent setup as a popover on the right.
 The after-pairing dialog is global, on both machines, since the one that
 showed the code may be on any screen: the one line on working together,
 then "What is X for?" with Just a pair / Orchestrator / Worker presets that

@@ -7,7 +7,7 @@ export default {
   },
   section: {
     title: "Remote",
-    lead: "Three ways to reach beyond this computer, most used first: control it from your phone, pair it with your other computers, and run agents on your own servers.",
+    lead: "Control this computer from your phone, pair it with your other computers, and run agents on your own servers.",
   },
   phones: {
     title: "Mobile remote control",
@@ -16,7 +16,7 @@ export default {
     lead: "Your phone as a remote control for this computer: answer agents, send prompts, watch their terminals. Nothing runs on the phone.",
     connect: "Connect a phone",
     connectAnother: "Connect another phone",
-    empty: "No phone is paired yet.",
+    empty: "No phone is paired yet. Get Termic Remote for <ios>iPhone</ios> or <android>Android</android>.",
     connectedNow: "Connected now",
     lastSeen: "Last seen {{when}}",
     neverSeen: "Not connected yet",

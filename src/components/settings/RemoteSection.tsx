@@ -9,17 +9,18 @@
 // polled); servers from the remote store, which the backend keeps current.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, RefreshCw, Server, Smartphone } from "lucide-react";
 import { PEER_CHANGED_EVENT, peerStatus } from "@/lib/ipc";
 import type { PeerStatus } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
-import { PhoneAppLinks } from "@/components/remote/ConnectPhoneDialog";
-import { cn } from "@/lib/utils";
+import { ANDROID_APP_URL, IOS_APP_URL } from "@/components/remote/ConnectPhoneDialog";
+import { openExternalUrl } from "@/lib/ipc";
 import { SectionTitle } from "./Controls";
-import { PeersSection } from "./PeersSection";
+import { PeersSection, ShareToggle } from "./PeersSection";
+import { Card, DeviceRow, Empty } from "./RemoteCard";
 import {
   phoneRename, phoneUnpair, remoteReconnect, serverRemove, serverRename, useRemote,
   type MachineView, type PhoneView,
@@ -67,8 +68,6 @@ function useRelative() {
   }, [i18n.language]);
 }
 
-const inline = "h-8 rounded-md border border-transparent bg-transparent px-1.5 outline-none hover:border-[var(--color-border-soft)] focus:border-[var(--color-accent)]/50 focus:bg-[var(--color-bg)]";
-
 async function confirmed(title: string, message: string, label: string): Promise<boolean> {
   const ok = await useUI.getState().askConfirm({ title, message, confirmLabel: label, destructive: true });
   return typeof ok === "boolean" ? ok : ok.confirmed;
@@ -89,12 +88,14 @@ export function RemoteSection() {
         <p className="text-[13px] text-[var(--color-fg-dim)]">{t("section.lead")}</p>
       </div>
 
+      <ShareToggle />
+
       <Card
         icon={<Smartphone className="h-4 w-4" />}
         title={t("phones.title")}
-        lead={<>{t("phones.lead")}<PhoneAppLinks className="mt-2" /></>}
+        lead={t("phones.lead")}
         action={
-          <Button variant="secondary" size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
+          <Button variant={phones.length === 0 ? "primary" : "secondary"} size="sm" data-testid="remote-connect-phone" className="shrink-0" onClick={() => setDialog({ phoneDialog: true })}>
             <Plus className="h-3.5 w-3.5" />
             {phones.length === 0 ? t("phones.connect") : t("phones.connectAnother")}
           </Button>
@@ -103,7 +104,18 @@ export function RemoteSection() {
         {phones.length > 0 ? (
           <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
         ) : (
-          <Empty>{t("phones.empty")}</Empty>
+          // Whoever paired a phone has the app: the links live only here
+          // and in the Connect a phone dialog.
+          <Empty>
+            <Trans
+              t={t}
+              i18nKey="phones.empty"
+              components={{
+                ios: <StoreLink id="phone-get-ios" url={IOS_APP_URL} />,
+                android: <StoreLink id="phone-get-android" url={ANDROID_APP_URL} />,
+              }}
+            />
+          </Empty>
         )}
       </Card>
 
@@ -138,75 +150,6 @@ export function RemoteSection() {
         )}
       </Card>
 
-    </div>
-  );
-}
-
-/** One area of the page: what it is and its action on top, its list, then
- *  an optional footer (the switch that governs it). */
-function Card({ icon, title, lead, action, footer, children }: {
-  icon: React.ReactNode; title: string; lead: React.ReactNode; action: React.ReactNode; footer?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
-      <header className="flex items-start gap-3 px-4 pt-4 pb-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-hover)] text-[var(--color-fg-dim)]">{icon}</span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-medium leading-8">{title}</div>
-          <div className="text-[12.5px] text-[var(--color-fg-dim)]">{lead}</div>
-        </div>
-        <div className="pt-0.5">{action}</div>
-      </header>
-      <div className="px-2 pb-2">{children}</div>
-      {footer && <div className="border-t border-[var(--color-border-soft)] px-4 py-3">{footer}</div>}
-    </section>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mx-2 mb-2 rounded-lg border border-dashed border-[var(--color-border)] px-3 py-3 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-      {children}
-    </div>
-  );
-}
-
-/** A device in a list: its icon with a status dot, a renameable name, the
- *  status line under it, and its actions on the right. */
-function DeviceRow({ testId, dataState, icon, dot, name, onRename, renameLabel, status, detail, actions }: {
-  testId: string; dataState: Record<string, string>; icon: React.ReactNode; dot: string; name: string;
-  onRename: (next: string) => Promise<void>; renameLabel: string; status: React.ReactNode; detail?: React.ReactNode; actions: React.ReactNode;
-}) {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => { setDraft(name); }, [name]);
-  async function save() {
-    const next = draft.trim();
-    if (!next || next === name) { setDraft(name); return; }
-    await onRename(next);
-  }
-  return (
-    <div data-testid={testId} {...dataState} className="group flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-[var(--color-hover)]">
-      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] text-[var(--color-fg-dim)]">
-        {icon}
-        <span aria-hidden className={cn("absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]", dot)} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <input
-          aria-label={renameLabel}
-          value={draft}
-          maxLength={60}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={() => void save()}
-          onKeyDown={e => {
-            if (e.key === "Enter") e.currentTarget.blur();
-            if (e.key === "Escape") { e.stopPropagation(); setDraft(name); }
-          }}
-          className={cn(inline, "w-full text-[14px] font-medium text-[var(--color-fg)]")}
-        />
-        <div className="truncate px-1.5 text-[12px] text-[var(--color-fg-faint)]">{status}</div>
-        {detail}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">{actions}</div>
     </div>
   );
 }
@@ -282,5 +225,20 @@ function ServerRow({ machine }: { machine: MachineView }) {
         </Button>
       </>}
     />
+  );
+}
+
+/** A store link inside a sentence (the phone card's empty state). */
+function StoreLink({ id, url, children }: { id: string; url: string; children?: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      data-testid={id}
+      data-url={url}
+      onClick={() => void openExternalUrl(url, "").catch(e => useUI.getState().pushToast(String(e), "error"))}
+      className="text-[var(--color-fg-dim)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg)]"
+    >
+      {children}
+    </button>
   );
 }

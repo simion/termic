@@ -6,7 +6,7 @@ export default {
   },
   section: {
     title: "远程",
-    lead: "三种连接方式,按常用程度排列:用手机遥控这台电脑、与你的其他电脑配对、在你自己的服务器上运行代理。",
+    lead: "用手机遥控这台电脑、与你的其他电脑配对、在你自己的服务器上运行代理。",
   },
   phones: {
     title: "手机遥控",
@@ -15,7 +15,7 @@ export default {
     lead: "把手机当作这台电脑的遥控器:回答代理、发送提示词、查看终端。手机本身不运行任何东西。",
     connect: "连接手机",
     connectAnother: "再连接一部手机",
-    empty: "还没有配对的手机。",
+    empty: "还没有配对的手机。获取 Termic Remote:<ios>iPhone</ios> 或 <android>Android</android>。",
     connectedNow: "当前已连接",
     lastSeen: "上次连接 {{when}}",
     neverSeen: "尚未连接",
