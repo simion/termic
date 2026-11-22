@@ -132,8 +132,10 @@ phone read "working" until its next prompt (docs/agent-hooks.md,
 log, read by `termic-remote/src/transcript.rs` into the same turns
 (prompt, reply, one line per tool call). A server task's log is on the
 box, so the desktop reads it there through `exec` (`task_host.rs`, as
-`termic result` does); Claude only so far, Codex and Antigravity read
-local files and say their chat is not shown for a server task yet:
+`termic result` does): Claude's file, and Codex's rollout found by a
+script on the box (`CODEX_ROLLOUT_SH`, the same lookup as below).
+Antigravity's chat is SQLite, which a box need not have, so a server
+task's says it is not shown yet:
 
 - Claude: its JSONL under `~/.claude/projects/<cwd as a dir name>/`.
 - Codex: its rollout under `~/.codex/sessions/YYYY/MM/DD/`. What Codex

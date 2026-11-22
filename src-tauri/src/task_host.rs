@@ -38,6 +38,11 @@ impl Host {
         matches!(self, Host::Server { .. })
     }
 
+    /// A script on the box (`sh`), for a caller with one of its own.
+    pub(crate) fn run_sh(&self, script: &str, args: &[&str]) -> Result<String, String> {
+        self.sh(script, args)
+    }
+
     /// Run a POSIX shell script on the box with `args` as $1..; its stdout.
     /// Local hosts never call this.
     fn sh(&self, script: &str, args: &[&str]) -> Result<String, String> {

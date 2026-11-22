@@ -2679,6 +2679,24 @@ fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<(PathBuf, crat
     Ok((file, fs))
 }
 
+/// termic_remote::transcript::codex_rollout on a box: the rollout named for
+/// the session, else the newest of the last 400 whose first line (its
+/// `session_meta`) names the task's folder; its contents.
+// shortcut: word-splits the file list, so a $HOME with a space finds nothing; fine for server homes, quote through `find -print0` if one shows up.
+const CODEX_ROLLOUT_SH: &str = r#"d="$HOME/.codex/sessions"
+if [ -n "$2" ]; then f=$(ls -r "$d"/*/*/*/*-"$2".jsonl 2>/dev/null | head -n 1); [ -n "$f" ] && exec cat -- "$f"; exit 0; fi
+for f in $(ls -r "$d"/*/*/*/*.jsonl 2>/dev/null | head -n 400); do
+  head -n 1 "$f" | grep -qF "\"cwd\":\"$1\"" && exec cat -- "$f"
+done"#;
+
+fn codex_rollout_on_box(fs: &crate::task_host::Host, cwd: &str, sid: Option<&str>) -> Result<String, String> {
+    let out = fs.run_sh(CODEX_ROLLOUT_SH, &[cwd, sid.unwrap_or("")])?;
+    if out.trim().is_empty() {
+        return Err("no Codex session for this task yet (has the agent replied?)".into());
+    }
+    Ok(out)
+}
+
 /// Why a task in the project's own checkout shows no chat (phones, the
 /// transcript view): its folder is shared with other sessions.
 const SHARED_CHECKOUT_CHAT: &str = "This task works in the project's own folder, which other sessions share, so its chat can't be told apart. The Terminal tab shows it.";
@@ -2687,9 +2705,18 @@ pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String
     let (projects, tasks) = host.projects_tasks();
     let t = resolve_by_name(&projects, &tasks, task, None).map_err(|e| e.message)?.clone();
     if matches!(t.cli.as_str(), "codex" | "agy" | "antigravity") {
-        // shortcut: their readers (termic_remote::transcript::other_agent) read this computer's files; a server task's chat waits for them to take a TaskHost.
-        if files_of(host, &t).is_server() {
-            return Err("This agent's chat on a server is not shown yet. The Terminal tab shows it.".into());
+        let fs = files_of(host, &t);
+        if fs.is_server() {
+            // Antigravity keeps its chat in SQLite, which a box need not have.
+            if t.cli != "codex" {
+                return Err("Antigravity's chat on a server is not shown yet. The Terminal tab shows it.".into());
+            }
+            let sid = t.persisted_tabs.iter().filter(|p| p.cli == t.cli).max_by_key(|p| p.is_default).and_then(|p| p.session_id.clone());
+            if sid.is_none() && t.is_main_checkout {
+                return Err(SHARED_CHECKOUT_CHAT.into());
+            }
+            let jsonl = codex_rollout_on_box(&fs, &t.path, sid.as_deref())?;
+            return Ok((t.id, termic_remote::transcript::parse_codex_jsonl(&jsonl)));
         }
         let home = host.home_dir().ok_or("no home directory")?;
         // The id the agent reported for the task's tab (agent_hooks.rs):
@@ -12355,5 +12382,29 @@ mod tests {
         proto::write_msg(&mut stream, &req(Command::Hello, None)).unwrap();
         let reply: Reply = proto::read_msg(&mut reader).unwrap().unwrap();
         assert!(reply.ok);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod codex_on_box_tests {
+    use super::CODEX_ROLLOUT_SH;
+
+    fn run(home: &std::path::Path, cwd: &str, sid: &str) -> String {
+        let out = std::process::Command::new("/bin/sh").args(["-c", CODEX_ROLLOUT_SH, "sh", cwd, sid]).env("HOME", home).output().unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn finds_the_rollout_by_session_or_else_the_newest_for_the_folder() {
+        let home = std::env::temp_dir().join(format!("codex-box-{}", std::process::id()));
+        let day = home.join(".codex/sessions/2026/11/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let meta = |cwd: &str| format!("{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{cwd}\"}}}}\nbody-for-{cwd}\n");
+        std::fs::write(day.join("rollout-2026-11-22T10-00-00-aaa.jsonl"), meta("/w/task")).unwrap();
+        std::fs::write(day.join("rollout-2026-11-22T11-00-00-bbb.jsonl"), meta("/w/other")).unwrap();
+        assert!(run(&home, "/w/task", "").contains("body-for-/w/task"), "newest for the folder, skipping another folder's newer one");
+        assert!(run(&home, "/w/none", "bbb").contains("body-for-/w/other"), "the named session wins");
+        assert_eq!(run(&home, "/w/none", ""), "", "nothing for a folder with no session");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
