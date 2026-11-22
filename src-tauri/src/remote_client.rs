@@ -1583,13 +1583,55 @@ fn restart_when_settled(l: &Link) {
     }
     let id = l.id.clone();
     std::thread::spawn(move || {
-        if let Err(e) = call(&id, serde_json::json!({ "cmd": "quit", "commit": true }), None) {
+        if let Err(e) = restart_server(&id) {
             eprintln!("[remote] {id}: could not restart termic-server: {e}");
             if let Ok(l) = link(&id) {
                 l.st.lock().unwrap().restarting = false;
             }
         }
     });
+}
+
+/// Restart a server's daemon onto the installed build: `quit`, which stops
+/// its agents noting them for the next daemon to resume. A daemon from
+/// before `quit` existed refuses it (unknown or unsupported): it is stopped over the
+/// same ssh the install used instead (`termic-server stop`), and the next
+/// connection's `bridge` starts the new binary. That one-time migration
+/// cannot resume its agents (the old daemon records none); they resume when
+/// their tasks are opened, as after any desktop restart.
+pub(crate) fn restart_server(id: &str) -> Result<(), String> {
+    let r = call(id, serde_json::json!({ "cmd": "quit", "commit": true }), None)?;
+    if r.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let msg = r.pointer("/error/message").and_then(Value::as_str).unwrap_or_default().to_string();
+    // Older daemons say so either way: serde's "unknown variant", or a
+    // catch-all Unsupported reply.
+    let unsupported = r.pointer("/error/code").and_then(Value::as_str) == Some("unsupported");
+    if !unsupported && !msg.contains("unknown variant") {
+        return Err(msg);
+    }
+    let dest = match &*link(id)?.endpoint.lock().unwrap() {
+        Endpoint::Server(rec) if rec.command.is_none() => rec.ssh.clone(),
+        _ => return Err(msg),
+    };
+    let out = ssh_command(&dest).arg("~/.termic/bin/termic-server stop").output().map_err(|e| ssh_missing(&e))?;
+    if !out.status.success() {
+        return Err(format!("could not stop the old termic-server: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    // The link notices the daemon gone and reconnects through `bridge`.
+    if let Ok(l) = link(id) {
+        if let Some(mut c) = l.child.lock().unwrap().take() {
+            let _ = c.kill();
+        }
+    }
+    Ok(())
+}
+
+/// Restart now, from a server's row: `restart_server` off the IPC thread.
+#[tauri::command]
+pub(crate) async fn server_restart(machine: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || restart_server(&machine)).await.map_err(|e| e.to_string())?
 }
 
 /// Upload termic-server to `~/.termic/bin` over the same ssh: the file goes

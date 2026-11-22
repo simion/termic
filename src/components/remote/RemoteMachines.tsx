@@ -6,6 +6,7 @@
 // Reads only the remote store's slice: a remote update never re-renders a
 // local row, and a local change never re-renders these.
 
+import { invoke } from "@tauri-apps/api/core";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Bell, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, Globe, Smartphone } from "lucide-react";
@@ -204,7 +205,8 @@ function ServerUpdate({ m }: { m: MachineView }) {
         disabled={busy}
         onClick={() => {
           setBusy(true);
-          remoteCall(m.id, { cmd: "quit", commit: true })
+          // `quit`, or over ssh for a daemon from before it (server_restart).
+          invoke<void>("server_restart", { machine: m.id })
             .catch(e => { setBusy(false); useUI.getState().pushToast(String(e), "error"); });
         }}
         className="shrink-0 rounded px-1.5 py-0.5 font-medium text-[var(--color-accent)] hover:bg-[var(--color-hover)] disabled:opacity-50"

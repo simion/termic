@@ -280,7 +280,8 @@ describe("Phones and servers", () => {
   const ssh = (script: string) => execFileSync("ssh", ["-o", "BatchMode=yes", "--", box!, script], { encoding: "utf8" });
   let serverId = "";
 
-  onBox("adds a real server through the checklist and shows it connected", async () => {
+  onBox("adds a real server through the checklist and shows it connected", async function () {
+    this.timeout(240_000);
     ssh(`set -e; rm -rf ~/${BOX_DIR}; mkdir -p ~/${BOX_DIR}/repo ~/.termic-server
 cd ~/${BOX_DIR}/repo && git init -q -b main && printf 'scripts:\n  setup: touch set-up-ran\n' > .termic.yaml && git add .termic.yaml && git -c user.email=e2e@termic.dev -c user.name=e2e commit -q -m init
 printf '%s\n' '#!/bin/sh' 'printf "fake agent ready\\r\\n> "' 'while IFS= read -r l; do printf "box says: %s\\r\\n> " "$l"; done' > ~/${BOX_DIR}/agent.sh
@@ -309,6 +310,22 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
     serverId = await browser.execute(() => window.__termic!.useRemote.getState().machines.find((m: any) => m.kind === "server")?.id as string) ?? "";
     await waitForAttr(`[data-testid="server-row-${serverId}"]`, "data-state", "online");
     await snap("remote-server-row.png");
+    // A box on an older termic-server gets this app's build installed; it
+    // restarts onto it by itself only once no agent there is working or
+    // waiting, and a real box's own agents may be. Restart now (what the
+    // row's button sends), so the rest runs against this build.
+    const bundled = process.env.TERMIC_E2E_SERVER_BIN_DIR
+      ? readFileSync(path.join(process.env.TERMIC_E2E_SERVER_BIN_DIR, "termic-server-version.txt"), "utf8").trim() : "";
+    if (bundled) {
+      const machine = () => browser.execute((id) => window.__termic!.useRemote.getState().machines.find((m: any) => m.id === id) ?? null, serverId) as Promise<any>;
+      await browser.waitUntil(async () => { const m = await machine(); return m?.version === bundled || !!m?.update; },
+        { timeout: 60_000, timeoutMsg: "the box was neither on this build nor given it" });
+      if ((await machine())?.version !== bundled) {
+        await browser.execute((id) => window.__termic!.invoke("server_restart", { machine: id }), serverId);
+        await browser.waitUntil(async () => { const m = await machine(); return m?.state === "online" && m.version === bundled; },
+          { timeout: 90_000, timeoutMsg: "the box never came back on this build" });
+      }
+    }
   });
 
   // A project left on the box by an earlier, interrupted run.
@@ -338,13 +355,14 @@ printf '{"fake":["%s"]}' "$HOME/${BOX_DIR}/agent.sh" > ~/.termic-server/agents.j
       await t.ipc.settingsSave(s);
       await t.useApp.getState().loadAll();
     }, `${boxHome}/${BOX_DIR}/agent.sh`);
-    // New task on a server with no project yet: its Add project dialog.
-    await clickPresent(`[data-testid="server-new-task-${serverId}"]`);
+    // The server's Add project (its menu): a real box may already have
+    // projects, so its + would open New task for one of those instead.
+    await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id, newTaskAdding: true }), serverId);
     await setInputValue('[data-testid="remote-project-path"]', `~/${BOX_DIR}/repo`);
     await clickPresent('[data-testid="remote-project-add"]');
     // Added: the ordinary New task dialog opens for it.
     await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 40_000);
-    const projectId = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid) as any)?.id as string, serverId);
+    const projectId = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid && String(p.root_path).includes("termic-e2e-box")) as any)?.id as string, serverId);
     // Only what works on a box: no isolation or secrets panes.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="rail-isolation"]'))).toBe(false);
     await clickPresent('[data-testid="rail-agent"]');

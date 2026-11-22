@@ -8271,7 +8271,19 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
 
     // Determine "branch new from" — strip the remote prefix if needed for create.
     // git can branch off "origin/master" directly.
-    let base_full = task_base_branch(&proj.base_branch, args.base_branch.as_deref());
+    let mut base_full = task_base_branch(&proj.base_branch, args.base_branch.as_deref());
+    // A server project is mirrored from the box, never added here, so it has
+    // no base pinned at add time: detect it now as project_add would (git
+    // runs on the box), or the task records no base and its diff, Send to
+    // main and PR have nothing to compare against.
+    if base_full.trim().is_empty() && proj.server.is_some() {
+        let remote = detect_default_remote(&repo);
+        let b = detect_base_branch(&repo, &remote).unwrap_or_else(|_| "main".into());
+        let tracked = format!("{remote}/{b}");
+        // A box repo with no remote (a folder `git init`-ed there) has only
+        // the local branch: record what resolves.
+        base_full = if !remote.is_empty() && try_resolve_base_ref(&repo, &tracked).is_some() { tracked } else { b };
+    }
     // Did the CALLER name this base, or did it come off the project's pin?
     // Only the first is verified strictly: see the resolution below. Trimmed
     // and emptiness-checked the same way `task_base_branch` does, so " " is
@@ -13972,7 +13984,7 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         let worktree = PathBuf::from(&w.path);
         let main = PathBuf::from(&p.root_path);
         if let Some(server) = p.server.as_deref() {
-            return send_diff_to_main_on_server(server, &w.base_branch, &worktree, &main);
+            return send_diff_to_main_on_server(server, &resolve_base_ref(&worktree, &w.base_branch), &worktree, &main);
         }
         if !main.is_dir() {
             return Err(other(format!("Project main checkout missing: {}", main.display())));
@@ -13991,7 +14003,9 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         // `git diff <base>` in a worktree returns the cumulative delta
         // between base and the working tree — exactly the union of
         // commits + staged + unstaged. --binary preserves binary blobs.
-        let base = w.base_branch.clone();
+        // The stored base as a ref that exists ("origin/main" in a repo with
+        // no remote is its local "main"), as creation resolved it.
+        let base = resolve_base_ref(&worktree, &w.base_branch);
         let patch_out = git_command()
             .args(["--no-pager", "diff", "--binary", &base])
             .current_dir(&worktree)
@@ -29176,6 +29190,7 @@ pub fn run() {
             remote_client::remote_set_connected,
             remote_client::server_add,
             server_projects::server_which,
+            remote_client::server_restart,
             remote_client::server_remove,
             remote_client::server_rename,
             remote_client::server_list,
