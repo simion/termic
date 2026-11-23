@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { cn } from "@/lib/utils";
-import { nameFromPrompt, openNewTaskOnServer, remoteCall, req, useMachine, useRemote } from "@/lib/remote";
+import { nameFromPrompt, remoteCall, req, useMachine, useRemote } from "@/lib/remote";
 import { agentName } from "./RemoteTaskView";
 
 interface Project { id: string; name: string; root_path: string; tasks: number; default_agent: string }
@@ -86,9 +86,9 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
       const r = await remoteCall(machineId, req("project_add", { path: dest, ...(url ? { clone: url } : {}) }), url ? 600_000 : undefined);
       if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
       const added = r.data?.project?.name ?? r.data?.name;
-      // A server's project is a desktop project (server_projects.rs): once
-      // the mirror has it, its tasks start from the ordinary New task
-      // dialog, like a local project's. Paired computers keep this form.
+      // A server's project is a desktop project (server_projects.rs): wait
+      // for the mirror to list it, then close, as Add project does locally.
+      // Its tasks start from its own row. Paired computers keep this form.
       if (machine?.kind === "server" && added) {
         for (let i = 0; i < 40 && !useApp.getState().projects.some(p => p.server === machineId && p.name === added); i++) {
           await useApp.getState().loadAll();
@@ -96,7 +96,6 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
           await new Promise(res => setTimeout(res, 250));
         }
         onClose();
-        await openNewTaskOnServer(machineId, added);
         return;
       }
       await load();
@@ -136,6 +135,37 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
     }
   }
 
+  const pathField = (
+    <label className="flex flex-col gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
+      {t("newTask.projectPath", { name: machineName })}
+      <div className="flex gap-2">
+        <Input
+          data-testid="remote-project-path"
+          autoFocus
+          value={addingPath ?? ""}
+          placeholder={t("newTask.projectPathPlaceholder")}
+          onChange={e => setAddingPath(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") void addProject(); }}
+          className="flex-1 font-mono"
+        />
+        <Button size="md" variant="primary" data-testid="remote-project-add" disabled={adding || !(addingPath ?? "").trim()} onClick={() => void addProject()}>{t("newTask.add")}</Button>
+      </div>
+    </label>
+  );
+
+  // A server only ever opens this to add a project (New task on a server
+  // project is the ordinary dialog), so it is that and nothing else.
+  if (machine?.kind === "server") {
+    return (
+      <AppDialog open onOpenChange={v => { if (!v) onClose(); }} title={t("newTask.addProjectTitle", { name: machineName })} className="max-w-[560px]">
+        <div data-testid="remote-add-project-dialog" className="flex flex-col gap-4">
+          {pathField}
+          {error && <p data-testid="remote-new-error" className="text-[12.5px] text-[var(--color-err)]">{error}</p>}
+        </div>
+      </AppDialog>
+    );
+  }
+
   return (
     <AppDialog open onOpenChange={v => { if (!v) onClose(); }} title={t("newTask.title", { name: machineName })} className="max-w-[560px]">
       <div className="flex flex-col gap-4">
@@ -164,23 +194,7 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
           </label>
         )}
 
-        {addingPath !== null && (
-          <label className="flex flex-col gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
-            {t("newTask.projectPath", { name: machineName })}
-            <div className="flex gap-2">
-              <Input
-                data-testid="remote-project-path"
-                autoFocus
-                value={addingPath}
-                placeholder={t("newTask.projectPathPlaceholder")}
-                onChange={e => setAddingPath(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") void addProject(); }}
-                className="flex-1 font-mono"
-              />
-              <Button size="md" variant="primary" data-testid="remote-project-add" disabled={adding || !addingPath.trim()} onClick={() => void addProject()}>{t("newTask.add")}</Button>
-            </div>
-          </label>
-        )}
+        {addingPath !== null && pathField}
 
         {agents.length > 0 && (
           <div className="flex flex-col gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">

@@ -177,6 +177,7 @@ export default {
   newTask: {
     fromBranch: "从 {{branch}} 开始",
     title: "在 {{name}} 上新建任务",
+    addProjectTitle: "在 {{name}} 上添加项目",
     project: "项目",
     agent: "代理",
     prompt: "提示词",

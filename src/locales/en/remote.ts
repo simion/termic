@@ -178,6 +178,7 @@ export default {
   newTask: {
     fromBranch: "Starts from {{branch}}",
     title: "New task on {{name}}",
+    addProjectTitle: "Add a project on {{name}}",
     project: "Project",
     agent: "Agent",
     prompt: "Prompt",

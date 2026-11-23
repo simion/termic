@@ -373,11 +373,20 @@ chmod +x ~/${BOX_DIR}/agent.sh`);
     // The server's Add project (its menu): a real box may already have
     // projects, so its + would open New task for one of those instead.
     await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id, newTaskAdding: true }), serverId);
+    // Add project on a server is only that: a path, no New task form.
+    await waitVisible('[data-testid="remote-add-project-dialog"]');
+    expect(await browser.execute(() => ["remote-new-prompt", "remote-new-start", "remote-new-project"].some(id => !!document.querySelector(`[data-testid="${id}"]`)))).toBe(false);
+    await snap("remote-server-add-project.png");
     await setInputValue('[data-testid="remote-project-path"]', `~/${BOX_DIR}/repo`);
     await clickPresent('[data-testid="remote-project-add"]');
-    // Added: the ordinary New task dialog opens for it.
-    await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 40_000);
+    // Added: the dialog closes once the project is listed, as locally.
+    await waitGone('[data-testid="remote-add-project-dialog"]', 40_000);
+    expect(await browser.execute(() => !!document.querySelector('[role="dialog"] [data-testid="new-task-name"]'))).toBe(false);
     const projectId = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid && String(p.root_path).includes("termic-e2e-box")) as any)?.id as string, serverId);
+    expect(projectId).toBeTruthy();
+    // Its tasks start from the ordinary New task dialog.
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    await waitVisible('[role="dialog"] [data-testid="new-task-name"]', 10_000);
     // Only what works on a box: no isolation or secrets panes.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="rail-isolation"]'))).toBe(false);
     await clickPresent('[data-testid="rail-agent"]');
