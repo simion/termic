@@ -12205,8 +12205,18 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     #[cfg(not(target_os = "macos"))]
     {
         let close_id = id.clone();
+        let handle = app.clone();
         win.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the LAST window quits, so the running-agents question
+                // is asked here, while the window is still up. Left to
+                // ExitRequested it came after the window was gone: the app
+                // looked dead, then asked, and Cancel left it running with no
+                // window at all.
+                if shown_profile_windows(&handle).len() <= 1 && confirm_quit_or_exit(&handle) {
+                    api.prevent_close();
+                    return;
+                }
                 set_open_at_quit(&close_id, false);
             }
         });
@@ -28258,7 +28268,14 @@ pub(crate) fn leave_windowless(app: &AppHandle) {
     // user opened them, so hiding all and restoring one would silently lose a
     // profile. A root the user CLOSED stays closed (ROOT_PUT_AWAY), unless it
     // is the only window there is.
-    let wins = shown_profile_windows(app);
+    let mut wins = shown_profile_windows(app);
+    // No window at all (Linux and Windows destroy the last one on close):
+    // build the root again, or Show would do nothing.
+    if wins.is_empty() {
+        if let Ok(w) = build_profile_window(app, &ProfileId::Root) {
+            wins.push(w);
+        }
+    }
     if wins.iter().any(|w| w.label() == ProfileId::Root.window_label()) {
         root_brought_back();
     }
