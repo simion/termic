@@ -166,7 +166,7 @@ forwarded from a viewer (the agent already has a terminal answering).
 
 Settings > Remote control (phones, then other computers) >
 **Mobile remote control** > **Connect a phone**, or Connect a phone in the sidebar's
-REMOTE + menu, shows a QR code.
+remote add menu (the footer's globe, or REMOTE's + once it has rows), shows a QR code.
 The card and the dialog's first step link the app: iPhone through the
 public TestFlight link (open to anyone, no invite), Android through
 Google Play (`PhoneAppLinks` in `ConnectPhoneDialog.tsx`).
@@ -267,7 +267,7 @@ contacts and protocol-version refusal. `/call` is gone.
 ## Servers
 
 Settings > Servers > **Add a server** (also in
-the sidebar's REMOTE + menu) is a checklist; nothing
+the sidebar's remote add menu) is a checklist; nothing
 is saved until it passes:
 
 1. **Reach** `ssh -T -o BatchMode=yes -- <dest> ...`: the user's own ssh,
@@ -394,9 +394,11 @@ servers). The sidebar has two top-level sections, each a filled header with a
 fold: PROJECTS (this computer's) and REMOTE (`RemoteSidebarSection` in
 `RemoteMachines.tsx`), the sidebar's half of Settings > Remote control and
 Servers. REMOTE
-always shows (outside the compact rail), so its + menu is the one way
-in from the sidebar: Add a server, Connect a phone, Pair a computer
-(which opens Settings > Remote control). Under it, servers first (one row per
+is drawn only once it has a row (a server or a paired computer; phones
+have none), since most people never add one and an empty header was
+noise. Its + menu, Add a server, Connect a phone, Pair a computer (which
+opens Settings > Remote control), is on a globe in the sidebar footer
+while the section is hidden (`RemoteFooterButton`). Under it, servers first (one row per
 server with its state, its switch and a menu, right-click too, for Add
 project, Server settings and Remove, and its projects drawn under it by
 the sidebar's own `renderProject`; New task is on each project row, not

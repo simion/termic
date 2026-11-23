@@ -13,6 +13,7 @@ import { Bell, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPul
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
+import { Button } from "@/components/ui/Button";
 import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
 import { ACCENTS, accentCss } from "@/lib/accents";
@@ -62,6 +63,43 @@ const headerBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--colo
  *  task, a menu) with its projects under it, drawn by the sidebar's own
  *  renderProject; then paired computers, each drawn from what it reports.
  *  Phones get no rows: they have no tasks to show. */
+/** Whether REMOTE has any rows: a server or a paired computer of this
+ *  profile. Phones have no rows. Without any, the section is not drawn and
+ *  its add menu lives on the footer's globe instead (`RemoteFooterButton`). */
+export function useHasRemoteRows(): boolean {
+  return useRemote(s => s.machines.some(mine));
+}
+
+/** Add a server / Connect a phone / Pair a computer, on any trigger. */
+function RemoteAddMenu({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("remote");
+  const setDialog = useRemote(s => s.setDialog);
+  const openSettings = useApp(s => s.openSettings);
+  return (
+    <DropdownRoot>
+      <Tip content={t("sidebar.addRemote")}>
+        <DropdownTrigger asChild>{children}</DropdownTrigger>
+      </Tip>
+      <DropdownMenu>
+        <DropdownItem data-testid="sidebar-connect-phone" onSelect={() => setDialog({ phoneDialog: true })}><Smartphone className="h-4 w-4" />{t("phones.connect")}</DropdownItem>
+        <DropdownItem data-testid="sidebar-pair-computer" onSelect={() => openSettings("remote")}><Monitor className="h-4 w-4" />{t("sidebar.pairComputer")}</DropdownItem>
+        <DropdownItem data-testid="sidebar-add-server" onSelect={() => setDialog({ serverDialog: true })}><Server className="h-4 w-4" />{t("sidebar.addServer")}</DropdownItem>
+      </DropdownMenu>
+    </DropdownRoot>
+  );
+}
+
+/** The footer's globe: the way in to remote control while REMOTE has no rows. */
+export function RemoteFooterButton({ className }: { className: string }) {
+  const { t } = useTranslation("remote");
+  if (useHasRemoteRows()) return null;
+  return (
+    <RemoteAddMenu>
+      <Button size="icon" variant="icon" data-testid="sidebar-footer-remote" aria-label={t("sidebar.addRemote")}><Globe className={className} /></Button>
+    </RemoteAddMenu>
+  );
+}
+
 export function RemoteSidebarSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
   const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
@@ -69,24 +107,14 @@ export function RemoteSidebarSection({ projects, renderProject }: { projects: Pr
   const computers = useMemo(() => all.filter(m => m.kind !== "server" && mine(m)), [all]);
   const folded = useRemote(s => !!s.folded["section:remote"]);
   const toggle = useRemote(s => s.toggleFold);
-  const setDialog = useRemote(s => s.setDialog);
-  const openSettings = useApp(s => s.openSettings);
+  if (servers.length === 0 && computers.length === 0) return null;
   return (
     <div data-testid="remote-sidebar-section" className="mt-3">
       <SidebarSectionHeader testId="remote-section-header" icon={<Globe className="h-4 w-4 shrink-0" />} label={t("sidebar.remoteHeader")}
         folded={folded} onToggle={() => toggle("section:remote")}>
-        <DropdownRoot>
-          <Tip content={t("sidebar.addRemote")}>
-            <DropdownTrigger asChild>
-              <button type="button" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
-            </DropdownTrigger>
-          </Tip>
-          <DropdownMenu>
-            <DropdownItem data-testid="sidebar-connect-phone" onSelect={() => setDialog({ phoneDialog: true })}><Smartphone className="h-4 w-4" />{t("phones.connect")}</DropdownItem>
-            <DropdownItem data-testid="sidebar-pair-computer" onSelect={() => openSettings("remote")}><Monitor className="h-4 w-4" />{t("sidebar.pairComputer")}</DropdownItem>
-            <DropdownItem data-testid="sidebar-add-server" onSelect={() => setDialog({ serverDialog: true })}><Server className="h-4 w-4" />{t("sidebar.addServer")}</DropdownItem>
-          </DropdownMenu>
-        </DropdownRoot>
+        <RemoteAddMenu>
+          <button type="button" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
+        </RemoteAddMenu>
       </SidebarSectionHeader>
       {!folded && (
         <div className="flex flex-col gap-1">

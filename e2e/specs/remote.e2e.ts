@@ -89,12 +89,13 @@ async function typeInShellUntil(line: string, done: () => boolean | Promise<bool
 }
 
 
-/** Open REMOTE's + menu in the sidebar (a Radix trigger wants pointer
- *  events, not a click). */
+/** Open the remote add menu: REMOTE's + once the section has rows, the
+ *  footer's globe while it has none (a Radix trigger wants pointer events,
+ *  not a click). */
 async function openAddRemote(): Promise<void> {
   await browser.waitUntil(() => browser.execute(() => {
     if (document.querySelector('[data-testid="sidebar-add-server"]')) return true;
-    const el = document.querySelector('[data-testid="sidebar-add-remote"]') as HTMLElement | null;
+    const el = document.querySelector('[data-testid="sidebar-add-remote"], [data-testid="sidebar-footer-remote"]') as HTMLElement | null;
     if (!el) return false;
     const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
     el.dispatchEvent(new PointerEvent("pointerdown", opts));
@@ -164,9 +165,12 @@ describe("Phones and servers", () => {
     await snap("remote-settings-empty.png");
   });
 
-  it("connects a phone from the sidebar's REMOTE section, which shows with nothing in it", async () => {
+  it("connects a phone from the footer's globe while REMOTE has nothing to show", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    await waitVisible('[data-testid="remote-section-header"]');
+    // No server or paired computer: no empty REMOTE section, a globe in the
+    // footer instead.
+    await waitVisible('[data-testid="sidebar-footer-remote"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-sidebar-section"]'))).toBe(false);
     await openAddRemote();
     // In order of use, the same as Settings > Remote.
     expect(await browser.execute(() => {
@@ -238,7 +242,7 @@ describe("Phones and servers", () => {
     await expect(phone(link, phoneId, "My iPhone")).rejects.toThrow("closed 4001");
   });
 
-  it("opens Pair computers in settings from the sidebar's REMOTE section", async () => {
+  it("opens Pair computers in settings from the remote add menu", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await openAddRemote();
     await clickPresent('[data-testid="sidebar-pair-computer"]');
@@ -247,7 +251,7 @@ describe("Phones and servers", () => {
     await snap("remote-sidebar-pair.png");
   });
 
-  it("opens Add a server from the sidebar's REMOTE section too", async () => {
+  it("opens Add a server from the remote add menu too", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await openAddRemote();
     await clickPresent('[data-testid="sidebar-add-server"]');
@@ -652,6 +656,8 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // New task lives on each project row, never on the server: a server holds
     // several projects, and a server-level New task started in the first one.
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="server-menu-new-task"], [data-testid="server-new-task-${id}"]`), serverId)).toBe(false);
+    // With a server, REMOTE is drawn and the footer's globe is gone.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-sidebar-section"]') && !document.querySelector('[data-testid="sidebar-footer-remote"]'))).toBe(true);
     await snap("remote-server-menu.png");
     await clickPresent('[data-testid="server-menu-add-project"]');
     await waitVisible('[data-testid="remote-project-path"]');

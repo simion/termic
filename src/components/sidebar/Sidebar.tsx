@@ -13,7 +13,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { RemoteSidebarSection } from "@/components/remote/RemoteMachines";
+import { RemoteSidebarSection, RemoteFooterButton } from "@/components/remote/RemoteMachines";
 import { stopRemoteAgent } from "@/components/remote/RemoteTaskView";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
@@ -2622,6 +2622,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <Activity className={iconSize(compact)} />
             </Button>
           </Tip>
+          <RemoteFooterButton className={iconSize(compact)} />
           {/* Settings sits alone on the right.
 
               The PROFILE control that used to sit beside it moved to the title
