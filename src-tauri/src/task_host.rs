@@ -137,6 +137,20 @@ impl Host {
         }
     }
 
+    /// A file's bytes, unchanged (a SQLite database, not text).
+    pub(crate) fn read_bytes(&self, p: &Path) -> Result<Vec<u8>, String> {
+        match self {
+            Host::Local => std::fs::read(p).map_err(|e| e.to_string()),
+            Host::Server { id, cwd } => {
+                let (code, out, err) = crate::server_projects::exec_on(id, cwd, &["cat", "--", &p.to_string_lossy()], &[])?;
+                if code != 0 {
+                    return Err(if err.trim().is_empty() { format!("exited {code}") } else { err.trim().to_string() });
+                }
+                Ok(out)
+            }
+        }
+    }
+
     pub(crate) fn read_to_string(&self, p: &Path) -> Result<String, String> {
         match self {
             Host::Local => std::fs::read_to_string(p).map_err(|e| e.to_string()),

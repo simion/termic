@@ -18,6 +18,8 @@ pub const BEHIND_BYTES: usize = 1024 * 1024;
 
 enum Out {
     Msg(ServerMsg),
+    /// A message whose size counts toward `queued` (a `pty_data`).
+    Sized(ServerMsg, usize),
     /// Terminal output and its raw length (for the behind accounting).
     Term(Vec<u8>, usize),
     Resync,
@@ -43,6 +45,18 @@ impl Outbox {
 
     pub fn send(&self, m: ServerMsg) {
         let _ = self.tx.send(Out::Msg(m));
+    }
+
+    /// `send`, counting `n` bytes toward the backlog until it is written:
+    /// output for a terminal other than the open one (`pty_data`), whose
+    /// sender holds back while `queued_bytes` is over `BEHIND_BYTES`.
+    pub fn send_sized(&self, m: ServerMsg, n: usize) {
+        self.queued.fetch_add(n, Ordering::SeqCst);
+        let _ = self.tx.send(Out::Sized(m, n));
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.queued.load(Ordering::SeqCst)
     }
 
     /// Terminal output for the open terminal, or nothing while behind.
@@ -86,6 +100,10 @@ impl Outbox {
         while let Ok(item) = rx.0.recv() {
             let r = match item {
                 Out::Msg(m) => w.send(&m),
+                Out::Sized(m, n) => {
+                    self.queued.fetch_sub(n, Ordering::SeqCst);
+                    w.send(&m)
+                }
                 Out::Term(bytes, n) => {
                     self.queued.fetch_sub(n, Ordering::SeqCst);
                     if self.behind.load(Ordering::SeqCst) {

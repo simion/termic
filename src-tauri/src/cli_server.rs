@@ -2681,15 +2681,10 @@ fn codex_rollout_on_box(fs: &crate::task_host::Host, cwd: &str, sid: Option<&str
 }
 
 /// Whether `transcript_turns` can read a task's conversation: the agents
-/// whose session logs it parses, where it can reach them (Antigravity's is
-/// SQLite, read only on this computer). Everything else is driven from its
-/// terminal, which every agent has.
-pub(crate) fn chat_supported(cli: &str, on_server: bool) -> bool {
-    match cli {
-        "claude" | "codex" => true,
-        "agy" | "antigravity" => !on_server,
-        _ => false,
-    }
+/// whose session logs it parses, on this computer or a server. Everything
+/// else is driven from its terminal, which every agent has.
+pub(crate) fn chat_supported(cli: &str, _on_server: bool) -> bool {
+    matches!(cli, "claude" | "codex" | "agy" | "antigravity")
 }
 
 /// Why a task in the project's own checkout shows no chat (phones, the
@@ -2702,11 +2697,25 @@ pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String
     if matches!(t.cli.as_str(), "codex" | "agy" | "antigravity") {
         let fs = files_of(host, &t);
         if fs.is_server() {
-            // Antigravity keeps its chat in SQLite, which a box need not have.
-            if t.cli != "codex" {
-                return Err("Antigravity's chat on a server is not shown yet. The Terminal tab shows it.".into());
-            }
             let sid = t.persisted_tabs.iter().filter(|p| p.cli == t.cli).max_by_key(|p| p.is_default).and_then(|p| p.session_id.clone());
+            if t.cli != "codex" {
+                // Antigravity's chat is a SQLite file: fetched whole from the
+                // box and read here. Found by the conversation id its hooks
+                // reported (scanning the box's conversations is too much to
+                // fetch), so it shows once the agent has started one.
+                let sid = sid.ok_or("The chat shows here once Antigravity has started a conversation. The Terminal tab shows it meanwhile.")?;
+                if sid.contains(['/', '\\']) || sid.contains("..") {
+                    return Err("unexpected conversation id".into());
+                }
+                let home = fs.home().ok_or("no home directory on the server")?;
+                let db = fs.read_bytes(&home.join(".gemini/antigravity-cli/conversations").join(format!("{sid}.db")))
+                    .map_err(|e| format!("could not read the conversation on the server ({e})"))?;
+                let local = std::env::temp_dir().join(format!("termic-agy-{}-{sid}-{}.db", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+                std::fs::write(&local, db).map_err(|e| e.to_string())?;
+                let turns = termic_remote::transcript::read_antigravity(&local);
+                let _ = std::fs::remove_file(&local);
+                return Ok((t.id, turns?));
+            }
             if sid.is_none() && t.is_main_checkout {
                 return Err(SHARED_CHECKOUT_CHAT.into());
             }
@@ -12411,7 +12420,7 @@ mod chat_supported_tests {
         use super::chat_supported;
         assert!(chat_supported("claude", false) && chat_supported("claude", true));
         assert!(chat_supported("codex", true));
-        assert!(chat_supported("agy", false) && !chat_supported("agy", true), "SQLite, read only here");
+        assert!(chat_supported("agy", false) && chat_supported("agy", true), "its SQLite file is fetched from a box");
         for other in ["copilot", "grok", "pi", "opencode", "muse", "my-custom", "shell"] {
             assert!(!chat_supported(other, false), "{other}");
         }

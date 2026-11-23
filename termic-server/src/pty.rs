@@ -188,9 +188,25 @@ impl Pty {
         g.taps.push((id, tx));
         g.seen = Some(Instant::now());
         let oldest = g.total - g.ring.len() as u64;
-        let start = seen.unwrap_or(0).clamp(oldest, g.total);
+        // A client that saw MORE than this PTY ever wrote saw another process
+        // under the same claim (another desktop restarted it): it gets this
+        // one's whole ring, not a clamp that skips its first bytes.
+        let start = match seen {
+            Some(s) if s <= g.total => s.max(oldest),
+            _ => oldest,
+        };
         let backlog = g.ring.iter().skip((start - oldest) as usize).copied().collect();
         Ok((id, backlog, start, rx))
+    }
+
+    /// The output from offset `from` on, as far as the ring still holds it,
+    /// and where what it returns starts (later than `from` when the ring has
+    /// moved past it).
+    pub fn since(&self, from: u64) -> (Vec<u8>, u64) {
+        let g = self.inner.lock().unwrap();
+        let oldest = g.total - g.ring.len() as u64;
+        let start = from.clamp(oldest, g.total);
+        (g.ring.iter().skip((start - oldest) as usize).copied().collect(), start)
     }
 
     pub fn unsubscribe(&self, id: u64) {
@@ -365,6 +381,27 @@ mod tests {
         }
         assert!(p.exited());
         assert!(p.subscribe().is_err());
+    }
+
+    #[test]
+    fn a_client_that_saw_another_process_gets_the_whole_ring() {
+        let notify: Notify = Arc::new(|| {});
+        let argv: Vec<String> = ["/bin/sh", "-c", "printf 'fresh-start\\n'; sleep 5"].iter().map(|s| s.to_string()).collect();
+        let p = Pty::spawn(&argv, "/", &[], std::time::Duration::from_millis(100), notify).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !String::from_utf8_lossy(&p.tail(RING_BYTES).0).contains("fresh-start") {
+            assert!(Instant::now() < deadline, "no output");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // It saw 1 MB of a process before this one: everything here is new.
+        let (_, backlog, at, _) = p.subscribe_from(Some(1 << 20)).unwrap();
+        assert_eq!(at, 0);
+        assert!(String::from_utf8_lossy(&backlog).contains("fresh-start"));
+        // One that saw part of THIS process gets only the rest.
+        let total = p.tail(RING_BYTES).0.len() as u64;
+        let (_, rest, at, _) = p.subscribe_from(Some(total)).unwrap();
+        assert_eq!((at, rest.len()), (total, 0));
+        p.kill();
     }
 
     /// A client sizes the PTY: the program inside sees it, every watcher is

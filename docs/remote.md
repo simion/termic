@@ -134,8 +134,10 @@ log, read by `termic-remote/src/transcript.rs` into the same turns
 box, so the desktop reads it there through `exec` (`task_host.rs`, as
 `termic result` does): Claude's file, and Codex's rollout found by a
 script on the box (`CODEX_ROLLOUT_SH`, the same lookup as below).
-Antigravity's chat is SQLite, which a box need not have, so a server
-task's says it is not shown yet:
+Antigravity's chat is a SQLite file, which a box need not be able to
+read, so it is fetched whole (`cat` over `exec`) and read on the
+desktop; only by the conversation id its hooks reported, since scanning
+the box's conversations would mean fetching all of them:
 
 - Claude: its JSONL under `~/.claude/projects/<cwd as a dir name>/`.
 - Codex: its rollout under `~/.codex/sessions/YYYY/MM/DD/`. What Codex
@@ -407,7 +409,13 @@ than growing a verb per feature:
   On every new connection the desktop sends `pty_open` again for the PTYs
   it had open there, with `seen` (bytes of output it already has), and the
   box attaches and sends only the rest, its first `pty_data` carrying `at`
-  (where that backlog starts). `seen` also means attach only: a PTY that
+  (where that backlog starts). A `seen` beyond everything the PTY wrote
+  means the client watched an earlier process under the claim (another
+  desktop restarted it), so it gets the whole ring rather than a clamp
+  that drops this process's first bytes. Live output is flow-controlled:
+  past `BEHIND_BYTES` queued for the client the box stops queueing and
+  remembers the offset, then sends the missed stretch from the ring once
+  the queue drains (`next_chunk` in session.rs). `seen` also means attach only: a PTY that
   ended meanwhile answers `pty_exit` instead of running its command
   again. One a `quit` ended (a restart onto a new build) answers it with
   the reason `restarted` (`wire::PTY_RESTARTED`, from `restarted_claims`

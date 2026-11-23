@@ -389,12 +389,26 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
     }
     let s2 = s.clone();
     std::thread::spawn(move || {
-        // shortcut: no flow control here (the agent terminal drops output
-        // while the client is behind); a shell is human-paced. Add the
-        // same accounting if a script floods a slow link.
+        // Flow control: past BEHIND_BYTES queued for this client, output is
+        // not queued but remembered by offset; once the queue drains, what
+        // was missed goes as one chunk read back from the ring, so a
+        // flooding command on a slow link cannot grow the daemon's memory.
+        // The tap carries the output right after the backlog, so `pos` is
+        // where each chunk ends in it, whether sent or skipped.
+        let mut pos = at + backlog.len() as u64;
+        let mut sent = pos;
         loop {
             match rx.recv() {
-                Ok(TapMsg::Data(bytes)) => send(&s2, ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&bytes), at: None }),
+                Ok(TapMsg::Data(bytes)) => {
+                    pos += bytes.len() as u64;
+                    if s2.out.queued_bytes() > termic_remote::outbox::BEHIND_BYTES {
+                        continue;
+                    }
+                    let data = next_chunk(sent, pos, bytes, |from| p.since(from));
+                    sent = pos;
+                    let n = data.len();
+                    s2.out.send_sized(ServerMsg::PtyData { pid: pid.clone(), data: termic_remote::b64(&data), at: None }, n);
+                }
                 Ok(TapMsg::Resize(..)) => {}
                 Ok(TapMsg::Closed(_)) => break,
                 // Unsubscribed: the connection ended or attached again. The
@@ -418,6 +432,39 @@ fn pty_open(s: &Arc<Session>, pid: String, cwd: &str, argv: Vec<String>, env: Ve
         }
         send(&s2, ServerMsg::PtyExit { pid, reason: "exited".into() });
     });
+}
+
+/// What to send for a tap chunk ending at `pos` when `sent` bytes have gone:
+/// the chunk itself, or, after chunks were skipped (`sent` short of where
+/// this one starts), everything from `sent` to `pos` read back from the ring
+/// (`since`: bytes from an offset and where they start), as far as it holds.
+fn next_chunk(sent: u64, pos: u64, chunk: Vec<u8>, since: impl Fn(u64) -> (Vec<u8>, u64)) -> Vec<u8> {
+    if sent + chunk.len() as u64 >= pos {
+        return chunk;
+    }
+    let (ring, start) = since(sent);
+    let upto = (pos.saturating_sub(start) as usize).min(ring.len());
+    ring[..upto].to_vec()
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::next_chunk;
+
+    #[test]
+    fn a_skipped_stretch_comes_back_in_order_and_once() {
+        let out: Vec<u8> = (0u8..=99).collect(); // the whole output, offsets 0..100
+        let ring = |from: u64| (out[from as usize..].to_vec(), from);
+        // In step: the chunk as it came.
+        assert_eq!(next_chunk(10, 20, out[10..20].to_vec(), ring), out[10..20]);
+        // 30 bytes skipped while behind, then a chunk ending at 70: 40..70.
+        assert_eq!(next_chunk(40, 70, out[60..70].to_vec(), ring), out[40..70]);
+        // Output written after this chunk (70..100) is not sent ahead of it.
+        assert_eq!(next_chunk(40, 70, out[60..70].to_vec(), ring).len(), 30);
+        // The ring moved past `sent`: what it still holds, up to the chunk's end.
+        let short = |from: u64| { let s = from.max(50); (out[s as usize..].to_vec(), s) };
+        assert_eq!(next_chunk(40, 70, out[60..70].to_vec(), short), out[50..70]);
+    }
 }
 
 // ───────────────────────────── terminal ──────────────────────────────
