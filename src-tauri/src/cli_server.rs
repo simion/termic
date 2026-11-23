@@ -4074,6 +4074,7 @@ fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
         },
         profile,
         server,
+        non_git: p.non_git && !multi,
     }
 }
 

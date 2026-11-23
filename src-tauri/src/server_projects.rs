@@ -359,15 +359,17 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
     let mut projects_changed = false;
     for bp in box_projects {
         let (id, name, root) = (s(bp, "id"), s(bp, "name"), s(bp, "root_path"));
+        let non_git = bp.get("non_git").and_then(|v| v.as_bool()).unwrap_or(false);
         if id.is_empty() {
             continue;
         }
         match projects.iter_mut().find(|p| p.id == id) {
             Some(p) => {
                 // The box decides where it is; the desktop keeps its name.
-                if p.root_path != root || p.server.as_deref() != Some(server) {
+                if p.root_path != root || p.server.as_deref() != Some(server) || p.non_git != non_git {
                     p.root_path = root;
                     p.server = Some(server.to_string());
+                    p.non_git = non_git;
                     projects_changed = true;
                 }
             }
@@ -379,6 +381,7 @@ fn mirror(server: &str, box_projects: &[Value], box_tasks: &[Value], projects: &
                     server: Some(server.to_string()),
                     default_cli: s(bp, "default_agent"),
                     profile: profile.clone(),
+                    non_git,
                     ..Default::default()
                 });
                 projects_changed = true;

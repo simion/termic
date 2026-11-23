@@ -356,6 +356,7 @@ fn project_info(p: &Project, tasks: &[TaskRec]) -> ProjectInfo {
         members: Vec::new(),
         profile: None,
         server: None,
+        non_git: p.non_git,
     }
 }
 
@@ -403,9 +404,9 @@ fn project_add(d: &Arc<Daemon>, path: &str, non_git: bool) -> Result<ReplyData, 
         return Err(fail(ErrorCode::BadRequest, format!("{path} is not a directory")));
     }
     let canon = canon.to_string_lossy().to_string();
-    let root = match daemon::git(&canon, &["rev-parse", "--show-toplevel"]) {
-        Ok(top) => top.trim().to_string(),
-        Err(_) if non_git => canon.clone(),
+    let (root, plain) = match daemon::git(&canon, &["rev-parse", "--show-toplevel"]) {
+        Ok(top) => (top.trim().to_string(), false),
+        Err(_) if non_git => (canon.clone(), true),
         Err(_) => return Err(fail(ErrorCode::BadRequest, format!("{canon} is not a git repository (pass --non-git to add it as a plain folder)"))),
     };
     let mut st = d.st.lock().unwrap();
@@ -419,7 +420,7 @@ fn project_add(d: &Arc<Daemon>, path: &str, non_git: bool) -> Result<ReplyData, 
         name = format!("{base}-{n}");
         n += 1;
     }
-    let p = Project { id: util::uuid(), name, path: root };
+    let p = Project { id: util::uuid(), name, path: root, non_git: plain };
     st.projects.push(p.clone());
     d.save(&st);
     let info = project_info(&p, &st.tasks);

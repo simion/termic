@@ -44,6 +44,7 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
   // Adding a project is its own wait: Start must not read "Starting..." then.
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [plainOffer, setPlainOffer] = useState(false);
   const [addingPath, setAddingPath] = useState<string | null>(startAdding ? "" : null);
   const machineName = machine?.name ?? "";
 
@@ -73,18 +74,28 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
 
   const derived = useMemo(() => nameFromPrompt(prompt), [prompt]);
 
-  async function addProject() {
+  async function addProject(nonGit = false) {
     const path = (addingPath ?? "").trim();
     if (!path) return;
     setAdding(true);
     setError(null);
+    setPlainOffer(false);
     try {
       // A git URL clones onto the server, into ~/<repo name>; anything else
       // is a folder already there.
       const url = /^(https?:\/\/|ssh:\/\/|git@)/.test(path) ? path : null;
       const dest = url ? `~/${url.replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop() || "repo"}` : path;
-      const r = await remoteCall(machineId, req("project_add", { path: dest, ...(url ? { clone: url } : {}) }), url ? 600_000 : undefined);
-      if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
+      const r = await remoteCall(machineId, req("project_add", { path: dest, ...(url ? { clone: url } : {}), ...(nonGit ? { non_git: true } : {}) }), url ? 600_000 : undefined);
+      if (!r.ok) {
+        // Not a git repo: offer it as a plain folder, as Add project does
+        // locally, instead of naming a CLI flag the dialog has no way to pass.
+        if (!url && /not a git repository/.test(r.error?.message ?? "")) {
+          setPlainOffer(true);
+          setError(t("newTask.notGit", { path: dest }));
+          return;
+        }
+        throw new Error(r.error?.message ?? "could not add the project");
+      }
       const added = r.data?.project?.name ?? r.data?.name;
       // A server's project is a desktop project (server_projects.rs): wait
       // for the mirror to list it, then close, as Add project does locally.
@@ -144,7 +155,7 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
           autoFocus
           value={addingPath ?? ""}
           placeholder={t("newTask.projectPathPlaceholder")}
-          onChange={e => setAddingPath(e.target.value)}
+          onChange={e => { setAddingPath(e.target.value); setPlainOffer(false); }}
           onKeyDown={e => { if (e.key === "Enter") void addProject(); }}
           className="flex-1 font-mono"
         />
@@ -160,7 +171,12 @@ function Body({ machineId, wanted, base, startAdding, onClose }: { machineId: st
       <AppDialog open onOpenChange={v => { if (!v) onClose(); }} title={t("newTask.addProjectTitle", { name: machineName })} className="max-w-[560px]">
         <div data-testid="remote-add-project-dialog" className="flex flex-col gap-4">
           {pathField}
-          {error && <p data-testid="remote-new-error" className="text-[12.5px] text-[var(--color-err)]">{error}</p>}
+          {error && <p data-testid="remote-new-error" className={cn("text-[12.5px]", plainOffer ? "text-[var(--color-fg-dim)]" : "text-[var(--color-err)]")}>{error}</p>}
+          {plainOffer && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="secondary" data-testid="remote-project-add-plain" disabled={adding} onClick={() => void addProject(true)}>{t("newTask.addPlain")}</Button>
+            </div>
+          )}
         </div>
       </AppDialog>
     );

@@ -17,6 +17,8 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    /// Added as a plain folder (`project_add` with `non_git`).
+    pub non_git: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -126,7 +128,7 @@ mod tests {
         let d = tmpdir("rt");
         let mut st = State::load(&d).unwrap();
         assert_eq!(st.server_id.len(), 32);
-        st.projects.push(Project { id: "p1".into(), name: "api".into(), path: "/srv/api".into() });
+        st.projects.push(Project { id: "p1".into(), name: "api".into(), path: "/srv/api".into(), non_git: false });
         st.tasks.push(TaskRec {
             id: "t1".into(),
             name: "fix".into(),

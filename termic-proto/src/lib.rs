@@ -1688,6 +1688,10 @@ pub struct ProjectInfo {
     /// The server it lives on, by name. Absent for a project here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
+    /// A plain folder, not a git repo: its tasks run in it, never in a
+    /// worktree. A box reports it so the desktop's mirror knows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub non_git: bool,
 }
 
 /// One member repo of a multi-repo project (v24).
@@ -2905,6 +2909,7 @@ mod tests {
             ],
             profile: None,
             server: None,
+            non_git: false,
         }
     }
 
@@ -3196,6 +3201,7 @@ mod tests {
                         members: Vec::new(),
                         profile: None,
                         server: None,
+                        non_git: false,
                     },
                     shop_project(),
                 ],

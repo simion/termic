@@ -14,7 +14,8 @@
 // when TERMIC_E2E_TEST_BOX names one.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, readFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { chmodSync, existsSync, lstatSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRpc, clickMenuItem, clickPresent, clickWhenVisible, requireTermicApi, setInputValue, snap, typeIntoAgent, typeIntoRemoteTerminal, waitForAgentPty, waitForAppShell, waitTabInFront, waitForAttr, waitGone, waitVisible } from "../helpers.js";
 
@@ -599,6 +600,29 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.execute((id) => document.querySelector(`[data-testid="server-row-${id}"]`)!.scrollIntoView({ block: "center" }), serverId);
     await snap("remote-settings-with-server.png");
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  it("adds a folder that is not a git repo as a plain folder, when asked", async () => {
+    // Outside any repo (the box's HOME may itself sit in one).
+    const plain = path.join(mkdtempSync(path.join(os.tmpdir(), "termic-plain-")), "notes");
+    mkdirSync(plain, { recursive: true });
+    await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id, newTaskAdding: true }), serverId);
+    await waitVisible('[data-testid="remote-add-project-dialog"]');
+    await setInputValue('[data-testid="remote-project-path"]', plain);
+    await clickPresent('[data-testid="remote-project-add"]');
+    // Refused as a repo, offered as a folder (no CLI flag named).
+    await waitVisible('[data-testid="remote-project-add-plain"]');
+    expect(await browser.execute(() => document.querySelector('[data-testid="remote-new-error"]')?.textContent ?? "")).not.toContain("--non-git");
+    await snap("remote-server-add-plain.png");
+    await clickPresent('[data-testid="remote-project-add-plain"]');
+    await waitGone('[data-testid="remote-add-project-dialog"]', 20_000);
+    // The desktop's copy knows it is a plain folder, so its tasks never
+    // ask for a worktree.
+    const nonGit = await browser.waitUntil(
+      () => browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid && p.name === "notes") as any)?.non_git, serverId),
+      { timeout: 10_000, timeoutMsg: "the plain folder never reached the sidebar" });
+    expect(nonGit).toBe(true);
+    await call({ cmd: "project_remove", name: "notes" });
   });
 
   it("installs this Mac's agent hooks on the box, naming the box's own paths", async () => {

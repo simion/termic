@@ -192,6 +192,8 @@ export default {
     projectPath: "Path or git URL on {{name}}",
     projectPathPlaceholder: "~/src/my-repo or https://github.com/you/repo",
     add: "Add",
+    notGit: "{{path}} is not a git repository. Its tasks can run in the folder itself, without worktrees or branches.",
+    addPlain: "Add as a plain folder",
     notInstalled: "not installed",
   },
   states: {

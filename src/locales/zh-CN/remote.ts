@@ -191,6 +191,8 @@ export default {
     projectPath: "{{name}} 上的路径或 git 地址",
     projectPathPlaceholder: "~/src/my-repo 或 https://github.com/you/repo",
     add: "添加",
+    notGit: "{{path}} 不是 git 仓库。它的任务可以直接在该文件夹中运行,没有工作树或分支。",
+    addPlain: "作为普通文件夹添加",
     notInstalled: "未安装",
   },
   states: {
