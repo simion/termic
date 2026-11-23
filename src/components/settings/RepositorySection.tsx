@@ -529,7 +529,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // "Code intelligence" once diagnostics are on (lib/lsp/featureName.ts), so
   // the tab and the panel it opens can never disagree.
   // A server project's agents run on the box: this Mac's sandbox, secrets
-  // roles and language servers do not reach them (docs/plans/server-projects.md).
+  // roles and language servers do not reach them (docs/remote.md, Servers).
   const onServer = !!proj.server;
   const tabs: { id: SubTab; label: string }[] = [
     { id: "scripts",  label: t(isMulti ? "repo.tabScriptsMulti" : "repo.tabScripts") },

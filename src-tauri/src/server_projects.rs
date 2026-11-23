@@ -1,4 +1,4 @@
-// Server projects as ordinary desktop projects (docs/plans/server-projects.md,
+// Server projects as ordinary desktop projects (docs/remote.md, Servers,
 // stage 1). A server's projects and tasks are mirrored into the desktop's own
 // store, tagged `Project.server`, so the normal sidebar and task view draw
 // them and the desktop's order, pins, groups and names apply. The box stays
@@ -558,7 +558,7 @@ mod tests {
 
 /// Which of `programs` a server project's box can run: each looked up on
 /// its login shell's PATH (the TaskHost `which`,
-/// docs/plans/server-projects.md). The desktop's own agent registry decides
+/// docs/remote.md, Servers). The desktop's own agent registry decides
 /// what to offer; the box only says what is installed there.
 #[tauri::command]
 pub(crate) async fn server_which(project_id: String, programs: Vec<String>) -> Result<Vec<bool>, String> {

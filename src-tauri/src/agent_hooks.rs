@@ -7144,7 +7144,7 @@ fn slot_rel(base: &str) -> Option<&'static str> {
 }
 
 /// Bring the hooks of every agent the user has them for on this computer up
-/// to date on a server (docs/plans/server-projects.md, "Agent hooks on the
+/// to date on a server (docs/agent-hooks.md, "On a server
 /// box"), once per run. Same consent rule as Docker: only an agent whose
 /// hooks are installed here. The hooks themselves need nothing new: they
 /// write an OSC to `$TERMIC_PTY`, which the box sets, and it reaches the

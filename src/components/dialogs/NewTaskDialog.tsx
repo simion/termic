@@ -106,7 +106,7 @@ export function NewTaskDialog() {
   const setActive = useApp(s => s.setActiveTask);
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
-  // A server project (docs/plans/server-projects.md): the same dialog; its
+  // A server project (docs/remote.md, Servers): the same dialog; its
   // agents are the ones installed ON THE BOX, and what acts only on this
   // Mac (the sandbox, Secrets, importing local worktrees) is left out.
   const isServer = !!project?.server;

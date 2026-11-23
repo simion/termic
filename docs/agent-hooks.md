@@ -767,6 +767,21 @@ container has neither the socket nor the binary. An ingest-only socket (no
 verbs, no shared secret) would be a sound escalation if the pty ever proves
 insufficient; the cage already permits unix sockets generally.
 
+## On a server box
+
+Hooks are not a socket back to the desktop: each writes an OSC into the
+agent's own terminal (`$TERMIC_PTY`), so they work on a box the way they
+work in Docker. `agent_hooks::sync_server` writes each agent's hook
+config on the box through `exec` (`TaskHost`), once per run and only for
+agents whose hooks are installed on this computer (Docker's consent
+rule); codex's trust step and the slot agents' second config run there
+too. The agent is spawned with `TERMIC_PTY` set to its slave path on the
+box, the OSCs ride the PTY stream the desktop already reads, and the
+same parser gives a server agent a local agent's state. The daemon keeps
+them in the ring for a reconnect and reads them itself for a state with
+nobody attached. `detect.rs` remains the fallback for agents without
+hooks.
+
 ## Hooks own the turn, once they have proved it
 
 While an agent's hooks are installed AND at least one has been seen on that

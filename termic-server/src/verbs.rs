@@ -470,7 +470,7 @@ const EXEC_MAX_OUT: usize = 64 * 1024 * 1024;
 const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 /// Whether `dir` is inside a registered project or one of this server's
-/// worktrees: the only places `exec` runs (docs/plans/server-projects.md).
+/// worktrees: the only places `exec` runs (docs/remote.md, Servers).
 /// A task the desktop made itself, recorded here as plain data (no agent
 /// started): its folder must be one this box lets a desktop work in, and
 /// its project one the box has. An existing record keeps its creation time.

@@ -220,7 +220,7 @@ impl Daemon {
             let ids: Vec<String> = self.st.lock().unwrap().tasks.iter().filter(|t| !t.archived).map(|t| t.id.clone()).collect();
             // The desktop starts a task's agent itself (`<task>:agent`, a
             // daemon-owned PTY): its state is read the same way, the floor
-            // for when no desktop is attached (docs/plans/server-projects.md).
+            // for when no desktop is attached (docs/remote.md, Servers).
             let desk = self.ptys.lock().unwrap().clone();
             let mut next: Option<Instant> = None;
             let mut soonest = |t: Instant| next = Some(next.map_or(t, |n: Instant| n.min(t)));

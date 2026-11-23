@@ -591,7 +591,7 @@ export function NewProjectDialog() {
         })}
       </div>
       {/* A project on another machine is added through its server, whose
-          projects then join the sidebar (docs/plans/server-projects.md). */}
+          projects then join the sidebar (docs/remote.md, Servers). */}
       <p className="-mt-3 mb-4 text-[12px] text-[var(--color-fg-dim)]">
         {t("newProject.onServer")}{" "}
         <button type="button" data-testid="new-project-add-server" className="text-[var(--color-accent)] hover:underline"

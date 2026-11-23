@@ -895,7 +895,7 @@ pub enum Command {
     /// CLI confirms before sending.
     ProjectRemove { name: String },
     /// Run a program in a folder and return what it printed: termic-server
-    /// only (docs/plans/server-projects.md), reached through the desktop's
+    /// only (docs/remote.md, Servers), reached through the desktop's
     /// own ssh bridge, and only inside a registered project or one of its
     /// worktrees. The desktop answers it with Unsupported: an agent or a
     /// paired machine must never run arbitrary commands through it.
@@ -913,7 +913,7 @@ pub enum Command {
     /// Record a task on a termic-server, as plain data: the desktop made its
     /// worktree itself (git through `exec`) and starts its agent itself
     /// (`pty_open`), and the box keeps the record so every desktop that
-    /// reaches it sees the task (docs/plans/server-projects.md). Inserts or
+    /// reaches it sees the task (docs/remote.md, Servers). Inserts or
     /// updates by `id`; starts nothing. termic-server only, like `exec`.
     TaskPut {
         /// The task's id (not `id`: that is the request's own, which the

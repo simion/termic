@@ -204,7 +204,7 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     }
 }
 
-/// A task of a server project (docs/plans/server-projects.md): the server
+/// A task of a server project (docs/remote.md, Servers): the server
 /// it runs on and its id. Its terminals are this desktop's (PtyManager
 /// slots that forward to the box), so only its transcript, a file on the
 /// box, is asked there.

@@ -3584,7 +3584,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
               {/* One menu for every task. A server project's task
-                  (docs/plans/server-projects.md) leaves out what acts only on
+                  (docs/remote.md, Servers) leaves out what acts only on
                   this Mac (sandbox, YOLO, resume override, schedules, the CLI
                   briefing) and gains what only a box has (its path there, Stop
                   and Start of an agent that outlives any tab). */}

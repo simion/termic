@@ -352,14 +352,39 @@ Servers live in `<global data dir>/servers.json` (machine-wide, like
 pairing). A destination starting with `-` or containing whitespace is
 refused, and `--` precedes it on every ssh command line.
 
-**A server's projects are ordinary projects** (stage 1 of
-[plans/server-projects.md](plans/server-projects.md)). On connect and on
+**A server's projects are ordinary projects.** On connect and on
 every change to its task list, `server_projects.rs` mirrors the box's
 projects and tasks into the desktop's store, keyed by the box's own ids:
 a project gets `server` (the servers.json id) and its `root_path` is the
-path on the box. The normal sidebar draws them; the desktop owns order,
-pins, task groups, folders and names (a resync keeps them), the box owns
-what exists. A task that left the box is marked archived, never deleted.
+path on the box. The normal sidebar draws them; names, pins, order and
+groups are shared through the box (below, `org`), and the box owns what
+exists. A task that left the box is marked archived, never deleted.
+
+**Why it is shaped this way** (decided 2026-11-22, when the box's own
+agent engine was removed):
+
+- **The box knows processes, not tasks.** Its surface is `exec`,
+  daemon-owned PTYs with a ring, the queued-prompt drain, the hook-OSC
+  reader that gives a state with nobody attached, and the folder fence.
+  No agent registry, argv, resume, worktree creation or task verbs. What
+  both sides compute identically lives in `termic-proto` /
+  `termic-remote`, never copied.
+- **`TaskHost` is the seam** (`task_host.rs`): every task operation picks
+  Local or Server once; a server PTY emits the same `pty://` events, so
+  TaskView, TabBar and NewTaskDialog have no remote branch.
+- **No invisible local server.** Running termic-server on the Mac would
+  mean a daemon (CLAUDE.md), moving sandbox, Docker, secrets and macOS
+  permissions into it, and a hop on every terminal byte.
+- **A box looks the same to every desktop on it.** It stores plain
+  records (projects, tasks, `org`); every write goes to the box, which
+  pushes it to every connected desktop. No offline edits: a disconnected
+  laptop's server projects are read-only, so nothing piles up to merge.
+  What stays per desktop is how it is viewed: collapsed folders, the
+  open task, tabs, splits.
+- **Not a goal: a phone without a desktop.** Adding a server, projects
+  and tasks stay desktop actions, so the desktop owns the task engine.
+  A phone straight to a box is an idea:
+  [ideas/phone-to-server.md](ideas/phone-to-server.md).
 Opening one shows the server's terminal in the main area (one at a time:
 a connection carries one terminal); its row's state and fade come from
 the server's rows (`data-remote-state`); New task on its project opens

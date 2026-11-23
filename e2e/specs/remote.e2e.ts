@@ -675,7 +675,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
   });
 
   // A server task is an ordinary desktop task whose terminals run on the
-  // box (docs/plans/server-projects.md): the desktop starts its agent
+  // box (docs/remote.md, Servers): the desktop starts its agent
   // itself, through the same TaskView, tabs and PTY slots as a local one.
   const deskLogs = async () => String((await cliRpc({ cmd: "logs", task }))?.data?.data ?? "");
   const terminalTabs = () => browser.execute((id) =>

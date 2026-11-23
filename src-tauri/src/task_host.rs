@@ -1,5 +1,5 @@
 //! Where a task's files live, and the few file operations task creation
-//! needs there (docs/plans/server-projects.md, "TaskHost is the seam"). A
+//! needs there (docs/remote.md, "TaskHost is the seam"). A
 //! local project's are this computer's; a server project's run on the box
 //! through termic-server's `exec`, inside the folders it fences. Git already
 //! routes by path (`git_bytes`), so only what creation does to the

@@ -277,7 +277,7 @@ export function UnifiedBar() {
             work with nothing selected. */}
         <CommandPaletteButton />
         {/* One bar for every task. A server project's task
-            (docs/plans/server-projects.md) leaves out what acts only on
+            (docs/remote.md, Servers) leaves out what acts only on
             this Mac (the sandbox, a Secrets role) and opens its editor
             over SSH; runs and prompts reach its tabs, which run on the box. */}
         {task && proj && (

@@ -113,7 +113,7 @@ pub struct Project {
     pub name: String,
     /// The server (`servers.json` id) this project lives on, reached over
     /// SSH through termic-server; `root_path` is then a path on that box.
-    /// None for a project on this machine (docs/plans/server-projects.md).
+    /// None for a project on this machine (docs/remote.md, Servers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
     /// Filesystem path to the project's git repo. For
@@ -3211,7 +3211,7 @@ fn git_command() -> std::process::Command {
 
 fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     // A server project's folder: git runs on the box, through termic-server's
-    // `exec` (docs/plans/server-projects.md, stage 3).
+    // `exec` (docs/remote.md, Servers).
     if let Some(server) = server_projects::server_for_path(cwd) {
         let mut argv = vec!["git"];
         argv.extend_from_slice(args);
@@ -4511,7 +4511,7 @@ const TERMINAL_CLAIMS: [(&str, &str); 4] = [
 ];
 
 /// The env a task's spawn gets wherever it runs, on this computer or on a
-/// server (docs/plans/server-projects.md, step 3): the task's identity
+/// server (docs/remote.md, Servers): the task's identity
 /// (TERMIC_TASK carries the NAME, as setup and run scripts always received;
 /// TERMIC_TASK_ID the unambiguous handle), a multi-repo task's sibling
 /// ports, the agent's own tab (GH #358, so `termic prop` writes where it
@@ -13083,7 +13083,7 @@ fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Res
 
     // A server project's task lives on the box: termic-server removes its
     // worktree and stops its agent there; this side only marks the record
-    // (docs/plans/server-projects.md). Nothing on this machine to tear down.
+    // (docs/remote.md, Servers). Nothing on this machine to tear down.
     if let Some(proj) = load_projects_all().into_iter().find(|p| p.id == w.project_id && p.server.is_some()) {
         let server = proj.server.clone().unwrap_or_default();
         // The project's archive script runs in the worktree on the box first
