@@ -122,7 +122,6 @@ export default {
     addRemote: "Connect a phone, pair a computer or add a server",
     addServer: "Add a server",
     pairComputer: "Pair a computer",
-    newTaskItem: "New task...",
     addProject: "Add project...",
     serverSettings: "Server settings",
     removeServer: "Remove server...",

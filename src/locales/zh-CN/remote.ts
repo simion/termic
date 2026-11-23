@@ -121,7 +121,6 @@ export default {
     addRemote: "连接手机、配对电脑或添加服务器",
     addServer: "添加服务器",
     pairComputer: "配对一台电脑",
-    newTaskItem: "新建任务...",
     addProject: "添加项目...",
     serverSettings: "服务器设置",
     removeServer: "移除服务器...",

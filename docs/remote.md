@@ -397,9 +397,10 @@ Servers. REMOTE
 always shows (outside the compact rail), so its + menu is the one way
 in from the sidebar: Add a server, Connect a phone, Pair a computer
 (which opens Settings > Remote control). Under it, servers first (one row per
-server with its state, New task and a menu, right-click too, for New
-task, Add project, Server settings and Remove, and its projects drawn
-under it by the sidebar's own `renderProject`), then paired computers
+server with its state, its switch and a menu, right-click too, for Add
+project, Server settings and Remove, and its projects drawn under it by
+the sidebar's own `renderProject`; New task is on each project row, not
+on the server, which holds several projects), then paired computers
 (other Termic apps, drawn from what they report, Unpair in their menu).
 Phones get no rows: they have no tasks to show. Every server and paired
 computer row has the same menu (its ⋮ and right-click) with Connect /

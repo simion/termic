@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
 import { CopyRow } from "@/components/settings/McpSection";
-import { serverAdd, serverInstall, serverProbe, serverRemove, serverTrust, useMachine, useRemote, type ServerProbe, openNewTaskOnServer } from "@/lib/remote";
+import { serverAdd, serverInstall, serverProbe, serverRemove, serverTrust, useMachine, useRemote, type ServerProbe } from "@/lib/remote";
 
 /** The same install, from a shell on the server (termic.dev public/install-server.sh). */
 const INSTALL_CURL = "curl -fsSL https://termic.dev/install-server.sh | sh";
@@ -214,7 +214,7 @@ function AddServerBody({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-3">
             <p data-testid="server-done" className="text-[13px] text-[var(--color-fg)]">{t("addServer.connectedDone", { name: machine.name })}</p>
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" size="sm" onClick={() => { onClose(); void openNewTaskOnServer(machine.id); }}>
+              <Button variant="secondary" size="sm" onClick={() => { onClose(); useRemote.getState().setDialog({ newTaskOn: machine.id, newTaskAdding: true }); }}>
                 {t("addServer.addProject", { name: machine.name })}
               </Button>
               <Button variant="primary" size="sm" data-testid="server-done-button" onClick={onClose}>{t("addServer.done")}</Button>

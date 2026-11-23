@@ -92,7 +92,7 @@ Check:
 
 - The checklist (reach, system, installed, connect) passes; a first-seen
   host key shows its fingerprint before Trust.
-- **New task on <server>** from its sidebar section: the agent starts on
+- **New task** on one of the server's project rows: the agent starts on
   the box (its login shell's PATH), the row shows, and its terminal opens
   and fills the pane; resize the window and the remote PTY follows.
 - Close the laptop lid or quit Termic: the server's agents keep running;

@@ -123,7 +123,6 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
   };
   return (
     <>
-      {server && online && <Item testId="server-menu-new-task" onSelect={() => void openNewTaskOnServer(m.id)}>{t("sidebar.newTaskItem")}</Item>}
       {server && online && <Item testId="server-menu-add-project" onSelect={() => setDialog({ newTaskOn: m.id, newTaskAdding: true })}>{t("sidebar.addProject")}</Item>}
       {!online && !off && <Item testId="server-menu-reconnect" onSelect={() => void remoteReconnect()}>{t("sidebar.reconnect")}</Item>}
       {off
@@ -242,11 +241,8 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
             <button type="button" aria-label={t("sidebar.reconnect")} onClick={() => void remoteReconnect()} className={headerBtn}><RefreshCw className="h-3.5 w-3.5" /></button>
           </Tip>
         )}
-        {online && (
-          <Tip content={t("sidebar.newTask", { name: m.name })}>
-            <button type="button" data-testid={`server-new-task-${m.id}`} aria-label={t("sidebar.newTask", { name: m.name })} onClick={() => void openNewTaskOnServer(m.id)} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
-          </Tip>
-        )}
+        {/* No New task here: a server holds several projects, and New task
+            belongs to the project row it starts in. */}
         <MachineSwitch m={m} />
         <MachineMenuButton m={m} />
       </div>

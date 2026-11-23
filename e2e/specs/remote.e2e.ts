@@ -648,7 +648,10 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
       return !!document.querySelector('[data-testid="server-menu-settings"]');
     }, serverId), { timeout: 10_000, timeoutMsg: "the server's menu never opened" });
     await openServerMenu();
-    expect(await browser.execute(() => ["new-task", "add-project", "settings", "remove"].every(k => !!document.querySelector(`[data-testid="server-menu-${k}"]`)))).toBe(true);
+    expect(await browser.execute(() => ["add-project", "settings", "remove"].every(k => !!document.querySelector(`[data-testid="server-menu-${k}"]`)))).toBe(true);
+    // New task lives on each project row, never on the server: a server holds
+    // several projects, and a server-level New task started in the first one.
+    expect(await browser.execute((id) => !!document.querySelector(`[data-testid="server-menu-new-task"], [data-testid="server-new-task-${id}"]`), serverId)).toBe(false);
     await snap("remote-server-menu.png");
     await clickPresent('[data-testid="server-menu-add-project"]');
     await waitVisible('[data-testid="remote-project-path"]');
