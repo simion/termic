@@ -83,7 +83,7 @@ export default {
     scratchHint: "便签尚未保存到项目中。按 {{combo}} 选择保存位置。",
     setSyntaxTip: "设置语法",
     readOnly: "只读",
-    readOnlyLinkTip: "通过指向任务之外的链接打开。Termic 可以读取，但不会通过它写入。",
+    readOnlyLinkTip: "通过指向任务之外、且不在沙盒允许路径内的链接打开。Termic 可以读取，但不会通过它写入。",
     readOnlyExternalTip: "任务之外的文件。Termic 只打开它供阅读，从不保存。",
     copyPathTip: "复制路径",
     revealInFinderTip: "在 {{manager}} 中显示",

@@ -263,8 +263,25 @@ data dir and are exempt, but only the paths the profile re-allows (skills,
 agents, `mcp.json`, never `mcp.env.local`).
 
 All of it applies to the binary previews as well, and all of it is
-**read-only**: the editor opens such a file locked and `task_file_write`
-keeps the strict check. A **server task** is the exception: it writes on
+**read-only** unless the link lands inside a sandbox path the user
+granted. Writes are a real boundary (the webview has no other), so
+`task_file_write` goes through `safe_task_write_path`, which follows a
+link out of the task only when:
+
+- the target is inside a grant from a layer the user owns: the global
+  defaults, the task's and the project's personal lists, or the task
+  agent's own list. The agent can already write there, so the editor may
+  too. `.termic.yaml` never counts, because a repo authors it and could
+  grant `$HOME` next to a link it ships. The built-in runtime paths never
+  count either (`~/.local/bin` is code execution). `regex:` entries bound
+  no directory and are skipped.
+- the target is NOT under the data dir, the keychain dirs, the broker's
+  per-spawn dirs (no customization exemption here), the main checkout or
+  any member's repo. These win over any grant, so allowlisting `~` cannot
+  make the `.claude` link write into the repo behind the worktree.
+
+Everything else opens locked. Rename, delete and every git path keep the
+strict check regardless. A **server task** is the exception: it writes on
 the box through `BOX_WRITE_SH`, which follows links (its `.claude` link
 included).
 
@@ -277,7 +294,8 @@ What this adds is an arbitrary file **read** reachable from the webview. It
 is accepted, bounded three ways:
 
 - **Read only.** There is deliberately no absolute-path write counterpart.
-  `task_file_write` stays task-bounded (`safe_task_path`), and the
+  `task_file_write` stays task-bounded (`safe_task_write_path`: the task,
+  or a link into a user-granted sandbox path, see above), and the
   tab the read feeds is `EditorState.readOnly` with its ⌘S path stubbed
   out. Nothing can be mutated outside a task through this.
 - **Text only, capped.** The same 2 MB ceiling as the task read, plus a

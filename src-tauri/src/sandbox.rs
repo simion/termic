@@ -1345,14 +1345,20 @@ pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>
     // arguments - the behavioral sandbox tests inject hostile lists
     // through the same seam the real layers flow through.
     let effective_cli = agent_override.unwrap_or(&task.cli).to_string();
-    let settings = crate::load_settings_inner();
-    let agent_paths: Vec<String> = settings
-        .agents
-        .iter()
-        .find(|a| a.id == effective_cli)
-        .map(|a| a.sandbox_allowed_paths.clone())
-        .unwrap_or_default();
+    let agent_paths = agent_allowed_paths(&effective_cli);
     render_profile_with(task, proxy_port, &effective_cli, &agent_paths, mode, &control_plane_paths())
+}
+
+/// One agent's `sandbox_allowed_paths` (Settings → Agents), unexpanded.
+/// Shared with the editor's write check (`task_write_bounds`) so the two
+/// agree on what the agent was granted.
+pub(crate) fn agent_allowed_paths(cli: &str) -> Vec<String> {
+    crate::load_settings_inner()
+        .agents
+        .into_iter()
+        .find(|a| a.id == cli)
+        .map(|a| a.sandbox_allowed_paths)
+        .unwrap_or_default()
 }
 
 pub(crate) fn render_profile_with(

@@ -86,7 +86,7 @@ export default {
     scratchHint: "Scratchpad, not saved to the project yet. {{combo}} picks a place for it.",
     setSyntaxTip: "Set syntax",
     readOnly: "Read-only",
-    readOnlyLinkTip: "Reached through a link out of the task. Termic reads it but does not write through it.",
+    readOnlyLinkTip: "Reached through a link out of the task, outside its sandbox allowed paths. Termic reads it but does not write through it.",
     readOnlyExternalTip: "A file outside the task. Termic opens it to read, never to save.",
     copyPathTip: "Copy path",
     revealInFinderTip: "Reveal in {{manager}}",
