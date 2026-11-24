@@ -3360,7 +3360,7 @@ fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
                     continue;
                 }
                 if let Some(win) = app.get_webview_window(&id.window_label()) {
-                    let _ = win.set_title(&format!("Termic - {}", p.name));
+                    crate::set_profile_window_title(&win, &format!("Termic - {}", p.name));
                 }
             }
         }

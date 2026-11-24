@@ -6480,7 +6480,7 @@ fn profile_update(app: AppHandle, slug: String, name: Option<String>, accent: Op
         use tauri::Manager;
         if let Some(win) = app.get_webview_window(&id.window_label()) {
             if !id.is_root() {
-                let _ = win.set_title(&title);
+                set_profile_window_title(&win, &title);
             }
         }
     }
@@ -29651,6 +29651,50 @@ fn cleanup_children(app: &tauri::AppHandle) {
             .collect();
         graceful_then_kill(&victims);
         mgr.inner.lock().drain();
+    }
+}
+
+/// Retitle a profile window, keeping its traffic lights where we put them.
+///
+/// Changing an NSWindow's title makes AppKit lay its title bar out again,
+/// which puts the window controls back at the system's spot (further in and
+/// lower than our `traffic_light_position`). tao only re-applies the custom
+/// position when its view draws, so they stayed misplaced until the next
+/// resize: only profile windows other than the root are ever retitled, which
+/// is why one profile's window had them off and the other's did not. The
+/// title is set and a redraw asked for in one main-thread step, so the redraw
+/// lands after that layout. An unchanged title is left alone: config sync
+/// re-set every window's title on each sync.
+pub(crate) fn set_profile_window_title(win: &tauri::WebviewWindow, title: &str) {
+    if win.title().ok().as_deref() == Some(title) {
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = win.set_title(title);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(ns_window) = win.ns_window() else { let _ = win.set_title(title); return };
+        let ns_window = ns_window as usize;
+        let title = title.to_string();
+        let _ = win.run_on_main_thread(move || {
+            use objc2::runtime::{AnyObject, Bool};
+            use objc2::{class, msg_send};
+            let ns_window = ns_window as *mut AnyObject;
+            let Ok(c) = std::ffi::CString::new(title) else { return };
+            // SAFETY: on the main thread (run_on_main_thread), on the live
+            // NSWindow tao owns; only public NSWindow / NSView calls.
+            unsafe {
+                let s: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()];
+                if s.is_null() { return; }
+                let _: () = msg_send![ns_window, setTitle: s];
+                let view: *mut AnyObject = msg_send![ns_window, contentView];
+                if !view.is_null() {
+                    let _: () = msg_send![view, setNeedsDisplay: Bool::new(true)];
+                }
+            }
+        });
     }
 }
 
