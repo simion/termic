@@ -1945,7 +1945,6 @@ pub(crate) fn write_atomic_private(dest: &Path, bytes: &[u8]) -> std::io::Result
 }
 
 fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // Resolve symlinks: rename would replace the link itself with a regular
     // file; we must write through to its target. canonicalize fails on a
     // DANGLING link (dotfiles target not created yet), so follow links by
@@ -1964,24 +1963,24 @@ fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Resul
     let dest = resolved.as_path();
     let dir = dest.parent().unwrap_or_else(|| Path::new("."));
     let stem = dest.file_name().and_then(|n| n.to_str()).unwrap_or("out");
-    let tmp = dir.join(format!(
-        ".{stem}.tmp.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed),
-    ));
+    // unguessable, and created with `create_new` (O_EXCL, which also refuses
+    // a symlink at the name). The dir is often one an agent can write: a
+    // `{pid}.{seq}` name opened with `File::create` let it plant a link there
+    // ahead of a save and have termic, outside the cage, write the buffer
+    // through it, and the rename then swapped the link in over the file.
+    let tmp = dir.join(format!(".{stem}.tmp.{}", Uuid::new_v4().simple()));
     let write = || -> std::io::Result<()> {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
         // A secret's temp file is BORN owner-only. Creating it with the umask
         // default and tightening after left a moment where another user could
         // open it, and an fd opened then keeps reading after the chmod.
         #[cfg(unix)]
-        let mut f = if private {
+        if private {
             use std::os::unix::fs::OpenOptionsExt;
-            fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?
-        } else {
-            fs::File::create(&tmp)?
-        };
-        #[cfg(not(unix))]
-        let mut f = fs::File::create(&tmp)?;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         // and set explicitly too: `mode` is filtered through the umask.
         #[cfg(unix)]
         if private {
@@ -4340,8 +4339,14 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
     // The TASK'S profile, not the root's: settings are profile-scoped in full
     // (docs/profiles.md), so a second profile's sandbox defaults have to be
     // the ones a spawn under it actually gets.
-    let globals = load_settings_in(&task.profile);
-    let projects = load_projects_all();
+    live_sandbox_lists_in(task, &load_settings_in(&task.profile), &load_projects_all(), true)
+}
+
+/// `live_sandbox_lists` with its inputs passed in. `committed: false` drops
+/// layer 4 (every `.termic.yaml`), leaving only what the user authored: the
+/// editor's write check (`task_write_bounds`) takes that half, since a repo
+/// can commit a grant but must never widen where the editor writes.
+fn live_sandbox_lists_in(task: &Task, globals: &Settings, projects: &[Project], committed: bool) -> (Vec<String>, Vec<String>) {
     let mut rw = globals.sandbox_default_rw_paths.clone();
     let mut hosts = globals.sandbox_default_allowed_hosts.clone();
     // The task's own pinned arrays — the Sandbox dialog's
@@ -4358,9 +4363,11 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
         // Single-repo: the project's committed `.termic.yaml` sandbox block
         // (re-read live) + its personal projects.json overrides.
         if let Some(p) = projects.iter().find(|p| p.id == task.project_id) {
-            let cfg = repo_config_for(p);
-            rw.extend(cfg.sandbox.allowed_paths);
-            hosts.extend(cfg.sandbox.allowed_hosts);
+            if committed {
+                let cfg = repo_config_for(p);
+                rw.extend(cfg.sandbox.allowed_paths);
+                hosts.extend(cfg.sandbox.allowed_hosts);
+            }
             rw.extend(p.sandbox_rw_paths.iter().cloned());
             hosts.extend(p.sandbox_allowed_hosts.iter().cloned());
         }
@@ -4369,7 +4376,7 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
         // re-read live from its source repo. (Member sandbox lists from the
         // multi-repo project were frozen into the task's pinned arrays
         // at create, so they're already covered above.)
-        for m in &task.composition {
+        for m in task.composition.iter().filter(|_| committed) {
             let rp = member_repo_path(m);
             if rp.is_empty() { continue; }
             let cfg = repo_config::load_or_default(Path::new(&rp));
@@ -17298,8 +17305,8 @@ fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
 ///
 /// **MUST** bound every renderer → filesystem access inside a task, either
 /// directly (diff, rename, delete, git paths) or as the first check of
-/// `safe_task_read_path` (file reads, the tree). Editor saves use it alone.
-/// Without it, untrusted paths from the webview could read
+/// `safe_task_read_path` (file reads, the tree) and `safe_task_write_path`
+/// (editor saves). Without it, untrusted paths from the webview could read
 /// arbitrary text files on disk.
 fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     let pb = reject_escaping_segments(rel)?;
@@ -17336,10 +17343,10 @@ fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
 /// which keeps termic's own secrets off the screen.
 ///
 /// READ paths only. Everything this admits beyond `safe_task_path` is outside
-/// the task, and `task_file_write`, `task_path_rename`, `task_path_delete`
-/// and every git path keep the strict check, so nothing outside the task is
-/// mutated through a link. The editor opens those files read-only
-/// (`task_file_writable`).
+/// the task. `task_path_rename`, `task_path_delete` and every git path keep
+/// the strict check; `task_file_write` writes through a link only into a
+/// sandbox path the user granted (`safe_task_write_path`). Every other file
+/// this admits opens read-only in the editor (`task_file_writable`).
 fn safe_task_read_path(w: &Task, base: &Path, rel: &str) -> Result<PathBuf, String> {
     resolve_task_path_in(base, rel, || task_read_bounds(w))
 }
@@ -17425,12 +17432,7 @@ fn task_write_bounds(w: &Task) -> WriteBounds {
     };
     let projects = load_projects_all();
     let proj = projects.iter().find(|p| p.id == w.project_id);
-    // the personal layers of `live_sandbox_lists`, minus `.termic.yaml`. A
-    // layer missing here fails safe: the file just opens read-only.
-    let mut raw = load_settings_in(&w.profile).sandbox_default_rw_paths;
-    raw.extend(w.sandbox_rw_paths.iter().cloned());
-    raw.extend(proj.map(|p| p.sandbox_rw_paths.clone()).unwrap_or_default());
-    raw.extend(sandbox::agent_allowed_paths(&w.cli));
+    let raw = write_grant_paths(w, &load_settings_in(&w.profile), &projects, sandbox::agent_allowed_paths(&w.cli));
     let granted = expand_grants(&raw, &home, &w.path);
     let mut denied = task_read_bounds(w).denied;
     let repos = proj.map(|p| p.root_path.clone()).into_iter()
@@ -17439,13 +17441,39 @@ fn task_write_bounds(w: &Task) -> WriteBounds {
     WriteBounds { granted, denied }
 }
 
+/// The raw grant entries the editor may write through a link into: what the
+/// agent's cage was actually given by the user, so the editor never reaches
+/// past it. A layer missing here fails safe: the file just opens read-only.
+///
+/// - the personal half of `live_sandbox_lists` (no `.termic.yaml`), the same
+///   list Seatbelt renders and Docker mounts
+/// - the agent's own `sandbox_allowed_paths`, Seatbelt only: Docker never
+///   mounts them (docker.rs), so in a Docker task the container cannot reach
+///   them and the editor must not either
+fn write_grant_paths(w: &Task, globals: &Settings, projects: &[Project], agent_paths: Vec<String>) -> Vec<String> {
+    let mut raw = live_sandbox_lists_in(w, globals, projects, false).0;
+    // ponytail: the task's primary agent, not the tab's. A tab running
+    // another agent (`agent_override`) gets a cage without these; tracking
+    // which agent planted a link is not worth it while the primary's cage
+    // can write there anyway.
+    if !w.docker_sandbox_enabled {
+        raw.extend(agent_paths);
+    }
+    raw
+}
+
 /// Sandbox allowed-path entries as canonical dirs, expanded the way the
 /// profile expands them (`subst_path`). `regex:` entries bound no directory
-/// and are dropped, as is anything missing on disk (nothing to write into).
+/// and are dropped, as is anything missing on disk (nothing to write into),
+/// relative or holding `..`: Seatbelt matches those literally or not at
+/// all, while canonicalizing would resolve `.` against termic's own cwd and
+/// `$WORKSPACE/..` to every sibling task.
 fn expand_grants(raw: &[String], home: &str, task_path: &str) -> Vec<PathBuf> {
     raw.iter()
         .filter(|p| !p.trim().is_empty() && !p.trim_start().starts_with("regex:"))
-        .filter_map(|p| dunce::canonicalize(sandbox::subst_path(p, home, task_path)).ok())
+        .map(|p| PathBuf::from(sandbox::subst_path(p, home, task_path)))
+        .filter(|p| p.is_absolute() && !p.components().any(|c| c == std::path::Component::ParentDir))
+        .filter_map(|p| dunce::canonicalize(p).ok())
         .collect()
 }
 
@@ -19402,8 +19430,9 @@ fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEnt
             safe_task_read_path(&w, &mp, remainder)?
         }
     } else {
-        // GH #250: also resolves through the config-dir symlinks termic itself
-        // creates into the repo root, which the strict check refused.
+        // GH #250: also follows a link out of the task at any depth (the
+        // `.claude` link termic creates, notes linked in from elsewhere),
+        // which the strict check refused.
         safe_task_read_path(&w, &base, &rel)?
     };
     // The repo that owns this directory + the path relative to its root.
@@ -34879,11 +34908,54 @@ mod tests {
         fs::create_dir_all(home.path().join(".local")).unwrap();
         fs::create_dir_all(task.path().join("out")).unwrap();
         let (h, t) = (home.path().to_str().unwrap(), task.path().to_str().unwrap());
-        let raw: Vec<String> = ["~/.local", "$HOME/.local/", "$WORKSPACE/out", "regex:^$HOME/.*", "", "~/missing"]
+        // `.`, a bare relative entry and `$WORKSPACE/..` all exist on disk and
+        // would canonicalize to something (termic's cwd, every sibling task),
+        // which Seatbelt would never match. They must drop, not widen.
+        let raw: Vec<String> = ["~/.local", "$HOME/.local/", "$WORKSPACE/out", "regex:^$HOME/.*", "", "~/missing",
+            ".", "out", "$WORKSPACE/..", "$HOME/.local/../.local"]
             .iter().map(|s| s.to_string()).collect();
         let got = expand_grants(&raw, h, t);
         let local = fs::canonicalize(home.path().join(".local")).unwrap();
         assert_eq!(got, vec![local.clone(), local, fs::canonicalize(task.path().join("out")).unwrap()]);
+    }
+
+    #[test]
+    fn write_grants_are_the_users_layers_and_the_agent_list_only_outside_docker() {
+        // the editor may write through a link only where the agent's cage
+        // reaches by the user's say-so. A repo's `.termic.yaml` never counts,
+        // and Docker never mounts the agent's own list, so a Docker task
+        // must not get it either (else the editor reaches host paths the
+        // container cannot).
+        let repo = tempdir().unwrap();
+        repo_config::add_allowed(repo.path(), repo_config::AllowKind::Path, "/from/termic-yaml").unwrap();
+        let proj = Project {
+            id: "p1".into(),
+            root_path: repo.path().to_string_lossy().into_owned(),
+            sandbox_rw_paths: vec!["/from/project".into()],
+            ..Default::default()
+        };
+        let globals = Settings { sandbox_default_rw_paths: vec!["/from/globals".into()], ..Default::default() };
+        let mut task = Task { project_id: "p1".into(), sandbox_rw_paths: vec!["/from/task".into()], ..Default::default() };
+        let agent = || vec!["/from/agent".to_string()];
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // control: the spawn's own list does carry `.termic.yaml`, so its
+        // absence below is the `committed: false` cut, not a fixture miss.
+        assert!(live_sandbox_lists_in(&task, &globals, std::slice::from_ref(&proj), true).0.contains(&"/from/termic-yaml".to_string()));
+
+        let projects = std::slice::from_ref(&proj);
+        assert_eq!(write_grant_paths(&task, &globals, projects, agent()),
+            s(&["/from/globals", "/from/task", "/from/project", "/from/agent"]));
+        task.docker_sandbox_enabled = true;
+        assert_eq!(write_grant_paths(&task, &globals, projects, agent()),
+            s(&["/from/globals", "/from/task", "/from/project"]));
+
+        // multi-repo: the project's list was frozen into the task at create,
+        // and the cage reads only the task's copy, so the editor does too.
+        task.docker_sandbox_enabled = false;
+        let multi = Project { project_type: ProjectType::Multi, ..proj.clone() };
+        assert_eq!(write_grant_paths(&task, &globals, std::slice::from_ref(&multi), vec![]),
+            s(&["/from/globals", "/from/task"]));
     }
 
     #[test]
@@ -39999,6 +40071,28 @@ filename f.rs
         fs::set_permissions(&loose, fs::Permissions::from_mode(0o644)).unwrap();
         write_atomic(&loose, b"plain").unwrap();
         assert_eq!(mode(&loose), 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_never_writes_through_a_link_planted_at_a_temp_name() {
+        // an agent that can write the dir plants links where the temp file
+        // used to be named (`.{name}.tmp.{pid}.{seq}`, both guessable) and
+        // waits for a save. The save must land in the file, never through a
+        // planted link, and the file must stay a regular file.
+        let dir = tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"untouched").unwrap();
+        let f = dir.path().join("notes.md");
+        fs::write(&f, b"old").unwrap();
+        for seq in 0..64 {
+            let name = format!(".notes.md.tmp.{}.{seq}", std::process::id());
+            std::os::unix::fs::symlink(&victim, dir.path().join(name)).unwrap();
+        }
+        write_atomic(&f, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "untouched");
+        assert_eq!(fs::read_to_string(&f).unwrap(), "new");
+        assert!(!fs::symlink_metadata(&f).unwrap().file_type().is_symlink());
     }
 
     #[test]
