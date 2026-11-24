@@ -19,7 +19,7 @@ import { ACCENTS } from "@/lib/accents";
 import { cn } from "@/lib/utils";
 import { FolderMinus, Pencil } from "lucide-react";
 
-export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onRename, ungroupLabel = "Ungroup projects" }: {
+export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onRename, ungroupLabel = "Ungroup projects", noDefaultColour = false }: {
   name: string;
   /** The group's resolved accent CSS (`accentCss(groupColors[name])`), or
    *  undefined for an uncoloured folder. */
@@ -29,6 +29,9 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
   onRename?: () => void;
   /** Task groups reuse this menu; the word is theirs to pick. */
   ungroupLabel?: string;
+  /** No "default colour" swatch: a paired computer's `group` verb takes an
+   *  accent and has no way to clear one. */
+  noDefaultColour?: boolean;
 }) {
   const { t } = useTranslation("sidebar");
   return (
@@ -42,7 +45,7 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
           an uncolored folder actually renders with — and the
           active pick carries a ring. */}
       <div className="flex items-center gap-0.5 px-1 pb-1">
-        <ContextMenuItem
+        {!noDefaultColour && <ContextMenuItem
           aria-label={t("groupActions.defaultColour")}
           checked={!accent}
           onSelect={() => onSetColor(null)}
@@ -55,7 +58,7 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
             )}
             style={{ backgroundColor: "var(--color-fg-faint)" }}
           />
-        </ContextMenuItem>
+        </ContextMenuItem>}
         {ACCENTS.map(c => (
           <ContextMenuItem
             key={c.key}

@@ -9,7 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, Check, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, MonitorSmartphone, Smartphone } from "lucide-react";
+import { Bell, Check, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, MonitorSmartphone, Smartphone, Cable } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
@@ -34,8 +34,11 @@ import { prNounShort, prRef } from "@/lib/forge";
 import type { ForgeProvider } from "@/lib/types";
 import { openPath, peerUnpair } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
-import { archiveRemoteTask, stopRemoteAgent } from "@/components/remote/RemoteTaskView";
-import { joinableGroups, layoutRemote, orderMachines, profilesOf, visibleTasks, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
+import { archiveRemoteTask, remoteArchivingKey, stopRemoteAgent } from "@/components/remote/RemoteTaskView";
+import { useIsArchiving } from "@/store/archivingTasks";
+import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
+import { copyRemoteAgentBriefing } from "@/lib/agentBriefing";
+import { joinableGroups, layoutRemote, orderMachines, profilesOf, visibleTasks, remoteCall, req, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
  *  with the label, a fold, and its actions on the right. */
@@ -168,7 +171,9 @@ export function RemoteSidebarSection({ projects, renderProject }: { projects: Pr
       <SidebarSectionHeader testId="remote-section-header" icon={<MonitorSmartphone className="h-4 w-4 shrink-0" />} label={t("sidebar.remoteHeader")} badge={ts("rail.badgeExp")}
         folded={folded} onToggle={() => toggle("section:remote")}>
         <RemoteAddMenu>
-          <button type="button" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")} className={headerBtn}><Plus className="h-3.5 w-3.5" /></button>
+          {/* The same button as PROJECTS' Add project beside it, with an icon
+              for connecting: a phone, a computer or a server. */}
+          <Button size="icon" variant="icon" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")}><Cable className="h-[18px] w-[18px]" /></Button>
         </RemoteAddMenu>
       </SidebarSectionHeader>
       {!folded && (
@@ -465,7 +470,7 @@ const MachineSection = memo(function MachineSection({ m: all }: { m: MachineView
                 data-testid={`remote-new-task-${m.id}`}
                 aria-label={t("sidebar.newTask", { name: m.name })}
                 onClick={() => void openNewTaskOnServer(m.id)}
-                className="rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+                className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
@@ -520,6 +525,7 @@ function RemoteFolder({ m, folder, projects }: { m: MachineView; folder: RemoteG
 }
 
 function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProject }) {
+  const { t } = useTranslation("remote");
   const key = `project:${m.id}:${project.name}`;
   const folded = useRemote(s => !!s.folded[key]);
   const toggle = useRemote(s => s.toggleFold);
@@ -527,13 +533,26 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
     <div data-testid={`remote-project-${project.name}`} data-folded={folded} className="[[data-testid^=remote-project-]+&]:mt-0.5">
       {/* The local project header: its band, type, chevron and padding, and
           it folds the same way (the fold is this computer's, per machine). */}
-      <button type="button" aria-expanded={!folded} onClick={() => toggle(key)}
-        className="group flex w-full select-none items-center gap-1.5 rounded-md bg-[var(--color-bg-2)]/50 py-1.5 pl-2 pr-0 text-left text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)] hover:bg-[var(--color-bg-2)]">
-        {folded
-          ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
-          : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
-        <span className="truncate">{project.name}</span>
-      </button>
+      <div className="flex items-center rounded-md bg-[var(--color-bg-2)]/50 hover:bg-[var(--color-bg-2)]">
+        <button type="button" data-testid={`remote-project-fold-${project.name}`} aria-expanded={!folded} onClick={() => toggle(key)}
+          className="group flex min-w-0 flex-1 select-none items-center gap-1.5 py-1.5 pl-2 pr-0 text-left text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)]">
+          {folded
+            ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+            : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+          <span className="truncate">{project.name}</span>
+        </button>
+        {/* New task in this project there, as a local project's + does. */}
+        {m.state === "online" && m.grant !== "reply" && (
+          <Tip content={t("newTask.title", { name: m.name })}>
+            <button type="button" data-testid={`remote-project-new-task-${project.name}`}
+              aria-label={t("newTask.title", { name: m.name })}
+              onClick={() => void openNewTaskOnServer(m.id, project.name)}
+              className="mr-0.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]">
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </Tip>
+        )}
+      </div>
       {!folded && project.segments.map(seg => seg.kind === "task"
         ? <RemoteTaskRow key={seg.task.id} m={m} task={seg.task} />
         : (
@@ -547,18 +566,63 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
  *  group's colour and its members on a rail of it, folding open and shut
  *  like the local one (the fold is this computer's, keyed per machine). */
 function RemoteGroupBlock({ m, group, tasks }: { m: MachineView; group: RemoteGroup; tasks: RemoteTask[] }) {
+  const { t } = useTranslation("sidebar");
   const key = `group:${m.id}:${group.id}`;
   const folded = useRemote(s => !!s.folded[key]);
   const toggle = useRemote(s => s.toggleFold);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // The local group's menu (colour, rename, ungroup), run on that machine
+  // through its `group` verb on a member task. Only where it lets this one.
+  const canAct = m.state === "online" && m.grant !== "reply" && m.kind !== "server" && tasks.length > 0;
+  const member = tasks[0];
+  const run = (a: Record<string, unknown>) => void remoteCall(m.id, req("group", { task: member.id, ...a }))
+    .then(r => { if (!r.ok) throw new Error(r.error?.message ?? "refused"); })
+    .catch(e => useUI.getState().pushToast(`${m.name}: ${e instanceof Error ? e.message : String(e)}`, "error"));
+  const commitRename = () => {
+    const name = renaming?.trim();
+    setRenaming(null);
+    if (name && name !== group.name) run({ name });
+  };
+  const header = renaming !== null ? (
+    <div className="ml-3 flex h-[var(--task-row-h)] items-center px-1">
+      <input
+        autoFocus
+        data-testid={`remote-group-rename-${group.id}`}
+        value={renaming}
+        onChange={e => setRenaming(e.target.value)}
+        onBlur={commitRename}
+        onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setRenaming(null); }}
+        className="m-0 min-w-0 flex-1 rounded-sm border-0 bg-[var(--color-bg)] p-0 text-[13px] font-medium text-inherit outline outline-1 outline-offset-2 outline-[var(--color-accent)]"
+      />
+    </div>
+  ) : (
+    <button type="button" aria-expanded={!folded} onClick={() => toggle(key)}
+      className="ml-3 flex h-[var(--task-row-h)] w-[calc(100%-0.75rem)] select-none items-center gap-1 rounded-md px-1 text-left text-[13px] font-medium hover:bg-[var(--color-hover)]"
+      style={{ color: groupColorCss(group) }}>
+      {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+      <span className="truncate">{group.name}</span>
+      <span className="ml-auto shrink-0 pr-1 text-[11px] font-normal tabular-nums text-[var(--color-fg-faint)]">{tasks.length}</span>
+    </button>
+  );
   return (
     <div data-testid={`remote-group-${group.id}`} data-color={group.color ?? ""} data-folded={folded}>
-      <button type="button" aria-expanded={!folded} onClick={() => toggle(key)}
-        className="ml-3 flex h-[var(--task-row-h)] w-[calc(100%-0.75rem)] select-none items-center gap-1 rounded-md px-1 text-left text-[13px] font-medium hover:bg-[var(--color-hover)]"
-        style={{ color: groupColorCss(group) }}>
-        {folded ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
-        <span className="truncate">{group.name}</span>
-        <span className="ml-auto shrink-0 pr-1 text-[11px] font-normal tabular-nums text-[var(--color-fg-faint)]">{tasks.length}</span>
-      </button>
+      {canAct && renaming === null ? (
+        <ContextMenuRoot>
+          <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
+          <ContextMenuContent>
+            <GroupActionsMenuItems
+              name={group.name}
+              accent={group.color ? groupColorCss(group) : undefined}
+              onSetColor={color => { if (color) run({ color }); }}
+              noDefaultColour
+              onRename={() => setRenaming(group.name)}
+              // Every member leaves: the group is gone on that machine.
+              onUngroup={() => { for (const x of tasks) void remoteCall(m.id, req("group", { task: x.id, leave: true })); }}
+              ungroupLabel={t("taskGroup.ungroupTasks")}
+            />
+          </ContextMenuContent>
+        </ContextMenuRoot>
+      ) : header}
       {!folded && (
         <div className="ml-6 border-l" style={{ borderColor: groupColorCss(group) }}>
           <div className="-ml-[calc(var(--spacing)*1.5-1px)]">
@@ -611,8 +675,16 @@ const RemoteTaskRow = memo(function RemoteTaskRow({ m, task }: { m: MachineView;
   const { t } = useTranslation("remote");
   const machine = m.id;
   const active = useRemote(s => s.open?.machine === machine && s.open?.task === task.id);
+  const archiving = useIsArchiving(remoteArchivingKey(machine, task.id));
   const openTask = useRemote(s => s.openTask);
   const [renaming, setRenaming] = useState<string | null>(null);
+  // That machine's agents, asked when the New tab submenu opens.
+  const [agents, setAgents] = useState<{ id: string }[]>([]);
+  const loadAgents = async () => {
+    const r = await remoteCall(m.id, req("agents")).catch(() => null);
+    const list = (r?.ok ? (r.data as { agents?: { id: string; kind: string; usable: boolean }[] } | undefined)?.agents : undefined) ?? [];
+    setAgents(list.filter(a => a.kind === "agent" && a.usable));
+  };
   const icon = resolveIconId(task.agent, []);
   const props = remoteProps(task);
   // The sidebar's own row settings, as a local task row reads them.
@@ -649,9 +721,13 @@ const RemoteTaskRow = memo(function RemoteTaskRow({ m, task }: { m: MachineView;
         // Greyed while its agent is not running, as a local or server task's
         // row is (the sidebar's `isLoaded`); every row read as started.
         (task.state === "inactive" || task.state === "unknown") && "opacity-60",
+        archiving && "pointer-events-none opacity-60",
       )}
+      data-task-archiving={archiving || undefined}
     >
-      <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-4 w-4" /></span>
+      {archiving
+        ? <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-fg-faint)]"><Spinner size={14} /></span>
+        : <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-4 w-4" /></span>}
       {renaming !== null ? (
         <input
           autoFocus
@@ -711,11 +787,36 @@ const RemoteTaskRow = memo(function RemoteTaskRow({ m, task }: { m: MachineView;
         </ContextMenuSub>
         {task.group && <ContextMenuItem onSelect={() => void act(m, task, { kind: "leave" })}>{t("menu.leaveGroup")}</ContextMenuItem>}
         </>}
-        {/* The local row's remaining items, run on that machine. */}
-        {task.branch && task.branch !== "HEAD" && <>
+        {files && <>
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={() => copyToClipboard(task.branch!, "branch")}>{t("sidebar:copyBranch")}</ContextMenuItem>
+          {/* A new tab in the task there: the same agent, or another one. */}
+          <ContextMenuSub onOpenChange={o => { if (o) void loadAgents(); }}>
+            <ContextMenuSubTrigger>{t("menu.newTab")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onSelect={() => void act(m, task, { kind: "tab", tab: { tab: "default" } })}>{t("menu.sameAgent")}</ContextMenuItem>
+              {agents.length > 0 && <ContextMenuSeparator />}
+              {agents.map(a => (
+                <ContextMenuItem key={a.id} onSelect={() => void act(m, task, { kind: "tab", tab: { tab: "agent", id: a.id } })}>{a.id}</ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          {(task.state === "inactive" || task.state === "unknown") && (
+            <ContextMenuItem onSelect={() => void act(m, task, { kind: "open" })}>{t("menu.restartAgent")}</ContextMenuItem>
+          )}
+          {!task.is_main_checkout && task.branch && task.branch !== "HEAD" && (
+            <ContextMenuItem onSelect={() => requestAnimationFrame(() => useRemote.getState().setDialog({ newTaskOn: m.id, newTaskProject: task.project, newTaskBase: task.branch! }))}>
+              {t("sidebar:duplicateWorktree")}
+            </ContextMenuItem>
+          )}
         </>}
+        {/* The local row's remaining items, run on that machine. */}
+        <ContextMenuSeparator />
+        {task.branch && task.branch !== "HEAD" && (
+          <ContextMenuItem onSelect={() => copyToClipboard(task.branch!, "branch")}>{t("sidebar:copyBranch")}</ContextMenuItem>
+        )}
+        {files && (
+          <ContextMenuItem onSelect={() => void copyRemoteAgentBriefing(task, { id: m.id, name: m.name })}>{t("sidebar:copyBriefing")}</ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         {task.state !== "inactive" && task.state !== "unknown" && (
           <ContextMenuItem onSelect={() => void stopRemoteAgent(m.id, task.id, m.name)}>{t("sidebar:stopTask")}</ContextMenuItem>

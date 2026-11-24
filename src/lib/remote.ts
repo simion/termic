@@ -535,7 +535,11 @@ export type RemoteTaskAction =
   | { kind: "pin"; pinned: boolean }
   | { kind: "join"; lead: string }
   | { kind: "newGroup"; color: string }
-  | { kind: "leave" };
+  | { kind: "leave" }
+  /** A new tab in the task: the agent it already runs, or a named one. */
+  | { kind: "tab"; tab: { tab: "default" } | { tab: "agent"; id: string } }
+  /** Start its agent again in its last session (`termic open`). */
+  | { kind: "open" };
 
 export function remoteTaskRequest(taskId: string, a: RemoteTaskAction): Record<string, unknown> {
   switch (a.kind) {
@@ -545,6 +549,8 @@ export function remoteTaskRequest(taskId: string, a: RemoteTaskAction): Record<s
     // Colouring a task in no group founds a group of one around it.
     case "newGroup": return req("group", { task: taskId, color: a.color });
     case "leave": return req("group", { task: taskId, leave: true });
+    case "tab": return req("tab", { task: taskId, kind: a.tab });
+    case "open": return req("open", { task: taskId });
   }
 }
 
@@ -608,6 +614,14 @@ export function useServerDetectedClis(projectId: string | undefined, isServer: b
  *  the desktop's own code on the box (task_host). With no project there
  *  yet, the server's Add project dialog, which then opens it. */
 export async function openNewTaskOnServer(serverId: string, projectName?: string | null, baseBranch?: string | null): Promise<void> {
+  // A paired computer's projects live there, not in this app's store, so the
+  // server path below found none and opened the dialog on "add a project":
+  // a path field where the project picker should be. Its own dialog lists
+  // the projects it has.
+  if (useRemote.getState().machines.find(m => m.id === serverId)?.kind !== "server") {
+    useRemote.getState().setDialog({ newTaskOn: serverId, newTaskProject: projectName ?? null, newTaskBase: baseBranch ?? null });
+    return;
+  }
   const { useApp } = await import("@/store/app");
   const { useUI } = await import("@/store/ui");
   const mine = useApp.getState().projects.filter(p => p.server === serverId);

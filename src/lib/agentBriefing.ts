@@ -28,7 +28,7 @@
 // exactly that reason.
 
 import { copyToClipboard } from "@/lib/clipboard";
-import { cliInstallStatus } from "@/lib/ipc";
+import { cliInstallStatus, peerStatus } from "@/lib/ipc";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import type { Task } from "@/lib/types";
 
@@ -105,4 +105,33 @@ function attr(v: string): string {
 export async function copyAgentBriefing(task: Task, projectName?: string | null) {
   const cli = await resolveCliFallback();
   return copyToClipboard(buildAgentBriefing({ task, projectName, cli }), "agent CLI briefing");
+}
+
+/** The briefing for a task on a PAIRED computer: the same block, addressed
+ *  through this machine's peer link. The agent it is pasted into runs here,
+ *  so it reaches the task with `--peer <that machine>`; the task replies
+ *  with `--peer <this machine>`. Both by peer id, which a rename on either
+ *  side does not change. No path: the task's folder is on the other machine. */
+export function buildRemoteAgentBriefing(opts: {
+  task: { id: string; name: string; agent: string; project: string };
+  machine: { id: string; name: string };
+  us: string;
+  cli: string;
+}): string {
+  const { task, machine, us, cli } = opts;
+  const agent = task.agent || "claude";
+  const them = `agent:${agent} task:${task.name} id:${task.id}`;
+  const you = "agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID";
+  return `<termic-task id="${attr(task.id)}" name="${attr(task.name)}" project="${attr(task.project)}" agent="${attr(agent)}" computer="${attr(machine.name)}">
+Another coding agent, working in Termic on the paired computer ${machine.name}. Prompt it, and it prompts you back when done:
+  ${cli} --peer ${machine.id} send ${task.id} -p "[message from ${you}] <your prompt here: what you want it to do>. When done, reply: ${cli} --peer ${us} send $TERMIC_TASK_ID -p '[message from ${them}] done: <what you did> -- ${them}' -- ${you}"
+Keep the outer double quotes and the $TERMIC_ variables as written (your shell fills in your own task name and address), and replace <you> with your agent name.
+</termic-task>`;
+}
+
+/** Copy a paired computer's task briefing, resolving the CLI and this
+ *  machine's peer id first. */
+export async function copyRemoteAgentBriefing(task: { id: string; name: string; agent: string; project: string }, machine: { id: string; name: string }) {
+  const [cli, status] = await Promise.all([resolveCliFallback(), peerStatus()]);
+  return copyToClipboard(buildRemoteAgentBriefing({ task, machine, us: status.self_id, cli }), "agent CLI briefing");
 }

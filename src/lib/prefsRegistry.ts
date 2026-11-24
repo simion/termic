@@ -187,6 +187,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "sidebarWidth", scoped: false, class: "local", reason: "panel size" },
   { key: "termic.remoteFolded", scoped: false, class: "local", reason: "collapse state of other machines' sidebar sections, which are per machine" },
   { key: "termic.remoteHiddenProfiles", scoped: false, class: "local", reason: "which of a paired computer's profiles its sidebar section shows; keyed by that machine" },
+  { key: "termic.remoteMachineOrder", scoped: false, class: "local", reason: "the order paired computers were dragged into in the sidebar; machine ids" },
 
   // ── Task view layout ──
   { key: "rightPanelHidden", scoped: false, class: "local", reason: "collapse state" },

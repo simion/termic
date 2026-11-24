@@ -289,7 +289,19 @@ so the host applies it exactly as its sidebar would and the next
 `tasks` snapshot carries the result. It also has the local row's Copy
 branch name, Stop task (while its agent runs: `stopRemoteAgent`) and
 Archive task (behind the same confirm as the task view's button:
-`archiveRemoteTask`). A server's row in this list skips pins and groups:
+`archiveRemoteTask`; the row shows a spinner until the host answers,
+through the same `archivingTasks` store a local archive uses, keyed by
+machine and task). On a paired computer it also offers New tab (the same
+agent, `tab` with kind `default`, or one of the host's usable agents,
+asked with `agents` when the submenu opens), Restart agent on a stopped
+task (`open`), Duplicate worktree (the paired computer's New task dialog
+from this task's branch) and Copy agent CLI briefing
+(`buildRemoteAgentBriefing`: the block addresses the task with
+`--peer <its machine id>` and the reply with `--peer <this machine's id>`,
+ids so a rename on either side does not break it). Not offered: Schedule
+(the schedule dialog is local-only), YOLO (no host verb sets it), and
+Spotlight, sandbox and the startup command, which change the other
+machine's own setup. A server's row in this list skips pins and groups:
 termic-server has neither. `pin` is a CLI verb for this
 (`termic pin [TASK] [--off]`, MCP `task_pin`, protocol v26).
 

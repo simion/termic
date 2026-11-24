@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 const FAKE_VERSION = (JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"), "utf8")) as { version: string }).version;
 import {
   waitForText,
-  cliBinary, clickMenuItem, clickPresent, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible,
+  cliBinary, clickMenuItem, clickPresent, readClipboard, requireTermicApi, setInputValue, snap, typeIntoRemoteTerminal, waitForAppShell, waitForAttr, waitGone, waitVisible,
   openTask,
 } from "../helpers.js";
 
@@ -858,10 +858,10 @@ describe("LAN pairing", () => {
       { timeout: 3_000, timeoutMsg: "the branch setting did not reach the remote row" });
       await prefs("setTaskBranchName", "none");
       // A paired computer's project folds like a local one.
-      await browser.execute(() => (document.querySelector('[data-testid="remote-project-webapp"] > button') as HTMLElement).click());
+      await browser.execute(() => (document.querySelector('[data-testid="remote-project-fold-webapp"]') as HTMLElement).click());
       await browser.waitUntil(async () => !(await browser.execute(() => !!document.querySelector('[data-testid="remote-task-rt-1"]'))),
         { timeout: 3_000, timeoutMsg: "folding the project did not hide its tasks" });
-      await browser.execute(() => (document.querySelector('[data-testid="remote-project-webapp"] > button') as HTMLElement).click());
+      await browser.execute(() => (document.querySelector('[data-testid="remote-project-fold-webapp"]') as HTMLElement).click());
       await waitVisible('[data-testid="remote-task-rt-1"]');
       // A task whose agent is not running reads as such: greyed, as a local
       // or server task's row is.
@@ -955,6 +955,70 @@ describe("LAN pairing", () => {
       await waitGone('[data-testid="remote-task-rename-rt-4"]');
       expect(sent(mark).filter(c => c.cmd === "rename")).toEqual([]);
 
+      // A group's right-click is the local group's menu, run on that machine
+      // through its group verb on a member: colour, then ungroup (every
+      // member leaves). No default swatch: that verb cannot clear a colour.
+      const groupMenu = async () => {
+        await browser.execute((sel) => {
+          const head = document.querySelector(sel)!;
+          const r = head.getBoundingClientRect();
+          head.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 5, button: 2 }));
+        }, '[data-testid="remote-group-rt-2"] > button');
+        await browser.waitUntil(() => browser.execute(() => document.querySelectorAll("[role='menuitem']").length > 0), { timeout: 5000, timeoutMsg: "no group menu" });
+      };
+      await groupMenu();
+      expect(await browser.execute(() => !!document.querySelector("[role='menuitemradio'][aria-label='Default']"))).toBe(false);
+      mark = calls.length;
+      await browser.execute(() => (document.querySelector("[role='menuitemradio'][aria-label='Blue']") as HTMLElement).click());
+      await browser.waitUntil(async () => sent(mark).some(c => c.cmd === "group" && c.color === "blue"), { timeout: 5000, timeoutMsg: `the colour never went: ${JSON.stringify(sent(mark))}` });
+      mark = calls.length;
+      await groupMenu();
+      await clickMenuItem("Ungroup tasks");
+      await browser.waitUntil(async () => sent(mark).filter(c => c.cmd === "group" && c.leave === true).length >= 1, { timeout: 5000, timeoutMsg: `nobody left: ${JSON.stringify(sent(mark))}` });
+
+      // A new tab in the task there: the agent it already runs, by default.
+      mark = calls.length;
+      await menu("rt-4");
+      await clickMenuItem("New tab");
+      await browser.waitUntil(() => browser.execute(() => [...document.querySelectorAll("[role='menuitem']")].some(e => e.textContent?.trim() === "Same agent")), { timeout: 5000, timeoutMsg: "no Same agent" });
+      await clickMenuItem("Same agent");
+      await waitSent(mark, { cmd: "tab", task: "rt-4", kind: { tab: "default" } });
+
+      // Restart agent only on a stopped task: it reopens it in its last session.
+      pushTasks!(baseTasks().map((x: any) => x.id === "rt-3" ? { ...x, state: "inactive" } : x));
+      await waitForAttr('[data-testid="remote-task-rt-3"]', "data-state", "inactive");
+      mark = calls.length;
+      await menu("rt-3");
+      await clickMenuItem("Restart agent");
+      await waitSent(mark, { cmd: "open", task: "rt-3" });
+      pushTasks!(baseTasks());
+      await waitForAttr('[data-testid="remote-task-rt-3"]', "data-state", "idle");
+
+      // Duplicate opens New task on that computer, from this task's branch.
+      await menu("rt-1");
+      await clickMenuItem("Duplicate worktree");
+      await waitVisible('[data-testid="remote-new-base"]');
+      expect(await browser.execute(() => document.querySelector('[data-testid="remote-new-base"]')!.textContent)).toContain("fix/login");
+      await browser.keys("Escape");
+      await waitGone('[data-testid="remote-new-base"]');
+
+      // The computer's own + opens New task on its projects, not on "add a
+      // project": the path field is for a server, where a project is a path.
+      await clickPresent(`[data-testid="remote-new-task-${remote.id}"]`);
+      await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="remote-new-project"], [data-testid="remote-add-project"]')), { timeout: 5000, timeoutMsg: "New task did not open" });
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-project-path"]'))).toBe(false);
+      await browser.keys("Escape");
+      await browser.waitUntil(() => browser.execute(() => !document.querySelector('[data-testid="remote-add-project"], [data-testid="remote-new-project"]')), { timeout: 5000, timeoutMsg: "New task did not close" });
+      // Each project row has its own +, the local project header's: New task
+      // there, in that project.
+      mark = calls.length;
+      await clickPresent('[data-testid="remote-project-new-task-webapp"]');
+      await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="remote-new-project"], [data-testid="remote-add-project"]')), { timeout: 5000, timeoutMsg: "the project's New task did not open" });
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-project-path"]'))).toBe(false);
+      await browser.waitUntil(async () => sent(mark).some(c => c.cmd === "project_list"), { timeout: 5000, timeoutMsg: "the dialog never asked for the projects" });
+      await browser.keys("Escape");
+      await browser.waitUntil(() => browser.execute(() => !document.querySelector('[data-testid="remote-add-project"], [data-testid="remote-new-project"]')), { timeout: 5000, timeoutMsg: "New task did not close" });
+
       // The local row's Stop and Archive, run on that machine. Stop only
       // while its agent runs; Archive asks first, and a cancel sends nothing.
       mark = calls.length;
@@ -1030,6 +1094,12 @@ describe("LAN pairing", () => {
       });
       if (renderers.local !== null) expect(renderers.remote).toBe(renderers.local);
       else expect(renderers.remote).toBe(true);
+      // An OSC 52 copy from the other machine (what Claude sends for a
+      // selection) lands on THIS clipboard. Claude also runs pbcopy, but on
+      // the machine it runs on, so over a pairing OSC 52 is the only way.
+      const copied = `copied over the pair ${Date.now()}`;
+      hostSend({ t: "term_data", data: Buffer.from(`\x1b]52;c;${Buffer.from(copied).toString("base64")}\x07`).toString("base64") });
+      await browser.waitUntil(async () => readClipboard() === copied, { timeout: 5000, timeoutMsg: `the OSC 52 copy never reached the clipboard (it has ${JSON.stringify(readClipboard().slice(0, 60))})` });
       await browser.waitUntil(async () => !!(await browser.execute(() => document.querySelector('[data-testid="remote-terminal"]')!.getAttribute("data-size"))),
         { timeout: 5_000, timeoutMsg: "the backlog never arrived" });
       // The last screen to take it owns the size. Opening it is taking it:

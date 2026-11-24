@@ -21,20 +21,15 @@ import {
 import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { attachCmdClickLinkOpener, registerPathLinkProvider, isAbsoluteToken, type ClickTarget } from "@/lib/termLinkOpener";
+import { registerPathLinkProvider, isAbsoluteToken } from "@/lib/termLinkOpener";
 import { resolvePathClick, normalizePath, expandTilde, resolveAbsoluteClick, type TaskRoot } from "@/lib/pathMatch";
 import { TerminalPathMenu, type ExternalTarget } from "@/components/task/TerminalPathMenu";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { openWebUrl, browserCommandForTask } from "@/lib/previewBrowser";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
-import { Osc52Base64 } from "@/lib/osc52";
+import { browserCommandForTask } from "@/lib/previewBrowser";
 import { makeCtrlSniffer } from "@/lib/ctrlSniffer";
 import { createPtyOutputActivity, lastPtyOutputAt } from "@/lib/ptyOutputActivity";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
-import { ImageAddon } from "@xterm/addon-image";
 import { preserveImagesOnErase } from "@/lib/terminalImagePersistence";
-import { terminalLook, useTerminalWidths } from "@/lib/terminalLook";
+import { loadTerminalAddons, openTerminalLink, terminalLinkHandler, terminalLook, wireTerminalLinks } from "@/lib/terminalLook";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
@@ -78,7 +73,7 @@ import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agen
 import { recordTitle, recordHook, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
-import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
+import { IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
 import { clearRemoteInterrupt, remoteInterruptAt } from "@/lib/remoteInterrupt";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
@@ -1153,24 +1148,7 @@ const captureArmedRef = useRef(false);
     // Shared link opener (WebLinksAddon, OSC 8 linkHandler, capture-phase
     // opener below). Routes through the opener plugin so the system browser
     // opens, not the WKWebView (window.open silently no-ops).
-    const openLink = (via: string) => (uri: string) => {
-      ipc.logLine(`[link] agent activate via=${via} uri=${uri}`).catch(() => {});
-      // GH #245: a configured browser takes the argv path in Rust. With
-      // NOTHING configured (the default) this falls through to the exact
-      // plugin-opener call that shipped before the setting existed, so the
-      // default carries none of the new path's risk. Link activation itself
-      // (#14, #58, #117) is untouched — this is only the handoff to the OS.
-      const browser = browserCommandForTask(task.id);
-      // Linux always takes the Rust path, configured browser or not: the
-      // plugin spawns xdg-open with our own environment, and inside an
-      // AppImage that is the bundled-library one, under which xdg-open's
-      // readlink and sed do not start (docs/gotchas.md). Rust's default
-      // path is the same xdg-open with the host's environment restored.
-      if (browser || IS_LINUX) { void openWebUrl(uri, browser); return; }
-      openUrl(uri)
-        .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
-        .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
-    };
+    const openLink = (via: string) => (uri: string) => openTerminalLink(uri, browserCommandForTask(task.id), `agent-${via}`);
 
     const term = new Terminal({
       ...terminalLook(),
@@ -1182,39 +1160,20 @@ const captureArmedRef = useRef(false);
       // Allow bypassing mouse reporting (e.g. in vim/tmux) for text selection
       // by holding the Option key, matching iTerm2/xterm.js convention.
       macOptionClickForcesSelection: true,
-      // OSC 8 hyperlinks (anchor text like "Learn more" with the URL only in
-      // the escape sequence). Same Cmd/Ctrl gate as visible URLs; without a
-      // linkHandler xterm parses these links but activates nothing.
-      linkHandler: {
-        activate: (ev, uri) => { if (ev.metaKey || ev.ctrlKey) openLink("osc8")(uri); },
-      },
+      linkHandler: terminalLinkHandler(openLink("osc8")),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Custom base64 codec repairs double-encoded OSC 52 payloads (Claude
-    // Code) so pasted text isn't mojibake. See lib/osc52.ts.
-    term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
     searchAddonRef.current = searchAddon;
-    term.loadAddon(new ImageAddon());
+    // Widths, the OSC 52 clipboard and inline images (lib/terminalLook): the
+    // image addon must be on before preserveImagesOnErase below.
+    loadTerminalAddons(term);
     const imagePersistence = /(?:^|\/)pi$/.test(spawnCommandForCli(tab.cli)) || (import.meta.env.VITE_E2E && tab.cli === "fakeagent")
       ? preserveImagesOnErase(term)
       : null;
-    useTerminalWidths(term);
-    // Links — Terminal.app / VS Code convention: the WebLinksAddon stays
-    // loaded the whole time, so URLs are detected up front and underline
-    // on hover. Opening is gated on Cmd/Ctrl inside the handler, so a
-    // plain click still selects/positions normally and only a deliberate
-    // Cmd+click navigates.
-    //
-    // The previous design loaded the addon ONLY while Cmd was held, but
-    // loading it mid-hold didn't re-linkify the already-visible buffer, so
-    // Cmd+clicking a URL that was already on screen did nothing (#14).
-    term.loadAddon(new WebLinksAddon((event, uri) => {
-      if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
-    }));
     // Hover-underline for file-path references, mirroring the URL addon above.
     const disposePathLinks = registerPathLinkProvider(term, (path, line, col, event) => {
       if (event.metaKey || event.ctrlKey) handlePathTarget({ path, line, col }, event.clientX, event.clientY);
@@ -1316,11 +1275,9 @@ const captureArmedRef = useRef(false);
         })
         .catch(() => useUI.getState().pushToast(i18n.t("task:terminal.listFilesFailed"), "error"));
     }
-    const onActivate = (target: ClickTarget, x: number, y: number) => {
-      if (target.kind === "url") openLink("capture")(target.uri);
-      else handlePathTarget(target, x, y);
-    };
-    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, onActivate);
+    // URLs (plain and OSC 8, plus the capture-phase opener) as every terminal
+    // has them, and file paths, which only a local task can open.
+    const disposeLinkOpener = wireTerminalLinks(term, host, openLink("capture"), (target, x, y) => handlePathTarget(target, x, y));
     termRef.current = term;
     fitRef.current = fit;
 

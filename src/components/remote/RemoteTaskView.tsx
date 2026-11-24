@@ -11,11 +11,10 @@
 // already has a terminal answering those, and a duplicate answer arrives as
 // typed garbage.
 
+import { useArchivingTasks } from "@/store/archivingTasks";
 import { terminalKeysAfter, terminalKeysBefore } from "@/lib/terminalKeys";
 import { builtinBaseId } from "@/lib/agents";
 import * as ipc from "@/lib/ipc";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
-import { Osc52Base64 } from "@/lib/osc52";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
@@ -30,8 +29,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import i18n from "i18next";
 import { useUI } from "@/store/ui";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
-import { terminalLook, useTerminalWidths } from "@/lib/terminalLook";
-import { ImageAddon } from "@xterm/addon-image";
+import { loadTerminalAddons, openTerminalLink, terminalLinkHandler, terminalLook, wireTerminalLinks } from "@/lib/terminalLook";
 import { cn } from "@/lib/utils";
 import {
   b64decodeBytes, b64encode, remoteCall, remoteTermClose, remoteTermOpen, remoteTermInput, remoteTermSize,
@@ -168,6 +166,10 @@ export async function archiveRemoteTask(machineName: string, machineId: string, 
     destructive: true,
   });
   if (!(typeof ok === "boolean" ? ok : ok.confirmed)) return;
+  // Archiving takes a while there (worktree, archive script): the row says
+  // so meanwhile, as a local task's row does, keyed by machine and task.
+  const key = remoteArchivingKey(machineId, task.id);
+  useArchivingTasks.getState().begin(key);
   try {
     const r = await remoteCall(machineId, req("archive", { task: task.id }), 330_000);
     if (!r.ok) throw new Error(r.error?.message ?? "archive failed");
@@ -175,8 +177,13 @@ export async function archiveRemoteTask(machineName: string, machineId: string, 
     close();
   } catch (e) {
     useUI.getState().pushToast(String(e), "error");
+  } finally {
+    useArchivingTasks.getState().end(key);
   }
 }
+
+/** The archiving store's key for a remote task (ids only unique per machine). */
+export const remoteArchivingKey = (machine: string, task: string) => `remote:${machine}:${task}`;
 
 function Gone({ message, onClose }: { message: string; onClose: () => void }) {
   const { t } = useTranslation("remote");
@@ -210,26 +217,26 @@ function RemoteTerminal({ machineId, taskId, tabId, agent }: { machineId: string
   useEffect(() => {
     const box = host.current;
     if (!box) return;
+    // The configured browser is per task on this machine; a remote task
+    // has none here, so links take the default opener.
+    const openLink = (uri: string) => openTerminalLink(uri, null, "remote");
     const term = new Terminal({
       ...terminalLook(),
+      linkHandler: terminalLinkHandler(openLink),
       scrollback: 5000,
       cursorBlink: false,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Copies the agent makes (OSC 52: Claude's "copied N chars") land on
-    // THIS computer's clipboard, as in a local terminal, with the same codec
-    // that repairs Claude's double-encoded payloads.
-    term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     // Drawn as a local terminal is: the agent's tables and boxes rely on
     // xterm's own box-drawing glyphs (the WebGL renderer joins them cell to
     // cell; the DOM renderer took them from the font, with gaps between
     // rows) and on Unicode 11 widths (⌘ / ⌥ in a row moved its right border).
-    useTerminalWidths(term);
-    // Images a CLI draws in the terminal (sixel, iTerm's inline images), as
-    // a local terminal shows them.
-    term.loadAddon(new ImageAddon());
+    // Widths, the OSC 52 clipboard and inline images, as every terminal has.
+    loadTerminalAddons(term);
     term.open(box);
+    // Links, as in a local terminal: OSC 8 (Claude's), plain URLs, Cmd+click.
+    const disposeLinks = wireTerminalLinks(term, box, openLink);
     const renderer = loadTerminalRenderer(term);
     const disposeCopyOnSelect = attachCopyOnSelect(term, box);
     let alive = true;
@@ -356,6 +363,7 @@ function RemoteTerminal({ machineId, taskId, tabId, agent }: { machineId: string
       if (reopening.current) reopening.current = false;
       else void remoteTermClose(machineId).catch(() => {});
       renderer.dispose();
+      disposeLinks();
       term.dispose();
     };
   }, [machineId, taskId, tabId, generation, agent]);

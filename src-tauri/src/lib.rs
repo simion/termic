@@ -3869,6 +3869,7 @@ pub(crate) struct PtyFeed {
 
 struct PtyFeedInner {
     ring: PtyRing,
+    modes: TermModes,
     taps: Vec<std::sync::mpsc::SyncSender<PtyTapMsg>>,
 }
 
@@ -3883,7 +3884,7 @@ impl PtyFeed {
 
     fn new() -> Self {
         PtyFeed {
-            inner: Mutex::new(PtyFeedInner { ring: PtyRing::new(), taps: Vec::new() }),
+            inner: Mutex::new(PtyFeedInner { ring: PtyRing::new(), modes: TermModes::default(), taps: Vec::new() }),
         }
     }
     /// Reader-thread path: retain the chunk and forward it to every
@@ -3892,6 +3893,7 @@ impl PtyFeed {
     fn push(&self, data: &[u8]) {
         let mut inner = self.inner.lock();
         inner.ring.push(data);
+        inner.modes.feed(data);
         inner
             .taps
             .retain(|tx| tx.try_send(PtyTapMsg::Data(data.to_vec())).is_ok());
@@ -3934,11 +3936,94 @@ impl PtyFeed {
         let (tx, rx) = std::sync::mpsc::sync_channel(Self::TAP_DEPTH);
         let mut inner = self.inner.lock();
         inner.taps.push(tx.clone());
-        let (backlog, truncated) = inner.ring.tail(usize::MAX);
+        let (mut backlog, truncated) = inner.ring.tail(usize::MAX);
+        // The ring holds only the recent output, and a program switches its
+        // input modes once, at startup: a viewer replaying the tail never saw
+        // Claude turn mouse tracking on, so it selected text itself instead of
+        // sending the drag, and Claude never copied it. The modes' state now
+        // follows the backlog (after it, so the replay cannot undo it).
+        backlog.extend_from_slice(&inner.modes.restore());
         (backlog, truncated, rx, tx)
     }
     fn tail(&self, max: usize) -> (Vec<u8>, bool) {
         self.inner.lock().ring.tail(max)
+    }
+}
+
+/// The DEC private modes that change what a terminal SENDS (mouse reports
+/// and their encodings, focus reports, bracketed paste, application cursor
+/// keys), as the PTY's output last set them. A late viewer replays only the
+/// ring's tail, so it is handed these after it (`restore`). Screen modes (the
+/// alternate screen, cursor visibility) are left to the replay: they change
+/// what is drawn, and the tail redraws it.
+#[derive(Default)]
+pub(crate) struct TermModes {
+    on: std::collections::BTreeMap<u16, bool>,
+    /// An escape sequence cut off at the end of the last chunk.
+    carry: Vec<u8>,
+}
+
+impl TermModes {
+    const TRACKED: [u16; 10] = [1, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 2004];
+
+    fn feed(&mut self, data: &[u8]) {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(data);
+        let mut i = 0;
+        while i < buf.len() {
+            if buf[i] != 0x1b {
+                i += 1;
+                continue;
+            }
+            // ESC [ ? params h|l
+            let rest = &buf[i..];
+            if rest.len() < 3 {
+                if b"\x1b[?".starts_with(rest) {
+                    self.carry = rest.to_vec();
+                }
+                return;
+            }
+            if &rest[..3] != b"\x1b[?" {
+                i += 1;
+                continue;
+            }
+            let mut j = 3;
+            while j < rest.len() && (rest[j].is_ascii_digit() || rest[j] == b';') {
+                j += 1;
+            }
+            if j == rest.len() {
+                // Cut off mid-sequence: keep it for the next chunk (bounded).
+                if rest.len() <= 32 {
+                    self.carry = rest.to_vec();
+                }
+                return;
+            }
+            let set = match rest[j] {
+                b'h' => Some(true),
+                b'l' => Some(false),
+                _ => None,
+            };
+            if let Some(set) = set {
+                for p in std::str::from_utf8(&rest[3..j]).unwrap_or("").split(';') {
+                    if let Ok(n) = p.parse::<u16>() {
+                        if Self::TRACKED.contains(&n) {
+                            self.on.insert(n, set);
+                        }
+                    }
+                }
+            }
+            i += j + 1;
+        }
+    }
+
+    /// The sequences that put a fresh terminal in these modes: each tracked
+    /// mode that is on is set, one that was turned off is reset.
+    fn restore(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (n, on) in &self.on {
+            out.extend_from_slice(format!("\x1b[?{n}{}", if *on { 'h' } else { 'l' }).as_bytes());
+        }
+        out
     }
 }
 
@@ -34047,6 +34132,31 @@ mod tests {
         let t0 = Instant::now();
         wait_for_attach(&buf, &attached, &done, Duration::from_secs(30));
         assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn a_late_viewer_gets_the_input_modes_set_before_its_backlog() {
+        let mut m = TermModes::default();
+        // Claude at startup: mouse tracking with SGR reports, bracketed paste.
+        m.feed(b"\x1b[?1000h\x1b[?1006h\x1b[?2004hhello");
+        // A sequence split across two chunks still counts.
+        m.feed(b"text \x1b[?10");
+        m.feed(b"04h more");
+        // Screen modes are left to the replay; an unknown one is ignored.
+        m.feed(b"\x1b[?1049h\x1b[?25l\x1b[?9999h");
+        assert_eq!(String::from_utf8(m.restore()).unwrap(), "\x1b[?1000h\x1b[?1004h\x1b[?1006h\x1b[?2004h");
+        // Turned off later: reset, so a replay that set it is undone.
+        m.feed(b"\x1b[?1000;1006l");
+        assert_eq!(String::from_utf8(m.restore()).unwrap(), "\x1b[?1000l\x1b[?1004h\x1b[?1006l\x1b[?2004h");
+    }
+
+    #[test]
+    fn subscribe_hands_the_modes_after_the_backlog() {
+        let feed = PtyFeed::new();
+        feed.push(b"\x1b[?1002h\x1b[?1006hscreen");
+        let (backlog, _, _rx, _tx) = feed.subscribe();
+        assert!(backlog.ends_with(b"\x1b[?1002h\x1b[?1006h"), "{:?}", String::from_utf8_lossy(&backlog));
+        assert!(String::from_utf8_lossy(&backlog).contains("screen"));
     }
 
     #[test]

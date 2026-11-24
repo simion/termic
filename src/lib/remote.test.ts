@@ -155,3 +155,11 @@ describe("orderMachines", () => {
     expect(orderMachines([m("a"), m("b")], ["gone", "b"]).map(x => x.id)).toEqual(["b", "a"]);
   });
 });
+
+describe("remoteTaskRequest: tab and open", () => {
+  it("asks the host for a tab (same agent or a named one) and to reopen", () => {
+    expect(remoteTaskRequest("t1", { kind: "tab", tab: { tab: "default" } })).toMatchObject({ cmd: "tab", task: "t1", kind: { tab: "default" } });
+    expect(remoteTaskRequest("t1", { kind: "tab", tab: { tab: "agent", id: "codex" } })).toMatchObject({ cmd: "tab", task: "t1", kind: { tab: "agent", id: "codex" } });
+    expect(remoteTaskRequest("t1", { kind: "open" })).toMatchObject({ cmd: "open", task: "t1" });
+  });
+});

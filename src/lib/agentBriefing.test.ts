@@ -141,3 +141,19 @@ describe("buildAgentBriefing sandbox caveat", () => {
     expect(build({ sandbox_mode: "off" }).split("\n").length).toBe(5);
   });
 });
+
+describe("buildRemoteAgentBriefing", () => {
+  it("reaches the task and takes the reply through the peer link, by id", async () => {
+    const { buildRemoteAgentBriefing } = await import("./agentBriefing");
+    const b = buildRemoteAgentBriefing({
+      task: { id: "task-9", name: "fix login", agent: "claude", project: "web" },
+      machine: { id: "peer-b", name: "Studio" },
+      us: "peer-a",
+      cli: "termic",
+    });
+    expect(b).toContain('termic --peer peer-b send task-9 -p "');
+    expect(b).toContain("termic --peer peer-a send $TERMIC_TASK_ID");
+    expect(b).toContain('computer="Studio"');
+    expect(b).not.toContain("path=");
+  });
+});

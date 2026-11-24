@@ -175,6 +175,9 @@ export default {
     moveToGroup: "Move to group",
     newGroup: "New group",
     leaveGroup: "Remove from group",
+    newTab: "New tab",
+    sameAgent: "Same agent",
+    restartAgent: "Restart agent",
   },
   newTask: {
     fromBranch: "Starts from {{branch}}",

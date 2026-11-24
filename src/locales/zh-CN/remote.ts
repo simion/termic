@@ -174,6 +174,9 @@ export default {
     moveToGroup: "移到分组",
     newGroup: "新建分组",
     leaveGroup: "移出分组",
+    newTab: "新建标签页",
+    sameAgent: "同一智能体",
+    restartAgent: "重新启动智能体",
   },
   newTask: {
     fromBranch: "从 {{branch}} 开始",

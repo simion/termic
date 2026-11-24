@@ -16,14 +16,8 @@ import { Terminal } from "@xterm/xterm";
 import { TerminalContextMenu } from "./TerminalContextMenu";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
-import { Osc52Base64 } from "@/lib/osc52";
-import { ImageAddon } from "@xterm/addon-image";
-import { terminalLook, useTerminalWidths } from "@/lib/terminalLook";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { openWebUrl, browserCommandForTask } from "@/lib/previewBrowser";
+import { loadTerminalAddons, openTerminalLink, terminalLinkHandler, terminalLook, wireTerminalLinks } from "@/lib/terminalLook";
+import { browserCommandForTask } from "@/lib/previewBrowser";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
@@ -39,7 +33,7 @@ import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld } from "@/lib/shortcuts";
-import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
+import { IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
@@ -122,21 +116,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     // Clickable links — same model as TerminalPane: always loaded so URLs
     // underline on hover, opening gated on Cmd/Ctrl so a plain click still
     // selects. Routes through `open_path` for the system browser (#14).
-    const openLink = (via: string) => (uri: string) => {
-      ipc.logLine(`[link] scratch activate via=${via} uri=${uri}`).catch(() => {});
-      // GH #245, same rule as TerminalPane: configured browser or the
-      // untouched pre-#245 default path.
-      const browser = browserCommandForTask(taskId);
-      // Linux always takes the Rust path, configured browser or not: the
-      // plugin spawns xdg-open with our own environment, and inside an
-      // AppImage that is the bundled-library one, under which xdg-open's
-      // readlink and sed do not start (docs/gotchas.md). Rust's default
-      // path is the same xdg-open with the host's environment restored.
-      if (browser || IS_LINUX) { void openWebUrl(uri, browser); return; }
-      openUrl(uri)
-        .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
-        .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
-    };
+    const openLink = (via: string) => (uri: string) => openTerminalLink(uri, browserCommandForTask(taskId), `scratch-${via}`);
 
     const term = new Terminal({
       ...terminalLook(),
@@ -146,25 +126,15 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
       // Allow bypassing mouse reporting for text selection by holding Option.
       macOptionClickForcesSelection: true,
-      // OSC 8 hyperlinks (anchor text like "Learn more"). Same Cmd/Ctrl gate;
-      // without a linkHandler xterm parses them but activates nothing.
-      linkHandler: {
-        activate: (ev, uri) => { if (ev.metaKey || ev.ctrlKey) openLink("osc8")(uri); },
-      },
+      linkHandler: terminalLinkHandler(openLink("osc8")),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Repair double-encoded OSC 52 payloads (Claude Code). See lib/osc52.ts.
-    term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
     searchAddonRef.current = searchAddon;
-    term.loadAddon(new ImageAddon());
-    term.loadAddon(new WebLinksAddon((event, uri) => {
-      if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
-    }));
-    useTerminalWidths(term);
+    loadTerminalAddons(term);
     term.open(hostRef.current);
     // GH #58: mouse-reporting-proof Cmd/Ctrl+click opener — the user can run
     // a TUI in the scratch shell too (htop, an agent CLI by hand). See
@@ -172,9 +142,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     // urlsOnly: file-path open is a TerminalPane feature. Without this the
     // opener would arm on path tokens here and swallow the click (dead in the
     // scratch shell, and eaten from under a mouse-reporting TUI).
-    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, (target) => {
-      if (target.kind === "url") openLink("capture")(target.uri);
-    }, { urlsOnly: true });
+    const disposeLinkOpener = wireTerminalLinks(term, host, openLink("capture"));
     // Mirror TerminalPane's IME handling: the shared bridge forwards WebKit
     // Korean input that xterm drops, while real composition sessions stay
     // with xterm. The guard below leaves native text editing enabled.
