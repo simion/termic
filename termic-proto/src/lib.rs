@@ -126,7 +126,11 @@ use std::io::{self, BufRead, Read, Write};
 /// script in its Run tab, the same tab the app's Run button drives. A v24
 /// server does not know the verb, and the version check says "restart the
 /// app" where the bare failure would read as a broken command.
-pub const PROTOCOL_VERSION: u32 = 25;
+///
+/// v26: the `pin` verb pins or unpins a task in the sidebar (a pinned task
+/// stays listed whatever the filters say), so a remote client or an agent
+/// can do what the row's Pin does. A v25 server does not know it.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -699,6 +703,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// Stop a task's agent: its live PTYs are ended (SIGTERM, then
+    /// SIGKILL). The task, worktree and session stay; sending to it or
+    /// opening it starts the agent again.
+    Stop {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Rename a task: the sidebar label ONLY. The branch and worktree
     /// directory keep their creation-time names (they are pushed /
     /// referenced by live PTY cwds; moving them is not this verb's job).
@@ -712,6 +724,19 @@ pub enum Command {
         /// same-project live duplicate is a Conflict.
         name: String,
         /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// v26: pin or unpin a task in the sidebar, as the row's Pin does: a
+    /// pinned task stays listed whatever the sidebar's filters say. Pins by
+    /// default; `pinned: false` unpins. cwd-aware when `task` absent.
+    Pin {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default = "pin_default")]
+        pinned: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
@@ -858,12 +883,59 @@ pub enum Command {
         path: String,
         #[serde(default)]
         non_git: bool,
+        /// Clone this git URL into `path` first (which must not exist yet),
+        /// then register it. For a machine you only reach remotely (a
+        /// termic-server box), where nothing else can put a repo there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clone: Option<String>,
     },
     /// Registered projects with live-task counts.
     ProjectList,
     /// Unregister a project. Archives and deletes ALL its tasks; the
     /// CLI confirms before sending.
     ProjectRemove { name: String },
+    /// Run a program in a folder and return what it printed: termic-server
+    /// only (docs/remote.md, Servers), reached through the desktop's
+    /// own ssh bridge, and only inside a registered project or one of its
+    /// worktrees. The desktop answers it with Unsupported: an agent or a
+    /// paired machine must never run arbitrary commands through it.
+    Exec {
+        cwd: String,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env: Vec<(String, String)>,
+        /// Bytes for the program's stdin, base64.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    /// Record a task on a termic-server, as plain data: the desktop made its
+    /// worktree itself (git through `exec`) and starts its agent itself
+    /// (`pty_open`), and the box keeps the record so every desktop that
+    /// reaches it sees the task (docs/remote.md, Servers). Inserts or
+    /// updates by `id`; starts nothing. termic-server only, like `exec`.
+    TaskPut {
+        /// The task's id (not `id`: that is the request's own, which the
+        /// command is flattened beside).
+        task: String,
+        name: String,
+        /// The box's project id.
+        project: String,
+        path: String,
+        branch: String,
+        #[serde(default)]
+        base_branch: String,
+        agent: String,
+        #[serde(default)]
+        is_main_checkout: bool,
+        /// The desktop's organisation of the task (name, pin, order, group),
+        /// opaque to the box: kept and handed back in `list` (`org`), so
+        /// every desktop that reaches it files the task the same way. Last
+        /// write wins. Absent: the box keeps what it had.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<serde_json::Value>,
+    },
     /// This machine, the machines paired with it, and the unpaired ones in
     /// sight on the LAN (v22, docs/peers.md).
     PeerList,
@@ -886,6 +958,10 @@ pub enum Command {
     /// Set the local name of a paired machine (empty: back to the name it
     /// gives itself). Local only: the other machine is not told.
     PeerRename { target: String, name: String },
+    /// Put an image (base64 PNG) on this computer's clipboard. A paired
+    /// computer sends it before forwarding a Ctrl+V to an agent here, which
+    /// then reads the image from the clipboard natively, as a local paste.
+    ClipboardImage { png: String },
     /// List recurring schedules across projects, optionally filtered to one project.
     ScheduleList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1160,12 +1236,15 @@ pub enum ReplyData {
     Prop(PropData),
     Quit(QuitData),
     Archive(ArchiveData),
+    Stop(StopData),
     Rename(RenameData),
+    Pin(PinData),
     Group(GroupData),
     Run(RunData),
     Pad(PadData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
+    Exec(ExecData),
     ProjectRemove(ProjectRemoveData),
     Send(SendData),
     Apply(ApplyData),
@@ -1477,11 +1556,31 @@ pub struct ArchiveData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StopData {
+    pub task_id: String,
+    pub name: String,
+    pub project: String,
+    /// Agent PTYs that were running and are now ended.
+    pub stopped_agents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RenameData {
     /// The task AFTER the rename, re-read from disk (name is the new one).
     pub task: TaskSummary,
     /// What the task was called before, for "renamed X to Y" output.
     pub old_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PinData {
+    /// The task after the change, re-read from disk.
+    pub task: TaskSummary,
+    pub pinned: bool,
+}
+
+fn pin_default() -> bool {
+    true
 }
 
 /// A task's sidebar task group, as `group` and task summaries report it.
@@ -1565,6 +1664,14 @@ pub struct PadData {
     pub truncated: bool,
 }
 
+/// What `exec` printed: stdout base64 (it may be binary), stderr as text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ExecData {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProjectInfo {
     pub id: String,
@@ -1579,6 +1686,16 @@ pub struct ProjectInfo {
     /// v24: a multi-repo project's member repos, in project order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<ProjectMemberInfo>,
+    /// The slug of the profile it belongs to. Absent with no profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// The server it lives on, by name. Absent for a project here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// A plain folder, not a git repo: its tasks run in it, never in a
+    /// worktree. A box reports it so the desktop's mirror knows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub non_git: bool,
 }
 
 /// One member repo of a multi-repo project (v24).
@@ -1829,6 +1946,10 @@ pub struct TaskSummary {
     /// not reported the task's tabs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<CollectedProp>,
+    /// A termic-server task's organisation as a desktop last wrote it
+    /// (`task_put`'s `org`). Desktops never send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -2621,6 +2742,7 @@ mod tests {
             Command::Quit { commit: false },
             Command::Quit { commit: true },
             Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::Stop { task: "fix-auth".into(), project: Some("web".into()) },
             Command::Rename {
                 task: Some("fix-auth".into()),
                 project: Some("web".into()),
@@ -2633,6 +2755,8 @@ mod tests {
                 name: "retitled".into(),
                 cwd: Some("/tasks/web/x".into()),
             },
+            Command::Pin { task: Some("fix-auth".into()), project: Some("web".into()), pinned: true, cwd: None },
+            Command::Pin { task: None, project: None, pinned: false, cwd: Some("/tasks/web/x".into()) },
             Command::PadList { task: None, project: None, scope: None, cwd: Some("/tasks/web/x".into()) },
             Command::PadNew {
                 task: Some("fix-auth".into()),
@@ -2654,8 +2778,8 @@ mod tests {
             Command::PadRead { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadRemove { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::PadClear { task: None, project: Some("web".into()), scope: Some("project".into()), cwd: None },
-            Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
-            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
+            Command::ProjectAdd { path: "/repo/web".into(), non_git: false, clone: None },
+            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true, clone: None },
             Command::ProjectList,
             Command::ProjectRemove { name: "web".into() },
             Command::PeerList,
@@ -2787,6 +2911,9 @@ mod tests {
                 },
                 ProjectMemberInfo { name: "docs".into(), root_path: "/src/docs".into(), non_git: true, base_branch: String::new() },
             ],
+            profile: None,
+            server: None,
+            non_git: false,
         }
     }
 
@@ -2874,6 +3001,7 @@ mod tests {
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
             spawned_by: None,
+            org: None,
         };
         for data in [
             ReplyData::Hello(HelloData {
@@ -3075,6 +3203,9 @@ mod tests {
                         default_agent: "claude".into(),
                         project_type: "single".into(),
                         members: Vec::new(),
+                        profile: None,
+                        server: None,
+                        non_git: false,
                     },
                     shop_project(),
                 ],
@@ -3426,5 +3557,77 @@ mod tests {
         for s in [CLI_DISABLED_MESSAGE, VERSION_MISMATCH_MESSAGE, VERSION_STALE_APP_MESSAGE] {
             assert!(!s.contains('\u{2014}'), "em dash in {s:?}");
         }
+    }
+}
+
+/// A task name as a branch and worktree-directory name: lowercase ASCII
+/// alphanumerics, `-` and `_`, dash runs collapsed, no leading or trailing
+/// dash, and never a Windows reserved device name (the slug is a directory,
+/// and a task named on a Mac must still check out on Windows). A name with
+/// no ASCII alphanumerics slugifies to "" and the caller refuses it.
+/// One function for the desktop and termic-server, so one name gives one
+/// branch on either; mirrored character for character by `slugify` in
+/// src/lib/utils.ts (`utils.test.ts` and `slugify_collapses_dash_runs`).
+pub fn slugify(s: &str) -> String {
+    let mapped: String = s
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let mut out = String::with_capacity(mapped.len());
+    let mut prev_dash = false;
+    for c in mapped.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push(c);
+            }
+            prev_dash = true;
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    let reserved = matches!(out.as_str(), "con" | "prn" | "aux" | "nul")
+        || (out.len() == 4
+            && (out.starts_with("com") || out.starts_with("lpt"))
+            && matches!(out.as_bytes()[3], b'1'..=b'9'));
+    if reserved { format!("{out}-1") } else { out }
+}
+
+/// The key that interrupts an agent's turn without quitting it: Esc for the
+/// TUIs that take it (claude, codex, opencode, cursor, grok), Ctrl+C for the
+/// rest. Shared by the desktop's stream host and termic-server.
+pub fn interrupt_key(agent: &str) -> &'static [u8] {
+    match agent {
+        "claude" | "next-claude" | "codex" | "opencode" | "cursor" | "grok" => b"\x1b",
+        _ => b"\x03",
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+
+    #[test]
+    fn slugify_is_path_and_branch_safe() {
+        assert_eq!(slugify("Fix the Login bug!"), "fix-the-login-bug");
+        assert_eq!(slugify("../../etc/passwd"), "etc-passwd");
+        assert_eq!(slugify("--rm -rf"), "rm-rf");
+        assert_eq!(slugify("snake_case name"), "snake_case-name");
+        assert_eq!(slugify("日本語"), "");
+        assert_eq!(slugify("CON"), "con-1");
+        assert_eq!(slugify("lpt3"), "lpt3-1");
+        for s in [slugify("-x-"), slugify(" a b "), slugify("a\nb\0c")] {
+            assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains('/') && !s.contains(".."), "{s}");
+        }
+    }
+
+    #[test]
+    fn interrupt_keys_per_agent() {
+        assert_eq!(interrupt_key("claude"), b"\x1b");
+        assert_eq!(interrupt_key("grok"), b"\x1b");
+        assert_eq!(interrupt_key("shell"), b"\x03");
     }
 }

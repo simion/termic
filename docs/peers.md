@@ -1,4 +1,4 @@
-# LAN pairing (Other computers)
+# LAN pairing (Pair computers)
 
 **Status: reference, experimental.** Termic on two computers of one
 network finds the other, pairs when a person types the four-digit code one
@@ -8,15 +8,13 @@ It replaces the manual setup of binding the MCP endpoint to `0.0.0.0` and
 copying the one master token across, which never rotated and could do
 everything.
 
-**Where this is going** (not decided): pairing becoming a live stream
-that a phone app (#165) and other computers use to drive this one, and
-later headless boxes (#82). That design is
-[ideas/remote-control.md](ideas/remote-control.md). Everything below is
-what ships today.
+**The stream.** Calls between paired computers, phones, other Termics'
+sidebars and SSH servers all travel over one sealed connection, the
+stream: [remote.md](remote.md). This page covers discovery, pairing two
+computers, the credential and the grants.
 
 **Off by default.** Nothing listens, nothing is advertised, until the
-user turns on Settings > Agent access > Other computers > "Share on this
-network"
+user turns on Settings > Remote control > "Share on this network"
 (`lan_sharing_enabled`). Turning it off unbinds the listener, sends an
 mDNS goodbye, and cancels any pairing in progress.
 
@@ -29,7 +27,7 @@ tested), `src-tauri/src/mdns.rs` (discovery). UI:
 ## The shape
 
 ```
- Mac agent --termic --peer laptop new ...--> Mac Termic ==sealed HTTP==> Laptop Termic --> dispatch --> task
+ Mac agent --termic --peer laptop new ...--> Mac Termic ==sealed stream==> Laptop Termic --> dispatch --> task
               (local socket or MCP)           (holds the pair key)  LAN   (checks the grant)
  Laptop agent --termic --peer mac send <id>--> Laptop Termic ==sealed==> Mac Termic --> agent's inbox
 ```
@@ -82,7 +80,7 @@ re-read per request, so a switch-off also refuses connections racing the
 unbind.
 
 HTTP/1.1, one request per connection, everything under
-`/termic-peer/v1`:
+`/termic-peer/v1`, plus one WebSocket route for the stream:
 
 | Method + path | Auth | What |
 |---|---|---|
@@ -90,7 +88,7 @@ HTTP/1.1, one request per connection, everything under
 | `POST /pair/request` | none, rate-limited per address | opens pairing mode here, naming the asker |
 | `POST /pair/start` | none, and only in pairing mode | step 1 of pairing (below) |
 | `POST /pair/confirm` | sealed with the new key | step 2 |
-| `POST /call` | sealed | run one verb |
+| `GET /stream` (WebSocket upgrade) | sealed handshake | the stream: verbs, task snapshots, terminals ([remote.md](remote.md)) |
 | `POST /unpair` | sealed | forget the sender |
 
 Pre-auth caps match the MCP endpoint: 16 KB head, 4 MB body grown from
@@ -98,7 +96,11 @@ bytes that arrive (never from the declared length), chunked encoding
 refused, 10 s read and 30 s write timeouts, 32 connections at once. Any
 request carrying an `Origin` header is refused with 403 before routing,
 so a web page on any machine of the network cannot so much as open a
-pairing dialog, and no response carries a CORS header.
+pairing dialog, and no response carries a CORS header. The one exception
+is `/stream`: a phone's WebSocket sends an Origin of its own, and nothing
+on that route is reachable without completing the sealed handshake, which
+needs a pair key. A stream connection is long-lived (idle timeout 75 s,
+clients ping) and counts toward the 32.
 
 ## Pairing
 
@@ -203,7 +205,10 @@ required), so this needed no protocol bump.
   never truncates it. Never in any environment, never sent to the
   webview, never shown. An unreadable file is moved aside to
   `peers.json.unreadable` rather than overwritten.
-- Every call is sealed with ChaCha20-Poly1305 under a key per DIRECTION,
+- Calls travel over the stream, which derives fresh keys per connection
+  from the pair key ([remote.md](remote.md), "The stream"). The sealed
+  envelope below still carries pairing's confirm and `unpair`.
+- Every envelope is sealed with ChaCha20-Poly1305 under a key per DIRECTION,
   `HKDF(pair key, "termic-dir-v1", sender "->" receiver)`, so a message
   cannot be reflected back at its sender. 96-bit random nonce. The AAD is
   `termic-peer-v1|<path>|<sender>|<receiver>`, so a sealed body moved to
@@ -264,18 +269,15 @@ keeps a dead key that opens nothing here; its next call gets 401, it
 marks the pair `revoked_by_peer`, and Settings tells that person "No
 longer paired on the other computer. Unpair here too."
 
-Every call is stamped with the sender's clock and refused outside 5
-minutes of the receiver's. Pairing has no such check, so two machines
-whose clocks disagree (a Windows laptop with a wrong time zone, say)
-would pair fine and then have every call refused. So pairing checks it
-too: the confirm is stamped, and a machine showing the code refuses one
-outside the window with a sealed 409 carrying its clock, stores nothing,
-and closes pairing mode; the typing side says "<machine>'s clock is 7 h
-57 min ahead of this machine's" and pairs nothing. A paired sender with a stale
-stamp gets a sealed 409 carrying the receiver's clock, not the bare 401,
-so the caller reports "<machine>'s clock is 7 h 57 min ahead of this
-machine's" and does not mark the pair revoked. Older versions answer it
-with the 401.
+Sealed envelopes (pairing's confirm, `unpair`) are stamped with the
+sender's clock and refused outside 5 minutes of the receiver's. Calls are
+not: they ride the stream, whose per-connection salts stop a replay
+without a clock. Pairing still checks it, so two machines whose clocks
+disagree (a Windows laptop with a wrong time zone, say) are told at
+pairing time: a machine showing the code refuses a confirm outside the
+window with a sealed 409 carrying its clock, stores nothing, and closes
+pairing mode; the typing side says "<machine>'s clock is 7 h 57 min
+ahead of this machine's" and pairs nothing.
 
 Renaming is local: it sets this machine's name for the peer, the other
 machine is not told, and either name or the id (a prefix of 6+
@@ -319,10 +321,13 @@ computer is followed.
 - Waits are clamped to the MCP cap there (5 minutes): loop `wait`. While
   a streamed verb runs remotely, the local app heartbeats the CLI so its
   30 s socket timeout never fires.
-- Both machines must speak the SAME CLI protocol to call each other (a
-  field the other side does not know would be dropped silently). A
-  mismatch is refused with both versions named. Pairing itself only
-  needs the same peer protocol.
+- A machine calls another when each is at least the other's
+  `REQUIRES_DESKTOP` (`termic-remote/src/compat.rs`, `peer_compatible`),
+  not when both run the same release or CLI protocol: most releases
+  change nothing on the wire, and the release skill raises the floor when
+  one does. A machine too old to send its version falls back to the old
+  rule, the same CLI protocol. A refusal names both versions and which
+  machine to update. Pairing itself only needs the same peer protocol.
 - A machine that moved (new DHCP lease) is not gone: on a connection
   failure the app re-queries discovery, waits up to 2 s for a fresh
   sighting, and retries once at the new address.
@@ -338,29 +343,47 @@ in `termic --help`, `TERMIC_CLI_HELP`, the MCP instructions and
 
 ## UI
 
-Settings > Agent access (the rail item, with a faded "MCP & CLI"), two
-tabs shown one at a time: MCP first, the Termic CLI second. They were one
-long scroll first, which read as a wall of prose and left pairing at the
-bottom where nobody found it. The MCP tab opens with Other computers,
-then the MCP endpoint: pairing is how agents reach another machine, and
-they do it through this Termic's MCP tools. Turning sharing on turns the
-MCP endpoint on with it (turning sharing off leaves MCP alone). Off with
-nothing paired, Other computers is its toggle and one line. Tab ids are
-settings tabs (`mcp`, `cli`); `peers` opens the MCP tab.
+Settings > Remote control, under Mobile remote control: the page for what
+drives this computer over the network (docs/remote.md). Settings has three
+neighbouring sections for three questions: MCP & CLI (how agents on this
+computer drive Termic), Remote control (phones and other computers) and
+Servers (where a project's tasks run over SSH). Pair computers used to sit
+at the top of the MCP tab, because agents reach another machine through
+this Termic's tools; it moved because phones come in on the same listener.
+"Share on this network" is therefore a page-level row above both cards
+(`ShareToggle`), not part of Pair computers.
+
+Pair a computer is enabled once an agent can reach a paired computer at
+all: Claude Code or Codex has Termic's MCP server, or the termic CLI is
+on PATH (`termic --peer` needs no MCP), or the person says they wired
+another agent themselves.
+Turning sharing on still turns the MCP endpoint on with it (turning
+sharing off leaves MCP alone). The switch follows `peer_status`, not the
+settings copy, because Connect a phone and Pair a computer turn sharing
+on from their own buttons. The old `peers` settings tab id opens Remote
+control.
 
 The MCP endpoint's network address sits folded under "Network address
 (advanced)", open only when it is already off loopback, with a line pointing here: it used to read as THE way to
 reach another machine, with one all-powerful token sent in the clear.
 
-Other computers (Experimental): the toggle with a plain warning; the
-pairing-mode panel (the code in large type, a countdown, wrong codes so
-far, Stop pairing) or its "Pair a computer" button; Nearby with "Ready to
-pair" rows first, each asking for the code inline and submitting at four
-digits; this
-computer's name, address and any bind or discovery error, plus a
-platform hint; paired computers (inline rename, "What it is for" with
-role presets, online or last seen, "May do on this computer", "Lets this
-computer", Unpair behind a confirm); Pair by address (address and code).
+Pair computers is a card like the other two (`RemoteCard.tsx`), and shows
+only what is needed: the paired list, or "No computer is paired yet."
+Everything for pairing waits behind **Pair a computer**, which turns
+sharing on if it is off and opens a dialog: Nearby with "Ready to pair"
+rows first, each asking for the code inline and submitting at four
+digits; refresh; "Not listed? Pair by address"; the network-blocked
+banner; and the agent setup, loud, while no agent has Termic's MCP. A
+successful pair closes it. Each paired computer is one compact two-line
+row (online dot, inline rename, online or last seen and the address, a
+warning such as "needs a Termic update" in place of the tail), with a
+role select (Just a pair / Orchestrator / Worker, or "Own note" for a
+hand-written one), the grant select, a menu (Edit note, Unpair behind a
+confirm) and a chevron that opens what it calls itself, what it lets
+this computer do, and the note; a hand-written note opens it by itself.
+While sharing is on, the card's footer is one line: this computer's
+name (renamed in a popover) and address, any bind or discovery error,
+and the agent setup as a popover on the right.
 The after-pairing dialog is global, on both machines, since the one that
 showed the code may be on any screen: the one line on working together,
 then "What is X for?" with Just a pair / Orchestrator / Worker presets that
@@ -407,7 +430,7 @@ profile brings that profile's window on screen: shown if hidden or
 minimized, built if closed, the same path as picking the profile from the
 menu (`reveal_profile_window`, triggered by `cli_server::PEER_ORIGIN` just
 before the request's RPC reaches the window). Found when a paired laptop
-named a project that lived in the Personal profile while only the NextTech
+named a project that lived in the Personal profile while only the Work
 window was open: its task started in a window nobody could see. Confining
 each pair to one profile was considered and left out on purpose; visibility
 is the rule instead.
@@ -461,12 +484,11 @@ off.
 
 ## Not done / known limits
 
-- Agents on one machine drive the other; a person cannot. A task made
-  on a pair shows in that machine's window only, its terminal cannot be
-  watched or typed into from here, and `attach` is refused. What comes
-  back is text (`task_log`, `task_result`). One request per connection
-  cannot carry a terminal stream.
-- Both ends run the full app. A headless server cannot be a pair.
+- `attach` across machines is still refused for agents; a PERSON watches
+  and types into a paired computer's tasks from the sidebar instead
+  ([remote.md](remote.md)).
+- A headless box is not a pair: it is a server, reached over ssh
+  ([remote.md](remote.md), "Servers").
 - IPv4 only, for discovery and the listener.
 - No TLS, by design (above).
 - The pairing protocol and every call path are covered by Rust tests
@@ -474,7 +496,7 @@ off.
   machine (`e2e/specs/peers.e2e.ts`). Two real machines, the Windows
   firewall prompt and the macOS Local Network prompt have no automated
   coverage: they need the manual pass.
-- Two machines on different CLI protocol versions can pair but not call
-  each other until both update.
+- A machine below the other's floor can pair but not call it until it
+  updates.
 - A response lost after B stored the pair leaves B paired and A not; B's
   next call is refused and shows "no longer paired", unpair and re-pair.

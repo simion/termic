@@ -42,7 +42,7 @@ const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, cl
 
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */
-function CopyRow({ text, label, className }: { text: string; label: string; className?: string }) {
+export function CopyRow({ text, label, className }: { text: string; label: string; className?: string }) {
   const { t } = useTranslation("settings");
   return (
     <div

@@ -52,6 +52,8 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "uiScale", scoped: false, class: "local", reason: "display density, follows this machine's screen" },
   { key: "caffeinateHours", scoped: false, class: "local", reason: "last caffeinate duration started; caffeinate is machine-wide power state" },
   { key: "caffeinateFlags", scoped: false, class: "local", reason: "last caffeinate display and closed-lid choice; caffeinate is machine-wide power state" },
+  { key: "caffeinateRestore", scoped: false, class: "local", reason: "whether caffeinate comes back after a restart; caffeinate is machine-wide power state" },
+  { key: "caffeinateLast", scoped: false, class: "local", reason: "the last caffeinate request, re-applied at launch when restore is on; machine-wide power state" },
   { key: "customThemeCache", scoped: false, class: "local", reason: "first-paint cache of a themes/ file; themeMode and the file itself are what sync" },
   { key: "editorFont", scoped: false, class: "sync" },
   { key: "editorFontSize", scoped: false, class: "sync" },
@@ -64,6 +66,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "splitPaneDim", scoped: false, class: "sync" },
   { key: "splitPaneDimAmount", scoped: false, class: "sync" },
   { key: "sidebarHoverReveal", scoped: false, class: "sync" },
+  { key: "showRemote", scoped: false, class: "sync" },
   { key: "profileSidebarWash", scoped: false, class: "sync" },
   { key: "markdownDefaultView", scoped: false, class: "local", reason: "last-used view, rewritten by every toggle in a markdown tab" },
   { key: "markdownReader", scoped: false, class: "sync" },
@@ -182,6 +185,8 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "commandPaletteThemeRecent", scoped: false, class: "local", reason: "recent palette theme picks" },
   { key: "commandPaletteThemeFilter", scoped: false, class: "local", reason: "palette theme list dark / light toggle" },
   { key: "sidebarWidth", scoped: false, class: "local", reason: "panel size" },
+  { key: "termic.remoteFolded", scoped: false, class: "local", reason: "collapse state of other machines' sidebar sections, which are per machine" },
+  { key: "termic.remoteHiddenProfiles", scoped: false, class: "local", reason: "which of a paired computer's profiles its sidebar section shows; keyed by that machine" },
 
   // ── Task view layout ──
   { key: "rightPanelHidden", scoped: false, class: "local", reason: "collapse state" },

@@ -55,6 +55,11 @@ mod mcp_server;
 mod mdns;
 mod peer_crypto;
 mod peers;
+mod push;
+mod remote_client;
+mod remote_server;
+mod server_projects;
+mod task_host;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
 pub mod customizations;
@@ -106,6 +111,11 @@ use sandbox::SandboxBundle;
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// The server (`servers.json` id) this project lives on, reached over
+    /// SSH through termic-server; `root_path` is then a path on that box.
+    /// None for a project on this machine (docs/remote.md, Servers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
     /// Filesystem path to the project's git repo. For
     /// `ProjectType::Single` this is the only repo in play. For
     /// `ProjectType::Multi` it's the HOST repo — the one that owns
@@ -1165,6 +1175,11 @@ pub(crate) fn profiles_registry() -> profiles::Registry {
 /// install that never made a second profile byte-identical to a pre-profiles
 /// one (docs/plans/profiles.md, "the default profile stays exactly where it
 /// is").
+/// The profiles registry, read now (empty with no profiles or no data dir).
+pub(crate) fn profile_registry() -> profiles::Registry {
+    global_dir().map(|g| profiles::load_registry(&g)).unwrap_or_default()
+}
+
 pub(crate) fn profile_dir(id: &ProfileId) -> Result<PathBuf> {
     let p = profiles::profile_dir(&global_dir()?, id);
     fs::create_dir_all(&p)?;
@@ -2716,6 +2731,12 @@ fn save_task(w: &Task) -> Result<()> {
     // The only writer of task records, so it is also what keeps a remembered
     // routing miss from outliving a task created after it (see TASK_WINDOW).
     note_task_window(&w.id, w.profile.window_label());
+    // A rename, pin or group move changes what a phone's list shows but not
+    // the agent cache its loop waits on: wake it now rather than on its 4 s
+    // fallback (remote_server.rs STATE_REFRESH).
+    cli_server::global_agent_cache().nudge();
+    // A server task's name, pin, order or group, shared through its box.
+    server_projects::push_org_if_changed(w);
     Ok(())
 }
 fn delete_task_file(id: &str) -> Result<()> {
@@ -3189,6 +3210,17 @@ fn git_command() -> std::process::Command {
 }
 
 fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
+    // A server project's folder: git runs on the box, through termic-server's
+    // `exec` (docs/remote.md, Servers).
+    if let Some(server) = server_projects::server_for_path(cwd) {
+        let mut argv = vec!["git"];
+        argv.extend_from_slice(args);
+        let (code, out, err) = server_projects::exec_on(&server, cwd, &argv, &[("GIT_OPTIONAL_LOCKS", "0")]).map_err(|e| anyhow!(e))?;
+        if code != 0 {
+            return Err(anyhow!("git {} failed: {err}", args.join(" ")));
+        }
+        return Ok(out);
+    }
     let mut cmd = git_command();
     // Windows: worktrees live under `%USERPROFILE%\termic\tasks\<project>\<task>`
     // and routinely hold `node_modules` / `target`, past the 260-character
@@ -3221,6 +3253,19 @@ fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
         return Err(anyhow!("{cmd_line} failed: {}", String::from_utf8_lossy(&out.stderr)));
     }
     Ok(out.stdout)
+}
+
+/// git with any exit status accepted: (success, stdout). For the few
+/// callers that read output from a "failing" git (`diff --no-index` exits 1
+/// when files differ). A server project's folder runs it on the box.
+fn git_raw(args: &[&str], cwd: &Path) -> Option<(bool, Vec<u8>)> {
+    if let Some(server) = server_projects::server_for_path(cwd) {
+        let mut argv = vec!["git"];
+        argv.extend_from_slice(args);
+        return server_projects::exec_on(&server, cwd, &argv, &[("GIT_OPTIONAL_LOCKS", "0")]).ok().map(|(code, out, _)| (code == 0, out));
+    }
+    let out = git_command().args(args).current_dir(cwd).env("PATH", shell_env::resolved_path()).output().ok()?;
+    Some((out.status.success(), out.stdout))
 }
 
 pub(crate) fn git(args: &[&str], cwd: &Path) -> Result<String> {
@@ -3851,6 +3896,15 @@ impl PtyFeed {
             .taps
             .retain(|tx| tx.try_send(PtyTapMsg::Data(data.to_vec())).is_ok());
     }
+    /// An empty chunk to every tap, outside the ring: wakes each forwarder
+    /// so it re-reads the PTY's size now. A forwarder learns of a resize
+    /// only per chunk, and an idle agent prints none, so a phone watching
+    /// a terminal the desktop took back was never told (no overlay; a
+    /// stale screen until the agent next printed).
+    fn nudge(&self) {
+        let mut inner = self.inner.lock();
+        inner.taps.retain(|tx| tx.try_send(PtyTapMsg::Data(Vec::new())).is_ok());
+    }
     fn send_detach(&self, reason: &str) {
         let mut inner = self.inner.lock();
         inner
@@ -4095,6 +4149,14 @@ pub(crate) fn pty_write_inner(manager: &PtyManager, pty_id: &str, data: &[u8]) -
     Ok(())
 }
 
+/// A PTY's size as (rows, cols), for a remote terminal view that must
+/// draw at the desktop's size (remote_server.rs). None for a dead id.
+pub(crate) fn pty_size_inner(manager: &PtyManager, pty_id: &str) -> Option<(u16, u16)> {
+    let map = manager.inner.lock();
+    let size = map.get(pty_id)?.master.get_size().ok()?;
+    Some((size.rows, size.cols))
+}
+
 /// Resize a PTY by id; same sharing rationale as `pty_write_inner`.
 pub(crate) fn pty_resize_inner(
     manager: &PtyManager,
@@ -4107,6 +4169,9 @@ pub(crate) fn pty_resize_inner(
         slot.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| e.to_string())?;
+        if let Some(feed) = &slot.feed {
+            feed.nudge();
+        }
     }
     Ok(())
 }
@@ -4117,10 +4182,16 @@ pub struct PtyManager {
 }
 
 #[derive(Clone, Serialize)]
-struct PtyChunk { data: Vec<u8> }
+pub(crate) struct PtyChunk { pub(crate) data: Vec<u8> }
 
 #[derive(Clone, Serialize)]
-struct PtyExit { code: Option<i32> }
+pub(crate) struct PtyExit {
+    pub(crate) code: Option<i32>,
+    /// A server PTY its box ended on a restart onto a new build: the pane
+    /// starts it again instead of showing it exited.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) restarted: bool,
+}
 
 /// Truth about how the agent actually got spawned - not just whether
 /// the task WANTED to be sandboxed but whether the cage actually
@@ -4438,10 +4509,49 @@ fn configure_terminal_env(cmd: &mut CommandBuilder) {
     for key in FOREIGN_TERMINAL_ENV {
         cmd.env_remove(key);
     }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "iTerm.app");
-    cmd.env("TERM_PROGRAM_VERSION", "3.5.0");
+    for (k, v) in TERMINAL_CLAIMS {
+        cmd.env(k, v);
+    }
+}
+
+/// The terminal Termic claims to be, so agents emit the OSCs it parses.
+const TERMINAL_CLAIMS: [(&str, &str); 4] = [
+    ("TERM", "xterm-256color"),
+    ("COLORTERM", "truecolor"),
+    ("TERM_PROGRAM", "iTerm.app"),
+    ("TERM_PROGRAM_VERSION", "3.5.0"),
+];
+
+/// The env a task's spawn gets wherever it runs, on this computer or on a
+/// server (docs/remote.md, Servers): the task's identity
+/// (TERMIC_TASK carries the NAME, as setup and run scripts always received;
+/// TERMIC_TASK_ID the unambiguous handle), a multi-repo task's sibling
+/// ports, the agent's own tab (GH #358, so `termic prop` writes where it
+/// runs) and the terminal claims. What only makes sense here (TERMIC_CLI,
+/// the sandbox, accounts, TERMIC_PTY) stays in `pty_spawn`.
+pub(crate) fn task_spawn_env(args: &SpawnArgs) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(wid) = args.task_id.as_deref() {
+        if let Some(task) = load_tasks_all().into_iter().find(|w| w.id == wid) {
+            // Multi-repo: sibling ports, so the agent (or anything run in
+            // this PTY) can `curl localhost:$TERMIC_PORT_API`. Same scheme
+            // as the script-stream spawn.
+            for (i, m) in task.composition.iter().enumerate() {
+                let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
+                let sanitized: String = m.dir_name.chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+                    .collect();
+                env.push((format!("TERMIC_PORT_{sanitized}"), p.to_string()));
+            }
+            env.push(("TERMIC_TASK".into(), task.name.clone()));
+        }
+        env.push(("TERMIC_TASK_ID".into(), wid.to_string()));
+    }
+    if let Some(tab) = agent_tab_id(args) {
+        env.push(("TERMIC_TAB_ID".into(), tab.to_string()));
+    }
+    env.extend(TERMINAL_CLAIMS.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env
 }
 
 /// Per-spawn opt-in sent by the frontend (Settings > Appearance > Share
@@ -4597,6 +4707,9 @@ fn descendant_names(_root: u32) -> Vec<String> { Vec::new() }
 /// that exited before the ack).
 #[tauri::command]
 fn pty_attached(state: State<'_, PtyManager>, id: String) {
+    if remote_client::pty_attached(&id) {
+        return;
+    }
     let map = state.inner.lock();
     let Some(slot) = map.get(&id) else { return };
     // Under the buffer mutex, exactly like the reader's `done` store: a store
@@ -4608,28 +4721,11 @@ fn pty_attached(state: State<'_, PtyManager>, id: String) {
 }
 
 
-/// Resolve the slave device path (`/dev/ttysNNN`) for a pty master, so it can be
-/// handed to agent hooks as `TERMIC_PTY`.
-///
-/// `ptsname` returns a pointer to a STATIC buffer and has no `_r` variant on
-/// macOS, so two concurrent spawns could otherwise read each other's result.
-/// The lock is held across the call and the copy, which is the whole critical
-/// section.
+/// The slave device path (`/dev/ttysNNN`) of a pty master, handed to agent
+/// hooks as `TERMIC_PTY` (termic_remote::pty, shared with termic-server).
 #[cfg(unix)]
 pub(crate) fn pty_slave_path(master: &Box<dyn portable_pty::MasterPty + Send>) -> Option<String> {
-    use std::os::unix::io::RawFd;
-    static PTSNAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let fd: RawFd = master.as_raw_fd()?;
-    let _guard = PTSNAME_LOCK.lock().ok()?;
-    // SAFETY: `fd` is a live pty master owned by the caller for the duration of
-    // this call, and the returned pointer is copied before the lock is dropped.
-    unsafe {
-        let p = libc::ptsname(fd);
-        if p.is_null() {
-            return None;
-        }
-        Some(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
-    }
+    termic_remote::pty::slave_path(master.as_raw_fd()?)
 }
 
 #[cfg(not(unix))]
@@ -4644,12 +4740,170 @@ fn agent_tab_id(args: &SpawnArgs) -> Option<&str> {
     args.role.as_ref().filter(|r| r.kind == "agent").and_then(|r| r.tab_id.as_deref())
 }
 
+/// A server PTY's id. A task's tab gets a stable one, `<task>:<tab>`, and
+/// its default agent `<task>:agent`, so the id is the claim: termic-server
+/// attaches an open whose id is already running instead of starting a
+/// second process. A restarted desktop finds its agent still running on
+/// the box, and two desktops opening one task share one agent. Anything
+/// without a tab (an aux shell spawned bare) gets a fresh id.
+fn server_pty_id(args: &SpawnArgs) -> String {
+    if let Some(r) = &args.role {
+        if r.kind == "agent" && r.is_default {
+            return format!("{}:agent", r.task_id);
+        }
+        if let Some(tab) = &r.tab_id {
+            return format!("{}:{tab}", r.task_id);
+        }
+    }
+    // A shell tab carries no CLI role (it stays out of the CLI's reach) but
+    // its owner names the tab, which is all the id needs.
+    if let Some(PtyOwner { task_id: Some(task), tab_id: Some(tab), .. }) = &args.owner {
+        return format!("{task}:{tab}");
+    }
+    Uuid::new_v4().to_string()
+}
+
+/// The argv a spawn built for this computer runs as on a box. The program
+/// runs as named (termic-server looks a bare name up on the login shell's
+/// PATH there, as the registry's defaults are). A shell running a command
+/// (`zsh -lic "<run script>"`) runs under the box's own login shell with
+/// the same flags, since the box may not have this computer's shell.
+fn server_argv(cmd: &str, args: &[String]) -> Vec<String> {
+    let name = Path::new(cmd).file_name().and_then(|n| n.to_str()).unwrap_or(cmd).to_string();
+    if matches!(name.as_str(), "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh") {
+        return ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" \"$@\"", "sh"].iter().map(|s| s.to_string())
+            .chain(args.iter().cloned()).collect();
+    }
+    std::iter::once(cmd.to_string()).chain(args.iter().cloned()).collect()
+}
+
+/// A terminal in a server project's folder runs on the box (termic-server
+/// `pty_open`); its output arrives as the same `pty://` events, so the panes
+/// need no remote branch. A bare login shell becomes the box's own login
+/// shell: this Mac's `/bin/zsh` may not exist there.
+fn server_pty_spawn(server: &str, args: &SpawnArgs) -> Result<SpawnResult, String> {
+    let shell_only = Path::new(&args.cmd).file_name().and_then(|n| n.to_str())
+        .is_some_and(|n| matches!(n, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh"))
+        && args.args.iter().all(|a| matches!(a.as_str(), "-l" | "-i" | "--login" | "-il" | "-li"));
+    let argv = if shell_only { Vec::new() } else { server_argv(&args.cmd, &args.args) };
+    // The claim on the box, and this spawn's own id here (unique, so a kill
+    // of an earlier spawn cannot reach this one: remote_client::pty_open).
+    let claim = server_pty_id(args);
+    // `/` keeps it a legal Tauri event name (`pty://<id>`).
+    let id = format!("{claim}/{}", &Uuid::new_v4().simple().to_string()[..8]);
+    // The webview's overlay, then what every task spawn gets (as locally,
+    // the task env applied after the overlay wins).
+    let mut env: Vec<(String, String)> = args.env.iter()
+        .filter(|(k, _)| k.as_str() != SHARE_HISTORY_ENV)
+        .map(|(k, v)| (k.clone(), v.clone())).collect();
+    for (k, v) in task_spawn_env(args) {
+        env.retain(|(e, _)| *e != k);
+        env.push((k, v));
+    }
+    dlog(&format!("[server-pty] spawn {id}"));
+    remote_client::pty_open(server, &id, &claim, &args.cwd, argv, env, args.cols, args.rows)?;
+    // A slot like a local PTY's, so everything that finds, reads, types into
+    // or sizes a terminal (the CLI's logs / send / attach, the phone host)
+    // has one path: its writer and master forward to the server, and the
+    // feed fills from the server's output (server_projects' sink).
+    if let Some(app) = server_projects::app_handle() {
+        let state = tauri::Manager::state::<PtyManager>(&app);
+        let mut map = state.inner.lock();
+        map.insert(id.clone(), PtySlot {
+            writer: Arc::new(Mutex::new(Box::new(RemotePtyWriter { pid: id.clone() }))),
+            master: Box::new(RemotePtyMaster { pid: id.clone(), size: Mutex::new((args.rows, args.cols)) }),
+            child_pid: None,
+            sandbox: None,
+            shell: None,
+            keychain: None,
+            task_id: args.task_id.clone(),
+            role: args.role.clone(),
+            feed: args.role.as_ref().map(|_| Arc::new(PtyFeed::new())),
+            owner: args.owner.clone(),
+            docker_container: None,
+            out_bytes: Arc::new(AtomicU64::new(0)),
+            seq: next_pty_seq(),
+            attached: Arc::new(AtomicBool::new(true)),
+            out_buf: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
+        });
+    }
+    Ok(SpawnResult { id, sandbox: SandboxStatus { active: false, proxy_active: false, warning: String::new() }, account: None })
+}
+
+/// A server PTY's output reached this desktop: its slot's feed and byte
+/// count, as a local PTY's reader thread does.
+pub(crate) fn server_pty_output(app: &AppHandle, pid: &str, data: &[u8]) {
+    let state = tauri::Manager::state::<PtyManager>(app);
+    let map = state.inner.lock();
+    if let Some(slot) = map.get(pid) {
+        slot.out_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+        if let Some(feed) = &slot.feed {
+            feed.push(data);
+        }
+    }
+}
+
+/// A server PTY ended: its slot goes, as a local PTY's waiter reaps it.
+pub(crate) fn server_pty_gone(app: &AppHandle, pid: &str) {
+    dlog(&format!("[server-pty] gone {pid}"));
+    tauri::Manager::state::<PtyManager>(app).inner.lock().remove(pid);
+}
+
+/// Typing into a server PTY through its slot (the CLI's `send` and attach).
+struct RemotePtyWriter {
+    pid: String,
+}
+
+impl Write for RemotePtyWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        remote_client::pty_input(&self.pid, buf).map_err(std::io::Error::other)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A server PTY's size through its slot: a resize goes to the server.
+struct RemotePtyMaster {
+    pid: String,
+    size: Mutex<(u16, u16)>,
+}
+
+impl portable_pty::MasterPty for RemotePtyMaster {
+    fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
+        *self.size.lock() = (size.rows, size.cols);
+        remote_client::pty_resize(&self.pid, size.cols, size.rows).map_err(anyhow::Error::msg)
+    }
+    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+        let (rows, cols) = *self.size.lock();
+        Ok(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+    }
+    fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, anyhow::Error> {
+        Err(anyhow::anyhow!("a server PTY's output arrives over its connection"))
+    }
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        Ok(Box::new(RemotePtyWriter { pid: self.pid.clone() }))
+    }
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<libc::pid_t> {
+        None
+    }
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        None
+    }
+}
+
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
     state: State<'_, PtyManager>,
     args: SpawnArgs,
 ) -> Result<SpawnResult, String> {
+    if let Some(server) = server_projects::server_for_path(Path::new(&args.cwd)) {
+        return server_pty_spawn(&server, &args);
+    }
     // a shell running a Secrets role (docs/sandbox.md "Shells"). None for
     // every other spawn, and nothing below changes for those.
     let shell_bundle = match plan_shell_secrets(&args, sandbox::available(), |tid| {
@@ -5052,26 +5306,11 @@ fn pty_spawn(
     // Multi-repo: expose sibling ports so the agent (or anything the
     // user runs in this PTY) can `curl localhost:$TERMIC_PORT_API`
     // without hardcoding. Same scheme as the script-stream spawn.
-    let mut task_name: Option<String> = None;
-    if let Some(wid) = args.task_id.as_deref() {
-        if let Some(task) = load_tasks_all().into_iter().find(|w| w.id == wid) {
-            for (i, m) in task.composition.iter().enumerate() {
-                let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
-                let sanitized: String = m.dir_name.chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
-                    .collect();
-                cmd.env(format!("TERMIC_PORT_{sanitized}"), p.to_string());
-            }
-            // Reused below for TERMIC_TASK, saving a third load_tasks
-            // disk scan per spawn.
-            task_name = Some(task.name.clone());
-        }
+    for (k, v) in task_spawn_env(&args) {
+        cmd.env(k, v);
     }
-    // Task identity + control-plane advertisement (docs/plans/cli.md,
-    // "Agents as users"). TERMIC_TASK carries the task NAME, matching
-    // what setup/run scripts have always received; TERMIC_TASK_ID is
-    // the unambiguous handle (names can repeat across projects), and
-    // the CLI resolves either. TERMIC_CLI is the absolute path of the
+    // Control-plane advertisement (docs/plans/cli.md, "Agents as users").
+    // TERMIC_CLI is the absolute path of the
     // bundled binary, injected only while "Enable CLI" is on so the
     // advertisement is never a lie; an ENFORCING-caged agent still sees
     // it, runs it, and gets the explicit "control plane unavailable"
@@ -5079,12 +5318,6 @@ fn pty_spawn(
     // allowed through by contract (observe, never block). The TOKEN is
     // deliberately never here: pty_spawn hands this env to every child,
     // caged included (cli_server.rs).
-    if let Some(wid) = args.task_id.as_deref() {
-        cmd.env("TERMIC_TASK_ID", wid);
-        if let Some(name) = &task_name {
-            cmd.env("TERMIC_TASK", name);
-        }
-    }
     let inherits_customizations = spawn_task.as_ref().map(|t| {
         load_projects_all()
             .into_iter()
@@ -5100,13 +5333,6 @@ fn pty_spawn(
                 cmd.env(k, v);
             }
         }
-    }
-    // The agent's OWN tab (GH #358), so `termic prop` writes where the agent
-    // runs without it having to discover its tab id. Only agent tabs carry a
-    // role with a tab id; the Docker branch gets the same through its env
-    // overlay (`agent_tab_env`).
-    if let Some(tab) = agent_tab_id(&args) {
-        cmd.env("TERMIC_TAB_ID", tab);
     }
     if load_settings_inner().cli_enabled {
         if let Ok(cli) = cli_server::bundled_cli_path() {
@@ -5456,7 +5682,7 @@ fn pty_spawn(
                 buf_w.1.wait(&mut b);
             }
         }
-        emit_to_window(&app_w, window_w.as_deref(), &format!("pty-exit://{}", id_w), PtyExit { code });
+        emit_to_window(&app_w, window_w.as_deref(), &format!("pty-exit://{}", id_w), PtyExit { code, restarted: false });
         // Drop this PID from the sandbox's PID set so the path watcher
         // stops counting denies from anything that happened to inherit
         // this PID after exit (rare but possible on macOS).
@@ -5529,6 +5755,7 @@ fn pty_spawn(
 
 #[tauri::command]
 fn pty_write(state: State<'_, PtyManager>, pty_id: String, data: Vec<u8>) -> Result<(), String> {
+    // A server PTY's slot writes to the server (RemotePtyWriter).
     pty_write_inner(&state, &pty_id, &data)
 }
 
@@ -5539,11 +5766,18 @@ fn pty_resize(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    // A server PTY's slot sizes it on the server (RemotePtyMaster).
     pty_resize_inner(&state, &pty_id, rows, cols)
 }
 
 #[tauri::command]
 fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> {
+    if remote_client::pty_machine(&pty_id).is_some() {
+        dlog(&format!("[server-pty] kill {pty_id}"));
+        // Its slot goes now: the box sends no exit for a kill it was asked for.
+        state.inner.lock().remove(&pty_id);
+        return remote_client::pty_kill(&pty_id);
+    }
     let slot = state.inner.lock().remove(&pty_id);
     if let Some(mut slot) = slot {
         caffeinate::exited(&pty_id);
@@ -6694,6 +6928,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
     let remote = if non_git { String::new() } else { detect_default_remote(&canon) };
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let p = Project {
+        server: None,
         default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
@@ -6915,6 +7150,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
     let base = if non_git { String::new() } else { detect_base_branch(&canon, &remote).unwrap_or_else(|_| "main".into()) };
     let name = trimmed_name.to_string();
     let p = Project {
+        server: None,
         default_role: None,
         // The one thing that genuinely cannot come from a record: a NEW
         // project joins the profile whose window asked for it.
@@ -7093,6 +7329,23 @@ fn project_update(mut p: Project) -> Result<(), String> {
 async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), String> {
     let ptys = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // A server project exists on the box (it owns existence; a resync
+        // would bring a locally removed one back): remove it there, which
+        // archives its tasks and leaves the repo's files, then forget it here.
+        if let Some(server) = load_projects_all().into_iter().find(|p| p.id == id).and_then(|p| p.server) {
+            let reply = remote_client::call(&server, serde_json::json!({"cmd": "project_remove", "name": id}), Some(std::time::Duration::from_secs(300)))?;
+            if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not remove it").to_string());
+            }
+            for w in load_tasks_all().into_iter().filter(|w| w.project_id == id) {
+                let _ = delete_task_file(&w.id);
+            }
+            let mut list = load_projects_all();
+            list.retain(|p| p.id != id);
+            save_projects(&list).map_err(|e| e.to_string())?;
+            server_projects::refresh_paths();
+            return Ok(());
+        }
         let tasks: Vec<Task> = load_tasks_all()
             .into_iter().filter(|w| w.project_id == id).collect();
         for w in tasks {
@@ -7237,7 +7490,7 @@ fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn task_open_repo(
+async fn task_open_repo(
     project_id: String,
     cli: Option<String>,
     name: Option<String>,
@@ -7269,6 +7522,8 @@ fn task_open_repo(
     // Unknown paths are ignored — the list is a filter, not a spec.
     members: Option<Vec<String>>,
 ) -> Result<Task, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     check_session_id(resume_session_id.as_deref())?;
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -7492,12 +7747,22 @@ fn task_open_repo(
     // takes the defaults.
     task.drop_role_unless_keychain_blocked();
     seed_task_role(&mut task);
+    // A server project's main-checkout task is recorded on the box too, like
+    // a worktree task (task_create_sync), or the mirror archives it.
+    if let Some(server) = &proj.server {
+        server_projects::put_task(server, &task)?;
+    }
     save_task(&task).map_err(|e| e.to_string())?;
-    if let Ok(pdir) = profile_dir(&proj.profile) {
+    if proj.server.is_some() {
+        server_projects::refresh_paths();
+    }
+    // Customizations are written into the checkout here, so not on a server.
+    if let (None, Ok(pdir)) = (&proj.server, profile_dir(&proj.profile)) {
         let _ = customizations::ensure_builtin_skills(&pdir);
         let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), effective_customization_mode(&proj), &task.cli);
     }
     Ok(task)
+}).await.map_err(|e| e.to_string())?
 }
 
 // ───────────────────────── import existing worktree (issue #5) ─────────────────────────
@@ -7552,6 +7817,30 @@ fn slot_occupant(wt_path: &Path) -> Option<std::fs::FileType> {
 /// or `ls-files` alone dying on a corrupt/locked index). And when git
 /// can't run here, the `worktree add` that follows can't succeed anyway.
 /// `advice` is appended to every refusal ("pick a different name…").
+/// `clear_orphan_or_refuse` wherever the task's files live (task_host): a
+/// server's slot is checked and cleared on the box, by the same rules
+/// (a link is unlinked, a non-directory refused, a registered worktree
+/// refused, an orphan removed).
+fn clear_orphan_on(host: &task_host::Host, repo: &Path, wt_path: &Path, advice: &str) -> Result<(), String> {
+    if !host.is_server() {
+        return clear_orphan_or_refuse(repo, wt_path, advice);
+    }
+    match host.slot(wt_path) {
+        task_host::Slot::Empty => Ok(()),
+        task_host::Slot::Link => host.remove_link(wt_path)
+            .map_err(|e| format!("link at {} couldn't be removed: {e}.{advice}", wt_path.display())),
+        task_host::Slot::Other => Err(format!("something that isn't a directory sits at {}.{advice}", wt_path.display())),
+        task_host::Slot::Dir => {
+            let listed = git(&["worktree", "list", "--porcelain"], repo).map_err(|e| e.to_string())?;
+            if worktree_listed(&listed, wt_path) {
+                return Err(format!("a worktree already lives at {}.{advice}", wt_path.display()));
+            }
+            host.remove_dir_all(wt_path)
+                .map_err(|e| format!("orphan directory at {} couldn't be removed: {e}.{advice}", wt_path.display()))
+        }
+    }
+}
+
 fn clear_orphan_or_refuse(repo: &Path, wt_path: &Path, advice: &str) -> Result<(), String> {
     let ftype = match slot_occupant(wt_path) {
         Some(f) => f,
@@ -8005,7 +8294,19 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
 
     // Determine "branch new from" — strip the remote prefix if needed for create.
     // git can branch off "origin/master" directly.
-    let base_full = task_base_branch(&proj.base_branch, args.base_branch.as_deref());
+    let mut base_full = task_base_branch(&proj.base_branch, args.base_branch.as_deref());
+    // A server project is mirrored from the box, never added here, so it has
+    // no base pinned at add time: detect it now as project_add would (git
+    // runs on the box), or the task records no base and its diff, Send to
+    // main and PR have nothing to compare against.
+    if base_full.trim().is_empty() && proj.server.is_some() {
+        let remote = detect_default_remote(&repo);
+        let b = detect_base_branch(&repo, &remote).unwrap_or_else(|_| "main".into());
+        let tracked = format!("{remote}/{b}");
+        // A box repo with no remote (a folder `git init`-ed there) has only
+        // the local branch: record what resolves.
+        base_full = if !remote.is_empty() && try_resolve_base_ref(&repo, &tracked).is_some() { tracked } else { b };
+    }
     // Did the CALLER name this base, or did it come off the project's pin?
     // Only the first is verified strictly: see the resolution below. Trimmed
     // and emptiness-checked the same way `task_base_branch` does, so " " is
@@ -8019,9 +8320,26 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // The PROJECT's profile owns the worktrees base. Reading the root's here
     // was a real bug: a second profile's seeded `~/termic/profiles/<slug>/tasks`
     // would be written to settings and then never used.
-    let wt_root = project_tasks_root(&globals.default_tasks_path, &proj)?;
-    fs::create_dir_all(&wt_root).map_err(|e| e.to_string())?;
+    // Where its files live (task_host): a server project's worktrees go in
+    // the box's own worktrees folder, the one its exec fence allows, under
+    // the project's slug, as termic-server always laid them out.
+    let host = task_host::Host::for_project(&proj);
+    let wt_root = match &proj.server {
+        Some(server) => {
+            // The slug plus the project's id: two projects whose names slug
+            // alike ("my.app", "my-app") must not share a folder, where one's
+            // orphan sweep would delete the other's live worktree.
+            let pslug = slugify(&proj.name);
+            let short: String = proj.id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
+            task_host::server_worktrees_root(server, &repo)?.join(if pslug.is_empty() { proj.id.clone() } else { format!("{pslug}-{short}") })
+        }
+        None => project_tasks_root(&globals.default_tasks_path, &proj)?,
+    };
+    host.create_dir_all(&wt_root)?;
     let wt_path = wt_root.join(&slug);
+    if let Some(server) = &proj.server {
+        server_projects::note_server_path(&wt_root, server);
+    }
 
     // Clean stale worktree metadata (refs to dirs the user removed manually,
     // or leftovers from a previous failed create) so `git worktree add` has
@@ -8030,8 +8348,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
 
     // Already-claimed target: a live worktree or git-tracked dir refuses,
     // a failed-create orphan is removed (fail-closed on git errors).
-    clear_orphan_or_refuse(
-        &repo, &wt_path,
+    clear_orphan_on(
+        &host, &repo, &wt_path,
         " Pick a different task name, or move the tasks path outside the repo.",
     )?;
 
@@ -8063,7 +8381,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             let p = PathBuf::from(&s);
             if p.is_absolute() { p } else { repo.join(p) }
         });
-    let has_git_crypt = common_gitdir
+    // Not on a server: bridging the key is a local symlink into the gitdir.
+    let has_git_crypt = !host.is_server() && common_gitdir
         .as_ref()
         .map(|p| p.join("git-crypt").exists())
         .unwrap_or(false);
@@ -8231,7 +8550,11 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         emit_create_progress(&app, &task_id, format!("Copying {} file pattern(s): {}", copy_patterns.len(), copy_patterns.join(", ")));
     }
     for pat in &copy_patterns {
-        copy_matching(&repo, &wt_path, pat);
+        if host.is_server() {
+            host.copy_matching_on_box(&repo, &wt_path, pat);
+        } else {
+            copy_matching(&repo, &wt_path, pat);
+        }
     }
 
     // Link the project's agent config dirs (`.claude/` and friends) into the
@@ -8240,15 +8563,20 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // (Settings.worktree_symlink_paths); each entry is linked only when it
     // exists in the repo and the checkout/copy didn't already provide it.
     for name in &globals.worktree_symlink_paths {
-        let existed = wt_path.join(name).exists();
-        link_config_dir(&repo, &wt_path, name);
-        if !existed && wt_path.join(name).exists() {
+        let existed = host.exists(&wt_path.join(name));
+        if host.is_server() {
+            host.link_on_box(&repo, &wt_path, name);
+        } else {
+            link_config_dir(&repo, &wt_path, name);
+        }
+        if !existed && host.exists(&wt_path.join(name)) {
             emit_create_progress(&app, &task_id, format!("Linked {name}."));
         }
     }
 
-    // Profile customizations (skills, personas, mcp)
-    if let Ok(pdir) = profile_dir(&proj.profile) {
+    // Profile customizations (skills, personas, mcp): written into the
+    // worktree here, so not on a server yet.
+    if let (false, Ok(pdir)) = (host.is_server(), profile_dir(&proj.profile)) {
         let _ = customizations::ensure_builtin_skills(&pdir);
         let cli_hint = args.cli.as_deref().unwrap_or(&proj.default_cli);
         let _ = customizations::reconcile_customizations(&pdir, &wt_path, effective_customization_mode(&proj), cli_hint);
@@ -8398,7 +8726,24 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // takes the defaults.
     task.drop_role_unless_keychain_blocked();
     seed_task_role(&mut task);
+    // A server project's task is recorded on the box too, as plain data, so
+    // every desktop that reaches it lists it (task_put) and the box reads
+    // its agent's state; the desktop starts that agent itself. Unrecorded,
+    // the worktree just made would be an orphan the next try refuses: it is
+    // taken back (git routes to the box by path).
+    if let Some(server) = &proj.server {
+        if let Err(e) = server_projects::put_task(server, &task) {
+            let _ = git(&["worktree", "remove", "--force", &task.path], &repo);
+            if !task.checkout_existing {
+                let _ = git(&["branch", "-D", &task.branch], &repo);
+            }
+            return Err(format!("{}: could not record the task ({e})", remote_client::server_name(server)));
+        }
+    }
     save_task(&task).map_err(|e| e.to_string())?;
+    if proj.server.is_some() {
+        server_projects::refresh_paths();
+    }
     drop(port_guard);
     emit_create_progress(&app, &task_id, format!("Worktree ready (port {port})."));
 
@@ -10460,12 +10805,15 @@ fn tokenize_home_prefix(path: &str) -> String {
 /// `Ok(None)` when the repo has no such file; `Err` when it exists but
 /// is malformed. Keyed by project — backs the Repository settings.
 #[tauri::command]
-fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig>, String> {
+async fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig>, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
         .ok_or("no such project")?;
     repo_config::load(Path::new(&p.root_path)).map_err(|e| e.to_string())
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Load a repo's `.termic.yaml` directly by path — used for inline
@@ -10481,12 +10829,15 @@ fn repo_config_load_at(path: String) -> Result<Option<repo_config::RepoConfig>, 
 /// Write a project's `.termic.yaml` (full re-serialize — see
 /// `repo_config::save`). Backs the Repository settings' Scripts tab.
 #[tauri::command]
-fn repo_config_save(project_id: String, config: repo_config::RepoConfig) -> Result<(), String> {
+async fn repo_config_save(project_id: String, config: repo_config::RepoConfig) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
         .ok_or("no such project")?;
     repo_config::save(Path::new(&p.root_path), &config).map_err(|e| e.to_string())
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Write a fresh `.termic.yaml` scaffold to a project's repo if it has
@@ -11866,8 +12217,18 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     #[cfg(not(target_os = "macos"))]
     {
         let close_id = id.clone();
+        let handle = app.clone();
         win.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the LAST window quits, so the running-agents question
+                // is asked here, while the window is still up. Left to
+                // ExitRequested it came after the window was gone: the app
+                // looked dead, then asked, and Cancel left it running with no
+                // window at all.
+                if shown_profile_windows(&handle).len() <= 1 && confirm_quit_or_exit(&handle) {
+                    api.prevent_close();
+                    return;
+                }
                 set_open_at_quit(&close_id, false);
             }
         });
@@ -12742,6 +13103,35 @@ fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Res
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("task not found")?;
 
+    // A server project's task lives on the box: termic-server removes its
+    // worktree and stops its agent there; this side only marks the record
+    // (docs/remote.md, Servers). Nothing on this machine to tear down.
+    if let Some(proj) = load_projects_all().into_iter().find(|p| p.id == w.project_id && p.server.is_some()) {
+        let server = proj.server.clone().unwrap_or_default();
+        // The project's archive script runs in the worktree on the box first
+        // (Settings or the box's .termic.yaml), as a local archive runs it.
+        // A failing script does not block the archive.
+        let script = effective_scripts(&proj).2;
+        if !skip_scripts && !script.trim().is_empty() {
+            match server_projects::exec_on(&server, Path::new(&w.path), &["sh", "-c", &script], &[]) {
+                Ok((0, _, _)) => {}
+                Ok((code, _, err)) => dlog(&format!("[archive] {}: archive script exited {code}: {}", w.id, err.trim())),
+                Err(e) => dlog(&format!("[archive] {}: archive script did not run: {e}", w.id)),
+            }
+        }
+        let reply = remote_client::call(&server, serde_json::json!({"cmd": "archive", "task": w.id}), Some(std::time::Duration::from_secs(300)))?;
+        if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err(reply.pointer("/error/message").and_then(serde_json::Value::as_str).unwrap_or("the server did not archive it").to_string());
+        }
+        // "Delete the branch too", as for a local task: the box removed the
+        // worktree and kept the branch; git runs there by the project's path.
+        if delete_branch && !w.is_main_checkout && !w.branch.is_empty() {
+            let _ = git(&["branch", "-D", &w.branch], Path::new(&proj.root_path));
+        }
+        w.archived = true;
+        return save_task(w).map_err(|e| e.to_string());
+    }
+
     // Remove any Docker containers for this task (non-fatal). `--rm`
     // handles the clean-exit case; this covers crashes / kills where it
     // never fired, before we tear down the worktree the container mounts.
@@ -13345,13 +13735,8 @@ pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
         // `git diff --no-index /dev/null <file>` renders the whole file as
         // added; it exits 1 whenever the files differ (always, here), so run it
         // directly and accept the non-zero status the git() helper would reject.
-        let out = git_command()
-            .args(["--no-pager", "diff", "--no-index", "--", "/dev/null", rel])
-            .current_dir(&wt)
-            .env("PATH", shell_env::resolved_path())
-            .output();
-        if let Ok(out) = out {
-            let text = String::from_utf8_lossy(&out.stdout);
+        if let Some((_, stdout)) = git_raw(&["--no-pager", "diff", "--no-index", "--", "/dev/null", rel], &wt) {
+            let text = String::from_utf8_lossy(&stdout);
             if !text.trim().is_empty() {
                 if !diff.is_empty() && !diff.ends_with('\n') { diff.push('\n'); }
                 diff.push_str(&text);
@@ -13603,6 +13988,44 @@ impl SendDiffError {
     }
 }
 
+/// Send to main for a server task: the same steps as the local path, run on
+/// the box (server_projects.rs `exec`). The checks and the diff go through
+/// the routed `git`; the patch is applied there with stdin, and untracked
+/// files are copied there with a tar pipe, never through this Mac.
+fn send_diff_to_main_on_server(server: &str, base: &str, worktree: &Path, main: &Path) -> Result<SendDiffResult, SendDiffError> {
+    let other = SendDiffError::Other;
+    let main_status = git(&["status", "--porcelain"], main).map_err(|e| other(e.to_string()))?;
+    if !main_status.trim().is_empty() {
+        return Err(SendDiffError::DirtyMain);
+    }
+    let patch = git_bytes(&["--no-pager", "diff", "--binary", base], worktree).map_err(|e| other(e.to_string()))?;
+    let tracked_files = patch.windows(11).filter(|w| w.starts_with(b"diff --git ")).count();
+    if !patch.is_empty() {
+        let (code, _, stderr) = server_projects::exec_with_stdin(
+            server, main, &["git", "apply", "--3way", "--whitespace=nowarn", "-"], &[("LC_ALL", "C")], Some(&patch),
+        ).map_err(other)?;
+        if code != 0 {
+            if stderr.lines().any(|l| l.trim_end().ends_with("with conflicts.")) {
+                return Err(SendDiffError::Conflict { main: main.display().to_string(), detail: stderr });
+            }
+            return Err(other(format!("git apply failed in {}: {stderr}", main.display())));
+        }
+    }
+    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"], worktree).map_err(|e| other(e.to_string()))?;
+    let untracked_files = untracked.split('\0').filter(|s| !s.is_empty()).count();
+    if untracked_files > 0 {
+        let (code, _, stderr) = server_projects::exec_on(
+            server, worktree,
+            &["sh", "-c", "git ls-files --others --exclude-standard -z | tar --null -T - -cf - | (cd \"$1\" && tar -xf -)", "sh", &main.to_string_lossy()],
+            &[],
+        ).map_err(other)?;
+        if code != 0 {
+            return Err(other(format!("copying untracked files to {} failed: {}", main.display(), stderr.trim())));
+        }
+    }
+    Ok(SendDiffResult { tracked_files, untracked_files })
+}
+
 pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, SendDiffError> {
     let other = SendDiffError::Other;
     {
@@ -13616,6 +14039,9 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         }
         let worktree = PathBuf::from(&w.path);
         let main = PathBuf::from(&p.root_path);
+        if let Some(server) = p.server.as_deref() {
+            return send_diff_to_main_on_server(server, &resolve_base_ref(&worktree, &w.base_branch), &worktree, &main);
+        }
         if !main.is_dir() {
             return Err(other(format!("Project main checkout missing: {}", main.display())));
         }
@@ -13633,7 +14059,9 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         // `git diff <base>` in a worktree returns the cumulative delta
         // between base and the working tree — exactly the union of
         // commits + staged + unstaged. --binary preserves binary blobs.
-        let base = w.base_branch.clone();
+        // The stored base as a ref that exists ("origin/main" in a repo with
+        // no remote is its local "main"), as creation resolved it.
+        let base = resolve_base_ref(&worktree, &w.base_branch);
         let patch_out = git_command()
             .args(["--no-pager", "diff", "--binary", &base])
             .current_dir(&worktree)
@@ -17190,6 +17618,48 @@ fn save_clipboard_image(bytes: &[u8], dir: &Path) -> Result<String, String> {
 /// clipboard, an AppHandle, or a running app - and because the ONE thing
 /// that must hold here is that the result is identifiable by
 /// `image_extension`, which is what every downstream reader uses.
+/// A PNG's pixels as 8-bit RGBA (a paired computer's pasted image, written
+/// to this computer's clipboard). Palette and grey images are expanded.
+pub(crate) fn decode_png_rgba(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let mut dec = png::Decoder::new(png_bytes);
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA);
+    let mut reader = dec.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::GrayscaleAlpha => buf.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        other => return Err(format!("unexpected PNG colour type {other:?}")),
+    };
+    Ok((rgba, info.width, info.height))
+}
+
+#[cfg(test)]
+#[test]
+fn a_png_round_trips_to_the_same_pixels() {
+    let px = vec![10u8, 20, 30, 255, 40, 50, 60, 128];
+    let png = encode_rgba_png(&px, 2, 1).unwrap();
+    assert_eq!(decode_png_rgba(&png).unwrap(), (px, 2, 1));
+}
+
+/// Base64 PNG of this computer's clipboard image, for sending to a paired
+/// computer before forwarding a Ctrl+V there. Err when there is none.
+#[tauri::command]
+async fn clipboard_image_png_b64(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        let image = app.clipboard().read_image().map_err(|e| e.to_string())?;
+        let (w, h) = (image.width(), image.height());
+        if w == 0 || h == 0 {
+            return Err("clipboard image had no size".to_string());
+        }
+        Ok(termic_remote::b64(&encode_rgba_png(image.rgba(), w, h)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() < expected {
@@ -17271,6 +17741,31 @@ async fn clipboard_image_save(request: tauri::ipc::Request<'_>) -> Result<String
         .map_err(|e| e.to_string())?
 }
 
+/// Put a pasted clipboard image on a server, for a server task's agent to
+/// read. A headless box has no clipboard for the agent to read, so the image
+/// saved on THIS computer (`clipboard_image_capture`) is copied into a temp
+/// file there and its path is pasted, which the agent turns into an image
+/// (the Docker route). Only files from this app's clipboard folder.
+#[tauri::command]
+async fn server_paste_image(server: String, cwd: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::fs::canonicalize(clipboard_dir()?).map_err(|e| e.to_string())?;
+        let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if !file.starts_with(&dir) {
+            return Err("not a pasted image".into());
+        }
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        let script = "f=$(mktemp \"${TMPDIR:-/tmp}/termic-paste-XXXXXX\") && mv \"$f\" \"$f.png\" && cat > \"$f.png\" && printf %s \"$f.png\"";
+        let (code, out, err) = server_projects::exec_with_stdin(&server, std::path::Path::new(&cwd), &["sh", "-c", script], &[], Some(&bytes))?;
+        if code != 0 {
+            return Err(if err.trim().is_empty() { format!("exited {code}") } else { err.trim().to_string() });
+        }
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Read a text file by ABSOLUTE path, with NO task containment (GH #240).
 ///
 /// This is the ONLY read in the app that is not bounded by a task root, and
@@ -17311,8 +17806,23 @@ fn read_external_file(path: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn task_file_read(id: String, path: String) -> Result<String, String> {
+async fn task_file_read(id: String, path: String) -> Result<String, String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    // A server task: read the file on the box, same cap, text only.
+    if let Some(server) = server_projects::server_for_path(Path::new(&w.path)) {
+        let base = PathBuf::from(&w.path);
+        let file = server_rel(&base, &path)?;
+        let (code, out, err) = server_projects::exec_on(&server, &base, &["head", "-c", "2000001", "--", &file.to_string_lossy()], &[])?;
+        if code != 0 {
+            return Err(err.trim().to_string());
+        }
+        if out.len() > 2_000_000 {
+            return Err(format!("{path} is larger than 2 MB"));
+        }
+        return String::from_utf8(out).map_err(|_| format!("{path} is not valid UTF-8 text"));
+    }
     // Member-aware: a `<dir_name>/…` path resolves inside that member's repo
     // (which may live outside the wrapper for repo_root members), matching
     // the diff/finder/grep path scheme.
@@ -17320,6 +17830,7 @@ fn task_file_read(id: String, path: String) -> Result<String, String> {
     let abs = safe_task_read_path(&w, &cwd, &rel)?;
     // Refuse binary or huge files for now — viewer is text-only.
     read_text_file_capped(&abs, 2_000_000)
+}).await.map_err(|e| e.to_string())?
 }
 
 /// Text-or-nothing decode for the editor's read. Split out ONLY so the
@@ -17594,14 +18105,36 @@ fn taskpdf_response(uri_path: &str) -> tauri::http::Response<Vec<u8>> {
 /// as the read side. Synchronous to mirror `task_file_read` — a
 /// single text file (capped at 2 MB on read) is not the heavy-IO case
 /// the spawn_blocking discipline targets.
+/// Write stdin to the file $1 on a box, atomically, as `write_atomic` does
+/// here: through a symlink to its target (a dotfiles link stays a link),
+/// keeping the file's mode (an executable script stays executable), via a
+/// temp file renamed over it. `stat -c` is GNU and busybox, `-f` the BSDs.
+pub(crate) const BOX_WRITE_SH: &str = r#"f=$1; [ -L "$f" ] && f=$(readlink -f -- "$f" 2>/dev/null || printf %s "$f"); t="$f.termic-tmp.$$"; cat > "$t" || exit 1; if [ -e "$f" ]; then m=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null) && chmod "$m" "$t"; fi; mv -f "$t" "$f""#;
+
 #[tauri::command]
-fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
+async fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
+    // Off the main thread: on a server project this is an ssh round trip.
+    tauri::async_runtime::spawn_blocking(move || {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    // A server task: write it on the box (write to a temp file, then rename
+    // over, so a torn write never leaves half a file), fenced to the task.
+    if let Some(server) = server_projects::server_for_path(Path::new(&w.path)) {
+        let base = PathBuf::from(&w.path);
+        let file = server_rel(&base, &path)?;
+        let f = file.to_string_lossy();
+        let (code, _, err) = server_projects::exec_with_stdin(
+            &server, &base,
+            &["sh", "-c", BOX_WRITE_SH, "sh", &f],
+            &[], Some(content.as_bytes()),
+        )?;
+        return if code == 0 { Ok(()) } else { Err(format!("write failed: {}", err.trim())) };
+    }
     let (cwd, rel) = resolve_task_git_path(&w, &path)?;
     let abs = safe_task_path(&cwd, &rel)?;
     // Atomic: uncommitted source is unrecoverable if a truncate-write tears.
     // Tradeoff accepted: the swap installs a new inode (breaks hardlinks).
     write_atomic(&abs, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+}).await.map_err(|e| e.to_string())?
 }
 
 // ──────────────────────────── scratchpads (GH #244) ────────────────────────
@@ -18679,9 +19212,36 @@ async fn task_dir_list(id: String, rel: String, heal: bool) -> Result<Vec<FileEn
         .map_err(|e| e.to_string())?
 }
 
+/// A relative path inside a server task, refused if it could climb out
+/// (`..`, absolute): the box checks its project fence, this keeps the
+/// request inside the task too.
+fn server_rel(base: &Path, rel: &str) -> Result<PathBuf, String> {
+    let p = Path::new(rel);
+    if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{rel}: outside the task"));
+    }
+    Ok(if rel.is_empty() { base.to_path_buf() } else { base.join(p) })
+}
+
 fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let base = PathBuf::from(&w.path);
+    // A server task: list the folder on the box (server_projects.rs).
+    if let Some(server) = server_projects::server_for_path(&base) {
+        let dir = server_rel(&base, &rel)?;
+        let (code, out, err) = server_projects::exec_on(&server, &base, &["ls", "-1Ap", "--", &dir.to_string_lossy()], &[])?;
+        if code != 0 {
+            return Err(err.trim().to_string());
+        }
+        let mut entries: Vec<FileEntry> = String::from_utf8_lossy(&out)
+            .lines()
+            // `.git` is a file in a worktree, a folder in a checkout: hide both.
+            .filter(|l| !l.is_empty() && *l != ".git/" && *l != ".git" && *l != ".DS_Store")
+            .map(|l| FileEntry { is_dir: l.ends_with('/'), name: l.trim_end_matches('/').to_string() })
+            .collect();
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        return Ok(entries);
+    }
     // Multi-repo: when the relative path enters a composition member
     // (e.g. "pydpf" or "pydpf/src"), resolve under that member's real
     // path instead of going through safe_task_path — which would
@@ -18820,12 +19380,8 @@ async fn task_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
         // globs (same ones the file tree uses) so a hidden path doesn't leak
         // back in via ⌘P. A repo that won't list just contributes nothing.
         let ls = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| -> Vec<String> {
-            match git_command()
-                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
-                .current_dir(dir)
-                .output()
-            {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            match git_raw(&["ls-files", "--cached", "--others", "--exclude-standard"], Path::new(dir)) {
+                Some((true, stdout)) => String::from_utf8_lossy(&stdout)
                     .lines()
                     .filter(|l| !l.is_empty())
                     .filter(|l| !path_is_excluded(patterns, l))
@@ -18989,36 +19545,7 @@ fn unique_task_name(base: &str, tasks: &[Task], project_id: &str) -> String {
 ///
 /// Mirrors `slugify` in src/lib/utils.ts character for character; `utils.test.ts`
 /// and `slugify_collapses_dash_runs` pin the pair against one case list.
-fn slugify(s: &str) -> String {
-    let mapped: String = s
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    let mut out = String::with_capacity(mapped.len());
-    let mut prev_dash = false;
-    for c in mapped.chars() {
-        if c == '-' {
-            if !prev_dash {
-                out.push(c);
-            }
-            prev_dash = true;
-        } else {
-            out.push(c);
-            prev_dash = false;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    // Windows cannot create a directory with a reserved device name, and the
-    // slug is a worktree directory. On every OS, so a task named on a Mac
-    // still checks out on a teammate's Windows machine. Mirrored in utils.ts.
-    let reserved = matches!(out.as_str(), "con" | "prn" | "aux" | "nul")
-        || (out.len() == 4
-            && (out.starts_with("com") || out.starts_with("lpt"))
-            && matches!(out.as_bytes()[3], b'1'..=b'9'));
-    if reserved { format!("{out}-1") } else { out }
-}
+use termic_proto::slugify;
 
 /// Recursively copy a file or directory. `fs::copy` ONLY handles files, so
 /// the previous implementation silently dropped directory patterns like
@@ -24358,7 +24885,7 @@ pub struct Settings {
     /// one and then keeps it across restarts.
     #[serde(default)]
     pub mcp_port: u16,
-    /// "Share on this network" (Settings > Agent access, docs/peers.md):
+    /// "Share on this network" (Settings > Remote control, docs/peers.md):
     /// binds the peer listener on every interface and advertises this
     /// machine over mDNS so other Termic instances can ask to pair. Default
     /// OFF; applied live both ways by settings_save, and re-read per request
@@ -27820,7 +28347,14 @@ pub(crate) fn leave_windowless(app: &AppHandle) {
     // user opened them, so hiding all and restoring one would silently lose a
     // profile. A root the user CLOSED stays closed (ROOT_PUT_AWAY), unless it
     // is the only window there is.
-    let wins = shown_profile_windows(app);
+    let mut wins = shown_profile_windows(app);
+    // No window at all (Linux and Windows destroy the last one on close):
+    // build the root again, or Show would do nothing.
+    if wins.is_empty() {
+        if let Ok(w) = build_profile_window(app, &ProfileId::Root) {
+            wins.push(w);
+        }
+    }
     if wins.iter().any(|w| w.label() == ProfileId::Root.window_label()) {
         root_brought_back();
     }
@@ -28653,6 +29187,8 @@ pub fn run() {
             cli_server::start(app.handle().clone());
             mcp_server::start_if_enabled(app.handle().clone());
             peers::start_if_enabled(app.handle().clone());
+            remote_client::init(app.handle().clone());
+            server_projects::init(app.handle().clone());
             // E2E: show the window, never take focus. `set_focus()` on macOS
             // ACTIVATES the app, which yanks the user to whichever Space the
             // window opened on — seventeen times a suite run, since each spec
@@ -28731,7 +29267,7 @@ pub fn run() {
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, project_forge_lists, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
-            task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
+            task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, server_paste_image, clipboard_image_png_b64, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             scratch_list, scratch_read, scratch_write, scratch_set_meta, scratch_delete,
             scratch_promote, scratch_promote_target_exists,
@@ -28770,6 +29306,7 @@ pub fn run() {
             mcp_server::mcp_regenerate_token,
             mcp_server::mcp_install_client,
             peers::peer_status,
+            push::phones_push,
             peers::peer_set_name,
             peers::peer_pair,
             peers::peer_pair_mode,
@@ -28779,6 +29316,29 @@ pub fn run() {
             peers::peer_set_note,
             peers::peer_unpair,
             peers::peer_refresh,
+            peers::phone_pair_start,
+            peers::phone_pair_cancel,
+            peers::phone_unpair,
+            peers::phone_rename,
+            remote_client::remote_machines,
+            remote_client::remote_call,
+            remote_client::remote_term_open,
+            remote_client::remote_term_close,
+            remote_client::remote_term_input,
+            remote_client::remote_set_folder_colors,
+            remote_client::remote_set_sidebar_folds,
+            remote_client::remote_term_size,
+            remote_client::remote_reconnect,
+            remote_client::remote_set_connected,
+            remote_client::server_add,
+            server_projects::server_which,
+            remote_client::server_restart,
+            remote_client::server_remove,
+            remote_client::server_rename,
+            remote_client::server_list,
+            remote_client::server_probe,
+            remote_client::server_trust,
+            remote_client::server_install,
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,
             list_monospace_fonts, list_font_families,
@@ -28842,6 +29402,7 @@ pub fn run() {
                 // tells it to wait for us instead of deferring to us.
                 if *code == Some(tauri::RESTART_EXIT_CODE) {
                     std::env::set_var(cli_server::RELAUNCH_ENV, "1");
+                    cli_server::release_socket_for_restart();
                 }
             }
             // Dock-icon click on a windowless app (applicationShouldHandle-
@@ -33442,6 +34003,22 @@ mod tests {
         let t0 = Instant::now();
         wait_for_attach(&buf, &attached, &done, Duration::from_secs(30));
         assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn a_resize_nudge_wakes_every_tap_and_adds_nothing_to_the_backlog() {
+        // A phone watching a terminal must hear of a resize while the agent
+        // is idle: the nudge is the wake-up its forwarder checks the size on.
+        let feed = PtyFeed::new();
+        feed.push(b"screen");
+        let (_, _, rx, _tx) = feed.subscribe();
+        feed.nudge();
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(PtyTapMsg::Data(d)) => assert!(d.is_empty(), "a nudge carries no bytes"),
+            other => panic!("expected a nudge, got {:?}", other.is_ok()),
+        }
+        let (backlog, _, _, _) = feed.subscribe();
+        assert_eq!(backlog, b"screen", "a nudge is not output");
     }
 
     #[test]
@@ -40093,5 +40670,56 @@ mod schedule_record_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod server_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn a_spawn_built_here_runs_by_name_on_a_box() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // The program as named: a bare name is found on the box's PATH.
+        assert_eq!(server_argv("claude", &s(&["--resume", "x"])), s(&["claude", "--resume", "x"]));
+        assert_eq!(server_argv("codex", &[]), s(&["codex"]));
+        // A shell running a command: the box's own login shell, same flags.
+        let run = server_argv("/bin/zsh", &s(&["-lic", "npm run dev"]));
+        assert_eq!(run[..4], s(&["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" \"$@\"", "sh"])[..]);
+        assert_eq!(run[4..], s(&["-lic", "npm run dev"])[..]);
+    }
+
+    #[test]
+    fn every_task_spawn_claims_the_terminal_termic_parses() {
+        let args: SpawnArgs = serde_json::from_value(serde_json::json!({ "cwd": "/tmp", "cmd": "x", "args": [] })).unwrap();
+        let env = task_spawn_env(&args);
+        for (k, v) in TERMINAL_CLAIMS {
+            assert!(env.iter().any(|(ek, ev)| ek == k && ev == v), "{k} missing");
+        }
+        assert!(!env.iter().any(|(k, _)| k == "TERMIC_TASK_ID"), "no task, no id");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod box_write_tests {
+    #[test]
+    fn a_box_write_keeps_the_mode_and_writes_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("box-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let real = d.join("run.sh");
+        std::fs::write(&real, "old").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = d.join("link.sh");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut c = std::process::Command::new("/bin/sh").args(["-c", super::BOX_WRITE_SH, "sh"]).arg(&link).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(c.stdin.as_mut().unwrap(), b"new").unwrap();
+        drop(c.stdin.take());
+        assert!(c.wait().unwrap().success());
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o755);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

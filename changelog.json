@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "2.0.5",
+      "date": "2026-11-24",
+      "summary": "Remote control: your phone, your own servers, and your other computers."
+    },
+    {
+      "version": "1.25.7",
+      "date": "2026-11-23",
+      "summary": "Two new features: a phone app to remote-control Termic, and agents on your own servers."
+    },
+    {
       "version": "1.24.6",
       "date": "2026-11-20",
       "summary": "Monokai theme, window titles that name your task, idle tasks free their build folders."

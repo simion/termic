@@ -956,6 +956,7 @@ mod tests {
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
             spawned_by: None,
+            org: None,
         }
     }
 
@@ -990,6 +991,9 @@ api      longer-task-name  codex   -        -             b2";
             default_agent: "claude".into(),
             project_type: "multi".into(),
             members: vec![member("api", "/src/api", false, "origin/main"), member("handbook", "/src/docs", true, "")],
+            profile: None,
+            server: None,
+            non_git: false,
         }
     }
 
@@ -1003,6 +1007,9 @@ api      longer-task-name  codex   -        -             b2";
             default_agent: "claude".into(),
             project_type: "single".into(),
             members: Vec::new(),
+            profile: None,
+            server: None,
+            non_git: false,
         };
         let mut empty = shop();
         empty.name = "bare".into();
@@ -1303,6 +1310,9 @@ created web/fix-auth
             default_agent: "claude".into(),
             project_type: "single".into(),
             members: Vec::new(),
+            profile: None,
+            server: None,
+            non_git: false,
         };
         assert_eq!(project_add_text(&p), "added project web at /repo/web");
         let out = project_list_text(&[p]);

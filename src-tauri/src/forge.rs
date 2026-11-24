@@ -70,6 +70,42 @@ pub fn host_of_remote(url: &str) -> Option<String> {
     }
 }
 
+/// `owner/repo` (or a GitLab `group/sub/repo`) of a git remote, both URL
+/// shapes, without a trailing `.git`. None when there is no path.
+pub fn path_of_remote(url: &str) -> Option<String> {
+    let u = url.trim();
+    let path = match u.split_once("://") {
+        Some((_, r)) => r.split_once('/').map(|(_, p)| p)?,
+        None => u.split_once(':').map(|(_, p)| p)?,
+    };
+    let p = path.trim_matches('/').trim_end_matches(".git").trim_matches('/');
+    (p.contains('/')).then(|| p.to_string())
+}
+
+/// For a folder on a server: (its current branch, its repo as an https URL),
+/// both read on the box through the routed git. None for a local folder.
+fn server_branch(cwd: &Path) -> Option<(String, String)> {
+    crate::server_projects::server_for_path(cwd)?;
+    let branch = crate::git(&["branch", "--show-current"], cwd).ok()?.trim().to_string();
+    let repo = server_repo_env(cwd)?;
+    (!branch.is_empty()).then(|| (branch, format!("https://{repo}")))
+}
+
+/// For a folder that lives on a server (server_projects.rs): `gh` runs here
+/// with no checkout to read, so it is told the repo (`GH_REPO`), from the
+/// box's origin remote (read through the routed git, once per folder).
+fn server_repo_env(cwd: &Path) -> Option<String> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(v) = cache.lock().unwrap().get(cwd) {
+        return v.clone();
+    }
+    let url = crate::git(&["remote", "get-url", "origin"], cwd).ok()?;
+    let v = host_of_remote(&url).zip(path_of_remote(&url)).map(|(h, p)| format!("{h}/{p}"));
+    cache.lock().unwrap().insert(cwd.to_path_buf(), v.clone());
+    v
+}
+
 /// Hosts each CLI is actually signed in to, learned from `auth status` and
 /// refreshed by `detect()`. This is what makes GitHub Enterprise and
 /// self-hosted GitLab work with no configuration: the CLI already knows
@@ -301,7 +337,17 @@ fn cli_command(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::process::Co
         .env("AZURE_CORE_COLLECT_TELEMETRY", "false")
         .env("NO_COLOR", "1");
     if let Some(d) = cwd {
-        cmd.current_dir(d);
+        if crate::server_projects::server_for_path(d).is_some() {
+            // The folder is on a server: there is nothing to cd into here.
+            if let Some(repo) = server_repo_env(d) {
+                cmd.env("GH_REPO", repo);
+            }
+            if let Some(home) = dirs::home_dir() {
+                cmd.current_dir(home);
+            }
+        } else {
+            cmd.current_dir(d);
+        }
     }
     cmd
 }
@@ -994,7 +1040,9 @@ pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Opti
 }
 
 fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
-    let num_s = number.map(|n| n.to_string());
+    // A folder on a server has no checkout here for gh to read the branch
+    // from: name it (the branch, read on the box through the routed git).
+    let num_s = number.map(|n| n.to_string()).or_else(|| server_branch(cwd).map(|(b, _)| b));
     let mut args: Vec<&str> = vec!["pr", "view"];
     if let Some(n) = num_s.as_deref() {
         args.push(n);
@@ -1399,12 +1447,18 @@ fn rollup_to_checks(rollup: &serde_json::Value) -> String {
 }
 
 fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
-    let num_s = number.map(|n| n.to_string());
+    // A folder on a server: name the branch and the repo (glab has no
+    // checkout here to read them from), as github_pr_status does.
+    let server = server_branch(cwd);
+    let num_s = number.map(|n| n.to_string()).or_else(|| server.as_ref().map(|(b, _)| b.clone()));
     let mut args: Vec<&str> = vec!["mr", "view"];
     if let Some(n) = num_s.as_deref() {
         args.push(n);
     }
     args.extend(["--output", "json"]);
+    if let Some((_, repo)) = &server {
+        args.extend(["-R", repo.as_str()]);
+    }
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
@@ -3062,6 +3116,26 @@ fn html_to_text(html: &str) -> String {
         .join("\n")
 }
 
+/// The CLI arguments that create a PR/MR. `server`: (branch, repo URL) for
+/// a folder on a server, where the CLI has no checkout to read either from.
+fn create_args(provider: &str, title: &str, body: &str, base: &str, draft: bool, server: Option<&(String, String)>) -> Vec<String> {
+    let mut a: Vec<String> = match provider {
+        GITLAB => ["mr", "create", "--title", title, "--description", body, "--target-branch", base, "--yes"].map(String::from).to_vec(),
+        _ => ["pr", "create", "--title", title, "--body", body, "--base", base].map(String::from).to_vec(),
+    };
+    if draft {
+        a.push("--draft".into());
+    }
+    if let Some((branch, repo)) = server {
+        match provider {
+            GITLAB => a.extend(["--source-branch".into(), branch.clone(), "-R".into(), repo.clone()]),
+            // GH_REPO (cli_command) names the repo for gh.
+            _ => a.extend(["--head".into(), branch.clone()]),
+        }
+    }
+    a
+}
+
 /// Create a PR/MR for `cwd`'s current branch (the caller pushes first).
 /// Returns the PR URL. Idempotent-ish: "already exists" failures that
 /// carry the existing URL are treated as success.
@@ -3078,13 +3152,8 @@ pub fn pr_create(
     if provider == AZURE {
         return azure_pr_create(&bin, cwd, title, body, base, draft);
     }
-    let mut args: Vec<&str> = match provider {
-        GITLAB => vec!["mr", "create", "--title", title, "--description", body, "--target-branch", base, "--yes"],
-        _ => vec!["pr", "create", "--title", title, "--body", body, "--base", base],
-    };
-    if draft {
-        args.push("--draft");
-    }
+    let owned = create_args(provider, title, body, base, draft, server_branch(cwd).as_ref());
+    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
     let o = run(&bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     let stdout = String::from_utf8_lossy(&o.stdout);
     let stderr = String::from_utf8_lossy(&o.stderr);
@@ -3178,6 +3247,28 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn create_args_name_the_branch_for_a_server_folder() {
+        let local = create_args(GITHUB, "t", "b", "main", false, None);
+        assert_eq!(local, ["pr", "create", "--title", "t", "--body", "b", "--base", "main"]);
+        let srv = ("feat".to_string(), "https://github.com/acme/web".to_string());
+        let gh = create_args(GITHUB, "t", "b", "main", true, Some(&srv));
+        assert_eq!(gh[gh.len() - 3..], ["--draft", "--head", "feat"]);
+        let gl = create_args(GITLAB, "t", "b", "main", false, Some(&srv));
+        assert_eq!(gl[gl.len() - 4..], ["--source-branch", "feat", "-R", "https://github.com/acme/web"]);
+    }
+
+    #[test]
+    fn path_of_remote_reads_both_url_shapes() {
+        assert_eq!(path_of_remote("https://github.com/acme/web.git").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("git@github.com:acme/web.git").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("ssh://git@git.acme.com:22/group/sub/repo").as_deref(), Some("group/sub/repo"));
+        assert_eq!(path_of_remote("https://github.com/acme/web/").as_deref(), Some("acme/web"));
+        assert_eq!(path_of_remote("/local/path/repo"), None);
+        assert_eq!(path_of_remote(""), None);
+    }
+
     use super::*;
 
     #[cfg(unix)]

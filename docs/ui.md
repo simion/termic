@@ -29,9 +29,9 @@ the inheritance override. See [customizations.md](customizations.md).
 
 Left rail + one content pane (`components/settings/Settings.tsx`). Three bands, hairline-separated, then the per-project list:
 
-1. **Opened by choice** (General, Appearance, Agents & Terminals)
+1. **Opened by choice** (General, Appearance, Agents & Terminals, then MCP & CLI, Remote control, Servers: how agents here drive Termic, what drives it over the network, and where a project's tasks run when not here)
 2. **Set once** (Tasks, Notifications, Prompts, Shortcuts, Profiles, Sync)
-3. **The perimeter**, what the app is allowed to do (Sandbox, Termic CLI)
+3. **The perimeter**, what the app is allowed to do (Sandbox, Secrets, Docker Sandbox)
 4. `PROJECTS`, the only band with a label, because it is a dynamic list needing an empty state
 
 The bands are what the app looks like and runs, then how it behaves while you work, then what it is allowed to do. Sandbox sits low because of the last one, not because it matters least. General leads by convention rather than by that rule: it is app-level and set-once, but every settings UI opens on General and fighting that expectation costs more than the inconsistency does.
@@ -179,9 +179,9 @@ carries the Layers icon (the ⋯ dots were rejected as a stray glyph).
 **The New task button under a project.** The dashed button the empty project
 shows sits BELOW the task rows, where a new task lands. The
 `newTaskButton` pref (Settings > Appearance, sidebar) decides when a project
-that has tasks shows it too: Empty projects (never), Auto (while there are
-two or fewer projects, the default: one long list puts the header's `+` far
-from where the task appears), or Always (`newTaskButtonShown` in
+that has tasks shows it too: Empty projects (never, the default: the
+header's `+` is how a task starts), Auto (while there are two or fewer
+projects), or Always (`newTaskButtonShown` in
 `store/prefs.ts`). Under tasks it draws as a lone centered `+` on a borderless row the height of a task row (`--task-row-h`)
 (`data-variant="quiet"`, labelled by its tooltip), so it does not read as
 one more task; the row highlights on hover and while its menu is open. The
@@ -698,6 +698,13 @@ same marks for the rows they hide: one of each that a member's row would
 draw, in the fixed order above (`groupBadgeKinds`, drawn by `WorkMarkList` in
 [src/components/sidebar/RollupMarks.tsx](../src/components/sidebar/RollupMarks.tsx)).
 Open, they carry none, because the rows show their own.
+
+Opening and shutting animates (240ms height and fade on the iOS curve,
+[src/components/ui/Expand.tsx](../src/components/ui/Expand.tsx)) for a
+project, a folder and each task group row. Shut content still unmounts:
+it is held only for the exit animation, the wrapper is `display:
+contents` at rest so it adds no box, and nothing animates on first mount
+or under reduced motion.
 
 A project's marks sit after its name, NOT in the action cluster on the right:
 the filter toggle and the cog there keep their space while invisible, which

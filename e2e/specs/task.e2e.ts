@@ -343,6 +343,19 @@ describe("new task dialog: side rail", () => {
     await requireTermicApi();
     projectId = await browser.execute(() =>
       window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo").id);
+    // No secrets roles: another spec (secrets-settings) can leave one in the
+    // shared profile, and a role adds a Secrets section to the rail.
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      if ((s as any).roles?.length) await t.ipc.settingsSave({ ...s, roles: [] } as any);
+      // The secrets store reloads when Settings closes (store/secrets.ts).
+      t.useApp.getState().openSettings("general");
+      t.useApp.getState().closeSettings();
+      await t.useApp.getState().loadAll();
+    });
+    await browser.waitUntil(() => browser.execute(() => ((window.__termic as any).useSecrets.getState().roles as unknown[]).length === 0),
+      { timeout: 10_000, timeoutMsg: "the secrets store never dropped the cleared roles" });
     await open();
     // Focus starts on Name, not on the first (i): a focused (i) shows its
     // tooltip, which would then swallow the first Escape.
@@ -4856,5 +4869,30 @@ describe("open the task folder in another app", () => {
       { timeout: 8_000, timeoutMsg: "the pick never reverted to the file manager" },
     );
     expect(opens()).toEqual([]);
+  });
+});
+
+describe("renaming a task", () => {
+  it("keeps its agent running: a rename never respawns the terminal", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const id = await openTask("rename-keeps-agent");
+    try {
+      await waitForAgentReady(id);
+      const before = await browser.execute((t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.ptyId as string | undefined, id);
+      expect(before).toBeTruthy();
+      // As an agent renames its own task (`termic rename`): mid-session.
+      expect((await cliRpc({ cmd: "rename", task: id, name: "renamed-keeps-agent" })).ok).toBe(true);
+      await browser.waitUntil(() => browser.execute((t) => window.__termic!.useApp.getState().tasks.find((x: any) => x.id === t)?.name === "renamed-keeps-agent", id),
+        { timeout: 10_000, timeoutMsg: "the rename never reached the store" });
+      // A negative: a respawn would replace the PTY within a frame or two of
+      // the store update. Nothing fires for one that never happens.
+      await browser.pause(1500);
+      const after = await browser.execute((t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.ptyId as string | undefined, id);
+      expect(after).toBe(before);
+      expect(await browser.execute((p) => window.__termic!.invoke("pty_alive", { id: p }), after)).toBe(true);
+    } finally {
+      await archiveTask(id);
+    }
   });
 });

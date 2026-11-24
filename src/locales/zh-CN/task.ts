@@ -281,7 +281,6 @@ export default {
   // TerminalPane：提示、退出横幅、YOLO 重启确认和启动遮罩。
   terminal: {
     scheduledSent: "定时消息已发送（原定 {{late}} 前）",
-    queueFinished: "消息队列已完成",
     pathGone: "该路径已不存在",
     menuCopy: "复制",
     menuPaste: "粘贴",
@@ -293,6 +292,9 @@ export default {
     resumeFailedRemember: " 安装智能体钩子，Termic 才能记住你选的会话。",
     resumeFailedSaid: " {{agent}} 说：“{{why}}”",
     moreAgentsTip: "这里放不下了。加宽窗口，或切换标签页查看其余智能体。",
+    elsewhere: "此终端正在另一个屏幕上使用。",
+    elsewhereOn: "此终端正在 {{name}} 上使用。",
+    continueHere: "在此继续",
     yoloRestartTitle: "重启 {{agent}} 以{{action}} YOLO？",
     yoloEnable: "启用",
     yoloDisable: "禁用",

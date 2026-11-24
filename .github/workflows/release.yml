@@ -97,8 +97,58 @@ jobs:
   #     since macOS unpacks the slice it needs).
   #   - ~2x build time on a single runner vs. parallel, but much less
   #     than waiting for an Intel runner to come available.
-  build-mac:
+  # termic-server, the small daemon Settings > Remote > Add a server
+  # installs on a Linux box (docs/remote.md). Built once here, static musl
+  # for x86_64 and aarch64, and bundled by every build-* job: the app ships
+  # the builds it installs, and a server needs no internet to get one.
+  server-bins:
     needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - run: cargo install cargo-zigbuild --locked
+      - run: node scripts/build-termic-server.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termic-server
+          path: src-tauri/resources/termic-server/termic-server-*
+          if-no-files-found: error
+
+  # The same daemon for a Mac as a server (a headless Mac mini): aarch64
+  # and x86_64, plain cargo on a Mac runner (Apple's SDK). The linker signs
+  # them ad hoc, which is what a binary installed over ssh needs (a file
+  # copied by ssh carries no quarantine); build-mac re-signs its own copy
+  # with the Developer ID, because notarization refuses an unsigned or
+  # ad-hoc Mach-O inside the app bundle.
+  server-bins-mac:
+    needs: validate
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - run: node scripts/build-termic-server.mjs darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termic-server-mac
+          path: src-tauri/resources/termic-server/termic-server-*
+          if-no-files-found: error
+
+  build-mac:
+    needs: [validate, server-bins, server-bins-mac]
     runs-on: macos-26
     outputs:
       version:   ${{ steps.meta.outputs.version }}
@@ -111,6 +161,11 @@ jobs:
       notarized: ${{ steps.signing.outputs.notarize }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: termic-server*
+          merge-multiple: true
+          path: src-tauri/resources/termic-server
       - name: Resolve version + filenames
         id: meta
         run: |
@@ -227,6 +282,35 @@ jobs:
             echo "::error::Set all six secrets, or none. A partial setup soft-skips notarization and publishes an unopenable build through a green pipeline."
             exit 1
           fi
+      - name: Sign the bundled macOS termic-server builds
+        # Notarization checks every Mach-O in the bundle, resources included,
+        # and tauri signs only the app's own binary. Developer ID, hardened
+        # runtime and a timestamp when notarizing; otherwise the linker's ad
+        # hoc signature stays, as on the rest of an unnotarized build.
+        if: steps.signing.outputs.notarize == 'true'
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/termic-server-sign.keychain-db"
+          pw="$(openssl rand -hex 16)"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 900 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+          # codesign finds an identity only in a keychain on the search list,
+          # `--keychain` or not ("no identity found" in v1.25.0's run), so the
+          # temporary one joins the list, as Tauri's own signing step does,
+          # and the list is put back after, for that later step.
+          orig=$(security list-keychains -d user | xargs)
+          security list-keychains -d user -s "$kc" $orig
+          for f in src-tauri/resources/termic-server/termic-server-*-apple-darwin; do
+            codesign --force --options runtime --timestamp --keychain "$kc" --sign "$APPLE_SIGNING_IDENTITY" "$f"
+            codesign --verify --strict --verbose=2 "$f"
+          done
+          security list-keychains -d user -s $orig
+          security delete-keychain "$kc"
       - name: Build, sign & notarize (universal)
         # Retried up to 3 times, but ONLY when the failure looks like Apple's
         # notary service (upload stall, 5xx, timeout). Notarization is a
@@ -390,7 +474,7 @@ jobs:
   #      that works on the same machine. 22.04 ships WebKitGTK 4.1 too,
   #      which is all Tauri 2 requires.
   build-linux:
-    needs: validate
+    needs: [validate, server-bins, server-bins-mac]
     runs-on: ubuntu-22.04
     outputs:
       version:        ${{ steps.meta.outputs.version }}
@@ -399,6 +483,11 @@ jobs:
       sig:            ${{ steps.hashes.outputs.sig }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: termic-server*
+          merge-multiple: true
+          path: src-tauri/resources/termic-server
       - name: Resolve version
         id: meta
         run: |
@@ -653,7 +742,7 @@ jobs:
   # anything is uploaded: a wrong key would otherwise ship installs that
   # never update.
   build-windows:
-    needs: validate
+    needs: [validate, server-bins, server-bins-mac]
     runs-on: windows-latest
     timeout-minutes: 60
     outputs:
@@ -668,6 +757,11 @@ jobs:
       # the checkout anyway.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: termic-server*
+          merge-multiple: true
+          path: src-tauri/resources/termic-server
       - name: Resolve version
         id: meta
         run: |
@@ -709,7 +803,7 @@ jobs:
 
   # ─── Stitch the universal build into a Release ────────────────────
   release:
-    needs: [build-mac, build-linux]
+    needs: [build-mac, build-linux, server-bins, server-bins-mac]
     runs-on: ubuntu-latest
     steps:
       # Checked out FIRST (before the artifacts land in mac/ and linux/) so
@@ -725,6 +819,23 @@ jobs:
         with:
           name: termic-${{ needs.build-linux.outputs.version }}-linux-x86_64
           path: linux
+      # termic-server for `curl -fsSL https://termic.dev/install-server.sh | sh`
+      # (termic.dev public/install-server.sh): the four builds, the version
+      # they carry, and a checksum file the script verifies against. The mac
+      # ones keep the linker's ad hoc signature, enough for a file curl
+      # writes (no quarantine).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: termic-server*
+          merge-multiple: true
+          path: server
+      - name: Checksum the termic-server builds
+        run: |
+          set -euo pipefail
+          cd server
+          test "$(ls termic-server-*-linux-musl termic-server-*-apple-darwin | wc -l)" -eq 4
+          sha256sum termic-server-*-linux-musl termic-server-*-apple-darwin > termic-server-SHA256SUMS
+          cat termic-server-version.txt termic-server-SHA256SUMS
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -766,6 +877,8 @@ jobs:
           cat <<'FOOTER'
           - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same. The image carries zsync update info, so Gear Lever and AppImageUpdate can update it in place (the `.zsync` beside it is for them, not for you).
 
+          - **Termic server** (Linux or macOS, for agents on another machine): add it from the app, Settings > Remote, or on the server run `curl -fsSL https://termic.dev/install-server.sh | sh`. The app keeps it on its own version from then on.
+
           The app self-updates after install. Full install and update help: https://termic.dev
           FOOTER
           } > release-notes.md
@@ -774,7 +887,8 @@ jobs:
             --title "v${VERSION}" \
             --notes-file release-notes.md \
             mac/dmg/*.dmg mac/macos/* \
-            linux/*.AppImage linux/*.AppImage.sig linux/*.AppImage.zsync
+            linux/*.AppImage linux/*.AppImage.sig linux/*.AppImage.zsync \
+            server/termic-server-*
 
   # ─── Attach the Windows build to the release ──────────────────────
   # After the release exists, and only if the Windows build succeeded, so a

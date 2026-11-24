@@ -243,6 +243,17 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **AltGr** never fires a Ctrl+Alt shortcut.
 - **Closing the window quits**, as Windows users expect. The macOS
   close-to-menu-bar behaviour is macOS-only.
+- **Remote control** ([remote.md](remote.md)). A Windows desktop hosts its
+  own tasks for phones and paired computers like any other, and adds
+  servers with Windows' built-in OpenSSH (`ssh.exe`, `ssh-keyscan`,
+  `ssh-keygen`), every call without a console window
+  (`remote_client::tool`). A missing OpenSSH Client is one sentence naming
+  the Optional features switch. The QR code's address list includes
+  adapters without multicast (`mdns::windows_addrs(false)`), which is how a
+  Tailscale address reaches the phone. `termic-server` itself is unix only
+  (Linux and macOS servers); its crate builds on Windows as a stub so the
+  workspace does. Checked with `cargo check --workspace --all-targets
+  --target x86_64-pc-windows-gnu`; not yet driven on a real Windows machine.
 
 ## Releases and updates
 

@@ -182,6 +182,20 @@ export const config: WebdriverIO.Config = {
     for (const k of Object.keys(process.env)) {
       if (k.startsWith("TERMIC_") && !k.startsWith("TERMIC_E2E_")) delete process.env[k];
     }
+    // The termic-server builds the app installs from (TERMIC_SERVER_BIN_DIR,
+    // which the loop above just dropped): remote.e2e.ts's real-box cases name
+    // theirs; otherwise .e2e/server-bin, empty unless the upgrade case stages
+    // one, so no run installs whatever a local release build left behind.
+    process.env.TERMIC_SERVER_BIN_DIR = process.env.TERMIC_E2E_SERVER_BIN_DIR ?? path.join(repoRoot, ".e2e", "server-bin");
+    // remote.e2e.ts's local-server cases: a stand-in for ssh that serves the
+    // host termic-e2e-local from a real termic-server built into the debug
+    // target (and passes any other host to the real ssh). Not on Windows,
+    // where termic-server does not run.
+    if (process.platform !== "win32") {
+      process.env.TERMIC_SSH_BIN = path.join(repoRoot, "e2e", "fixtures", "fake-ssh.sh");
+      process.env.TERMIC_E2E_LOCAL_BOX ??= path.join(repoRoot, ".e2e", "local-box");
+      process.env.TERMIC_E2E_SERVER_DIR ??= path.join(repoRoot, "src-tauri", "target", "debug");
+    }
     // the embedded WebDriver defaults to 4445 for every run, so two agents
     // running e2e at once drive each other's app. A free port per run; the
     // tauri-service's own onPrepare reads it, and runs after this one.

@@ -528,11 +528,16 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // The code-nav label follows the feature's own name, which turns into
   // "Code intelligence" once diagnostics are on (lib/lsp/featureName.ts), so
   // the tab and the panel it opens can never disagree.
+  // A server project's agents run on the box: this Mac's sandbox, secrets
+  // roles and language servers do not reach them (docs/remote.md, Servers).
+  const onServer = !!proj.server;
   const tabs: { id: SubTab; label: string }[] = [
     { id: "scripts",  label: t(isMulti ? "repo.tabScriptsMulti" : "repo.tabScripts") },
-    { id: "sandbox",  label: t("repo.sandboxHeading") },
-    { id: "secrets",  label: t("secrets:manage.project.tab") },
-    { id: "codenav",  label: codeIntelName(typeChecking) },
+    ...(onServer ? [] : [
+      { id: "sandbox" as const,  label: t("repo.sandboxHeading") },
+      { id: "secrets" as const,  label: t("secrets:manage.project.tab") },
+      { id: "codenav" as const,  label: codeIntelName(typeChecking) },
+    ]),
     { id: "git",      label: t("repo.tabGit") },
     { id: "advanced", label: t("repo.tabMore") },
   ];
@@ -1188,8 +1193,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           />
 
           {/* Spotlight mirrors a task's git changes onto the main checkout,
-              so it lives here rather than on Scripts & run. */}
-          <div className="border-t border-[var(--color-border-soft)] pt-6">
+              so it lives here rather than on Scripts & run. Not for a
+              server project: its checkout is on the box. */}
+          {!onServer && <div className="border-t border-[var(--color-border-soft)] pt-6">
             <div className="mb-3 flex items-center gap-2 text-[14px] font-medium text-[var(--color-fg)]">
               <AudioWaveform className="h-4 w-4 text-[var(--color-accent)]" />
               {t("repo.spotlightHeading")}
@@ -1248,7 +1254,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 )}
               </div>
             )}
-          </div>
+          </div>}
         </div>
       )}
 

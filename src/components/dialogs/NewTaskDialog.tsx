@@ -1,6 +1,7 @@
 // New task dialog: name + CLI segmented pills + branch name +
 // branch-from. Calls task_create on submit.
 
+import { useServerDetectedClis } from "@/lib/remote";
 import { flushSync } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
@@ -105,7 +106,13 @@ export function NewTaskDialog() {
   const setActive = useApp(s => s.setActiveTask);
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
-  const detectedClis = useApp(s => s.detectedClis);
+  // A server project (docs/remote.md, Servers): the same dialog; its
+  // agents are the ones installed ON THE BOX, and what acts only on this
+  // Mac (the sandbox, Secrets, importing local worktrees) is left out.
+  const isServer = !!project?.server;
+  const localClis = useApp(s => s.detectedClis);
+  const serverClis = useServerDetectedClis(projectId ?? undefined, isServer, agents);
+  const detectedClis = isServer ? serverClis : localClis;
   const branchPrefix = usePrefs(s => s.branchPrefix);
   // CLI choices: the registry (custom agents included), or the built-in
   // list before it loads — minus any disabled / not-installed agents.
@@ -160,6 +167,8 @@ export function NewTaskDialog() {
   // SandboxSelection (off / Seatbelt's 3 modes / docker) rather than a
   // separate mode + engine - see SandboxPicker.tsx.
   const [selection, setSelection] = useState<SandboxSelection>("off");
+  // The macOS sandbox and Docker cage agents on this Mac only.
+  useEffect(() => { if (isServer) setSelection("off"); }, [isServer, selection]);
   // Keychain block for THIS task. Not remembered across opens and off on
   // every open, same as the Sandbox dialog's default.
   const [blockKc, setBlockKc] = useState(false);
@@ -449,7 +458,7 @@ export function NewTaskDialog() {
   // projects (multi composition / non-git folders don't apply). When on,
   // the git fields (branch / branch-from) are hidden and the
   // user picks from `importList` instead.
-  const canImport = !isMulti && !project?.non_git;
+  const canImport = !isMulti && !project?.non_git && !isServer;
   const [importMode, setImportMode] = useState(false);
   const [importList, setImportList] = useState<ImportableWorktree[]>([]);
   const [importLoading, setImportLoading] = useState(false);
@@ -707,7 +716,7 @@ export function NewTaskDialog() {
     //      pick before we know better).
     //   2. first installed agent (when project default is known-broken).
     //   3. "shell" as the no-agent fallback.
-    const detected = useApp.getState().detectedClis;
+    const detected = isServer ? serverClis : useApp.getState().detectedClis;
     const list = useApp.getState().agents;
     const detectionRan = Object.keys(detected).length > 0;
     const isInstalled = (id: string) => detected[id]?.found === true;
@@ -794,7 +803,7 @@ export function NewTaskDialog() {
     // Import mode: off by default. We eager-load the project's existing
     // unopened worktrees so the "Import a worktree"
     // affordance only appears when there's actually something to import.
-    const canImp = (p?.type ?? "single") !== "multi" && !p?.non_git;
+    const canImp = (p?.type ?? "single") !== "multi" && !p?.non_git && !p?.server;
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setResumeOverride("");
@@ -1731,8 +1740,8 @@ export function NewTaskDialog() {
     "task",
     ...(isMulti ? ["repos" as const] : []),
     "agent",
-    "isolation",
-    ...(roles.length > 0 ? ["secrets" as const] : []),
+    ...(isServer ? [] : ["isolation" as const]),
+    ...(roles.length > 0 && !isServer ? ["secrets" as const] : []),
   ];
   // a section that went away (a project's roles deleted) falls back to Task.
   const at: Section = sections.includes(section) ? section : "task";

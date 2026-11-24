@@ -19,7 +19,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Osc52Base64 } from "@/lib/osc52";
 import { ImageAddon } from "@xterm/addon-image";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { terminalLook, useTerminalWidths } from "@/lib/terminalLook";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -139,19 +139,8 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     };
 
     const term = new Terminal({
+      ...terminalLook(),
       cursorBlink: true,
-      fontFamily: currentTerminalStack(),
-      fontSize: usePrefs.getState().terminalFontSize,
-      // Regular 400 / bold 700 — the static JetBrains Mono masters. See
-      // TerminalPane for why these are pinned rather than user-tunable.
-      fontWeight: 400,
-      fontWeightBold: 700,
-      letterSpacing: usePrefs.getState().terminalLetterSpacing,
-      lineHeight: 1.0,
-      theme: currentTerminalTheme() as any,
-      // Light-theme truecolor readability. See TerminalPane / #83.
-      minimumContrastRatio: currentMinimumContrastRatio(),
-      allowProposedApi: true,
       scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
       // Option-as-Meta for terminal editors. See TerminalPane. (issue #11)
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
@@ -175,9 +164,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));
-    const unicode11 = new Unicode11Addon();
-    term.loadAddon(unicode11);
-    term.unicode.activeVersion = "11";
+    useTerminalWidths(term);
     term.open(hostRef.current);
     // GH #58: mouse-reporting-proof Cmd/Ctrl+click opener — the user can run
     // a TUI in the scratch shell too (htop, an agent CLI by hand). See
@@ -492,7 +479,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
   }, [themeKey, customThemeRev]);
 
   return (
-    <div className="relative flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full flex-col" data-testid="aux-terminal" data-tab-id={tabId}>
       {secretsRole && taskId && tabId && <ShellRcBanner taskId={taskId} tabId={tabId} active={active} />}
       {sudoOffer && offerTouchIdForSudo && !exited && (
         <SudoTouchIdBanner taskId={taskId} onDismiss={() => setSudoOffer(false)} />

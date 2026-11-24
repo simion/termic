@@ -40,6 +40,18 @@ time; the native status includes `duration_minutes` for this purpose.
 Timed sessions do not restart on relaunch. A webview reload reconnects to the
 existing native session.
 
+**Turn back on when Termic restarts** (a checkbox in the popover, off by
+default) is the opt-in exception. Every accepted request is remembered in
+localStorage (`caffeinateLast`, cleared by Turn off); at launch, with the
+box ticked (`caffeinateRestore`) and the native side off,
+`restoreAtLaunch` re-applies it. A duration comes back as Until its
+original end, an Until only while its end is ahead, and indefinite as it
+was; a closed-lid request without its permission comes back without the
+lid. Automatic mode already survives a relaunch natively, so it is never
+re-applied.
+
+The mug is filled while the request is active and outlined otherwise.
+
 The mug uses the native manager's accepted-request state. A warning and error
 text distinguish acquisition failures and outstanding restoration from an
 active request. OS overrides and platform restrictions can still allow sleep.

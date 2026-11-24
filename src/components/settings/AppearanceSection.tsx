@@ -6,7 +6,7 @@ import { CodeIntelServers } from "./CodeIntelServers";
 import { useApp } from "@/store/app";
 import { usePrefs, scheduledNavVisible, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
 import type { TerminalRendererKind } from "@/store/prefs";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -462,6 +462,8 @@ function SidebarSection() {
   const taskPrBadge = usePrefs(s => s.taskPrBadge);
   const setTaskPrBadge = usePrefs(s => s.setTaskPrBadge);
   const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
+  const showRemote = usePrefs(s => s.showRemote);
+  const setShowRemote = usePrefs(s => s.setShowRemote);
   const setSidebarHoverReveal = usePrefs(s => s.setSidebarHoverReveal);
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
@@ -477,6 +479,83 @@ function SidebarSection() {
   return (
     <div className="flex flex-col gap-6">
       <h2 className="text-[15px] font-medium">{t("appearance.sidebarHeading")}</h2>
+      <SidebarGroup title={t("appearance.sidebarGroups.nav")}>
+      <Toggle
+        label={t("appearance.hoverReveal.label")}
+        hint={t("appearance.hoverReveal.hint")}
+        value={sidebarHoverReveal}
+        onChange={setSidebarHoverReveal}
+      />
+      <Toggle
+        label={t("appearance.board.label")}
+        hint={t("appearance.board.hint")}
+        value={showBoard}
+        onChange={v => {
+          setShowBoard(v);
+          // Settings sits over the view it was opened from. Turned off over
+          // the board, closing Settings would land on a view with no way
+          // back in and no nav entry lit, so leave it now.
+          const app = useApp.getState();
+          if (!v && app.view.page === "board") app.setView("dashboard");
+        }}
+      />
+      <Toggle
+        label={t("appearance.todos.label")}
+        hint={t("appearance.todos.hint")}
+        value={showTodos}
+        onChange={v => {
+          setShowTodos(v);
+          const app = useApp.getState();
+          if (!v && app.view.page === "todos") app.setView("dashboard");
+        }}
+      />
+      <div className="flex items-start justify-between gap-6" data-testid="scheduled-nav-setting">
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium">{t("appearance.scheduledNav.label")}</div>
+          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            {t("appearance.scheduledNav.hint")}
+          </div>
+        </div>
+        <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+          {([
+            ["off",    t("appearance.scheduledNav.off"),    t("appearance.scheduledNav.offHint")],
+            ["auto",   t("appearance.scheduledNav.auto"),   t("appearance.scheduledNav.autoHint")],
+            ["always", t("appearance.scheduledNav.always"), t("appearance.scheduledNav.alwaysHint")],
+          ] as const).map(([id, label, hint]) => (
+            <Tip key={id} content={hint} side="top">
+              <button
+                type="button"
+                data-value={id}
+                aria-pressed={scheduledNav === id}
+                onClick={() => {
+                  setScheduledNav(id);
+                  // Same reason as the board switch above: do not leave the
+                  // window on a view its nav entry no longer leads to.
+                  const app = useApp.getState();
+                  const has = app.tasks.some(x => !!x.schedule && !x.archived);
+                  if (app.view.page === "scheduled" && !scheduledNavVisible(id, has)) app.setView("dashboard");
+                }}
+                className={cn(
+                  "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+                  scheduledNav === id
+                    ? "bg-[var(--color-accent-deep)] text-white"
+                    : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                )}
+              >{label}</button>
+            </Tip>
+          ))}
+        </div>
+      </div>
+      </SidebarGroup>
+      <SidebarGroup title={t("appearance.sidebarGroups.status")}>
+      <Toggle
+        label={t("appearance.statusSection.label")}
+        hint={t("appearance.statusSection.hint")}
+        value={showStatusSection}
+        onChange={setShowStatusSection}
+      />
+      </SidebarGroup>
+      <SidebarGroup title={t("appearance.sidebarGroups.projects")}>
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-medium">{t("appearance.expand.label")}</div>
@@ -596,80 +675,6 @@ function SidebarSection() {
           ))}
         </div>
       </div>
-      <Toggle
-        label={t("appearance.hoverReveal.label")}
-        hint={t("appearance.hoverReveal.hint")}
-        value={sidebarHoverReveal}
-        onChange={setSidebarHoverReveal}
-      />
-      {/* Also a check row in the sidebar's Project list options menu; both
-          write the same pref. */}
-      <Toggle
-        label={t("appearance.statusSection.label")}
-        hint={t("appearance.statusSection.hint")}
-        value={showStatusSection}
-        onChange={setShowStatusSection}
-      />
-      <Toggle
-        label={t("appearance.board.label")}
-        hint={t("appearance.board.hint")}
-        value={showBoard}
-        onChange={v => {
-          setShowBoard(v);
-          // Settings sits over the view it was opened from. Turned off over
-          // the board, closing Settings would land on a view with no way
-          // back in and no nav entry lit, so leave it now.
-          const app = useApp.getState();
-          if (!v && app.view.page === "board") app.setView("dashboard");
-        }}
-      />
-      <Toggle
-        label={t("appearance.todos.label")}
-        hint={t("appearance.todos.hint")}
-        value={showTodos}
-        onChange={v => {
-          setShowTodos(v);
-          const app = useApp.getState();
-          if (!v && app.view.page === "todos") app.setView("dashboard");
-        }}
-      />
-      <div className="flex items-start justify-between gap-6" data-testid="scheduled-nav-setting">
-        <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-medium">{t("appearance.scheduledNav.label")}</div>
-          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-            {t("appearance.scheduledNav.hint")}
-          </div>
-        </div>
-        <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-          {([
-            ["off",    t("appearance.scheduledNav.off"),    t("appearance.scheduledNav.offHint")],
-            ["auto",   t("appearance.scheduledNav.auto"),   t("appearance.scheduledNav.autoHint")],
-            ["always", t("appearance.scheduledNav.always"), t("appearance.scheduledNav.alwaysHint")],
-          ] as const).map(([id, label, hint]) => (
-            <Tip key={id} content={hint} side="top">
-              <button
-                type="button"
-                data-value={id}
-                aria-pressed={scheduledNav === id}
-                onClick={() => {
-                  setScheduledNav(id);
-                  // Same reason as the board switch above: do not leave the
-                  // window on a view its nav entry no longer leads to.
-                  const app = useApp.getState();
-                  const has = app.tasks.some(x => !!x.schedule && !x.archived);
-                  if (app.view.page === "scheduled" && !scheduledNavVisible(id, has)) app.setView("dashboard");
-                }}
-                className={cn(
-                  "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
-                  scheduledNav === id
-                    ? "bg-[var(--color-accent-deep)] text-white"
-                    : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                )}
-              >{label}</button>
-            </Tip>
-          ))}
-        </div>
-      </div>
       <div className="flex items-start justify-between gap-6" data-testid="new-task-button-setting">
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-medium">{t("appearance.newTaskButton.label")}</div>
@@ -700,7 +705,29 @@ function SidebarSection() {
           ))}
         </div>
       </div>
+      </SidebarGroup>
+      <SidebarGroup title={t("appearance.sidebarGroups.remote")}>
+      {/* Also a check row in the sidebar's Project list options menu; both
+          write the same pref. */}
+      <Toggle
+        label={t("appearance.remoteSection.label")}
+        hint={t("appearance.remoteSection.hint")}
+        value={showRemote}
+        onChange={setShowRemote}
+      />
+      </SidebarGroup>
     </div>
+  );
+}
+
+/** One area of the sidebar (its nav, STATUS, PROJECTS, REMOTE): a heading and
+ *  a rule, so the page reads in the order the sidebar does. */
+function SidebarGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-5 border-t border-[var(--color-border-soft)] pt-4">
+      <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-fg-dim)]">{title}</h3>
+      {children}
+    </section>
   );
 }
 

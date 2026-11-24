@@ -6,7 +6,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, rememberCaffeinateFlags, rememberCaffeinateHours, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
+import { caffeinatePermission, caffeinateRestoreOn, setCaffeinateRestore, recoverCaffeinate, initCaffeinate, INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, rememberCaffeinateFlags, rememberCaffeinateHours, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
 
 const PRESETS = ["1", "2", "4", "8", "16", "24", INDEFINITE];
 
@@ -20,6 +20,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
   const [until, setUntil] = useState(() => localDateTime(new Date(Date.now() + 7_200_000)));
   const [closedLid, setClosedLid] = useState(() => lastCaffeinateFlags().closedLid);
   const [display, setDisplay] = useState(() => lastCaffeinateFlags().display);
+  const [restore, setRestore] = useState(caffeinateRestoreOn);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
@@ -101,7 +102,8 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
             data-active={status?.active ?? false} aria-label={`${t("caffeinate.title")}: ${heading}`}
             className={cn("relative shrink-0", status?.active && "text-[var(--color-accent)]")}
           >
-            <Coffee className="h-[18px] w-[18px]" />
+            {/* Filled while it keeps the computer awake, outlined otherwise. */}
+            <Coffee className="h-[18px] w-[18px]" fill={status?.active ? "currentColor" : "none"} />
             {warning || status?.recovery_pending
               ? <CircleAlert aria-label={t("caffeinate.warning")} className="absolute bottom-0 right-0 h-2.5 w-2.5 text-[var(--color-warn)]" />
               : enabled ? <span className={cn("absolute bottom-0.5 right-0.5 h-1.5 w-1.5 rounded-full border border-[var(--color-accent)]", status?.active && "bg-[var(--color-accent)]")} /> : null}
@@ -171,6 +173,13 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
                 {t("caffeinate.displayOn")}
               </label>
               <p id={`${id}-display`} data-testid="caffeinate-display-hint" className="pl-5 text-[12px] leading-relaxed text-[var(--color-fg-dim)]">{t(display ? "caffeinate.displayHintOn" : "caffeinate.displayHintOff")}</p>
+            </div>
+            <div className="space-y-1 border-t border-[var(--color-border-soft)] pt-3">
+              <label className="flex items-center gap-2 text-[var(--color-fg)]">
+                <input type="checkbox" checked={restore} onChange={e => { setRestore(e.target.checked); setCaffeinateRestore(e.target.checked); }} aria-describedby={`${id}-restore`} data-testid="caffeinate-restore-on-launch" className="accent-[var(--color-accent)]" />
+                {t("caffeinate.restoreOnLaunch")}
+              </label>
+              <p id={`${id}-restore`} className="pl-5 text-[12px] leading-relaxed text-[var(--color-fg-dim)]">{t("caffeinate.restoreOnLaunchHint")}</p>
             </div>
             <div className="space-y-2 border-t border-[var(--color-border-soft)] pt-3">
               <label className="flex items-center gap-2 text-[var(--color-fg)]">

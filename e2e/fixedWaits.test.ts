@@ -76,9 +76,27 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "Written at each call site, never inside a helper, so this count is the "
       + "real number of waits",
   },
-  "task.e2e.ts": {
+  "peers.e2e.ts": {
     count: 1,
-    why: "a negative: hovering an unlinked task draws no spawn link",
+    why: "negative: a click on a paired terminal another screen sized must NOT "
+      + "claim the size back (only Continue here does); nothing fires for a "
+      + "term_size that is never sent",
+  },
+  "remote.e2e.ts": {
+    count: 5,
+    why: "negatives: a resync of the box must not undo a pin and a name the "
+      + "desktop set, so the store is read after the resync window; an optional "
+      + "server update must NOT restart the box, and a newer box must NOT be "
+      + "downgraded. Nothing fires for a restart or an upload that never happens. "
+      + "A focus on a terminal sized elsewhere must NOT take its size back (that "
+      + "ping-ponged two windows); nothing fires for a reclaim that never happens. "
+      + "A terminal closed offline is killed after remote_client's 1.5 s KILL_GRACE, "
+      + "which the spec outlasts before reconnecting",
+  },
+  "task.e2e.ts": {
+    count: 2,
+    why: "negatives: hovering an unlinked task draws no spawn link, and a rename "
+      + "must NOT respawn the agent's PTY. Nothing fires for either",
   },
 };
 

@@ -96,7 +96,9 @@ function archivePrompt(w: Task, deleteBranchDefault: boolean): { message: string
  *  (sidebar row menu, unified bar button, command palette) so
  *  the copy, the delete-branch checkbox and the "Show this every time" opt-out
  *  can't drift between them. No-op if the user cancels. */
-export async function confirmAndArchive(w: Task): Promise<void> {
+/** `quiet`: no "Archived" toast, for a click on a notice that already said
+ *  what would happen (the merged-PR notice's Archive button). */
+export async function confirmAndArchive(w: Task, opts?: { quiet?: boolean }): Promise<void> {
   const ui = useUI.getState();
   const prefs = usePrefs.getState();
   // Name the task the way the UI the user clicked from names it (GH #260).
@@ -112,7 +114,7 @@ export async function confirmAndArchive(w: Task): Promise<void> {
     // happened — and the only pointer back to where the task went. Pushed
     // BEFORE awaiting: the archive can take tens of seconds (script +
     // node_modules rmdir) and the confirmation belongs to the click.
-    ui.pushToast(i18n.t("backend:archiveTask.archivedToast", { name: label }), "info", {
+    if (!opts?.quiet) ui.pushToast(i18n.t("backend:archiveTask.archivedToast", { name: label }), "info", {
       ttlMs: 6000,
       action: { label: i18n.t("backend:archiveTask.history"), onClick: () => useApp.getState().setView("history") },
     });

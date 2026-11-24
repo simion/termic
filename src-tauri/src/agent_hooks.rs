@@ -139,6 +139,11 @@ pub enum Target {
     /// Carries the agent's OWN id (a clone keeps its own folder), not the base
     /// id. `docker.rs` documents why conflating the two makes clones unusable.
     Docker(String),
+    /// The agent's config on a termic-server box (`sync_server`): written in
+    /// a local staging copy of `<home>/<state dir>` and pushed back, so the
+    /// commands name the box's paths. `home` is the box user's $HOME.
+    /// `cwd`: a folder exec may run in there (a project's root).
+    Server { agent: String, server: String, home: String, cwd: String },
 }
 
 impl Target {
@@ -147,7 +152,7 @@ impl Target {
     /// resolves the base separately.
     pub fn agent(&self) -> &str {
         match self {
-            Target::Host(a) | Target::Docker(a) => a,
+            Target::Host(a) | Target::Docker(a) | Target::Server { agent: a, .. } => a,
         }
     }
 }
@@ -2471,7 +2476,26 @@ pub fn config_dir(target: &Target) -> Result<PathBuf, String> {
                 .ok_or_else(|| format!("{agent} has no known state dir"))
         }
         Target::Docker(agent_id) => Ok(crate::docker::agent_config_host_dir(agent_id)),
+        Target::Server { agent, server, .. } => Ok(server_stage(server, agent)),
     }
+}
+
+/// Where a server agent's config is staged here while it is installed: in
+/// this user's own cache folder, made 0700, never a shared temp dir (the
+/// staged files are the user's agent config, and what is in this folder is
+/// pushed back to the box as hook scripts that run there). Removed after
+/// each sync (`sync_one_on_server`).
+fn server_stage(server: &str, agent: &str) -> PathBuf {
+    let safe = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect::<String>();
+    let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("termic").join("server-hooks");
+    if std::fs::create_dir_all(&base).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    base.join(safe(server)).join(safe(agent))
 }
 
 /// The config FILE we merge into, which is not the same shape per agent:
@@ -2540,6 +2564,12 @@ pub fn command_prefix(target: &Target) -> Result<String, String> {
             "{}/{}/{}/",
             crate::docker::CONTAINER_HOME,
             state_dir(crate::docker::base_agent_id_str(agent_id))?,
+            SCRIPT_DIR
+        ),
+        Target::Server { agent, home, .. } => format!(
+            "{}/{}/{}/",
+            home.trim_end_matches('/'),
+            state_dir(&base_of(agent))?,
             SCRIPT_DIR
         ),
     })
@@ -2750,6 +2780,9 @@ fn codex_binary(target: &Target) -> String {
 /// ends with untrusted hooks looks identical to a working one and reports
 /// nothing, which is the failure this whole feature exists to remove.
 fn trust_codex_hooks(target: &Target, settings: &Path, prefix: &str) -> Result<(), String> {
+    if let Target::Server { server, home, cwd, .. } = target {
+        return trust_codex_hooks_on_box(target, server, home, cwd, settings, prefix);
+    }
     let home = codex_home_for(target)?;
     let bin = codex_binary(target);
     // cwd only scopes which PROJECT-level hooks codex reports; ours are
@@ -2772,6 +2805,48 @@ fn trust_codex_hooks(target: &Target, settings: &Path, prefix: &str) -> Result<(
     let next = crate::codex_trust::with_trust(&existing, &found)?;
     write_atomic(&cfg, next.as_bytes())?;
     log_trust(&format!("codex: trusted {} hook(s) in {}", found.len(), cfg.display()));
+    Ok(())
+}
+
+/// `trust_codex_hooks` for a box: the hashes come from `codex app-server`
+/// run THERE (one initialize + hooks/list piped in, the first id-2 reply
+/// kept), for the hooks file at its box path; the trust entry goes into the
+/// staged config.toml that is pushed back with the hooks.
+fn trust_codex_hooks_on_box(target: &Target, server: &str, home: &str, cwd: &str, staged: &Path, prefix: &str) -> Result<(), String> {
+    let codex_home = format!("{}/{}", home.trim_end_matches('/'), state_dir("codex")?);
+    let box_settings = format!("{codex_home}/{}", settings_rel("codex"));
+    // codex hashes the hooks as written on the box: they go there first.
+    let stage = staged.parent().ok_or("no codex home")?;
+    let sh = |script: &str, args: &[&str], stdin: Option<&[u8]>| -> Result<Vec<u8>, String> {
+        let mut argv = vec!["/bin/sh", "-c", script, "sh"];
+        argv.extend_from_slice(args);
+        let (code, out, err) = crate::server_projects::exec_with_stdin(server, Path::new(cwd), &argv, &[], stdin)?;
+        if code != 0 {
+            return Err(format!("exited {code}: {}", err.trim()));
+        }
+        Ok(out)
+    };
+    push_stage(stage, &[settings_rel("codex"), SCRIPT_DIR], &codex_home, &sh)?;
+    let bin = Path::new(&codex_binary(target)).file_name().and_then(|n| n.to_str()).unwrap_or("codex").to_string();
+    let init = serde_json::json!({ "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "termic", "version": env!("CARGO_PKG_VERSION") } } }).to_string();
+    let list = serde_json::json!({ "id": 2, "method": "hooks/list", "params": { "cwds": [home] } }).to_string();
+    // A login shell, so PATH finds codex where an interactive login would.
+    // The sleep holds stdin open long enough for the answer; grep ends at it.
+    let script = "{ printf '%s\n%s\n' \"$1\" \"$2\"; sleep 8; } | CODEX_HOME=\"$3\" \"$4\" app-server 2>/dev/null | grep -m 1 -E '\"id\": ?2[,}]'";
+    let argv = ["/bin/sh", "-lc", script, "sh", &init, &list, &codex_home, &bin];
+    let (code, out, err) = crate::server_projects::exec_on(server, Path::new(cwd), &argv, &[])?;
+    if code != 0 {
+        return Err(format!("codex on the server did not list its hooks ({}): is it installed there?", err.trim()));
+    }
+    let raw: Value = serde_json::from_slice(&out).map_err(|e| format!("codex on the server answered something else: {e}"))?;
+    let found = crate::codex_trust::filter_ours(&raw, Path::new(&box_settings), prefix)?;
+    if found.is_empty() {
+        return Err(format!("codex on the server did not report the hooks termic wrote to {box_settings}"));
+    }
+    let cfg = staged.parent().ok_or("no codex home")?.join("config.toml");
+    let existing = std::fs::read_to_string(&cfg).unwrap_or_default();
+    write_atomic(&cfg, crate::codex_trust::with_trust(&existing, &found)?.as_bytes())?;
+    log_trust(&format!("codex: trusted {} hook(s) on a server in {codex_home}", found.len()));
     Ok(())
 }
 
@@ -3839,6 +3914,8 @@ pub async fn agent_hooks_auto_set(on: bool) -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn agent_hooks_install(agent_id: String) -> Result<AgentHookStatus, String> {
     check_supported(&agent_id)?;
+    // Servers take the newly installed agent on their next sync.
+    servers_synced().lock().unwrap().clear();
     install(&Target::Host(agent_id.clone()))?;
     // A Docker failure must not leave the host half installed and the UI lying,
     // so roll the host back and report the real error.
@@ -7039,3 +7116,184 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
 }
 
 
+
+// ─────────────────────────── On a server ───────────────────────────────
+
+/// Servers whose agents' hooks were brought up to date this run.
+fn servers_synced() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Whether an agent's hooks can be installed on a box from here: any with
+/// hooks, since every install is files in its config dir (codex's trust
+/// entry, its hashes asked of `codex app-server` on the box, and the slot
+/// agents' second config, staged with the rest: `slot_rel`).
+fn server_installable(base: &str) -> bool {
+    !hooks_for(base).is_empty()
+}
+
+/// The second config file a slot agent's install writes, relative to its
+/// config dir (install_config_slot), so the box install pulls and pushes it.
+fn slot_rel(base: &str) -> Option<&'static str> {
+    Some(match config_slot(base)? {
+        ConfigSlot::Json { rel, .. } => rel,
+        ConfigSlot::MuseManaged => "settings.json",
+        ConfigSlot::GrokToml => "config.toml",
+    })
+}
+
+/// Bring the hooks of every agent the user has them for on this computer up
+/// to date on a server (docs/agent-hooks.md, "On a server
+/// box"), once per run. Same consent rule as Docker: only an agent whose
+/// hooks are installed here. The hooks themselves need nothing new: they
+/// write an OSC to `$TERMIC_PTY`, which the box sets, and it reaches the
+/// desktop in the PTY stream. `cwd` is any folder exec may run in there.
+pub(crate) fn sync_server(server: &str, cwd: &Path) {
+    if servers_synced().lock().unwrap().contains(server) {
+        return;
+    }
+    let sh = |script: &str, args: &[&str], stdin: Option<&[u8]>| -> Result<Vec<u8>, String> {
+        let mut argv = vec!["/bin/sh", "-c", script, "sh"];
+        argv.extend_from_slice(args);
+        let (code, out, err) = crate::server_projects::exec_with_stdin(server, cwd, &argv, &[], stdin)?;
+        if code != 0 {
+            return Err(format!("exited {code}: {}", err.trim()));
+        }
+        Ok(out)
+    };
+    let home = match sh("printf %s \"$HOME\"", &[], None) {
+        Ok(h) if !h.is_empty() => String::from_utf8_lossy(&h).into_owned(),
+        Ok(_) => return,
+        Err(e) => return crate::dlog(&format!("[agent-hooks] {server}: no home on the box: {e}")),
+    };
+    let ids: Vec<String> = crate::load_settings_inner().agents.iter().map(|a| a.id.clone()).collect();
+    for agent in ids {
+        let base = base_of(&agent);
+        if !server_installable(&base) || !status(&Target::Host(agent.clone())).ours_present {
+            continue;
+        }
+        let target = Target::Server { agent: agent.clone(), server: server.to_string(), home: home.clone(), cwd: cwd.to_string_lossy().into_owned() };
+        if let Err(e) = sync_one_on_server(&target, &base, &home, &sh) {
+            crate::dlog(&format!("[agent-hooks] {server}: {agent}: {e}"));
+        }
+    }
+    servers_synced().lock().unwrap().insert(server.to_string());
+}
+
+fn sync_one_on_server(
+    target: &Target,
+    base: &str,
+    home: &str,
+    sh: &dyn Fn(&str, &[&str], Option<&[u8]>) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let remote = format!("{}/{}", home.trim_end_matches('/'), state_dir(base)?);
+    let mut rels: Vec<String> = vec![settings_rel(base).to_string(), SCRIPT_DIR.to_string()];
+    // codex's trust entries live in its config.toml; a slot agent's
+    // second config is its own file.
+    if base == "codex" {
+        rels.push("config.toml".into());
+    }
+    if let Some(r) = slot_rel(base).filter(|r| !rels.iter().any(|x| x == r)) {
+        rels.push(r.to_string());
+    }
+    rels.extend(plugin_companions(base).into_iter().map(|(r, _)| r.to_string()));
+    let rel_args: Vec<&str> = rels.iter().map(String::as_str).collect();
+    // Pull what the install reads and writes, as a tar of what exists.
+    let mut pull = vec![remote.as_str()];
+    pull.extend_from_slice(&rel_args);
+    // A symlinked config (dotfiles) is left alone: pushed back it would
+    // replace the link with a file, and staged here a link would point at
+    // a path on this computer.
+    let tar = sh(
+        "cd \"$1\" 2>/dev/null || exit 0; shift; for f; do [ -L \"$f\" ] && { echo \"$f is a symlink\" >&2; exit 3; }; done; set -- $(for f; do [ -e \"$f\" ] && printf '%s\\n' \"$f\"; done); [ $# -gt 0 ] && tar cf - \"$@\"; true",
+        &pull,
+        None,
+    )?;
+    let stage = config_dir(target)?;
+    let result = stage_install_push(target, &stage, &tar, &rel_args, &remote, sh);
+    let _ = std::fs::remove_dir_all(&stage);
+    result
+}
+
+fn stage_install_push(
+    target: &Target,
+    stage: &Path,
+    tar: &[u8],
+    rel_args: &[&str],
+    remote: &str,
+    sh: &dyn Fn(&str, &[&str], Option<&[u8]>) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(stage);
+    std::fs::create_dir_all(stage).map_err(|e| format!("create {}: {e}", stage.display()))?;
+    if !tar.is_empty() {
+        run_tar(&["xf", "-", "-C", &stage.to_string_lossy()], Some(tar))?;
+    }
+    let st = status(target);
+    if st.ours_present && !st.stale && st.error.is_none() {
+        return Ok(());
+    }
+    install(target)?;
+    push_stage(stage, rel_args, remote, sh)?;
+    crate::dlog(&format!("[agent-hooks] installed {} on a server in {remote}", target.agent()));
+    Ok(())
+}
+
+/// Send the staged `rels` (those that exist) into `remote` on the box. Our
+/// script dir is replaced whole, so a script a newer schema retired does not
+/// linger; the user's own files are only ever overwritten by the merged copy
+/// of themselves.
+fn push_stage(stage: &Path, rels: &[&str], remote: &str, sh: &dyn Fn(&str, &[&str], Option<&[u8]>) -> Result<Vec<u8>, String>) -> Result<(), String> {
+    let present: Vec<&str> = rels.iter().copied().filter(|r| stage.join(r).exists()).collect();
+    let stage_s = stage.to_string_lossy().into_owned();
+    let mut args = vec!["cf", "-", "-C", stage_s.as_str()];
+    args.extend_from_slice(&present);
+    let out = run_tar(&args, None)?;
+    sh(&format!("mkdir -p \"$1\" && cd \"$1\" && rm -rf {SCRIPT_DIR} && tar xf -"), &[remote], Some(&out)).map(|_| ())
+}
+
+fn run_tar(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("tar")
+        .args(args)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("tar: {e}"))?;
+    if let Some(b) = stdin {
+        child.stdin.take().unwrap().write_all(b).map_err(|e| format!("tar: {e}"))?;
+    }
+    let out = child.wait_with_output().map_err(|e| format!("tar: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("tar: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+
+    #[test]
+    fn a_server_install_names_the_box_paths_and_writes_a_local_stage() {
+        let t = Target::Server { agent: "claude".into(), server: "box 1".into(), home: "/home/u/".into(), cwd: "/home/u/repo".into() };
+        assert_eq!(command_prefix(&t).unwrap(), "/home/u/.claude/termic-hooks/");
+        let dir = config_dir(&t).unwrap();
+        // By component, not by string: the separator is `\\` on Windows.
+        let tail = std::path::Path::new("termic").join("server-hooks").join("box_1").join("claude");
+        assert!(dir.ends_with(&tail), "{}", dir.display());
+        assert!(!dir.starts_with("/tmp"), "never a shared temp dir");
+    }
+
+    #[test]
+    fn every_agent_with_hooks_installs_on_a_server_with_its_slot_file() {
+        assert!(server_installable("claude"));
+        assert!(server_installable("codex"));
+        assert!(server_installable("grok"));
+        assert_eq!(slot_rel("grok"), Some("config.toml"));
+        assert_eq!(slot_rel("agy"), Some("antigravity-cli/settings.json"));
+        assert_eq!(slot_rel("claude"), None);
+    }
+}

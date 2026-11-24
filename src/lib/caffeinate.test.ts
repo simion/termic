@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
-import { INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, matchesCaffeinateSettings, rememberCaffeinateFlags, rememberCaffeinateHours, requestFromDraft, type CaffeinateStatus } from "./caffeinate";
+import { INDEFINITE, lastCaffeinateFlags, lastCaffeinateHours, localDateTime, matchesCaffeinateSettings, rememberCaffeinateFlags, rememberCaffeinateHours, requestFromDraft, requestToRestore, type CaffeinateStatus } from "./caffeinate";
 
 describe("caffeinate draft validation", () => {
   it("rejects invalid durations without constructing an IPC request", () => {
@@ -50,5 +50,24 @@ describe("caffeinate draft validation", () => {
     // Toggling the display alone is a pending change, not "These settings are active".
     expect(matchesCaffeinateSettings(status, "duration", INDEFINITE, "", false, false)).toBe(false);
     expect(matchesCaffeinateSettings(status, "duration", "24", "", false, true)).toBe(false);
+  });
+});
+
+describe("caffeinate restored at launch", () => {
+  const now = 1_000_000_000_000;
+  it("brings back indefinite and agent modes as they were", () => {
+    expect(requestToRestore({ request: { mode: "indefinite", display: true }, at: now - 9e9 }, now)).toEqual({ mode: "indefinite", display: true });
+    expect(requestToRestore({ request: { mode: "agents" }, at: now - 9e9 }, now)).toEqual({ mode: "agents" });
+  });
+  it("turns a duration into its end, and drops it once that has passed", () => {
+    const saved = { request: { mode: "duration" as const, duration_minutes: 60, closed_lid: false, display: false }, at: now - 30 * 60_000 };
+    expect(requestToRestore(saved, now)).toEqual({ mode: "until", until_ms: now + 30 * 60_000, closed_lid: false, display: false });
+    expect(requestToRestore(saved, now + 31 * 60_000)).toBeNull();
+  });
+  it("keeps an end time only while it is ahead; nothing saved or off is nothing", () => {
+    expect(requestToRestore({ request: { mode: "until", until_ms: now + 1 }, at: now - 5 }, now)).toEqual({ mode: "until", until_ms: now + 1 });
+    expect(requestToRestore({ request: { mode: "until", until_ms: now }, at: now - 5 }, now)).toBeNull();
+    expect(requestToRestore(null, now)).toBeNull();
+    expect(requestToRestore({ request: { mode: "off" }, at: now }, now)).toBeNull();
   });
 });

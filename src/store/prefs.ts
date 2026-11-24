@@ -113,6 +113,7 @@ const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
 const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
+const LS_SHOW_REMOTE = "showRemote";
 const LS_STATUS_SECTION_COLLAPSED = scoped("statusSectionCollapsed");
 const LS_SHOW_BOARD = scoped("showBoard");
 const LS_SHOW_TODOS = scoped("showTodos");
@@ -884,6 +885,10 @@ interface PrefsState {
    *  status section"). Off by default: it pays off with many parallel tasks
    *  and is clutter with two. */
   showStatusSection: boolean;
+  /** Settings > Appearance > Remote in the sidebar: the REMOTE section (or,
+   *  with nothing in it, the footer's globe). On by default; off for
+   *  someone who never uses servers, phones or paired computers. */
+  showRemote: boolean;
   /** Whether the sidebar's STATUS section is collapsed in place. */
   statusSectionCollapsed: boolean;
   /** The Kanban entry in the sidebar's primary nav, the only way into the
@@ -1127,6 +1132,7 @@ interface PrefsState {
   setBoardArchiveLimit: (n: number) => void;
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
   setShowStatusSection: (v: boolean) => void;
+  setShowRemote: (v: boolean) => void;
   setStatusSectionCollapsed: (v: boolean) => void;
   setShowBoard: (v: boolean) => void;
   setShowTodos: (v: boolean) => void;
@@ -1183,7 +1189,10 @@ export function parseScheduledNav(raw: string): ScheduledNavMode {
 export type { LauncherVisibility } from "@/lib/launcherUsage";
 export type NewTaskButtonMode = "empty" | "auto" | "always";
 export function parseNewTaskButton(raw: string): NewTaskButtonMode {
-  return raw === "empty" || raw === "always" ? raw : "auto";
+  // Default "always": the button under a project's tasks is the visible way
+  // to start one (the header's `+` is hover-only beside it). "empty" (only
+  // where a project has none yet) is the opt-out in Settings.
+  return raw === "auto" || raw === "empty" ? raw : "always";
 }
 /** Whether a project draws the "New task" button under its tasks. */
 export function newTaskButtonShown(mode: NewTaskButtonMode, taskCount: number, projectCount: number): boolean {
@@ -1434,6 +1443,7 @@ function readStoredPrefs() {
   })();
   const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
   const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
+  const initialShowRemote = lsGetBool(LS_SHOW_REMOTE, true);
   const initialStatusSectionCollapsed = lsGet(LS_STATUS_SECTION_COLLAPSED, "") === "1";
   const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
   const initialShowTodos = lsGet(LS_SHOW_TODOS, "") !== "0";
@@ -1546,6 +1556,7 @@ function readStoredPrefs() {
     boardArchiveLimit: initialBoardArchiveLimit,
     boardPinnedColumns: initialBoardPinnedColumns,
     showStatusSection: initialShowStatusSection,
+    showRemote: initialShowRemote,
     statusSectionCollapsed: initialStatusSectionCollapsed,
     showBoard: initialShowBoard,
     showTodos: initialShowTodos,
@@ -1995,6 +2006,11 @@ export const usePrefs = create<PrefsState>(set => ({
   // The status-section setters bail on an unchanged value (returning `s` is
   // a no-op notify): a fold click re-renders the section, and a repeated one
   // should not.
+  setShowRemote: (v) => set(s => {
+    if (s.showRemote === v) return s;
+    try { localStorage.setItem(LS_SHOW_REMOTE, v ? "1" : "0"); } catch {}
+    return { showRemote: v };
+  }),
   setShowStatusSection: (v) => set(s => {
     if (s.showStatusSection === v) return s;
     try { localStorage.setItem(LS_SHOW_STATUS_SECTION, v ? "1" : "0"); } catch {}

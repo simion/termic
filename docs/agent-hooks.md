@@ -701,6 +701,20 @@ the CONTAINER's address (`/proc/1/fd/1`). Before that, every hook in a
 sandboxed tab exited on its first line and a whole tab delivered zero OSCs
 while its unsandboxed neighbours delivered hundreds.
 
+**A termic-server box is a third realm.** The daemon sets `TERMIC_PTY` to its
+own PTY's slave path, so the OSC rides the PTY stream to the desktop and the
+same parser reads it. The config is written by `agent_hooks::sync_server`
+(`Target::Server`), once per run when a server syncs: it pulls the agent's
+hooks file and `termic-hooks/` from the box over `exec` as a tar, runs the
+ordinary install on that staged copy with the box's `$HOME` in the command
+paths, and pushes it back. Same consent rule as Docker: only agents whose
+hooks are installed on this computer. codex's trust step runs there too:
+the hooks are pushed first, then `codex app-server` on the box is piped
+one initialize + hooks/list (a login shell, so its PATH finds codex), and
+the hashes it reports go into the staged `config.toml` pushed after.
+The agents with a second config slot (agy, copilot, grok, muse) have that
+file staged and pushed with the rest (`slot_rel`).
+
 ### Working and done are termic's own bodies, not OSC 133
 
 Until schema v13 the hooks said "turn started" / "turn over" as raw OSC
@@ -752,6 +766,21 @@ The seatbelt profile also denies caged agents that socket by path, and a
 container has neither the socket nor the binary. An ingest-only socket (no
 verbs, no shared secret) would be a sound escalation if the pty ever proves
 insufficient; the cage already permits unix sockets generally.
+
+## On a server box
+
+Hooks are not a socket back to the desktop: each writes an OSC into the
+agent's own terminal (`$TERMIC_PTY`), so they work on a box the way they
+work in Docker. `agent_hooks::sync_server` writes each agent's hook
+config on the box through `exec` (`TaskHost`), once per run and only for
+agents whose hooks are installed on this computer (Docker's consent
+rule); codex's trust step and the slot agents' second config run there
+too. The agent is spawned with `TERMIC_PTY` set to its slave path on the
+box, the OSCs ride the PTY stream the desktop already reads, and the
+same parser gives a server agent a local agent's state. The daemon keeps
+them in the ring for a reconnect and reads them itself for a state with
+nobody attached. `detect.rs` remains the fallback for agents without
+hooks.
 
 ## Hooks own the turn, once they have proved it
 
@@ -1006,6 +1035,13 @@ live turn. termic accepts an interrupt only when the key is corroborated by the
 title going idle (3s) or the terminal falling quiet (15s), and only while the
 user is watching. It calls `interruptWork`, not `fireDone`: an interrupt is not
 a completion, so it earns no badge and spends no done token.
+
+A Stop from a phone or another computer (docs/remote.md) writes the key
+straight to the PTY, so the window never sees it and nobody is watching.
+The host emits `remote://interrupt` for that PTY instead, and it licenses
+both corroborations exactly like a watched Escape
+(`src/lib/remoteInterrupt.ts`). Without it the agent stopped and the task
+kept reading "working" on every screen until its next prompt.
 
 ## Config shapes, and the grok guard
 

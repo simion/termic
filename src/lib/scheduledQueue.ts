@@ -39,7 +39,7 @@ export function pickQueueItem(
  *
  *  NOT the stored `queueActive` flag on its own. That flag is only dropped by
  *  the drain, the next time the agent's turn ends and it finds nothing left,
- *  which is where "queue finished" is announced. So after the LAST message
+ *  which is where the queue is marked done. So after the LAST message
  *  has gone it stays set for that whole turn, and for an agent idling on
  *  delegated work (its messages are flushed at once and no turn end is
  *  coming) it stays set indefinitely: the footer button sat lit over an

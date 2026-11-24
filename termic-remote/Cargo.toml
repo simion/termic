@@ -1,0 +1,23 @@
+[package]
+name = "termic-remote"
+version = "0.1.0"
+description = "The remote-control stream (docs/remote.md): wire messages, the sealed session, and the WebSocket and stdio framing a phone, another Termic or a headless box speaks."
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+workspace = "../src-tauri"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ring = "0.17"
+base64 = "0.22"
+# Replays a PTY ring into a screen (screen.rs): a pure-Rust VT emulator.
+vt100 = "0.15"
+# Reads Antigravity's conversation files (transcript.rs), which are SQLite.
+# Bundled: no system library to find on a server or a Windows desktop.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+# ptsname (pty.rs): the slave path agent hooks write to, on the desktop and on a box.
+libc = "0.2"

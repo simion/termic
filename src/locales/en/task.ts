@@ -286,7 +286,6 @@ export default {
   // boot overlay.
   terminal: {
     scheduledSent: "Scheduled message sent (due {{late}} ago)",
-    queueFinished: "Message queue finished",
     pathGone: "That path no longer exists",
     menuCopy: "Copy",
     menuPaste: "Paste",
@@ -298,6 +297,9 @@ export default {
     resumeFailedRemember: " Install agent hooks so Termic remembers the one you pick.",
     resumeFailedSaid: " {{agent}} said: \"{{why}}\"",
     moreAgentsTip: "More agents than fit here. Widen the window, or switch tabs to see them.",
+    elsewhere: "This terminal is in use on another screen.",
+    elsewhereOn: "This terminal is in use on {{name}}.",
+    continueHere: "Continue here",
     yoloRestartTitle: "Restart {{agent}} to {{action}} YOLO?",
     yoloEnable: "enable",
     yoloDisable: "disable",

@@ -53,7 +53,11 @@ npm run test:e2e      # wdio run ./wdio.conf.ts (skip the rebuild while iteratin
 test time). Rebuild it after any Rust or frontend change. Screenshots land in
 `.e2e/artifacts/` (gitignored). Do NOT build the e2e binary with a bare
 `cargo build` — that bakes in the dev-server URL and the window comes up blank
-(`about:blank`); always go through `e2e:build` / `make e2e`.
+(`about:blank`); always go through `e2e:build` / `make e2e`. `cargo test`
+(and `cargo test --workspace`) also rewrites `target/debug/termic`, without
+the `e2e` feature: the next run then fails before any spec with "Embedded
+WebDriver server did not become ready", because that binary has no WebDriver
+plugin. Run `e2e:build` again after a `cargo test`.
 
 The e2e binary is built with `VITE_E2E=1`, which exposes `window.__termic`
 (stores + ipc + invoke) so specs can read real app state and drive real IPC.

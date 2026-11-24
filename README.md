@@ -298,6 +298,20 @@ Keys are the macOS ones; every shortcut can be rebound.
   and Antigravity, daily and weekly for Devin, monthly for copilot), and how
   full the conversation is (`42% ctx`) for most built-ins.
   Optionally move a task to another login when one passes 95%.
+- **Termic servers: agents that keep working while your laptop sleeps.**
+  Point Termic at any machine you reach with `ssh`, such as a Linux box at
+  home or a cloud server. It copies one small program there
+  (termic-server, no sudo), runs your agents on that machine in their own
+  worktrees, and shows its projects and tasks in your sidebar like local
+  ones. Close the laptop and they keep going. Settings > Remote, or the +
+  on REMOTE in the sidebar.
+- **Termic Remote, on your phone.** Answer a waiting agent, send a
+  prompt, watch its terminal, or stop and start it from your iPhone or
+  Android phone. Pair it once with a QR code in Settings > Remote; the
+  phone runs nothing, every action happens on your computer. iPhone:
+  [TestFlight](https://testflight.apple.com/join/SqxhPr6a), open to
+  anyone. Android:
+  [Google Play](https://play.google.com/store/apps/details?id=dev.termic.remote).
 - **Activity.** A process monitor scoped to Termic: every agent, shell and
   run script by project and task, with CPU, memory, output rate and uptime.
 - **Keep awake.** The coffee mug in the sidebar keeps the computer awake

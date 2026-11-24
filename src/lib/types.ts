@@ -203,6 +203,10 @@ export interface Project {
    *  list. No effect on paths, git, or workspaces. Missing/empty =
    *  ungrouped. */
   group?: string;
+  /** The server (servers.json id) it lives on, over SSH through
+   *  termic-server; `root_path` is then a path on that box. Absent for a
+   *  project on this machine (docs/remote.md, Servers). */
+  server?: string;
   /** Personal (local, projects.json) extra run commands surfaced in the
    *  RunControls dropdown and launched as terminal tabs (GH #124). Separate
    *  from the single primary `run_script` (the Run button). The committed,
@@ -985,7 +989,7 @@ export interface Settings {
   mcp_bind_address?: string;
   /** Port the MCP listener binds; 0 means chosen automatically. */
   mcp_port?: number;
-  /** "Share on this network" (Settings > Agent access): advertise this
+  /** "Share on this network" (Settings > Remote control): advertise this
    *  Termic over mDNS and run the peer listener so another Termic on the
    *  LAN can pair with it. Default off. See docs/peers.md. */
   lan_sharing_enabled?: boolean;

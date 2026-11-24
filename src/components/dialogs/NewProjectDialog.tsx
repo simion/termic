@@ -5,6 +5,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { useRemote } from "@/lib/remote";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -589,6 +590,15 @@ export function NewProjectDialog() {
           );
         })}
       </div>
+      {/* A project on another machine is added through its server, whose
+          projects then join the sidebar (docs/remote.md, Servers). */}
+      <p className="-mt-3 mb-4 text-[12px] text-[var(--color-fg-dim)]">
+        {t("newProject.onServer")}{" "}
+        <button type="button" data-testid="new-project-add-server" className="text-[var(--color-accent)] hover:underline"
+          onClick={() => { close(); useRemote.getState().setDialog({ serverDialog: true }); }}>
+          {t("newProject.addServer")}
+        </button>
+      </p>
 
       {mode === "clone" ? (
         <>

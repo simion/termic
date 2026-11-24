@@ -171,6 +171,26 @@ pub fn another_instance_running(deep_link: Option<&str>) -> bool {
     raise_owner(deep_link)
 }
 
+/// On a restart, stop being findable before the next process looks for us.
+///
+/// Unlinking the socket file makes every later connect fail, so the relaunched
+/// process finds no owner no matter how long this one takes to exit (a GTK
+/// teardown can outlast the 15s wait below, and then the new process deferred
+/// to a dying one and quit). Our listener keeps its now-unreachable inode
+/// until we are gone; the new process binds a fresh file.
+pub fn release_socket_for_restart() {
+    if let Ok(dir) = crate::global_dir() {
+        release_socket_at(&dir.join(proto::SOCKET_FILE));
+    }
+}
+
+fn release_socket_at(sock: &Path) {
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(sock);
+    #[cfg(not(unix))]
+    let _ = sock;
+}
+
 /// Set by the exiting process when its exit is a restart, so the process it
 /// spawns knows the instance holding the socket is on its way out.
 pub const RELAUNCH_ENV: &str = "TERMIC_RELAUNCHED";
@@ -520,7 +540,7 @@ fn run_attach_session(
                     }
                     "resize" => {
                         if let (Some(rows), Some(cols)) = (frame.rows, frame.cols) {
-                            let _ = host.pty_set_size(&pty_id, rows, cols);
+                            let _ = host.pty_set_size(&pty_id, rows, cols, Some(("cli", "termic attach")));
                         }
                     }
                     "detach" => break,
@@ -537,6 +557,8 @@ fn run_attach_session(
     // place, its usual cause is a tap force-dropped for falling behind.
     let reason = loop {
         match attachment.rx.recv() {
+            // Empty: a resize nudge (PtyFeed::nudge), not output.
+            Ok(crate::PtyTapMsg::Data(bytes)) if bytes.is_empty() => {}
             Ok(crate::PtyTapMsg::Data(bytes)) => {
                 if proto::write_msg(&mut writer, &proto::AttachFrame::out(&bytes)).is_err() {
                     // Client socket gone; the input thread sees EOF too.
@@ -692,8 +714,24 @@ pub(crate) trait CliHost: Send + Sync {
     fn pty_subscribe(&self, pty_id: &str) -> Result<crate::PtyAttachment, String>;
     /// Type bytes into a PTY (the attach `in` path).
     fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String>;
-    /// Resize a PTY (the attach `resize` path, opt-in client-side).
-    fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String>;
+    /// A remote client (phone, other computer) interrupted this PTY. Its
+    /// key bypassed the window's keyboard, so the window is told, and ends
+    /// the turn as it would for a watched Escape (lib/remoteInterrupt.ts).
+    fn note_remote_interrupt(&self, _task_id: &str, _pty_id: &str) {}
+    /// A PTY's current size as (rows, cols): what a remote terminal view
+    /// draws at (the host owns the size; docs/remote.md). None when gone.
+    fn pty_size(&self, _pty_id: &str) -> Option<(u16, u16)> {
+        None
+    }
+    /// Resize a PTY (the attach `resize` path, opt-in client-side). `by` is
+    /// the screen that took the size, `(kind, name)` with kind "phone",
+    /// "computer" or "cli", shown on the pane it took it from; None for a
+    /// size handed back.
+    fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16, by: Option<(&str, &str)>) -> Result<(), String>;
+    /// Put a PNG on this computer's clipboard (a paired computer's paste).
+    fn set_clipboard_image(&self, _png: &[u8]) -> Result<(), String> {
+        Err("this host has no clipboard".into())
+    }
     /// Tell live attach sessions on this task why they are ending,
     /// BEFORE the PTYs are killed.
     fn notify_detach(&self, task_id: &str, reason: &str);
@@ -854,6 +892,15 @@ pub(crate) fn dispatch_authenticated(
         };
     }
     match &req.cmd {
+        Command::ClipboardImage { png } => {
+            let Some(bytes) = termic_remote::unb64(png) else {
+                return Reply::err(&req.id, ErrorCode::BadRequest, "not base64");
+            };
+            match host.set_clipboard_image(&bytes) {
+                Ok(()) => Reply { id: req.id.clone(), ok: true, data: None, error: None },
+                Err(e) => Reply::err(&req.id, ErrorCode::Internal, e),
+            }
+        }
         Command::PeerList | Command::PeerPair { .. } | Command::PeerUnpair { .. } | Command::PeerRename { .. } => {
             match host.peers() {
                 Some(node) => crate::peers::handle_verb(&node, req, sink),
@@ -971,8 +1018,12 @@ pub(crate) fn dispatch_authenticated(
         Command::Archive { task, project } => {
             handle_archive(&req.id, host, task, project.as_deref())
         }
+        Command::Stop { task, project } => handle_stop(&req.id, host, task, project.as_deref()),
         Command::Rename { task, project, name, cwd } => {
             handle_rename(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), name)
+        }
+        Command::Pin { task, project, pinned, cwd } => {
+            handle_pin(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), *pinned)
         }
         Command::Group { task, project, name, color, cwd, caller_task, join, leave } => handle_group(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
@@ -1006,11 +1057,27 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "clear" }),
         ),
-        Command::ProjectAdd { path, non_git } => {
+        Command::ProjectAdd { path, non_git, clone } => {
+            if let Some(url) = clone {
+                // As termic-server does: clone into a path that does not
+                // exist yet, with this user's git and credentials.
+                if url.starts_with('-') || std::path::Path::new(path).exists() {
+                    return Reply::err(&req.id, ErrorCode::BadRequest, format!("{path} already exists, or {url} is not a git URL"));
+                }
+                match crate::git_command().args(["clone", "--quiet", "--", url, path]).env("PATH", crate::shell_env::resolved_path()).output() {
+                    Ok(o) if o.status.success() => {}
+                    Ok(o) => return Reply::err(&req.id, ErrorCode::Internal, format!("git clone failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+                    Err(e) => return Reply::err(&req.id, ErrorCode::Internal, format!("could not run git: {e}")),
+                }
+            }
             handle_project_add(&req.id, host, path, *non_git)
         }
         Command::ProjectList => handle_project_list(&req.id, host),
         Command::ProjectRemove { name } => handle_project_remove(&req.id, host, name),
+        // termic-server only: an agent or a paired machine never runs
+        // arbitrary commands on this machine through the CLI.
+        Command::Exec { .. } => Reply::err(&req.id, ErrorCode::Unsupported, "exec runs on a termic-server, not on the desktop"),
+        Command::TaskPut { .. } => Reply::err(&req.id, ErrorCode::Unsupported, "task_put records a task on a termic-server, not on the desktop"),
         Command::ScheduleList { project } => handle_schedule(
             &req.id, host, None, project.as_deref(), None,
             serde_json::json!({ "op": "list" }),
@@ -1424,6 +1491,12 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             },
         },
     };
+    // A server project's task is made by the desktop like any other (its
+    // worktree through `exec`, then `task_put`, task_create_sync); only
+    // adopting a worktree or a PR checkout are not done on a box yet.
+    if proj.server.is_some() && (from.is_some() || pr.is_some()) {
+        return fail(ErrorCode::Unsupported, format!("project \"{}\" is on a server; --from and --pr are not supported there yet", proj.name));
+    }
     if proj.non_git && from.is_some() {
         return fail(
             ErrorCode::BadRequest,
@@ -2568,54 +2641,145 @@ fn handle_logs(
 
 // ───────────────────────────── result ────────────────────────────────
 
-/// Claude Code's transcript-directory name for a cwd: every character
-/// that is not ASCII alphanumeric becomes '-'. Verified against the
-/// live layout ("/Users/x/.config/dotfiles" -> "-Users-x--config-dotfiles").
-fn claude_project_dir_name(cwd: &str) -> String {
-    cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+use termic_remote::transcript::{claude_project_dir_name, last_assistant_text};
+
+/// Where a task's files are: this computer, or its server's box
+/// (task_host.rs), so a server task's transcript is read where its agent
+/// wrote it.
+fn files_of(host: &dyn CliHost, t: &Task) -> crate::task_host::Host {
+    let (projects, _) = host.projects_tasks();
+    projects.iter().find(|p| p.id == t.project_id).map(crate::task_host::Host::for_project).unwrap_or(crate::task_host::Host::Local)
 }
 
-/// The agent's last message out of a Claude Code JSONL transcript: the
-/// last "assistant" line carrying non-empty text content (tool-use-only
-/// turns are skipped).
-fn last_assistant_text(jsonl: &str) -> Option<String> {
-    for line in jsonl.lines().rev() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-            continue;
-        }
-        // Sidechain lines are a subagent's internal conversation
-        // interleaved in the same transcript; their last message is not
-        // the agent's answer.
-        if v.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
-            continue;
-        }
-        let Some(content) = v.pointer("/message/content") else { continue };
-        let text = match content {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Array(blocks) => blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => continue,
-        };
-        if !text.trim().is_empty() {
-            return Some(text);
-        }
+/// The claude session transcript of `t`, or why there is none. Shared by
+/// `result` (the last message) and the remote transcript (every turn).
+fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<(PathBuf, crate::task_host::Host), proto::ErrorBody> {
+    let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
+    // Transcript layout is agent-specific; claude's JSONL is the one
+    // reader shipped (docs/plans/cli.md: the RESULT.md file drop stays
+    // the agent-agnostic floor).
+    if t.cli != "claude" {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "result reads claude session transcripts and this task's agent is \"{}\". Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.",
+                t.cli
+            ),
+        ));
     }
-    None
+    let fs = files_of(host, t);
+    let home = if fs.is_server() { fs.home() } else { host.home_dir() };
+    let Some(home) = home else {
+        return Err(err(ErrorCode::Internal, "no home directory".into()));
+    };
+    let dir = home.join(".claude").join("projects").join(claude_project_dir_name(&t.path));
+    // A stored per-tab session id pins the transcript (repo-root tasks);
+    // otherwise the newest .jsonl of the task's cwd is the session
+    // `--continue` would resume (worktree tasks).
+    let pinned = t
+        .persisted_tabs
+        .iter()
+        .filter(|p| p.cli == "claude")
+        .max_by_key(|p| p.is_default)
+        .and_then(|p| p.session_id.clone())
+        .map(|s| dir.join(format!("{s}.jsonl")))
+        .filter(|f| fs.is_file(f));
+    // Main-checkout tasks SHARE their cwd with the user's own claude
+    // sessions and any sibling main-checkout task; newest-in-dir would
+    // happily serve someone else's conversation as this task's result.
+    // Worktree cwds are exclusive to the task, so newest is safe there.
+    if pinned.is_none() && t.is_main_checkout {
+        return Err(err(
+            ErrorCode::Unsupported,
+            "this task shares the project checkout, so its transcript cannot be identified. Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.".into(),
+        ));
+    }
+    let file = pinned.or_else(|| fs.newest_with_ext(&dir, "jsonl")).ok_or_else(|| {
+        err(ErrorCode::NotFound, "no claude session transcript found for this task (has the agent replied yet?)".into())
+    })?;
+    Ok((file, fs))
 }
 
-fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
-        .map(|e| e.path())
+/// termic_remote::transcript::codex_rollout on a box: the rollout named for
+/// the session, else the newest of the last 400 whose first line (its
+/// `session_meta`) names the task's folder; its contents.
+// shortcut: word-splits the file list, so a $HOME with a space finds nothing; fine for server homes, quote through `find -print0` if one shows up.
+const CODEX_ROLLOUT_SH: &str = r#"d="$HOME/.codex/sessions"
+if [ -n "$2" ]; then f=$(ls -r "$d"/*/*/*/*-"$2".jsonl 2>/dev/null | head -n 1); [ -n "$f" ] && exec cat -- "$f"; exit 0; fi
+for f in $(ls -r "$d"/*/*/*/*.jsonl 2>/dev/null | head -n 400); do
+  head -n 1 "$f" | grep -qF "\"cwd\":\"$1\"" && exec cat -- "$f"
+done"#;
+
+fn codex_rollout_on_box(fs: &crate::task_host::Host, cwd: &str, sid: Option<&str>) -> Result<String, String> {
+    let out = fs.run_sh(CODEX_ROLLOUT_SH, &[cwd, sid.unwrap_or("")])?;
+    if out.trim().is_empty() {
+        return Err("no Codex session for this task yet (has the agent replied?)".into());
+    }
+    Ok(out)
 }
+
+/// Whether `transcript_turns` can read a task's conversation: the agents
+/// whose session logs it parses, on this computer or a server. Everything
+/// else is driven from its terminal, which every agent has.
+pub(crate) fn chat_supported(cli: &str, _on_server: bool) -> bool {
+    matches!(cli, "claude" | "codex" | "agy" | "antigravity")
+}
+
+/// Why a task in the project's own checkout shows no chat (phones, the
+/// transcript view): its folder is shared with other sessions.
+const SHARED_CHECKOUT_CHAT: &str = "This task works in the project's own folder, which other sessions share, so its chat can't be told apart. The Terminal tab shows it.";
+
+pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String, Vec<termic_remote::wire::Turn>), String> {
+    let (projects, tasks) = host.projects_tasks();
+    let t = resolve_by_name(&projects, &tasks, task, None).map_err(|e| e.message)?.clone();
+    if matches!(t.cli.as_str(), "codex" | "agy" | "antigravity") {
+        let fs = files_of(host, &t);
+        if fs.is_server() {
+            let sid = t.persisted_tabs.iter().filter(|p| p.cli == t.cli).max_by_key(|p| p.is_default).and_then(|p| p.session_id.clone());
+            if t.cli != "codex" {
+                // Antigravity's chat is a SQLite file: fetched whole from the
+                // box and read here. Found by the conversation id its hooks
+                // reported (scanning the box's conversations is too much to
+                // fetch), so it shows once the agent has started one.
+                let sid = sid.ok_or("The chat shows here once Antigravity has started a conversation. The Terminal tab shows it meanwhile.")?;
+                if sid.contains(['/', '\\']) || sid.contains("..") {
+                    return Err("unexpected conversation id".into());
+                }
+                let home = fs.home().ok_or("no home directory on the server")?;
+                let db = fs.read_bytes(&home.join(".gemini/antigravity-cli/conversations").join(format!("{sid}.db")))
+                    .map_err(|e| format!("could not read the conversation on the server ({e})"))?;
+                let local = std::env::temp_dir().join(format!("termic-agy-{}-{sid}-{}.db", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+                std::fs::write(&local, db).map_err(|e| e.to_string())?;
+                let turns = termic_remote::transcript::read_antigravity(&local);
+                let _ = std::fs::remove_file(&local);
+                return Ok((t.id, turns?));
+            }
+            if sid.is_none() && t.is_main_checkout {
+                return Err(SHARED_CHECKOUT_CHAT.into());
+            }
+            let jsonl = codex_rollout_on_box(&fs, &t.path, sid.as_deref())?;
+            return Ok((t.id, termic_remote::transcript::parse_codex_jsonl(&jsonl)));
+        }
+        let home = host.home_dir().ok_or("no home directory")?;
+        // The id the agent reported for the task's tab (agent_hooks.rs):
+        // Codex's session, agy's conversation.
+        let sid = t.persisted_tabs.iter().filter(|p| p.cli == t.cli).max_by_key(|p| p.is_default).and_then(|p| p.session_id.clone());
+        // Without it, the folder decides, and a shared checkout's folder
+        // is also the user's own sessions' and any sibling task's.
+        if sid.is_none() && t.is_main_checkout {
+            return Err(SHARED_CHECKOUT_CHAT.into());
+        }
+        let turns = termic_remote::transcript::other_agent(&t.cli, &home, &t.path, sid.as_deref())?;
+        return Ok((t.id, turns));
+    }
+    // This answers a person on a phone, not an agent: the CLI's advice
+    // (write RESULT.md) is no use to them.
+    let file = claude_transcript_file(host, &t).map_err(|e| if t.is_main_checkout && e.code == ErrorCode::Unsupported { SHARED_CHECKOUT_CHAT.to_string() } else { e.message })?;
+    let (file, fs) = file;
+    let jsonl = fs.read_to_string(&file).map_err(|e| format!("could not read the transcript ({e})"))?;
+    Ok((t.id, termic_remote::transcript::parse_claude_jsonl(&jsonl)))
+}
+
 
 fn handle_result(
     id: &str,
@@ -2629,53 +2793,11 @@ fn handle_result(
         Ok(t) => t.clone(),
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    // Transcript layout is agent-specific; claude's JSONL is the one
-    // reader shipped (docs/plans/cli.md: the RESULT.md file drop stays
-    // the agent-agnostic floor).
-    if t.cli != "claude" {
-        return Reply::err(
-            id,
-            ErrorCode::Unsupported,
-            format!(
-                "result reads claude session transcripts and this task's agent is \"{}\". Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.",
-                t.cli
-            ),
-        );
-    }
-    let Some(home) = host.home_dir() else {
-        return Reply::err(id, ErrorCode::Internal, "no home directory");
+    let (file, fs) = match claude_transcript_file(host, &t) {
+        Ok(f) => f,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    let dir = home.join(".claude").join("projects").join(claude_project_dir_name(&t.path));
-    // A stored per-tab session id pins the transcript (repo-root tasks);
-    // otherwise the newest .jsonl of the task's cwd is the session
-    // `--continue` would resume (worktree tasks).
-    let pinned = t
-        .persisted_tabs
-        .iter()
-        .filter(|p| p.cli == "claude")
-        .max_by_key(|p| p.is_default)
-        .and_then(|p| p.session_id.clone())
-        .map(|s| dir.join(format!("{s}.jsonl")))
-        .filter(|f| f.is_file());
-    // Main-checkout tasks SHARE their cwd with the user's own claude
-    // sessions and any sibling main-checkout task; newest-in-dir would
-    // happily serve someone else's conversation as this task's result.
-    // Worktree cwds are exclusive to the task, so newest is safe there.
-    if pinned.is_none() && t.is_main_checkout {
-        return Reply::err(
-            id,
-            ErrorCode::Unsupported,
-            "this task shares the project checkout, so its transcript cannot be identified. Use the file convention instead: prompt the agent to write RESULT.md, then read it from the task path.",
-        );
-    }
-    let Some(file) = pinned.or_else(|| newest_jsonl(&dir)) else {
-        return Reply::err(
-            id,
-            ErrorCode::NotFound,
-            "no claude session transcript found for this task (has the agent replied yet?)",
-        );
-    };
-    let jsonl = match std::fs::read_to_string(&file) {
+    let jsonl = match fs.read_to_string(&file) {
         Ok(s) => s,
         Err(e) => {
             return Reply::err(
@@ -3578,6 +3700,26 @@ fn handle_archive(id: &str, host: &dyn CliHost, task: &str, project: Option<&str
     )
 }
 
+// ───────────────────────────── stop ──────────────────────────────────
+
+/// End a task's agent and keep the task (worktree, session, tabs): sending
+/// to it or opening it starts the agent again. A phone's Stop.
+fn handle_stop(id: &str, host: &dyn CliHost, task: &str, project: Option<&str>) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_by_name(&projects, &tasks, task, project) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let project_name = projects.iter().find(|p| p.id == t.project_id).map(|p| p.name.clone()).unwrap_or_else(|| t.project_id.clone());
+    host.notify_detach(&t.id, "stopped");
+    let stopped = host.kill_task_ptys(&t.id);
+    // Then the webview's own Stop (unmount, clear the tabs), so a task open
+    // here does not sit on an exited banner and read as running. After the
+    // kill, which counts what it stopped (the unmount kills PTYs too).
+    let _ = host.rpc("stop_task", serde_json::json!({ "taskId": t.id }), Duration::from_secs(5));
+    Reply::ok(id, ReplyData::Stop(proto::StopData { task_id: t.id, name: t.name, project: project_name, stopped_agents: stopped }))
+}
+
 // ───────────────────────────── rename ────────────────────────────────
 
 /// Rename a task's display label. The branch and worktree directory are
@@ -3633,6 +3775,25 @@ fn handle_rename(
         id,
         ReplyData::Rename(proto::RenameData { task: renamed, old_name: t.name }),
     )
+}
+
+/// `pin`: pin or unpin a task, as the sidebar row's Pin does. Through the
+/// webview (`pin_task`) like rename, so the store the sidebar draws from
+/// changes with the file and the row moves at once.
+fn handle_pin(id: &str, host: &dyn CliHost, task: Option<&str>, project: Option<&str>, cwd: Option<&str>, pinned: bool) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    if let Err(e) = host.rpc("pin_task", serde_json::json!({ "taskId": t.id, "pinned": pinned }), PROJECT_RPC_TIMEOUT) {
+        return Reply::err(id, ErrorCode::Internal, format!("pin failed ({e})"));
+    }
+    let (projects, tasks) = host.projects_tasks();
+    match tasks.iter().find(|w| w.id == t.id) {
+        Some(w) => Reply::ok(id, ReplyData::Pin(proto::PinData { task: summarize(w, &projects, &tasks, None, None), pinned })),
+        None => Reply::err(id, ErrorCode::Internal, "task disappeared during pin"),
+    }
 }
 
 /// `group`: report, or rename / recolour, the task's sidebar task group. The
@@ -3931,6 +4092,8 @@ fn handle_schedule(
 
 fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
     let multi = p.project_type == crate::ProjectType::Multi;
+    let profile = crate::profile_registry().profile_of(&p.profile).map(|x| x.slug.clone());
+    let server = p.server.as_ref().map(|id| crate::remote_client::server_name(id));
     proto::ProjectInfo {
         id: p.id.clone(),
         name: p.name.clone(),
@@ -3951,6 +4114,9 @@ fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
         } else {
             Vec::new()
         },
+        profile,
+        server,
+        non_git: p.non_git && !multi,
     }
 }
 
@@ -4079,6 +4245,7 @@ fn summarize(
             .as_deref()
             .and_then(|pid| tasks.iter().find(|t| t.id == pid))
             .map(|t| qualified(projects, t)),
+        org: None,
     }
 }
 
@@ -4589,11 +4756,28 @@ impl CliHost for TauriHost {
     fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String> {
         crate::pty_write_inner(&self.app.state::<crate::PtyManager>(), pty_id, data)
     }
-    fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String> {
-        crate::pty_resize_inner(&self.app.state::<crate::PtyManager>(), pty_id, rows, cols)
+    fn note_remote_interrupt(&self, task_id: &str, pty_id: &str) {
+        crate::emit_scoped_by_id(&self.app, task_id, "remote://interrupt", serde_json::json!({ "pty": pty_id }));
+    }
+    fn pty_size(&self, pty_id: &str) -> Option<(u16, u16)> {
+        crate::pty_size_inner(&self.app.state::<crate::PtyManager>(), pty_id)
+    }
+    fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16, by: Option<(&str, &str)>) -> Result<(), String> {
+        crate::pty_resize_inner(&self.app.state::<crate::PtyManager>(), pty_id, rows, cols)?;
+        // Sized from outside this window (a phone, another computer, `termic
+        // attach`): the pane showing this PTY scales its drawing to the new
+        // size until someone works in it here, which takes the size back.
+        use tauri::Emitter;
+        let _ = self.app.emit("termic://pty-resized", serde_json::json!({ "ptyId": pty_id, "cols": cols, "rows": rows, "by": by.map(|b| b.1), "byKind": by.map(|b| b.0) }));
+        Ok(())
     }
     fn notify_detach(&self, task_id: &str, reason: &str) {
         crate::notify_task_detach(&self.app.state::<crate::PtyManager>(), task_id, reason);
+    }
+    fn set_clipboard_image(&self, png: &[u8]) -> Result<(), String> {
+        let (rgba, w, h) = crate::decode_png_rgba(png)?;
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        self.app.clipboard().write_image(&tauri::image::Image::new_owned(rgba, w, h)).map_err(|e| e.to_string())
     }
     fn notify_tab_detach(&self, task_id: &str, tab_id: &str, reason: &str) {
         crate::notify_tab_detach(&self.app.state::<crate::PtyManager>(), task_id, tab_id, reason);
@@ -4724,6 +4908,12 @@ pub struct TabAgentState {
 }
 
 struct AgentCacheInner {
+    /// Every window's own push (one window per profile, each with its own
+    /// webview), and when it came. `states` is their merge: before this,
+    /// each push replaced the map, so a task running in one window read
+    /// "inactive" whenever another window pushed, and flipped every few
+    /// seconds.
+    windows: HashMap<String, (Instant, HashMap<String, TaskAgentState>)>,
     states: HashMap<String, TaskAgentState>,
     /// Bumped on every push; waiters detect change by seq, never by
     /// polling field diffs.
@@ -4749,17 +4939,36 @@ pub(crate) struct AgentSnapshot {
 impl AgentCache {
     pub(crate) fn new() -> Self {
         AgentCache {
-            inner: Mutex::new(AgentCacheInner { states: HashMap::new(), seq: 0, last_push: None }),
+            inner: Mutex::new(AgentCacheInner { windows: HashMap::new(), states: HashMap::new(), seq: 0, last_push: None }),
             cv: Condvar::new(),
         }
     }
 
+    /// A single unnamed window's map (the tests' shorthand).
+    #[cfg(test)]
     pub(crate) fn update(&self, states: HashMap<String, TaskAgentState>) {
+        self.update_from("", states);
+    }
+
+    /// One window's full map. Windows that stopped pushing (closed) drop
+    /// out after the staleness cutoff; the rest merge, and for a task more
+    /// than one window reports, the one where it runs wins.
+    pub(crate) fn update_from(&self, window: &str, states: HashMap<String, TaskAgentState>) {
         let mut inner = self.inner.lock().unwrap();
-        inner.states = states;
+        let now = Instant::now();
+        inner.windows.insert(window.to_string(), (now, states));
+        inner.windows.retain(|_, (at, _)| now.duration_since(*at) <= CACHE_STALE_AFTER);
+        inner.states = merge_windows(inner.windows.values().map(|(_, m)| m));
         inner.seq += 1;
         inner.last_push = Some(Instant::now());
         drop(inner);
+        self.cv.notify_all();
+    }
+
+    /// Wake the waiters without changing anything: something they also read
+    /// changed elsewhere (a server's own task rows, remote_client.rs).
+    pub(crate) fn nudge(&self) {
+        self.inner.lock().unwrap().seq += 1;
         self.cv.notify_all();
     }
 
@@ -4794,6 +5003,24 @@ impl AgentCache {
     }
 }
 
+/// Several windows' maps as one: a task's entry from the window where it
+/// runs (any state but inactive/unknown) beats one where it does not.
+fn merge_windows<'a>(maps: impl Iterator<Item = &'a HashMap<String, TaskAgentState>>) -> HashMap<String, TaskAgentState> {
+    let running = |s: &TaskAgentState| !matches!(s.state.as_str(), "inactive" | "unknown");
+    let mut out: HashMap<String, TaskAgentState> = HashMap::new();
+    for m in maps {
+        for (id, st) in m {
+            match out.get(id) {
+                Some(have) if running(have) || !running(st) => {}
+                _ => {
+                    out.insert(id.clone(), st.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn global_agent_cache() -> &'static AgentCache {
     static CACHE: OnceLock<AgentCache> = OnceLock::new();
     CACHE.get_or_init(AgentCache::new)
@@ -4802,8 +5029,8 @@ pub(crate) fn global_agent_cache() -> &'static AgentCache {
 /// Webview push target: the FULL per-task state map (idempotent
 /// snapshot, not a delta - deltas would desync on a webview reload).
 #[tauri::command]
-pub fn cli_agent_states(states: HashMap<String, TaskAgentState>) {
-    global_agent_cache().update(states);
+pub fn cli_agent_states(window: tauri::Window, states: HashMap<String, TaskAgentState>) {
+    global_agent_cache().update_from(window.label(), states);
 }
 
 /// list/status rows from a cache snapshot. Phase 1 reads the
@@ -6364,6 +6591,8 @@ pub(crate) mod test_support {
         pub(crate) pty_rings: Mutex<HashMap<String, (Vec<u8>, bool)>>,
         /// Bytes the attach path typed into PTYs.
         pub(crate) pty_inputs: Mutex<Vec<(String, Vec<u8>)>>,
+        /// (task, pty) for each remote interrupt the window was told about.
+        pub(crate) remote_interrupts: Mutex<Vec<(String, String)>>,
         /// Live attach tap senders per pty id, so tests can drive (and
         /// end) an attach session.
         pub(crate) taps: Mutex<HashMap<String, Vec<std::sync::mpsc::SyncSender<crate::PtyTapMsg>>>>,
@@ -6414,6 +6643,7 @@ pub(crate) mod test_support {
                 tab_ptys: Mutex::new(HashMap::new()),
                 pty_rings: Mutex::new(HashMap::new()),
                 pty_inputs: Mutex::new(Vec::new()),
+                remote_interrupts: Mutex::new(Vec::new()),
                 taps: Mutex::new(HashMap::new()),
                 resizes: Mutex::new(Vec::new()),
                 home: None,
@@ -6612,11 +6842,17 @@ pub(crate) mod test_support {
                 tx,
             })
         }
+        fn pty_size(&self, pty_id: &str) -> Option<(u16, u16)> {
+            self.pty_rings.lock().unwrap().contains_key(pty_id).then_some((24, 80))
+        }
         fn pty_input(&self, pty_id: &str, data: &[u8]) -> Result<(), String> {
             self.pty_inputs.lock().unwrap().push((pty_id.to_string(), data.to_vec()));
             Ok(())
         }
-        fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16) -> Result<(), String> {
+        fn note_remote_interrupt(&self, task_id: &str, pty_id: &str) {
+            self.remote_interrupts.lock().unwrap().push((task_id.to_string(), pty_id.to_string()));
+        }
+        fn pty_set_size(&self, pty_id: &str, rows: u16, cols: u16, _by: Option<(&str, &str)>) -> Result<(), String> {
             self.resizes.lock().unwrap().push((pty_id.to_string(), rows, cols));
             Ok(())
         }
@@ -6766,6 +7002,19 @@ mod tests {
     // human still has to confirm. If this ever needed auth, a deep link
     // would silently do nothing on Windows/Linux.
     #[test]
+    fn clipboard_image_reaches_the_host_and_refuses_bad_input() {
+        let host = StubHost::default();
+        let tok = Some(host.token());
+        // Not base64: refused before the host is asked.
+        let bad = handle(&req(Command::ClipboardImage { png: "%%%".into() }, tok), &host);
+        assert_eq!(bad.error.as_ref().map(|e| e.code), Some(ErrorCode::BadRequest));
+        // Valid base64 reaches the host's clipboard (the stub has none, so
+        // its own error comes back: the routing is what is checked here).
+        let ok = handle(&req(Command::ClipboardImage { png: termic_remote::b64(b"png") }, tok), &host);
+        assert_eq!(ok.error.map(|e| e.message), Some("this host has no clipboard".into()));
+    }
+
+    #[test]
     fn open_url_is_unauthenticated_and_queues_the_link() {
         let host = StubHost::default();
         let url = "termic://new?project=web&p=hello";
@@ -6909,6 +7158,23 @@ mod tests {
         // Tasks the webview did not report stay unknown, not "idle".
         let other = l.tasks.iter().find(|t| t.project == "api").unwrap();
         assert!(other.work_state.is_none());
+    }
+
+    #[test]
+    fn two_windows_merge_and_the_window_running_a_task_wins() {
+        let st = |s: &str| TaskAgentState { props: Default::default(), state: s.into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true };
+        let cache = AgentCache::new();
+        // The Work window runs t1; the Personal window knows t1 too but
+        // runs nothing for it, and has its own t2.
+        cache.update_from("work", HashMap::from([("t1".to_string(), st("idle"))]));
+        cache.update_from("personal", HashMap::from([("t1".to_string(), st("inactive")), ("t2".to_string(), st("working"))]));
+        let snap = cache.snapshot();
+        assert_eq!(snap.states["t1"].state, "idle", "the running window's view, whichever pushed last");
+        assert_eq!(snap.states["t2"].state, "working");
+        // And again in the other order: no flipping.
+        cache.update_from("work", HashMap::from([("t1".to_string(), st("idle"))]));
+        assert_eq!(cache.snapshot().states["t1"].state, "idle");
+        assert_eq!(cache.snapshot().states["t2"].state, "working", "the other window's tasks stay");
     }
 
     #[test]
@@ -8352,6 +8618,34 @@ mod tests {
     }
 
     #[test]
+    fn pin_routes_through_the_webview_and_defaults_to_pinning() {
+        let host = StubHost::default();
+        host.script_rpc("pin_task", Ok(serde_json::Value::Null));
+        // The wire form a remote client sends: no `pinned` means pin.
+        let cmd: Command = serde_json::from_value(serde_json::json!({ "cmd": "pin", "task": "solo" })).unwrap();
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Pin(p)) = reply.data else { panic!("expected pin, got {reply:?}") };
+        assert!(p.pinned);
+        assert_eq!(p.task.id, "w3");
+        let unpin = Command::Pin { task: Some("solo".into()), project: None, pinned: false, cwd: None };
+        assert!(handle(&req(unpin, Some("tok")), &host).ok);
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls.iter().map(|c| (c.0.as_str(), c.1["taskId"].clone(), c.1["pinned"].clone())).collect::<Vec<_>>(), vec![
+            ("pin_task", serde_json::json!("w3"), serde_json::json!(true)),
+            ("pin_task", serde_json::json!("w3"), serde_json::json!(false)),
+        ]);
+    }
+
+    #[test]
+    fn pin_names_an_unknown_task_and_writes_nothing() {
+        let host = StubHost::default();
+        let reply = handle(&req(Command::Pin { task: Some("nope".into()), project: None, pinned: true, cwd: None }, Some("tok")), &host);
+        assert!(!reply.ok);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn rename_rejects_an_empty_name_before_resolving() {
         let host = StubHost::default();
         let reply = handle(&req(rename_cmd(Some("solo"), None, "   "), Some("tok")), &host);
@@ -8789,7 +9083,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
@@ -8806,7 +9100,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Err("project already added".into()));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
@@ -8815,7 +9109,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Err("project already added".into()));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/repo/unknown".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/repo/unknown".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         assert_eq!(reply.error.expect("error").code, ErrorCode::Internal);
@@ -8897,7 +9191,7 @@ mod tests {
             Err("/x/plain is not a git repo. Confirm adding it as a plain folder.".into()),
         );
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: false }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: false, clone: None }, Some("tok")),
             &host,
         );
         let err = reply.error.expect("error");
@@ -8907,7 +9201,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
         let reply = handle(
-            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: true }, Some("tok")),
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: true, clone: None }, Some("tok")),
             &host,
         );
         assert!(reply.ok, "{reply:?}");
@@ -9105,6 +9399,16 @@ mod tests {
         let dynamic: Arc<dyn CliHost> = arc.clone();
         std::thread::spawn(move || serve_listener(listener, dynamic));
         (sock, dir, arc)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_restarting_owner_stops_answering_once_it_releases_its_socket() {
+        let (sock, _guard) = spawn_server(StubHost::default());
+        assert!(live_owner(&sock).is_some(), "the owner answers before the restart");
+        release_socket_at(&sock);
+        // Still running (its listener thread is alive), yet nobody can find it.
+        assert!(live_owner(&sock).is_none());
     }
 
     // The ordering `quit` depends on: the client must GET its reply, and only
@@ -11970,6 +12274,48 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound);
     }
 
+    /// A remote client's chat for a Codex task: the rollout named by the
+    /// session id its tab recorded, read into turns. A shared checkout
+    /// without that id is refused rather than guessed at.
+    #[test]
+    fn a_codex_tasks_transcript_is_its_recorded_session() {
+        let home = tempfile::tempdir().unwrap();
+        let mut host = StubHost { home: Some(home.path().to_path_buf()), ..Default::default() };
+        host.tasks[2].cli = "codex".into();
+        host.tasks[2].persisted_tabs = vec![crate::PersistedTab {
+            id: "tab1".into(),
+            cli: "codex".into(),
+            is_default: true,
+            session_id: Some("019a0000-0000-7000-8000-000000000001".into()),
+            ..Default::default()
+        }];
+        let day = home.path().join(".codex/sessions/2026/01/02");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-01-02T09-00-00-019a0000-0000-7000-8000-000000000001.jsonl"),
+            concat!(
+                r#"{"type":"session_meta","payload":{"cwd":"/tasks/web/solo"}}"#, "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix it"}]}}"#, "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixed"}]}}"#,
+            ),
+        )
+        .unwrap();
+        let (id, turns) = transcript_turns(&host, "solo").unwrap();
+        assert_eq!(id, host.tasks[2].id);
+        assert_eq!(turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["fix it", "fixed"]);
+        // The same task on the shared checkout, with no recorded id.
+        host.tasks[2].persisted_tabs.clear();
+        host.tasks[2].is_main_checkout = true;
+        let err = transcript_turns(&host, "solo").unwrap_err();
+        assert_eq!(err, SHARED_CHECKOUT_CHAT);
+        // A claude task there gets the same words for a person, not the
+        // CLI's advice to an agent (write RESULT.md).
+        host.tasks[2].cli = "claude".into();
+        let err = transcript_turns(&host, "solo").unwrap_err();
+        assert_eq!(err, SHARED_CHECKOUT_CHAT);
+        assert!(!err.contains("RESULT.md"));
+    }
+
     // ── attach ───────────────────────────────────────────────────────
 
     #[test]
@@ -12117,5 +12463,43 @@ mod tests {
         proto::write_msg(&mut stream, &req(Command::Hello, None)).unwrap();
         let reply: Reply = proto::read_msg(&mut reader).unwrap().unwrap();
         assert!(reply.ok);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod codex_on_box_tests {
+    use super::CODEX_ROLLOUT_SH;
+
+    fn run(home: &std::path::Path, cwd: &str, sid: &str) -> String {
+        let out = std::process::Command::new("/bin/sh").args(["-c", CODEX_ROLLOUT_SH, "sh", cwd, sid]).env("HOME", home).output().unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn finds_the_rollout_by_session_or_else_the_newest_for_the_folder() {
+        let home = std::env::temp_dir().join(format!("codex-box-{}", std::process::id()));
+        let day = home.join(".codex/sessions/2026/11/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let meta = |cwd: &str| format!("{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{cwd}\"}}}}\nbody-for-{cwd}\n");
+        std::fs::write(day.join("rollout-2026-11-22T10-00-00-aaa.jsonl"), meta("/w/task")).unwrap();
+        std::fs::write(day.join("rollout-2026-11-22T11-00-00-bbb.jsonl"), meta("/w/other")).unwrap();
+        assert!(run(&home, "/w/task", "").contains("body-for-/w/task"), "newest for the folder, skipping another folder's newer one");
+        assert!(run(&home, "/w/none", "bbb").contains("body-for-/w/other"), "the named session wins");
+        assert_eq!(run(&home, "/w/none", ""), "", "nothing for a folder with no session");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod chat_supported_tests {
+    #[test]
+    fn chat_is_for_the_agents_whose_logs_are_read_and_where_they_can_be() {
+        use super::chat_supported;
+        assert!(chat_supported("claude", false) && chat_supported("claude", true));
+        assert!(chat_supported("codex", true));
+        assert!(chat_supported("agy", false) && chat_supported("agy", true), "its SQLite file is fetched from a box");
+        for other in ["copilot", "grok", "pi", "opencode", "muse", "my-custom", "shell"] {
+            assert!(!chat_supported(other, false), "{other}");
+        }
     }
 }

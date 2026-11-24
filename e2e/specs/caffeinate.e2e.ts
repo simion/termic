@@ -18,7 +18,7 @@ const STOP = '[data-testid="caffeinate-stop"]';
 const ERROR = '[data-testid="caffeinate-error"]';
 const failureFile = path.join(dataDir, "e2e-caffeinate-fail");
 const visibleRun = !!process.env.TERMIC_E2E_VISIBLE && process.env.TERMIC_E2E_VISIBLE !== "0";
-const originalFooterOrder = ["caffeinate-trigger", "theme-picker", "sidebar-report-bug", "sidebar-contact", "sidebar-shortcuts", "open-activity", "sidebar-settings"];
+const originalFooterOrder = ["caffeinate-trigger", "theme-picker", "sidebar-report-bug", "sidebar-contact", "sidebar-shortcuts", "open-activity", "sidebar-footer-remote", "sidebar-settings"];
 const footerOrder = () => browser.execute(() => [...document.querySelectorAll('[data-testid="sidebar-footer"] button')].map(el => el.getAttribute("data-testid")));
 const text = (selector: string) => browser.execute(s => document.querySelector(s)?.textContent ?? "", selector);
 const mode = () => browser.execute(s => document.querySelector(s)?.getAttribute("data-mode"), TRIGGER);
@@ -101,6 +101,8 @@ describe("caffeinate", () => {
     await clickWhenVisible(APPLY);
     await browser.waitUntil(active);
     expect(await mode()).toBe("duration");
+    // The mug fills while it keeps the computer awake.
+    expect(await browser.execute(s => document.querySelector(`${s} svg`)?.getAttribute("fill"), TRIGGER)).toBe("currentColor");
     await waitVisible('[data-testid="caffeinate-current"]');
     expect(await text(STATUS)).toContain("Keeping awake");
     await browser.waitUntil(async () => await browser.execute(s => document.activeElement === document.querySelector(s), STATUS));
@@ -112,6 +114,28 @@ describe("caffeinate", () => {
     await browser.execute(s => document.querySelector<HTMLElement>(s)!.focus(), STOP);
     await stop();
     await browser.waitUntil(async () => await browser.execute(s => document.activeElement === document.querySelector(s), STATUS));
+    // Outlined again once off.
+    expect(await browser.execute(s => document.querySelector(`${s} svg`)?.getAttribute("fill"), TRIGGER)).toBe("none");
+  });
+
+  it("remembers 'Turn back on when Termic restarts', and forgets the request once it is turned off", async () => {
+    await open();
+    const box = '[data-testid="caffeinate-restore-on-launch"]';
+    await waitVisible(box);
+    const ls = (k: string) => browser.execute(key => localStorage.getItem(key), k);
+    expect(await browser.execute(q => (document.querySelector(q) as HTMLInputElement).checked, box)).toBe(false);
+    await clickWhenVisible(box);
+    expect(await ls("caffeinateRestore")).toBe("1");
+    // Starting one records it for the next launch; stopping it clears that.
+    await clickWhenVisible('[data-testid="caffeinate-choice-duration"]');
+    await setInputValue('[data-testid="caffeinate-hours"]', "2");
+    await clickWhenVisible(APPLY);
+    await browser.waitUntil(active);
+    expect(JSON.parse((await ls("caffeinateLast")) ?? "null")?.request?.mode).toBe("duration");
+    await stop();
+    expect(await ls("caffeinateLast")).toBeNull();
+    await clickWhenVisible(box);
+    expect(await ls("caffeinateRestore")).toBe("0");
   });
 
   it("offers 16 and 24 hours, explains pending changes, and restores the accepted choice", async () => {

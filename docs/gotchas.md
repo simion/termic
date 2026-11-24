@@ -491,16 +491,27 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
-### `transition-opacity` froze a state-driven fade too
+### The settings Toggle froze too, on `left` and `background-color`
 
-The project filter icon (`ProjectTaskFilter.tsx`) switches `opacity-0` to
-`opacity-100` when a filter pins it, and with `transition-opacity` on it
-computed opacity stayed `0`: a pinned filter's icon was invisible
-(`projects.e2e.ts` "pins the bar"). Removing the transition fixed it,
-restoring it broke it. The fade now applies only while unpinned (the hover
-reveal). So `transition-[color,background-color]` above is not a complete
-defence: when React state flips a property that carries a CSS transition,
-assert the computed value in a spec.
+Settings > Remote control: Connect a phone turns sharing on from its dialog, the
+page reads the new value from `peer_status`, and the "Allow paired phones"
+switch got `aria-checked="true"` and an inline `left: 18px` while
+`getComputedStyle` kept `left: 2px` and the off track colour, permanently
+(still off after the dialog closed). Removing the Toggle's two
+`transition` declarations fixed it; putting them back reproduced it
+(`e2e/specs/remote.e2e.ts`, the QR case asserts the computed knob
+position). So `transition-[color,background-color]` above is not a
+complete defence. What makes this case freeze when a direct click does not
+is NOT established. The fix is local: `RemoteSection` remounts the Toggle
+when its value arrives from outside, which draws it with no transition.
+
+Same again with `transition-opacity`: the project filter icon
+(`ProjectTaskFilter.tsx`) switches `opacity-0` to `opacity-100` when a
+filter pins it, and computed opacity stayed `0`, so a pinned filter's icon
+was invisible (`projects.e2e.ts` "pins the bar"). Removing the transition
+fixed it, restoring it broke it. The fade now applies only while unpinned
+(the hover reveal). Rule of thumb: when React state flips a property that
+carries a CSS transition, assert the computed value in a spec.
 
 ## An overhanging hit area is clipped out of existence
 
@@ -1519,3 +1530,5 @@ stack, and drops that one event. That is what an ordinary Cocoa app's run
 loop does with such an exception. If a crash still reads
 `panic_cannot_unwind`, the throw came through another Rust `extern "C"`
 method (a tao view or delegate callback), not through `sendEvent:`.
+
+- **A second copy of another machine's state goes stale, and nothing notices.** Two Queued bugs in one day: the phone kept its own list of prompts it had queued and cleared one only when the transcript showed the same text, so a mismatch stayed on screen for good; and the desktop rebuilt Claude's queue from its `queue-operation` log lines, which drift (a `dequeue` names nothing, a `remove`'s text can differ from its `enqueue`, `popAll` was unhandled), so long sessions piled up prompts Claude had long since taken. Rules: do not mirror state you cannot reconcile with its owner (the phone's queue was deleted, not patched); cross-check a reconstruction against a signal you already trust (the phone shows Queued only while the agent is mid-turn, because Claude drains its queue when a turn ends); and test a reader of an undocumented format against real data, not only the shapes you know: `make transcript-audit` runs `termic-remote`'s transcript reader over this machine's Claude sessions and fails on an unknown queue operation or a sent prompt still shown as queued. Run it after a Claude Code update. It reads real transcripts, so it is local only and prints paths and counts, never text.

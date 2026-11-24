@@ -781,6 +781,11 @@ export const clipboardImageSave = (bytes: Uint8Array) => invoke<string>("clipboa
  *  pasteboard has to be read natively. Rejects when the clipboard holds no
  *  image, which the caller treats as "forward the keystroke", not an error. */
 export const clipboardImageCapture = () => invoke<string>("clipboard_image_capture");
+/** Copy a pasted image (a path from clipboardImageCapture/Save) onto a
+ *  server; resolves to its path there. */
+/** This computer's clipboard image as base64 PNG; rejects when there is none. */
+export const clipboardImagePngB64 = () => invoke<string>("clipboard_image_png_b64");
+export const serverPasteImage = (server: string, cwd: string, path: string) => invoke<string>("server_paste_image", { server, cwd, path });
 /** Read a task image or PDF as base64, for the markdown preview's inline
  *  images or the file-tree preview pane (image/PDF extensions, 20 MB cap).
  *  Member-aware + worktree-contained, same checks as taskFileRead. Pass the
@@ -1286,8 +1291,9 @@ export const ptyAttached = (ptyId: string) => invoke<void>("pty_attached", { id:
  *  dead id, so delivery confirmation re-checks with this). */
 export const ptyAlive = (ptyId: string) => invoke<boolean>("pty_alive", { id: ptyId });
 /** Listen for PTY exit. Rust emits `PtyExit { code: Option<i32> }`. */
-export function onPtyExit(ptyId: string, cb: (code: number | null) => void): Promise<UnlistenFn> {
-  return listen<{ code: number | null }>(`pty-exit://${ptyId}`, ev => cb(ev.payload.code));
+/** `restarted`: a server PTY its box ended on a restart onto a new build. */
+export function onPtyExit(ptyId: string, cb: (code: number | null, restarted: boolean) => void): Promise<UnlistenFn> {
+  return listen<{ code: number | null; restarted?: boolean }>(`pty-exit://${ptyId}`, ev => cb(ev.payload.code, !!ev.payload.restarted));
 }
 
 // ───────────────────────────── settings & discovery ─────────────────────────────
@@ -1360,7 +1366,7 @@ export const mcpRegenerateToken = () => invoke<void>("mcp_regenerate_token");
 export const mcpInstallClient  = (client: "claude" | "codex") =>
   invoke<string>("mcp_install_client", { client });
 // ───────────────────────── LAN peers ─────────────────────────
-// Settings > Agent access and the global pairing dialog (docs/peers.md).
+// Settings > Remote control and the global pairing dialog (docs/peers.md).
 // Whether sharing is on comes from `settings.lan_sharing_enabled`.
 export const peerStatus        = () => invoke<PeerStatus>("peer_status");
 /** Rename this machine as others see it. Empty goes back to the default. */
@@ -1470,6 +1476,9 @@ export async function notify(
     // The banner stays silent; the sound is decoupled and reliable.
     if (opts?.sound) void playCompletionSound(opts.sound, true);
     notifSend({ title, body, extra: route ? { taskId: route.taskId, tabId: route.tabId } : undefined });
+    // The same line to paired phones that are away (src-tauri/src/push.rs;
+    // a no-op until the push relay exists).
+    invoke("phones_push", { title, body }).catch(() => {});
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }

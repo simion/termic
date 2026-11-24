@@ -4,6 +4,7 @@
 // for "add another agent to this task" and never found the "+" in the tab bar;
 // both entry points now render from here so they cannot drift apart.
 
+import { useServerDetectedClis } from "@/lib/remote";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { Agent } from "@/lib/types";
@@ -119,8 +120,12 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const closedTabs = useApp(s => s.closedTabs[taskId] ?? NO_CLOSED_TABS);
+  // A server project's task: what is installed on its box, not here.
+  const projectId = useApp(s => s.tasks.find(w => w.id === taskId)?.project_id);
+  const isServer = useApp(s => !!s.projects.find(p => p.id === projectId)?.server);
+  const serverClis = useServerDetectedClis(projectId, isServer, registry);
   // Hide disabled / not-installed agents from the new-agent list.
-  const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
+  const visibleClis = visibleCliIds(registry.map(a => a.id), registry, isServer ? serverClis : detectedClis);
   const customTerminals = useMemo(
     () => registry.filter(a => isTerminalEntry(a) && !a.disabled),
     [registry],

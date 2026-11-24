@@ -4,7 +4,7 @@
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
@@ -18,7 +18,7 @@ import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Flower2,
-  MessageSquareText, Library, Palette,
+  MessageSquareText, Library, Palette, Play, Square,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -30,6 +30,12 @@ import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { ForgeRatePill } from "@/components/ForgeRatePill";
 import { themesDir, taskSendDiffToMain } from "@/lib/ipc";
+import { remoteCall, req, useRemote } from "@/lib/remote";
+import { i18n } from "@/lib/i18n";
+import { resolveRunTargets } from "@/lib/runTabs";
+import { openExternalUrl } from "@/lib/ipc";
+import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
+import type { Task } from "@/lib/types";
 import { OpenWithButton } from "@/components/OpenWithButton";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import {
@@ -270,6 +276,10 @@ export function UnifiedBar() {
             palette's global commands (new task, project picker, settings)
             work with nothing selected. */}
         <CommandPaletteButton />
+        {/* One bar for every task. A server project's task
+            (docs/remote.md, Servers) leaves out what acts only on
+            this Mac (the sandbox, a Secrets role) and opens its editor
+            over SSH; runs and prompts reach its tabs, which run on the box. */}
         {task && proj && (
           <>
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
@@ -314,43 +324,9 @@ export function UnifiedBar() {
                 nothing to send). Hard-blocks on a dirty main checkout
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
-            {!task.is_main_checkout && (
-              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
-                <Button size="sm" variant="ghost" className="gap-1.5"
-                  onClick={async () => {
-                    const ok = await useUI.getState().askConfirm({
-                      title: t("unifiedBar.sendToMainTitle", { name: taskCrumb }),
-                      message: t("unifiedBar.sendToMainMessage", { path: proj.root_path }),
-                      confirmLabel: t("unifiedBar.sendToMain"),
-                    });
-                    if (!ok) return;
-                    try {
-                      const r = await taskSendDiffToMain(task.id);
-                      // Build a compact, human-readable summary. Quietly
-                      // omit the zero halves so it reads as a result, not
-                      // a checklist of nothings-happened.
-                      const parts: string[] = [];
-                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
-                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
-                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
-                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
-                    } catch (e) {
-                      await useUI.getState().askConfirm({
-                        title: t("unifiedBar.sendToMainFailed"),
-                        message: String(e),
-                        confirmLabel: t("ok", { ns: "common" }),
-                        cancelLabel: "",
-                        destructive: true,
-                      });
-                    }
-                  }}>
-                  <ArrowUpToLine className="h-4 w-4" />
-                  <span>{t("unifiedBar.sendToMain")}</span>
-                </Button>
-              </Tip>
-            )}
-            <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />
-            {(() => {
+            {!task.is_main_checkout && <SendToMainButton task={task} rootPath={proj.root_path} crumb={taskCrumb} />}
+            {!proj.server && <TaskRoleKey task={task} className="h-4 w-4" wrapClassName="px-1.5" />}
+            {!proj.server && (() => {
               if (task.docker_sandbox_enabled) {
                 return (
                   <Tip content={t("unifiedBar.sbDockerTip")} side="bottom">
@@ -392,7 +368,7 @@ export function UnifiedBar() {
                 data-testid="archive-task"
               ><Archive className="h-4 w-4" /></Button>
             </Tip>
-            <OpenWithButton task={task} />
+            {proj.server ? <ServerOpenWith serverId={proj.server} path={task.path} /> : <OpenWithButton task={task} />}
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
             <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
               <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
@@ -409,6 +385,85 @@ export function UnifiedBar() {
         <WindowControls />
       </div>
     </header>
+  );
+}
+
+/** Send to main: the task's diff into the project's main checkout. A server
+ *  task's runs on the box (lib.rs send_diff_to_main_on_server). */
+function SendToMainButton({ task, rootPath, crumb }: { task: { id: string }; rootPath: string; crumb: string }) {
+  const { t } = useTranslation("chrome");
+  return (
+              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
+                <Button size="sm" variant="ghost" className="gap-1.5" data-testid="send-to-main"
+                  onClick={async () => {
+                    const ok = await useUI.getState().askConfirm({
+                      title: t("unifiedBar.sendToMainTitle", { name: crumb }),
+                      message: t("unifiedBar.sendToMainMessage", { path: rootPath }),
+                      confirmLabel: t("unifiedBar.sendToMain"),
+                    });
+                    if (!ok) return;
+                    try {
+                      const r = await taskSendDiffToMain(task.id);
+                      // Build a compact, human-readable summary. Quietly
+                      // omit the zero halves so it reads as a result, not
+                      // a checklist of nothings-happened.
+                      const parts: string[] = [];
+                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
+                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
+                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
+                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
+                    } catch (e) {
+                      await useUI.getState().askConfirm({
+                        title: t("unifiedBar.sendToMainFailed"),
+                        message: String(e),
+                        confirmLabel: t("ok", { ns: "common" }),
+                        cancelLabel: "",
+                        destructive: true,
+                      });
+                    }
+                  }}>
+                  <ArrowUpToLine className="h-4 w-4" />
+                  <span>{t("unifiedBar.sendToMain")}</span>
+                </Button>
+              </Tip>
+  );
+}
+
+/** Editors that open a folder on another machine over SSH, by URL. */
+const SSH_EDITORS = [
+  { id: "vscode", name: "VS Code", scheme: "vscode" },
+  { id: "cursor", name: "Cursor", scheme: "cursor" },
+] as const;
+
+/** Open with, for a server task: the worktree is on the box, so an editor
+ *  opens it over SSH (its Remote-SSH URL) rather than as a local folder. */
+function ServerOpenWith({ serverId, path }: { serverId: string; path: string }) {
+  const { t } = useTranslation("chrome");
+  const ssh = useRemote(s => s.machines.find(m => m.id === serverId)?.ssh ?? null);
+  if (!ssh) return null;
+  const open = (ed: typeof SSH_EDITORS[number]) => {
+    const url = `${ed.scheme}://vscode-remote/ssh-remote+${ssh}${path}`;
+    openExternalUrl(url, "").catch((e: unknown) =>
+      useUI.getState().pushToast(t("openWith.openFailed", { name: ed.name, error: String(e) }), "error"));
+  };
+  return (
+    <DropdownRoot>
+      <Tip content={t("openWith.openWith")} side="bottom">
+        <DropdownTrigger asChild>
+          <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="server-open-with">
+            <Code2 className="h-4 w-4" />
+            <span>{t("openWith.openWith")}</span>
+          </Button>
+        </DropdownTrigger>
+      </Tip>
+      <DropdownMenu align="end" className="min-w-[180px]" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {SSH_EDITORS.map(ed => (
+          <DropdownItem key={ed.id} data-testid={`server-open-${ed.id}`} onSelect={() => open(ed)}>
+            <span>{t("openWith.openIn", { label: ed.name })}</span>
+          </DropdownItem>
+        ))}
+      </DropdownMenu>
+    </DropdownRoot>
   );
 }
 

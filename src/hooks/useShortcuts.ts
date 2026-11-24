@@ -52,6 +52,8 @@ import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { taskHasOpenAgent } from "@/lib/taskBoardState";
 import { sidebarTaskOrder } from "@/lib/taskGroups";
 import type { TerminalTab } from "@/lib/types";
+import { stopRemoteAgent, useServerClose } from "@/components/remote/RemoteTaskView";
+import { useRemote } from "@/lib/remote";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
 
@@ -913,6 +915,34 @@ export function closeInnermost(): void {
   if (inBottom() && taskId) {
     const bottomId = state.activeBottomTab[taskId];
     if (bottomId) state.closeBottomTab(taskId, bottomId);
+    return;
+  }
+  // A remote agent runs on the other machine past any tab, so ⌘W on it
+  // asks: close the view, stop the agent, or neither.
+  const askAndClose = (machineId: string, remoteTask: string, taskName: string, closeView: () => void) => {
+    const m = useRemote.getState().machines.find(x => x.id === machineId);
+    const machineName = m?.name ?? machineId;
+    void useServerClose.getState().ask(taskName, machineName).then(c => {
+      if (c === "close") closeView();
+      else if (c === "stop") void stopRemoteAgent(machineId, remoteTask, machineName);
+    });
+  };
+  // A paired computer's task, drawn over the main area.
+  const remote = useRemote.getState();
+  if (remote.open) {
+    const open = remote.open;
+    const name = remote.machines.find(m => m.id === open.machine)?.tasks.find(t => t.id === open.task)?.name ?? open.task;
+    askAndClose(open.machine, open.task, name, () => useRemote.getState().openTask(null));
+    return;
+  }
+  // A server task's default agent tab, wherever focus sits: its agent runs
+  // on the box past the view, so ask (close the view, stop the agent, or
+  // neither). Every other tab of it closes as a local one does.
+  const task = taskId ? state.tasks.find(t => t.id === taskId) : undefined;
+  const server = task ? state.projects.find(p => p.id === task.project_id)?.server : undefined;
+  const activeTab = taskId ? (state.tabs[taskId] ?? []).find(t => t.id === state.activeTab[taskId]) : undefined;
+  if (taskId && task && server && activeTab?.type === "terminal" && (activeTab as TerminalTab).is_default && !inBottom()) {
+    askAndClose(server, taskId, task.name, () => useApp.getState().setActiveTask(null));
     return;
   }
   if (inSplitPane() && taskId) {

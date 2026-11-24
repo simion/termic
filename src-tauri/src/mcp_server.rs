@@ -1353,6 +1353,24 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_pin",
+        cli_verb: "pin",
+        description: "Pin a task in the sidebar (stays listed whatever the filters), or unpin it.",
+        params: &[
+            P_TASK_SELF,
+            P_PROJECT,
+            ParamDef { name: "off", json_type: "boolean", required: false, description: "Unpin instead.", cli_flag: Some("--off") },
+        ],
+        destructive: false,
+        read_only: false,
+        build: |a| Ok(Command::Pin {
+            task: Some(need_str(a, "task")?),
+            project: arg_str(a, "project")?,
+            pinned: !arg_bool(a, "off")?,
+            cwd: None,
+        }),
+    },
+    ToolDef {
         name: "task_group",
         cli_verb: "group",
         description: "Show, name or recolour a task's sidebar group (tasks you create join yours), or move a task in or out. Name it for the batch of work. An ungrouped task founds its group.",
@@ -1544,6 +1562,18 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_stop",
+        cli_verb: "stop",
+        description: "Stop a task's agent: its running agent processes end, and the task, worktree and session stay. Sending to the task or opening it starts the agent again.",
+        params: &[P_TASK, P_PROJECT],
+        destructive: true,
+        read_only: false,
+        build: |a| Ok(Command::Stop {
+            task: need_str(a, "task")?,
+            project: arg_str(a, "project")?,
+        }),
+    },
+    ToolDef {
         name: "task_tab",
         cli_verb: "tab",
         description: "Open a tab inside a running task (the app's \"+\" menu as a tool), optionally delivering a first prompt to it. Returns the new tab's id, which is the stable selector other tools take. With `tab`, renames an open tab instead.",
@@ -1705,12 +1735,14 @@ const TOOLS: &[ToolDef] = &[
         params: &[
             ParamDef { name: "path", json_type: "string", required: true, description: "Absolute path to the repo (or folder with nonGit).", cli_flag: Some("path") },
             ParamDef { name: "nonGit", json_type: "boolean", required: false, description: "Allow a plain non-git folder.", cli_flag: Some("--non-git") },
+            ParamDef { name: "clone", json_type: "string", required: false, description: "Git URL to clone into path first (path must not exist). With peer, the clone happens on that machine.", cli_flag: Some("--clone") },
         ],
         destructive: false,
         read_only: false,
         build: |a| Ok(Command::ProjectAdd {
             path: need_str(a, "path")?,
             non_git: arg_bool(a, "nonGit")?,
+            clone: arg_str(a, "clone")?,
         }),
     },
     ToolDef {
@@ -4043,7 +4075,11 @@ mod tests {
         // 29298: task_run, parity with `termic run`: start, stop or report
         // the task's run/setup script in its Run tab, and the one sentence
         // that steers an agent to it instead of its own dev server.
-        const RECORDED: usize = 29298;
+        // 29770: task_pin, parity with `termic pin`: pin or unpin a task in
+        // the sidebar, which a remote client's task menu needs too.
+        // 29914: project_add's `clone`, parity with `termic project add
+        // --clone`: the one way a repo gets onto a termic-server box.
+        const RECORDED: usize = 30389;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

@@ -7,7 +7,7 @@
 //! - **Discovery** is `mdns.rs` (`_termic._tcp`). It only finds; nothing it
 //!   says is trusted, and pairing works without it (pair by address).
 //! - **The peer listener** is one TCP port on every interface, bound only
-//!   while LAN sharing is on (Settings > Agent access). Its surface:
+//!   while LAN sharing is on (Settings > Remote control). Its surface:
 //!   `hello` (what the advertisement already says), the three pairing steps,
 //!   and two SEALED endpoints, `call` and `unpair`. An unpaired machine gets
 //!   the first four and nothing else: it can ask to pair, which puts a dialog
@@ -49,7 +49,21 @@ use crate::{dlog, mdns};
 /// carries. Two machines on different peer protocols cannot pair at all;
 /// two on different CLI protocols can pair but not call each other.
 pub(crate) const PV: u32 = 2;
+
+/// Whether a Termic at `version` works with this one as a paired computer:
+/// at least termic_remote::compat::REQUIRES_DESKTOP, not the same release
+/// (most releases change nothing on the wire). A machine whose version is
+/// unknown or unreadable falls back to the old rule, the same CLI
+/// protocol. The other machine applies its own floor to this one.
+pub(crate) fn peer_compatible(version: Option<&str>, proto: Option<u32>) -> bool {
+    match version.filter(|v| termic_remote::compat::core(v).is_some()) {
+        Some(v) => termic_remote::compat::at_least(v, termic_remote::compat::REQUIRES_DESKTOP),
+        None => proto.is_none_or(|p| p == proto::PROTOCOL_VERSION),
+    }
+}
 const PREFIX: &str = "/termic-peer/v1";
+/// The remote-control stream (remote_server.rs, docs/remote.md).
+pub(crate) const STREAM_PATH: &str = "/termic-peer/v1/stream";
 pub(crate) const PEERS_FILE: &str = "peers.json";
 
 /// Where the listener's port is picked from: below every platform's dynamic
@@ -135,7 +149,7 @@ impl Grant {
             _ => None,
         }
     }
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Grant::Reply => "reply",
             Grant::Drive => "drive",
@@ -183,7 +197,7 @@ fn permitted(
                     "{us} only lets this machine reply to its tasks that contacted it \
                      (send, naming the task id from the message you are answering). \
                      To do more, the person at {us} changes what this machine may do \
-                     in Settings > Agent access."
+                     in Settings > Remote control."
                 )
             };
             let Command::Send { task: Some(task), project, resume, fresh, .. } = cmd else {
@@ -296,6 +310,35 @@ struct Store {
     /// remembered address keeps working across restarts.
     port: u16,
     peers: Vec<PeerRecord>,
+    /// Phones paired by scanning this machine's QR code (docs/remote.md).
+    /// A phone is a remote control of THIS machine: it never runs anything
+    /// itself and is never driven, so it has a key and nothing else.
+    phones: Vec<PhoneRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct PhoneRecord {
+    /// The id the phone generated for itself (32 hex).
+    id: String,
+    /// What the phone calls itself ("Alice's iPhone"), from its hello.
+    name: String,
+    /// The pair key the QR code carried, hex. Never leaves this file.
+    key: String,
+    paired_at_ms: i64,
+    last_seen_ms: Option<i64>,
+    addr: Option<String>,
+    /// Where to push to it while it is away (push.rs). Set by the phone.
+    push: Option<PushTarget>,
+}
+
+/// A phone's push token and the service it belongs to ("ios" = APNs,
+/// "android" = FCM).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct PushTarget {
+    pub platform: String,
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -471,6 +514,31 @@ pub(crate) struct PairModeView {
     pub requested_by: Option<String>,
 }
 
+/// A phone paired with this machine.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PhoneView {
+    pub id: String,
+    pub name: String,
+    pub paired_at_ms: i64,
+    pub last_seen_ms: Option<i64>,
+    /// Has a live connection right now.
+    pub connected: bool,
+}
+
+/// The QR code this machine shows while a phone may pair: one key, used
+/// once, gone after `PAIR_MODE_TTL`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PhonePairingView {
+    /// `termic-remote://pair?...`: what the QR encodes. Carries the key;
+    /// shown only as the code, never as text.
+    pub link: String,
+    /// The QR code, as an SVG document.
+    pub svg: String,
+    pub expires_at_ms: i64,
+    /// Where the phone will try to reach this machine, in order.
+    pub addresses: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PeerStatus {
     pub enabled: bool,
@@ -488,6 +556,11 @@ pub(crate) struct PeerStatus {
     pub nearby: Vec<NearbyView>,
     /// Open while this machine shows a pairing code.
     pub pair_mode: Option<PairModeView>,
+    pub phones: Vec<PhoneView>,
+    /// Open while this machine shows a phone pairing QR code.
+    pub phone_pairing: Option<PhonePairingView>,
+    /// Ids of computers with a live stream to this machine right now.
+    pub connected: Vec<String>,
 }
 
 fn platform() -> &'static str {
@@ -506,6 +579,8 @@ pub(crate) trait PeerUi: Send + Sync {
     fn changed(&self);
     /// A pairing completed (the global dialog asks what the machine is for).
     fn pairing(&self, view: &PairingView);
+    /// A phone scanned the QR code and is now paired.
+    fn phone_paired(&self, _id: &str, _name: &str) {}
 }
 
 // ───────────────────────────── pairing ───────────────────────────────
@@ -565,11 +640,44 @@ pub(crate) struct Node {
     replay: Mutex<HashMap<String, i64>>,
     failures: Mutex<u32>,
     runtime: Mutex<Option<Runtime>>,
+    /// The phone pairing on offer: the key the QR code carries.
+    phone_pairing: Mutex<Option<PhonePairing>>,
+    /// Live stream connections, so unpairing a device or turning sharing
+    /// off cuts it at once instead of at its next request.
+    live: Mutex<Vec<LiveConn>>,
+    live_seq: std::sync::atomic::AtomicU64,
     bind_error: Mutex<Option<String>>,
     discovery_error: Mutex<Option<String>>,
     /// Tests: what discovery would have seen, without multicast.
     #[cfg(test)]
     fake_sightings: Mutex<Vec<mdns::Sighting>>,
+}
+
+/// Where and how to reach a paired computer's stream (remote_client.rs).
+pub(crate) struct PeerEndpoint {
+    pub peer_id: String,
+    pub name: String,
+    /// Freshest first: discovery's sighting, then the stored address.
+    pub addrs: Vec<SocketAddr>,
+    pub key: [u8; 32],
+    pub self_id: String,
+    pub self_name: String,
+    /// What this machine lets the other do here (sent in the hello).
+    pub grant: String,
+    pub port: Option<u16>,
+}
+
+struct PhonePairing {
+    key: [u8; 32],
+    until: Instant,
+    expires_at_ms: i64,
+    addresses: Vec<String>,
+}
+
+struct LiveConn {
+    seq: u64,
+    client_id: String,
+    stream: TcpStream,
 }
 
 struct Runtime {
@@ -603,6 +711,9 @@ impl Node {
             replay: Mutex::new(HashMap::new()),
             failures: Mutex::new(0),
             runtime: Mutex::new(None),
+            phone_pairing: Mutex::new(None),
+            live: Mutex::new(Vec::new()),
+            live_seq: std::sync::atomic::AtomicU64::new(1),
             bind_error: Mutex::new(None),
             discovery_error: Mutex::new(None),
             #[cfg(test)]
@@ -725,12 +836,44 @@ impl Node {
         *rt = Some(Runtime { port, addr, shutdown, discovery });
         drop(rt);
         self.ui.changed();
+        self.debug_offer_phone_pairing();
+    }
+
+    /// Test seam (DEBUG BUILDS ONLY, like TERMIC_DATA_DIR): with
+    /// `TERMIC_DEBUG_PHONE_PAIRING=<file>`, keep a phone pairing on offer
+    /// and write its link to that file, renewed whenever one is used or
+    /// expires. This is how a phone app test (a simulator with no camera,
+    /// nobody at the desk) pairs with a dev instance. Dead in release: a
+    /// leaked variable must never leave a pairing key lying in a file.
+    fn debug_offer_phone_pairing(self: &Arc<Self>) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let Ok(path) = std::env::var("TERMIC_DEBUG_PHONE_PAIRING") else { return };
+        if path.trim().is_empty() {
+            return;
+        }
+        match self.start_phone_pairing() {
+            Ok(v) => {
+                let _ = std::fs::write(&path, format!("{}\n", v.link));
+                dlog("[peers] debug: phone pairing link written");
+            }
+            Err(e) => dlog(&format!("[peers] debug: no phone pairing ({e})")),
+        }
     }
 
     fn advert(&self, port: u16) -> mdns::Advert {
+        // Termic, Termic Beta and a dev build on one Mac are separate machines
+        // to pair with, under one computer name: all but the release say which
+        // they are, or the pair list shows the same name twice and a user
+        // pairs with the wrong one.
+        let name = match FLAVOR.get().copied().flatten() {
+            Some(f) => format!("{} ({f})", self.self_name()),
+            None => self.self_name(),
+        };
         mdns::Advert {
             id: self.self_id(),
-            name: self.self_name(),
+            name,
             version: self.version.clone(),
             proto: proto::PROTOCOL_VERSION,
             pv: PV,
@@ -763,6 +906,8 @@ impl Node {
         }
         *self.pair_mode.lock().unwrap() = None;
         *self.incoming.lock().unwrap() = None;
+        *self.phone_pairing.lock().unwrap() = None;
+        self.cut_all();
         self.ui.changed();
     }
 
@@ -784,7 +929,7 @@ impl Node {
                 port: x.port,
                 version: x.version.clone(),
                 proto: x.proto,
-                proto_ok: x.proto == proto::PROTOCOL_VERSION,
+                proto_ok: peer_compatible(Some(&x.version), Some(x.proto)),
                 pairing: x.pairing,
             })
             .collect();
@@ -812,6 +957,9 @@ impl Node {
             peers,
             nearby,
             pair_mode,
+            phones: s.phones.iter().map(|p| self.phone_view(p)).collect(),
+            phone_pairing: self.phone_pairing_view(),
+            connected: self.connected_ids(),
         }
     }
 
@@ -908,6 +1056,8 @@ impl Node {
             s.peers.retain(|p| p.id != rec.id);
             self.save(&s);
         }
+        self.cut(&rec.id);
+        crate::remote_client::forget(&rec.id);
         self.ui.changed();
         if let (Some(key), Some(addr)) = (rec.key(), self.address_of(&rec)) {
             let me = self.self_id();
@@ -992,7 +1142,7 @@ impl Node {
 
     fn open_pair_mode_for(self: &Arc<Self>, requested_by: Option<String>) -> Result<PairModeView, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let code = pc::new_code();
         let until = Instant::now() + PAIR_MODE_TTL;
@@ -1238,7 +1388,7 @@ impl Node {
     /// its name, for "Type the code shown on <name>".
     pub(crate) fn request_pair(&self, target: &str) -> Result<String, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let target = target.trim();
         if target.is_empty() {
@@ -1273,7 +1423,7 @@ impl Node {
     /// requests. Both sides let the other drive (Settings narrows it).
     pub(crate) fn pair(self: &Arc<Self>, target: &str, code: &str) -> Result<PairingView, String> {
         if self.port().is_none() {
-            return Err("Turn on sharing on this network first (Settings > Agent access).".into());
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         }
         let target = target.trim();
         if target.is_empty() {
@@ -1402,62 +1552,6 @@ impl Node {
 
     // ── calls ────────────────────────────────────────────────────────
 
-    fn on_call(&self, body: &[u8], src: IpAddr) -> (u16, Vec<u8>) {
-        let path = format!("{PREFIX}/call");
-        let (rec, msg) = match self.open_sealed(&path, body) {
-            Ok(x) => x,
-            Err(Some(rec)) => return self.clock_answer(&rec, &path),
-            Err(None) => return self.refuse(),
-        };
-        self.backoff_reset();
-        let their_grant = msg.grant;
-        self.touch(&rec.id, Some(src), msg.port, their_grant);
-
-        let us = self.self_name();
-        let call: Option<CallBody> = serde_json::from_value(msg.body.clone()).ok();
-        let reply = match call {
-            None => Reply::err("peer", ErrorCode::BadRequest, "malformed call"),
-            Some(c) if c.proto != proto::PROTOCOL_VERSION => Reply::err(
-                &c.request.id,
-                ErrorCode::Unsupported,
-                format!(
-                    "{us} runs Termic {} (CLI protocol {}) and the calling machine speaks protocol {}. \
-                     Update the older one so both run the same version.",
-                    self.version,
-                    proto::PROTOCOL_VERSION,
-                    c.proto
-                ),
-            ),
-            Some(c) => {
-                let cmd = localize_signature(sanitize(&c.request.cmd), &rec);
-                match permitted(rec.grant, &cmd, &rec.contacts, self.host.as_ref(), &us) {
-                    Err(why) => Reply::err(&c.request.id, ErrorCode::Auth, why),
-                    Ok(()) => {
-                        let mut cmd = report_back_now(cmd, &rec.contacts, self.host.as_ref());
-                        crate::mcp_server::clamp_wait(&mut cmd);
-                        let req = Request {
-                            id: c.request.id.clone(),
-                            token: None,
-                            profile: c.request.profile.clone(),
-                            peer: None,
-                            from_task: None,
-                            cmd,
-                        };
-                        // Marked as a paired computer's: whatever it does in a
-                        // profile, that profile's window comes on screen.
-                        crate::cli_server::with_peer_origin(|| {
-                            crate::cli_server::dispatch_authenticated(&req, self.host.as_ref(), &mut crate::mcp_server::NoopSink)
-                        })
-                    }
-                }
-            }
-        };
-        let grant = self.find(&rec.id).map(|r| r.grant).unwrap_or(rec.grant);
-        let out = Sealed::new(serde_json::json!({ "reply": reply }), Some(grant)).with_rid(&msg.rid);
-        let key = rec.key().expect("opened with it");
-        json(200, &pc::seal(&key, &path, &self.self_id(), &rec.id, &out.to_bytes()))
-    }
-
     fn on_unpair(&self, body: &[u8]) -> (u16, Vec<u8>) {
         let path = format!("{PREFIX}/unpair");
         let Ok((rec, msg)) = self.open_sealed(&path, body) else { return self.refuse() };
@@ -1467,6 +1561,8 @@ impl Node {
             self.save(&s);
         }
         dlog(&format!("[peers] {} unpaired from this machine", rec.display_name()));
+        self.cut(&rec.id);
+        crate::remote_client::forget(&rec.id);
         self.ui.changed();
         let out = Sealed::new(serde_json::json!({}), None).with_rid(&msg.rid);
         let key = rec.key().expect("opened with it");
@@ -1497,16 +1593,6 @@ impl Node {
         Ok((rec, msg))
     }
 
-    /// The paired machine's call was sealed correctly but stamped outside the
-    /// window: answer 409 with this clock (the sealed ts), so it can say the
-    /// clocks disagree instead of marking the pair revoked. Nothing runs.
-    fn clock_answer(&self, rec: &PeerRecord, path: &str) -> (u16, Vec<u8>) {
-        let key = rec.key().expect("opened with it");
-        let out = Sealed::new(serde_json::json!({}), None);
-        let (_, body) = json(200, &pc::seal(&key, path, &self.self_id(), &rec.id, &out.to_bytes()));
-        (409, body)
-    }
-
     /// The one refusal: a bare 401 after a growing delay, identical for an
     /// unknown sender, a bad seal, a stale or a replayed message.
     fn refuse(&self) -> (u16, Vec<u8>) {
@@ -1527,7 +1613,7 @@ impl Node {
     /// Run `req` on the paired machine it names. The local half of `--peer`
     /// and MCP `peer_call`: everything the other machine sees is sealed with
     /// the pair key, which never leaves this process.
-    pub(crate) fn forward(&self, req: &Request, sink: &mut dyn EventSink) -> Reply {
+    pub(crate) fn forward(self: &Arc<Self>, req: &Request, sink: &mut dyn EventSink) -> Reply {
         let sel = req.peer.as_deref().unwrap_or("");
         if matches!(req.cmd, Command::PeerList | Command::PeerPair { .. } | Command::PeerUnpair { .. } | Command::PeerRename { .. }) {
             return Reply::err(&req.id, ErrorCode::BadRequest, "the peer verbs act on this machine; drop --peer");
@@ -1535,26 +1621,31 @@ impl Node {
         if matches!(req.cmd, Command::Attach { .. }) {
             return Reply::err(&req.id, ErrorCode::Unsupported, "attach does not reach across machines");
         }
+        // A server (remote_client.rs, reached over ssh) when no paired
+        // computer answers to the name. It needs no sharing: ssh goes out.
+        if self.find(sel).is_err() {
+            if let Some(server) = crate::remote_client::find_server(sel) {
+                return forward_to_server(&server, req, sink);
+            }
+        }
         if !(self.enabled)() || self.port().is_none() {
             return Reply::err(
                 &req.id,
                 ErrorCode::Unsupported,
-                "Sharing on this network is off on this machine (Settings > Agent access), so it cannot reach paired machines.",
+                "Sharing on this network is off on this machine (Settings > Remote control), so it cannot reach paired machines.",
             );
         }
         let rec = match self.find(sel) {
             Ok(r) => r,
             Err(msg) => return Reply::err(&req.id, ErrorCode::NotFound, msg),
         };
-        let Some(key) = rec.key() else {
+        if rec.key().is_none() {
             return Reply::err(&req.id, ErrorCode::Internal, "the stored key for that machine is damaged; pair again");
-        };
+        }
         if let Some(task) = req.from_task.as_deref().filter(|t| !t.trim().is_empty()) {
             self.remember_contact(&rec.id, task);
         }
         let name = rec.display_name();
-        let me = self.self_id();
-        let path = format!("{PREFIX}/call");
         let cmd = sanitize(&req.cmd);
         let budget = call_budget(&cmd);
         let streaming = streamed(&cmd);
@@ -1566,113 +1657,32 @@ impl Node {
             from_task: None,
             cmd,
         };
-        let body = CallBody { proto: proto::PROTOCOL_VERSION, request: inner };
-        let msg = Sealed::new(serde_json::to_value(&body).unwrap_or_default(), Some(rec.grant))
-            .with_port(self.port());
-        let rid = msg.rid.clone();
-        let env = pc::seal(&key, &path, &me, &rec.id, &msg.to_bytes());
-        let payload = serde_json::to_vec(&env).unwrap_or_default();
-
-        let first = self.address_of(&rec);
-        let mut used = first;
-        let result = match first {
-            Some(addr) => self.call_with_heartbeat(addr, &path, payload.clone(), budget, streaming, &req.id, sink),
-            None => Err(HttpError::Connect("no known address".into())),
-        };
-        // A machine that moved (a new DHCP lease, the other Wi-Fi) is not
-        // gone: ask the network once, and retry where it answers now.
-        let result = match result {
-            Err(HttpError::Connect(_)) => match self.rediscover(&rec.id) {
-                Some(addr) if Some(addr) != first => {
-                    used = Some(addr);
-                    self.call_with_heartbeat(addr, &path, payload, budget, streaming, &req.id, sink)
-                }
-                _ => result,
-            },
-            other => other,
-        };
-        let (status, bytes) = match result {
-            Ok(x) => x,
-            Err(e) => {
-                return Reply::err(&req.id, ErrorCode::PeerUnreachable, unreachable_msg(&name, &e.to_string()));
-            }
-        };
-        if status == 409 {
-            let their_ts = serde_json::from_slice::<pc::Envelope>(&bytes)
-                .ok()
-                .filter(|e| e.from == rec.id)
-                .and_then(|e| pc::open(&key, &path, &me, &e))
-                .and_then(|p| Sealed::parse(&p))
-                .map(|m| m.ts);
-            if let Some(ts) = their_ts {
-                return Reply::err(&req.id, ErrorCode::Conflict, clock_skew_msg(&name, ts - now_ms()));
-            }
-        }
-        if status == 401 {
-            self.mark_revoked(&rec.id);
-            return Reply::err(
-                &req.id,
-                ErrorCode::Auth,
-                format!("{name} no longer accepts this machine. It may have unpaired it: unpair here and pair again."),
-            );
-        }
-        if status != 200 {
-            return Reply::err(&req.id, ErrorCode::Internal, format!("{name} answered {status}"));
-        }
-        let opened = serde_json::from_slice::<pc::Envelope>(&bytes)
-            .ok()
-            .filter(|e| e.from == rec.id)
-            .and_then(|e| pc::open(&key, &path, &me, &e))
-            .and_then(|p| Sealed::parse(&p))
-            .filter(|m| m.rid == rid);
-        let Some(answer) = opened else {
-            return Reply::err(&req.id, ErrorCode::Internal, format!("{name}'s answer did not check out"));
-        };
-        // The address that ANSWERED, which after a retry is not the first.
-        self.touch(&rec.id, used.map(|a| a.ip()), used.map(|a| a.port()), answer.grant);
-        match answer.body.get("reply").cloned().map(serde_json::from_value::<Reply>) {
-            Some(Ok(mut reply)) => {
+        // Over the stream (docs/remote.md): one short connection per call,
+        // sealed with the pair key exactly as the sidebar's link is, on its
+        // own thread so this one can heartbeat the CLI meanwhile.
+        let (tx, rx) = mpsc::channel();
+        let peer_id = rec.id.clone();
+        let node = self.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(call_over_stream(&node, &peer_id, inner, budget));
+        });
+        let result = await_with_heartbeat(rx, streaming, &req.id, sink)
+            .unwrap_or_else(|| Err(StreamCallError::Unreachable("the call thread ended without an answer".into())));
+        match result {
+            Ok(mut reply) => {
                 reply.id = req.id.clone();
                 reply
             }
-            _ => Reply::err(&req.id, ErrorCode::Internal, format!("{name} sent an answer this version cannot read")),
-        }
-    }
-
-    /// The HTTP exchange, on its own thread when the CLI reads a stream, so
-    /// this one can keep the CLI's connection alive with heartbeats while
-    /// the other machine works (its socket gives up after 30 silent seconds).
-    #[allow(clippy::too_many_arguments)]
-    fn call_with_heartbeat(
-        &self,
-        addr: SocketAddr,
-        path: &str,
-        payload: Vec<u8>,
-        budget: Duration,
-        streaming: bool,
-        req_id: &str,
-        sink: &mut dyn EventSink,
-    ) -> Result<(u16, Vec<u8>), HttpError> {
-        if !streaming {
-            return http_raw(addr, "POST", path, &payload, budget);
-        }
-        let (tx, rx) = mpsc::channel();
-        let path = path.to_string();
-        std::thread::spawn(move || {
-            let _ = tx.send(http_raw(addr, "POST", &path, &payload, budget));
-        });
-        loop {
-            match rx.recv_timeout(HEARTBEAT_EVERY) {
-                Ok(r) => return r,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // A client that hung up stops being told; the call itself
-                    // runs to completion on the other machine either way.
-                    let _ = sink.emit(&StreamEvent::heartbeat(req_id));
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(HttpError::Io("the call thread ended without an answer".into()))
-                }
+            Err(StreamCallError::Revoked) => {
+                self.mark_revoked(&rec.id);
+                Reply::err(
+                    &req.id,
+                    ErrorCode::Auth,
+                    format!("{name} no longer accepts this machine. It may have unpaired it: unpair here and pair again."),
+                )
             }
+            Err(StreamCallError::Unreachable(e)) => Reply::err(&req.id, ErrorCode::PeerUnreachable, unreachable_msg(&name, &e)),
+            Err(StreamCallError::Other(e)) => Reply::err(&req.id, ErrorCode::Internal, format!("{name}: {e}")),
         }
     }
 
@@ -1710,6 +1720,378 @@ impl Node {
         }
     }
 
+    // ── the stream (remote_server.rs) and phones ─────────────────────
+
+    /// Sharing is on and the listener is bound: pairs are reachable.
+    pub(crate) fn sharing_on(&self) -> bool {
+        (self.enabled)() && self.port().is_some()
+    }
+
+    /// Every paired computer: (id, the name it has here).
+    pub(crate) fn paired_computers(&self) -> Vec<(String, String)> {
+        self.store.lock().unwrap().peers.iter().map(|p| (p.id.clone(), p.display_name())).collect()
+    }
+
+    /// What the client side needs to open a stream to a paired computer.
+    pub(crate) fn peer_endpoint(&self, id: &str) -> Result<PeerEndpoint, String> {
+        let rec = self.by_id(id).ok_or("that computer is no longer paired")?;
+        let key = rec.key().ok_or("the stored key for that machine is damaged; pair again")?;
+        let mut addrs = Vec::new();
+        if let Some(a) = self.address_of(&rec) {
+            addrs.push(a);
+        }
+        if let Some(a) = rec.socket() {
+            if !addrs.contains(&a) {
+                addrs.push(a);
+            }
+        }
+        Ok(PeerEndpoint {
+            peer_id: rec.id.clone(),
+            name: rec.display_name(),
+            addrs,
+            key,
+            self_id: self.self_id(),
+            self_name: self.self_name(),
+            grant: rec.grant.as_str().to_string(),
+            port: self.port(),
+        })
+    }
+
+    /// Ask discovery where a pair is now (it moved), waiting up to 2 s.
+    pub(crate) fn rediscover_addr(&self, id: &str) -> Option<SocketAddr> {
+        self.rediscover(id)
+    }
+
+    /// This node as an Arc, for the debug seam that needs to schedule work
+    /// from a `&self` method. The app's own node; None in tests.
+    fn arc(&self) -> Option<Arc<Node>> {
+        node().filter(|n| std::ptr::eq(Arc::as_ptr(n), self))
+    }
+
+    /// A paired computer by its exact id (never by name: a connecting
+    /// client is identified by the id it proved a key for).
+    fn by_id(&self, id: &str) -> Option<PeerRecord> {
+        self.store.lock().unwrap().peers.iter().find(|p| p.id == id).cloned()
+    }
+
+    pub(crate) fn host(&self) -> Arc<dyn CliHost> {
+        self.host.clone()
+    }
+
+    /// Offer a phone pairing: a fresh 256-bit key in a QR code, good for
+    /// one phone within `PAIR_MODE_TTL`. The camera is the secure channel
+    /// (docs/remote.md, "Pairing a phone"): whoever can see this screen
+    /// can pair, exactly like reading a code off it, and nothing else can.
+    /// Reopening replaces the key, so an old photo of the code is useless.
+    pub(crate) fn start_phone_pairing(self: &Arc<Self>) -> Result<PhonePairingView, String> {
+        let Some(port) = self.port() else {
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
+        };
+        let bound = self.runtime.lock().unwrap().as_ref().map(|r| r.addr);
+        let addresses: Vec<String> = match bound {
+            Some(a) if !a.is_unspecified() => vec![SocketAddr::new(a, port).to_string()],
+            _ => mdns::reachable_addrs().into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port).to_string()).collect(),
+        };
+        if addresses.is_empty() {
+            return Err("This computer has no network address a phone could reach. Connect it to Wi-Fi or a VPN first.".into());
+        }
+        let key = pc::random_bytes::<32>();
+        let until = Instant::now() + PAIR_MODE_TTL;
+        *self.phone_pairing.lock().unwrap() = Some(PhonePairing {
+            key,
+            until,
+            expires_at_ms: now_ms() + PAIR_MODE_TTL.as_millis() as i64,
+            addresses,
+        });
+        self.ui.changed();
+        // Closed at its deadline even when nobody looks; a reopened pairing
+        // has another key, so a stale timer does nothing.
+        let me = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(PAIR_MODE_TTL);
+            let mut p = me.phone_pairing.lock().unwrap();
+            if p.as_ref().is_some_and(|p| p.key == key) {
+                *p = None;
+                drop(p);
+                me.ui.changed();
+                me.debug_offer_phone_pairing();
+            }
+        });
+        self.phone_pairing_view().ok_or_else(|| "pairing closed".into())
+    }
+
+    pub(crate) fn cancel_phone_pairing(&self) {
+        if self.phone_pairing.lock().unwrap().take().is_some() {
+            self.ui.changed();
+        }
+    }
+
+    fn phone_pairing_view(&self) -> Option<PhonePairingView> {
+        let p = self.phone_pairing.lock().unwrap();
+        let p = p.as_ref().filter(|p| p.until > Instant::now())?;
+        let link = phone_link(&p.addresses, &self.self_id(), &self.self_name(), &p.key);
+        Some(PhonePairingView { svg: qr_svg(&link), link, expires_at_ms: p.expires_at_ms, addresses: p.addresses.clone() })
+    }
+
+    fn phone_view(&self, p: &PhoneRecord) -> PhoneView {
+        PhoneView {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            paired_at_ms: p.paired_at_ms,
+            last_seen_ms: p.last_seen_ms,
+            connected: self.live.lock().unwrap().iter().any(|l| l.client_id == p.id),
+        }
+    }
+
+    fn connected_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.live.lock().unwrap().iter().map(|l| l.client_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Forget a phone: its key is deleted and its live connection cut now.
+    pub(crate) fn unpair_phone(&self, id: &str) -> Result<(), String> {
+        let found = {
+            let mut s = self.store.lock().unwrap();
+            let before = s.phones.len();
+            s.phones.retain(|p| p.id != id);
+            let found = s.phones.len() != before;
+            if found {
+                self.save(&s);
+            }
+            found
+        };
+        if !found {
+            return Err("That phone is not paired.".into());
+        }
+        self.cut(id);
+        self.ui.changed();
+        Ok(())
+    }
+
+    /// Keep (or, with `None`, drop) the push token a paired phone sent.
+    pub(crate) fn set_phone_push(&self, id: &str, target: Option<PushTarget>) {
+        let mut s = self.store.lock().unwrap();
+        let Some(p) = s.phones.iter_mut().find(|p| p.id == id) else { return };
+        if p.push == target {
+            return;
+        }
+        p.push = target;
+        self.save(&s);
+    }
+
+    /// The push targets of paired phones that are not connected now: a
+    /// phone looking at the app already sees the change.
+    pub(crate) fn away_push_targets(&self) -> Vec<PushTarget> {
+        let live = self.connected_ids();
+        let s = self.store.lock().unwrap();
+        s.phones.iter().filter(|p| !live.contains(&p.id)).filter_map(|p| p.push.clone()).collect()
+    }
+
+    pub(crate) fn rename_phone(&self, id: &str, name: &str) -> Result<(), String> {
+        {
+            let mut s = self.store.lock().unwrap();
+            let p = s.phones.iter_mut().find(|p| p.id == id).ok_or("That phone is not paired.")?;
+            p.name = clean_name(name);
+            self.save(&s);
+        }
+        self.ui.changed();
+        Ok(())
+    }
+
+    /// The keys a connecting client may hold: a paired computer's or
+    /// phone's own key, or, for an id this machine does not know yet, the
+    /// key of the phone pairing on offer. Never both: a known id cannot
+    /// use the pending key.
+    pub(crate) fn stream_keys(&self, client_id: &str) -> Vec<[u8; 32]> {
+        if !(self.enabled)() {
+            return Vec::new();
+        }
+        {
+            let s = self.store.lock().unwrap();
+            if let Some(p) = s.peers.iter().find(|p| p.id == client_id) {
+                return p.key().into_iter().collect();
+            }
+            if let Some(p) = s.phones.iter().find(|p| p.id == client_id) {
+                // A known phone may also be re-pairing with a fresh code
+                // (it forgot this computer, or was reinstalled keeping its
+                // id): its own key first, then the pending one.
+                let mut keys: Vec<[u8; 32]> = pc::key_from_hex(&p.key).into_iter().collect();
+                if let Some(pending) = self.phone_pairing.lock().unwrap().as_ref().filter(|x| x.until > Instant::now()) {
+                    keys.push(pending.key);
+                }
+                return keys;
+            }
+        }
+        if client_id == self.self_id() {
+            return Vec::new();
+        }
+        self.phone_pairing
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|p| p.until > Instant::now())
+            .map(|p| vec![p.key])
+            .unwrap_or_default()
+    }
+
+    /// A client proved a key (its hello opened). Decide who it is and what
+    /// it may do; None refuses it. A phone opening under the pending key
+    /// is paired now, and the pending key is spent.
+    pub(crate) fn stream_authorized(
+        &self,
+        client_id: &str,
+        key_index: usize,
+        hello: &termic_remote::wire::ClientMsg,
+        src: IpAddr,
+    ) -> Option<crate::remote_server::StreamClient> {
+        use termic_remote::wire::{ClientKind, ClientMsg};
+        let ClientMsg::Hello { name, kind, grant, port, caps, app_version, .. } = hello else { return None };
+        let wants_tasks = caps.iter().any(|c| c == termic_remote::wire::caps::TASKS);
+        self.backoff_reset();
+        if let Some(rec) = self.by_id(client_id) {
+            if *kind != ClientKind::Computer {
+                return None;
+            }
+            self.touch(&rec.id, Some(src), *port, grant.as_deref().and_then(Grant::parse));
+            return Some(crate::remote_server::StreamClient { id: rec.id.clone(), name: rec.display_name(), kind: ClientKind::Computer, grant: rec.grant, wants_tasks, version: app_version.clone() });
+        }
+        let known_phone = {
+            let mut s = self.store.lock().unwrap();
+            let hit = s.phones.iter_mut().find(|p| p.id == client_id).map(|p| {
+                p.last_seen_ms = Some(now_ms());
+                p.addr = Some(src.to_string());
+                p.name.clone()
+            });
+            if hit.is_some() {
+                self.save(&s);
+            }
+            hit
+        };
+        if let Some(name) = known_phone.filter(|_| key_index == 0) {
+            if *kind != ClientKind::Phone {
+                return None;
+            }
+            self.ui.changed();
+            return Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks, version: None });
+        }
+        // A new phone, which can only have opened under the pending key.
+        if *kind != ClientKind::Phone {
+            return None;
+        }
+        let pending = self.phone_pairing.lock().unwrap().take().filter(|p| p.until > Instant::now())?;
+        let name = {
+            let n = clean_name(name);
+            if n.is_empty() { "Phone".to_string() } else { n }
+        };
+        {
+            let mut s = self.store.lock().unwrap();
+            s.phones.retain(|p| p.id != client_id);
+            s.phones.push(PhoneRecord {
+                id: client_id.into(),
+                name: name.clone(),
+                key: pc::key_to_hex(&pending.key),
+                paired_at_ms: now_ms(),
+                last_seen_ms: Some(now_ms()),
+                addr: Some(src.to_string()),
+                // A fresh pairing: the phone sends its token again on connect.
+                push: None,
+            });
+            self.save(&s);
+        }
+        dlog(&format!("[peers] phone {name} paired"));
+        self.ui.changed();
+        self.ui.phone_paired(client_id, &name);
+        if let Some(me) = self.arc() {
+            me.debug_offer_phone_pairing();
+        }
+        Some(crate::remote_server::StreamClient { id: client_id.into(), name, kind: ClientKind::Phone, grant: Grant::Drive, wants_tasks, version: None })
+    }
+
+    /// A handshake failed: the same growing delay as a refused call.
+    pub(crate) fn stream_refused(&self) {
+        let _ = self.refuse();
+    }
+
+    pub(crate) fn register_live(&self, client_id: &str, stream: TcpStream) -> u64 {
+        let seq = self.live_seq.fetch_add(1, Ordering::SeqCst);
+        self.live.lock().unwrap().push(LiveConn { seq, client_id: client_id.into(), stream });
+        self.ui.changed();
+        seq
+    }
+
+    pub(crate) fn unregister_live(&self, seq: u64) {
+        self.live.lock().unwrap().retain(|l| l.seq != seq);
+        self.ui.changed();
+    }
+
+    /// End every live connection of one client. Its reader sees the socket
+    /// close and the session winds down (taps released, threads joined).
+    fn cut(&self, client_id: &str) {
+        for l in self.live.lock().unwrap().iter().filter(|l| l.client_id == client_id) {
+            let _ = l.stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn cut_all(&self) {
+        for l in self.live.lock().unwrap().iter() {
+            let _ = l.stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// One verb from a stream client, under its grant: what `/call` did for
+    /// a paired computer (its grant, its reply contacts, the signature
+    /// rewrite, the protocol check), and Drive for a phone.
+    pub(crate) fn run_stream_call(&self, client: &crate::remote_server::StreamClient, req: Request, proto_v: Option<u32>) -> Reply {
+        use termic_remote::wire::ClientKind;
+        let us = self.self_name();
+        let cmd = sanitize(&req.cmd);
+        let cmd = match client.kind {
+            ClientKind::Computer => {
+                if !peer_compatible(client.version.as_deref(), proto_v) {
+                    let theirs = match (client.version.as_deref(), proto_v) {
+                        (Some(v), _) => format!("Termic {v}"),
+                        (None, Some(p)) => format!("an older Termic (CLI protocol {p})"),
+                        (None, None) => "an older Termic".into(),
+                    };
+                    return Reply::err(
+                        &req.id,
+                        ErrorCode::Unsupported,
+                        format!(
+                            "{us} runs Termic {} and needs {} or later on the calling machine, which runs {theirs}. \
+                             Update Termic there.",
+                            self.version,
+                            termic_remote::compat::REQUIRES_DESKTOP,
+                        ),
+                    );
+                }
+                // Re-read: the grant and the contacts can change while a
+                // connection stays open.
+                let Some(rec) = self.by_id(&client.id) else {
+                    return Reply::err(&req.id, ErrorCode::Auth, format!("{us} no longer has this machine paired"));
+                };
+                let cmd = localize_signature(cmd, &rec);
+                if let Err(why) = permitted(rec.grant, &cmd, &rec.contacts, self.host.as_ref(), &us) {
+                    return Reply::err(&req.id, ErrorCode::Auth, why);
+                }
+                report_back_now(cmd, &rec.contacts, self.host.as_ref())
+            }
+            _ => {
+                if let Some(verb) = drive_denied(&cmd) {
+                    return Reply::err(&req.id, ErrorCode::Auth, format!("{us} does not let a phone run {verb}"));
+                }
+                cmd
+            }
+        };
+        let mut cmd = cmd;
+        crate::mcp_server::clamp_wait(&mut cmd);
+        let inner = Request { id: req.id.clone(), token: None, profile: req.profile.clone(), peer: None, from_task: None, cmd };
+        crate::cli_server::with_peer_origin(|| {
+            crate::cli_server::dispatch_authenticated(&inner, self.host.as_ref(), &mut crate::mcp_server::NoopSink)
+        })
+    }
+
     // ── the CLI / MCP verbs ──────────────────────────────────────────
 
     pub(crate) fn list_data(&self) -> proto::PeersData {
@@ -1736,6 +2118,90 @@ impl Node {
                 .collect(),
         }
     }
+}
+
+/// Why a call over the stream did not produce a reply.
+#[derive(Debug)]
+enum StreamCallError {
+    /// The other machine refused this one's key: it unpaired us.
+    Revoked,
+    /// Nothing answered, or the connection dropped.
+    Unreachable(String),
+    Other(String),
+}
+
+/// Wait for a call's answer on `rx`, heartbeating the CLI meanwhile when
+/// it reads this verb as a stream (its socket gives up after 30 silent
+/// seconds). A client that hung up stops being told; the call itself runs
+/// to completion on the other machine either way.
+fn await_with_heartbeat<T>(rx: mpsc::Receiver<T>, streaming: bool, req_id: &str, sink: &mut dyn EventSink) -> Option<T> {
+    loop {
+        match rx.recv_timeout(HEARTBEAT_EVERY) {
+            Ok(r) => return Some(r),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if streaming {
+                    let _ = sink.emit(&StreamEvent::heartbeat(req_id));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+/// `--peer <server>`: the verb runs on a headless box over its link.
+fn forward_to_server(server: &str, req: &Request, sink: &mut dyn EventSink) -> Reply {
+    let cmd = sanitize(&req.cmd);
+    let budget = call_budget(&cmd);
+    let streaming = streamed(&cmd);
+    let inner = Request { id: req.id.clone(), token: None, profile: None, peer: None, from_task: None, cmd };
+    let Ok(value) = serde_json::to_value(&inner) else {
+        return Reply::err(&req.id, ErrorCode::Internal, "could not encode the request");
+    };
+    let (tx, rx) = mpsc::channel();
+    let server_id = server.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::remote_client::call(&server_id, value, Some(budget)));
+    });
+    let result = await_with_heartbeat(rx, streaming, &req.id, sink).unwrap_or_else(|| Err("the call thread ended without an answer".into()));
+    match result.and_then(|v| serde_json::from_value::<Reply>(v).map_err(|e| e.to_string())) {
+        Ok(mut reply) => {
+            reply.id = req.id.clone();
+            reply
+        }
+        Err(e) => Reply::err(&req.id, ErrorCode::PeerUnreachable, e),
+    }
+}
+
+/// One verb on a paired computer over a fresh stream connection.
+fn call_over_stream(node: &Node, peer_id: &str, req: Request, budget: Duration) -> Result<Reply, StreamCallError> {
+    use termic_remote::wire::{ClientMsg, ServerMsg};
+    let ((_, mut reader, mut writer), sock) = crate::remote_client::connect_peer(node, peer_id, false).map_err(|e| {
+        if e.contains("no longer accepts") {
+            StreamCallError::Revoked
+        } else {
+            StreamCallError::Unreachable(e)
+        }
+    })?;
+    let _ = sock.set_read_timeout(Some(budget));
+    let id = req.id.clone();
+    let req = serde_json::to_value(&req).map_err(|e| StreamCallError::Other(e.to_string()))?;
+    writer
+        .send(&ClientMsg::Call { id: id.clone(), req, proto: Some(proto::PROTOCOL_VERSION) })
+        .map_err(|e| StreamCallError::Unreachable(e.to_string()))?;
+    let out = loop {
+        match reader.recv::<ServerMsg>() {
+            Ok(Some(ServerMsg::Reply { id: rid, reply })) if rid == id => {
+                break serde_json::from_value::<Reply>(reply)
+                    .map_err(|_| StreamCallError::Other("sent an answer this version cannot read".into()));
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => break Err(StreamCallError::Unreachable("the connection closed before the answer".into())),
+            Err(e) => break Err(StreamCallError::Unreachable(e.to_string())),
+        }
+    };
+    writer.close(1000, "");
+    let _ = sock.shutdown(std::net::Shutdown::Both);
+    out
 }
 
 /// The verbs `cli_server` dispatches to (`peer list` and friends). The
@@ -1794,14 +2260,6 @@ fn clock_skew(name: &str, skew_ms: i64) -> String {
     format!("{name}'s clock is {amount} {dir} this machine's")
 }
 
-fn clock_skew_msg(name: &str, skew_ms: i64) -> String {
-    format!(
-        "{}, so it refuses every call (the two must agree within 5 minutes). \
-         Turn on automatic time and check the time zone on both machines.",
-        clock_skew(name, skew_ms)
-    )
-}
-
 fn new_record(peer: &Who, ip: IpAddr, key: &[u8; 32], their_grant: Grant) -> PeerRecord {
     PeerRecord {
         id: peer.id.clone(),
@@ -1842,7 +2300,7 @@ fn find_in<'a>(peers: &'a [PeerRecord], sel: &str) -> Result<&'a PeerRecord, Str
     match hits.as_slice() {
         [one] => Ok(one),
         [] if peers.is_empty() => Err(format!(
-            "no paired machine called {sel}: this machine is not paired with any (Settings > Agent access, or `termic peer pair`)"
+            "no paired machine called {sel}: this machine is not paired with any (Settings > Remote control, or `termic peer pair`)"
         )),
         [] => Err(format!(
             "no paired machine called {sel} (paired: {})",
@@ -1873,7 +2331,7 @@ fn peer_view(p: &PeerRecord, sightings: &[mdns::Sighting]) -> PeerView {
             .or_else(|| p.socket().map(|a| a.to_string())),
         version: seen.map(|s| s.version.clone()).or_else(|| p.version.clone()),
         proto,
-        proto_ok: proto.is_none_or(|v| v == proto::PROTOCOL_VERSION),
+        proto_ok: peer_compatible(seen.map(|s| s.version.as_str()).or(p.version.as_deref()), proto),
         grant: p.grant,
         their_grant: p.their_grant,
         revoked_by_peer: p.revoked_by_peer,
@@ -1904,6 +2362,38 @@ fn unreachable_msg(name: &str, err: &str) -> String {
     )
 }
 
+/// The phone pairing link the QR code encodes. Read by the phone app;
+/// additive like the stream: unknown
+/// parameters are ignored there.
+///
+/// `v` link version, `h` addresses to try in order (comma-separated
+/// host:port), `id` this machine's id, `m` its name, `k` the 256-bit key
+/// (base64url).
+fn phone_link(addresses: &[String], id: &str, name: &str, key: &[u8; 32]) -> String {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    format!(
+        "termic-remote://pair?v=1&h={}&id={id}&m={}&k={}",
+        utf8_percent_encode(&addresses.join(","), NON_ALPHANUMERIC),
+        utf8_percent_encode(name, NON_ALPHANUMERIC),
+        termic_remote::b64url(key),
+    )
+}
+
+/// The link as a QR code, an SVG document the Settings panel draws inline.
+fn qr_svg(link: &str) -> String {
+    use qrcode::render::svg;
+    match qrcode::QrCode::with_error_correction_level(link.as_bytes(), qrcode::EcLevel::M) {
+        Ok(code) => code
+            .render::<svg::Color>()
+            .min_dimensions(240, 240)
+            .quiet_zone(true)
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#ffffff"))
+            .build(),
+        Err(_) => String::new(),
+    }
+}
+
 // ───────────────────────────── sealed messages ───────────────────────
 
 /// The plaintext inside every envelope.
@@ -1932,10 +2422,6 @@ impl Sealed {
         self.rid = rid.to_string();
         self
     }
-    fn with_port(mut self, port: Option<u16>) -> Sealed {
-        self.port = port;
-        self
-    }
     fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
     }
@@ -1944,14 +2430,6 @@ impl Sealed {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CallBody {
-    /// The caller's CLI protocol. Both machines must match: a verb's fields
-    /// grow between versions, and a field the other side does not know is
-    /// dropped silently, which is the wrong thing to do to someone's agent.
-    proto: u32,
-    request: Request,
-}
 
 // ───────────────────────────── http ──────────────────────────────────
 
@@ -2023,6 +2501,8 @@ struct HttpReq {
     method: String,
     path: String,
     has_origin: bool,
+    /// `Sec-WebSocket-Key` of an upgrade request (the stream).
+    ws_key: Option<String>,
     body: Vec<u8>,
 }
 
@@ -2041,6 +2521,8 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpReq, u16>> {
     let path = parts.next().unwrap_or("").split('?').next().unwrap_or("").to_string();
     let mut len = 0usize;
     let mut has_origin = false;
+    let mut ws_key = None;
+    let mut upgrade = false;
     loop {
         let mut h = String::new();
         head.read_line(&mut h)?;
@@ -2060,6 +2542,8 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpReq, u16>> {
                 },
                 "transfer-encoding" => return Ok(Err(411)),
                 "origin" => has_origin = true,
+                "upgrade" => upgrade = v.trim().eq_ignore_ascii_case("websocket"),
+                "sec-websocket-key" => ws_key = Some(v.trim().to_string()),
                 _ => {}
             }
         }
@@ -2072,7 +2556,8 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpReq, u16>> {
     if body.len() != len {
         return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "short body"));
     }
-    Ok(Ok(HttpReq { method, path, has_origin, body }))
+    let ws_key = ws_key.filter(|_| upgrade);
+    Ok(Ok(HttpReq { method, path, has_origin, ws_key, body }))
 }
 
 fn handle_conn(stream: TcpStream, node: &Arc<Node>, shutdown: &AtomicBool) -> std::io::Result<()> {
@@ -2083,6 +2568,20 @@ fn handle_conn(stream: TcpStream, node: &Arc<Node>, shutdown: &AtomicBool) -> st
         Ok(r) => r,
         Err(status) => return respond(stream, status, b""),
     };
+    // The stream (remote_server.rs): a WebSocket. A phone's WebSocket sends
+    // an Origin header of its own (React Native's does), so Origin cannot
+    // gate this one path; nothing on it is reachable without the sealed
+    // handshake, which a web page cannot complete without a pair key.
+    if req.path == STREAM_PATH {
+        if shutdown.load(Ordering::SeqCst) || !(node.enabled)() {
+            return respond(stream, 403, b"");
+        }
+        let Some(key) = req.ws_key.clone().filter(|_| req.method == "GET") else {
+            return respond(stream, 400, b"");
+        };
+        crate::remote_server::serve(stream, &key, node.clone(), src);
+        return Ok(());
+    }
     // A browser page on any machine of this network can POST here. It always
     // sends Origin, so anything carrying one is refused before it can so much
     // as open a pairing dialog. Nothing here emits a CORS header.
@@ -2113,9 +2612,8 @@ fn route(node: &Arc<Node>, req: &HttpReq, src: IpAddr) -> (u16, Vec<u8>) {
         ("POST", "/pair/request") => node.on_pair_request(&req.body, src),
         ("POST", "/pair/start") => node.on_pair_start(&req.body, src),
         ("POST", "/pair/confirm") => node.on_pair_confirm(&req.body, src),
-        ("POST", "/call") => node.on_call(&req.body, src),
         ("POST", "/unpair") => node.on_unpair(&req.body),
-        (_, "/hello" | "/pair/request" | "/pair/start" | "/pair/confirm" | "/call" | "/unpair") => (405, Vec::new()),
+        (_, "/hello" | "/pair/request" | "/pair/start" | "/pair/confirm" | "/unpair") => (405, Vec::new()),
         _ => (404, Vec::new()),
     }
 }
@@ -2304,10 +2802,18 @@ impl PeerUi for TauriUi {
     fn changed(&self) {
         use tauri::Emitter;
         let _ = self.0.emit("peer://changed", ());
+        // Pairs or sharing changed: keep the sidebar's links in line. On its
+        // own thread: this can be called with peers.rs state just released,
+        // and supervise reads it again.
+        std::thread::spawn(crate::remote_client::supervise);
     }
     fn pairing(&self, view: &PairingView) {
         use tauri::Emitter;
         let _ = self.0.emit("peer://pairing", view);
+    }
+    fn phone_paired(&self, id: &str, name: &str) {
+        use tauri::Emitter;
+        let _ = self.0.emit("peer://phone-paired", serde_json::json!({ "id": id, "name": name }));
     }
 }
 
@@ -2322,7 +2828,18 @@ pub(crate) fn node() -> Option<Arc<Node>> {
     node_slot().lock().unwrap().clone()
 }
 
+/// "Beta" (its own bundle identifier) or "Dev" (a debug build, which shares
+/// the release's identifier); None for the release.
+static FLAVOR: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+
 fn ensure_node(app: &tauri::AppHandle) -> Option<Arc<Node>> {
+    let _ = FLAVOR.set(if app.config().identifier.ends_with(".beta") {
+        Some("Beta")
+    } else if cfg!(debug_assertions) {
+        Some("Dev")
+    } else {
+        None
+    });
     let mut slot = node_slot().lock().unwrap();
     if slot.is_none() {
         let dir = crate::global_dir().ok()?;
@@ -2375,9 +2892,12 @@ pub(crate) fn peer_set_name(app: tauri::AppHandle, name: String) -> Result<(), S
 }
 
 #[tauri::command]
-pub(crate) async fn peer_pair(app: tauri::AppHandle, target: String, code: String) -> Result<PairingView, String> {
+pub(crate) async fn peer_pair(app: tauri::AppHandle, window: tauri::Window, target: String, code: String) -> Result<PairingView, String> {
     let node = need(&app)?;
-    tauri::async_runtime::spawn_blocking(move || node.pair(&target, &code)).await.map_err(|e| e.to_string())?
+    let view = tauri::async_runtime::spawn_blocking(move || node.pair(&target, &code)).await.map_err(|e| e.to_string())??;
+    // It belongs to the profile whose window paired it.
+    let _ = crate::remote_client::set_machine_profile(&view.peer_id, window.label());
+    Ok(view)
 }
 
 /// Ask another machine to show a pairing code. Returns its name.
@@ -2421,6 +2941,28 @@ pub(crate) async fn peer_unpair(app: tauri::AppHandle, peer: String) -> Result<(
     tauri::async_runtime::spawn_blocking(move || node.unpair(&peer).map(|_| ())).await.map_err(|e| e.to_string())?
 }
 
+/// Show a QR code a phone scans to pair (docs/remote.md).
+#[tauri::command]
+pub(crate) fn phone_pair_start(app: tauri::AppHandle) -> Result<PhonePairingView, String> {
+    need(&app)?.start_phone_pairing()
+}
+
+#[tauri::command]
+pub(crate) fn phone_pair_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    need(&app)?.cancel_phone_pairing();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn phone_unpair(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    need(&app)?.unpair_phone(&id)
+}
+
+#[tauri::command]
+pub(crate) fn phone_rename(app: tauri::AppHandle, id: String, name: String) -> Result<(), String> {
+    need(&app)?.rename_phone(&id, &name)
+}
+
 #[tauri::command]
 pub(crate) fn peer_refresh(app: tauri::AppHandle) -> Result<(), String> {
     need(&app)?.refresh();
@@ -2437,6 +2979,7 @@ mod tests {
     #[derive(Default)]
     struct RecUi {
         pairings: Mutex<Vec<PairingView>>,
+        phones: Mutex<Vec<String>>,
         changes: AtomicUsize,
     }
     impl PeerUi for RecUi {
@@ -2445,6 +2988,9 @@ mod tests {
         }
         fn pairing(&self, view: &PairingView) {
             self.pairings.lock().unwrap().push(view.clone());
+        }
+        fn phone_paired(&self, id: &str, _name: &str) {
+            self.phones.lock().unwrap().push(id.to_string());
         }
     }
 
@@ -2791,56 +3337,94 @@ mod tests {
         assert!(b.node.find("A").unwrap().revoked_by_peer, "B shows it is no longer paired there");
     }
 
-    #[test]
-    fn unpaired_and_forged_callers_get_the_same_bare_401() {
-        let (a, b) = (machine("A"), machine("B"));
-        pair(&a, &b, Grant::Drive, Grant::Drive);
-        let target: SocketAddr = addr(&b).parse().unwrap();
-        let path = format!("{PREFIX}/call");
-        // Not JSON, an unknown sender, a sealed message under the wrong key.
-        let stranger = pc::seal(&[1u8; 32], &path, &"f".repeat(32), &b.node.self_id(), b"{}");
-        let wrong_key = pc::seal(&[1u8; 32], &path, &a.node.self_id(), &b.node.self_id(), b"{}");
-        for body in [b"nonsense".to_vec(), serde_json::to_vec(&stranger).unwrap(), serde_json::to_vec(&wrong_key).unwrap()] {
-            let (status, out) = http(target, "POST", &path, &body, Duration::from_secs(5)).unwrap();
-            assert_eq!((status, out.len()), (401, 0));
+    // ── the stream (remote_server.rs) ────────────────────────────────
+
+    use termic_remote::conn::{self as rconn, Connected};
+    use termic_remote::wire::{self as rwire, ClientKind, ClientMsg, ServerMsg};
+
+    /// Open a stream to `m` as `client_id` holding `key`.
+    fn stream_as(m: &Machine, client_id: &str, key: &[u8; 32], kind: ClientKind, caps: &[&str]) -> std::io::Result<Connected> {
+        stream_as_version(m, client_id, key, kind, caps, None)
+    }
+
+    fn stream_as_version(m: &Machine, client_id: &str, key: &[u8; 32], kind: ClientKind, caps: &[&str], app_version: Option<&str>) -> std::io::Result<Connected> {
+        let target = addr(m);
+        let mut s = TcpStream::connect(&target)?;
+        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+        termic_remote::ws::client_handshake(&mut s, &target, STREAM_PATH)?;
+        let (r, w) = termic_remote::ws::split_tcp(s, termic_remote::ws::End::Client)?;
+        let hello = ClientMsg::Hello {
+            v: rwire::VERSION,
+            name: "client".into(),
+            kind,
+            caps: caps.iter().map(|c| c.to_string()).collect(),
+            app_version: app_version.map(String::from),
+            grant: None,
+            port: None,
+        };
+        rconn::client_handshake(Box::new(r), Box::new(w), &m.node.self_id(), client_id, key, &hello)
+    }
+
+    /// The next message that is not a task snapshot.
+    fn next_non_tasks(c: &mut Connected) -> ServerMsg {
+        loop {
+            match c.reader.recv::<ServerMsg>().unwrap().expect("connection closed") {
+                ServerMsg::Tasks { .. } => continue,
+                m => return m,
+            }
         }
     }
 
     #[test]
-    fn a_replayed_call_is_refused() {
+    fn unknown_and_wrong_key_clients_are_refused_alike() {
+        let (a, b) = (machine("A"), machine("B"));
+        pair(&a, &b, Grant::Drive, Grant::Drive);
+        let stranger = "f".repeat(32);
+        assert!(stream_as(&b, &stranger, &[1u8; 32], ClientKind::Computer, &[]).is_err());
+        assert!(stream_as(&b, &a.node.self_id(), &[1u8; 32], ClientKind::Computer, &[]).is_err());
+        let key = a.node.find("B").unwrap().key().unwrap();
+        assert!(stream_as(&b, &a.node.self_id(), &key, ClientKind::Computer, &[]).is_ok());
+        // A paired computer's key cannot pose as a phone.
+        assert!(stream_as(&b, &a.node.self_id(), &key, ClientKind::Phone, &[]).is_err());
+    }
+
+    /// A recorded connection replayed byte for byte opens nothing: the host
+    /// picks a fresh salt every time, so the old hello no longer opens.
+    #[test]
+    fn a_replayed_connection_is_refused() {
+        use termic_remote::seal;
         let (a, b) = (machine("A"), machine("B"));
         pair(&a, &b, Grant::Drive, Grant::Drive);
         let key = a.node.find("B").unwrap().key().unwrap();
-        let path = format!("{PREFIX}/call");
-        let req = Request {
-            id: "r".into(),
-            token: None,
-            profile: None,
-            peer: None,
-            from_task: None,
-            cmd: Command::List { project: None, quiet: false },
-        };
-        let msg = Sealed::new(serde_json::to_value(CallBody { proto: proto::PROTOCOL_VERSION, request: req }).unwrap(), None);
-        let env = pc::seal(&key, &path, &a.node.self_id(), &b.node.self_id(), &msg.to_bytes());
-        let body = serde_json::to_vec(&env).unwrap();
-        let target: SocketAddr = addr(&b).parse().unwrap();
-        assert_eq!(http(target, "POST", &path, &body, Duration::from_secs(5)).unwrap().0, 200);
-        assert_eq!(http(target, "POST", &path, &body, Duration::from_secs(5)).unwrap().0, 401, "same bytes twice");
-
-        // And a stale one, sealed correctly but ten minutes old.
-        let mut old = Sealed::new(msg.body.clone(), None);
-        old.ts -= 600_000;
-        let env = pc::seal(&key, &path, &a.node.self_id(), &b.node.self_id(), &old.to_bytes());
-        let (status, out) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
-        assert_eq!(status, 409, "the paired machine with a wrong clock is told so, not refused as a stranger");
-        let e: pc::Envelope = serde_json::from_slice(&out).unwrap();
-        let theirs = Sealed::parse(&pc::open(&key, &path, &a.node.self_id(), &e).unwrap()).unwrap();
-        assert!((theirs.ts - now_ms()).abs() < 5_000, "the answer carries B's clock");
-
-        // The same stale message from an unpaired key is still the bare 401.
-        let env = pc::seal(&[7u8; 32], &path, &a.node.self_id(), &b.node.self_id(), &old.to_bytes());
-        let (status, out) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
-        assert_eq!((status, out.len()), (401, 0));
+        let (me, them) = (a.node.self_id(), b.node.self_id());
+        let client_salt = [7u8; 16];
+        let mut first = client_salt.to_vec();
+        first.extend_from_slice(&termic_remote::id_to_bytes(&me).unwrap());
+        let hello = ClientMsg::Hello { v: 1, name: "A".into(), kind: ClientKind::Computer, caps: vec![], app_version: None, grant: None, port: None };
+        let mut recorded: Option<Vec<u8>> = None;
+        for round in 0..2 {
+            let target = addr(&b);
+            let mut s = TcpStream::connect(&target).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            termic_remote::ws::client_handshake(&mut s, &target, STREAM_PATH).unwrap();
+            let (mut r, mut w) = termic_remote::ws::split_tcp(s, termic_remote::ws::End::Client).unwrap();
+            use termic_remote::{FrameRead, FrameWrite};
+            let host_salt: [u8; 16] = r.recv().unwrap().unwrap().try_into().unwrap();
+            let sealed = recorded.clone().unwrap_or_else(|| {
+                let (mut sealer, _) = seal::session(&key, &host_salt, &client_salt, &them, &me, seal::Role::Client);
+                sealer.seal(&hello.to_bytes())
+            });
+            w.send(&first).unwrap();
+            w.send(&sealed).unwrap();
+            let answer = r.recv();
+            if round == 0 {
+                assert!(matches!(answer, Ok(Some(_))), "the original connection is welcomed");
+                recorded = Some(sealed);
+            } else {
+                assert!(matches!(answer, Ok(None) | Err(_)), "the replay is refused");
+                assert_eq!(r.close_code, Some(rconn::CLOSE_UNAUTHENTICATED));
+            }
+        }
     }
 
     #[test]
@@ -2905,11 +3489,182 @@ mod tests {
 
     #[test]
     fn clock_skew_is_worded_with_its_size_and_direction() {
-        assert_eq!(
-            clock_skew_msg("win", 477 * 60_000 + 30_000),
-            "win's clock is 7 h 57 min ahead of this machine's, so it refuses every call (the two must agree within 5 minutes). Turn on automatic time and check the time zone on both machines."
-        );
-        assert!(clock_skew_msg("win", -6 * 60_000).contains("6 min behind"));
+        assert_eq!(clock_skew("win", 477 * 60_000 + 30_000), "win's clock is 7 h 57 min ahead of this machine's");
+        assert!(clock_skew("win", -6 * 60_000).contains("6 min behind"));
+    }
+
+    #[test]
+    fn a_reply_peer_gets_no_tasks_and_no_terminal_over_the_stream() {
+        let (a, b) = (machine("Mac"), machine("Win"));
+        pair(&a, &b, Grant::Drive, Grant::Reply); // Win lets Mac only reply
+        let key = a.node.find("Win").unwrap().key().unwrap();
+        let mut c = stream_as(&b, &a.node.self_id(), &key, ClientKind::Computer, &["tasks"]).unwrap();
+        let ServerMsg::Welcome { caps, grant, .. } = c.welcome.clone() else { panic!() };
+        assert_eq!(grant.as_deref(), Some("reply"));
+        assert_eq!(caps, vec!["call".to_string()]);
+        c.writer.send(&ClientMsg::TermOpen { task: "solo".into(), tab: None }).unwrap();
+        assert!(matches!(next_non_tasks(&mut c), ServerMsg::Error { .. }));
+        // And a Drive peer gets everything.
+        let key = b.node.find("Mac").unwrap().key().unwrap();
+        let c = stream_as(&a, &b.node.self_id(), &key, ClientKind::Computer, &[]).unwrap();
+        let ServerMsg::Welcome { caps, .. } = c.welcome else { panic!() };
+        for cap in ["call", "tasks", "terminal", "keys", "transcript"] {
+            assert!(caps.iter().any(|c| c == cap), "missing {cap}: {caps:?}");
+        }
+    }
+
+    #[test]
+    fn a_phone_pairs_once_with_the_qr_key_and_unpairing_cuts_it() {
+        let b = machine("Mac");
+        let view = b.node.start_phone_pairing().unwrap();
+        assert!(view.link.starts_with("termic-remote://pair?v=1&h="), "{}", view.link);
+        assert!(view.svg.starts_with("<?xml") || view.svg.starts_with("<svg"), "an SVG");
+        let k = view.link.split("&k=").nth(1).unwrap();
+        let key: [u8; 32] = termic_remote::unb64url(k).unwrap().try_into().unwrap();
+        let phone = "a1".repeat(16);
+        let mut c = stream_as(&b, &phone, &key, ClientKind::Phone, &["tasks"]).unwrap();
+        assert_eq!(b.node.status().phones.len(), 1);
+        assert!(b.node.status().phone_pairing.is_none(), "the key is spent");
+        assert_eq!(b.ui.phones.lock().unwrap().len(), 1, "the desktop was told");
+        // A second phone with the same (spent) key gets nothing.
+        assert!(stream_as(&b, &"b2".repeat(16), &key, ClientKind::Phone, &[]).is_err());
+        // The paired phone reconnects with its key any time.
+        drop(c.writer);
+        let mut c2 = stream_as(&b, &phone, &key, ClientKind::Phone, &[]).unwrap();
+        c2.writer.send(&ClientMsg::Ping {}).unwrap();
+        assert_eq!(next_non_tasks(&mut c2), ServerMsg::Pong {});
+        // Unpair: the live connection ends at once.
+        b.node.unpair_phone(&phone).unwrap();
+        let end = loop {
+            match c2.reader.recv::<ServerMsg>() {
+                Ok(Some(_)) => continue,
+                other => break other,
+            }
+        };
+        assert!(matches!(end, Ok(None) | Err(_)), "{end:?}");
+        assert!(stream_as(&b, &phone, &key, ClientKind::Phone, &[]).is_err());
+        let _ = c.reader.recv::<ServerMsg>();
+    }
+
+    /// A client that goes away is let go: its session ends and it no longer
+    /// counts as connected (it once leaked, the writer waiting forever).
+    #[test]
+    fn a_closed_connection_is_no_longer_connected() {
+        let b = machine("Mac");
+        let v = b.node.start_phone_pairing().unwrap();
+        let key: [u8; 32] = termic_remote::unb64url(v.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap();
+        let id = "f6".repeat(16);
+        let mut c = stream_as(&b, &id, &key, ClientKind::Phone, &[]).unwrap();
+        assert_eq!(b.node.status().connected, vec![id.clone()]);
+        c.writer.close(1000, "");
+        drop(c);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !b.node.status().connected.is_empty() {
+            assert!(Instant::now() < deadline, "still counted as connected");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!b.node.status().phones[0].connected);
+    }
+
+
+    /// A phone that forgot this computer scans a fresh code with the same
+    /// id: it re-pairs, the old key stops working, and the code is spent.
+    #[test]
+    fn a_known_phone_re_pairs_with_a_fresh_code() {
+        let b = machine("Mac");
+        let key_of = |v: PhonePairingView| -> [u8; 32] { termic_remote::unb64url(v.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap() };
+        let id = "a7".repeat(16);
+        let old = key_of(b.node.start_phone_pairing().unwrap());
+        drop(stream_as(&b, &id, &old, ClientKind::Phone, &[]).unwrap());
+        let fresh = key_of(b.node.start_phone_pairing().unwrap());
+        drop(stream_as(&b, &id, &fresh, ClientKind::Phone, &[]).unwrap());
+        assert_eq!(b.node.status().phones.len(), 1, "one record, replaced");
+        assert!(b.node.status().phone_pairing.is_none(), "the code is spent");
+        assert!(stream_as(&b, &id, &old, ClientKind::Phone, &[]).is_err(), "the old key no longer works");
+        assert!(stream_as(&b, &id, &fresh, ClientKind::Phone, &[]).is_ok());
+        assert_eq!(b.ui.phones.lock().unwrap().len(), 2, "the desktop was told both times");
+    }
+
+    #[test]
+    fn turning_sharing_off_cuts_live_streams() {
+        let b = machine("Mac");
+        let key: [u8; 32] = {
+            let v = b.node.start_phone_pairing().unwrap();
+            termic_remote::unb64url(v.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap()
+        };
+        let mut c = stream_as(&b, &"c3".repeat(16), &key, ClientKind::Phone, &[]).unwrap();
+        b.node.stop();
+        let end = loop {
+            match c.reader.recv::<ServerMsg>() {
+                Ok(Some(_)) => continue,
+                other => break other,
+            }
+        };
+        assert!(matches!(end, Ok(None) | Err(_)));
+    }
+
+    #[test]
+    fn a_phone_sees_tasks_runs_verbs_and_watches_a_terminal() {
+        let host = Arc::new(StubHost::default());
+        host.role_ptys.lock().unwrap().insert(("w3".into(), "agent".into()), "pty-1".into());
+        host.pty_rings.lock().unwrap().insert("pty-1".into(), (b"hello from the agent".to_vec(), false));
+        let b = machine_with("Mac", host.clone());
+        let v = b.node.start_phone_pairing().unwrap();
+        let key: [u8; 32] = termic_remote::unb64url(v.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap();
+        let mut c = stream_as(&b, &"d4".repeat(16), &key, ClientKind::Phone, &["tasks"]).unwrap();
+        // A snapshot of every live task arrives unasked.
+        let tasks = loop {
+            if let ServerMsg::Tasks { tasks } = c.reader.recv::<ServerMsg>().unwrap().unwrap() {
+                break tasks;
+            }
+        };
+        let mut names: Vec<_> = tasks.iter().map(|t| format!("{}/{}", t.project, t.name)).collect();
+        names.sort();
+        assert_eq!(names, ["api/fix-auth", "web/fix-auth", "web/solo"]);
+        // A verb runs through the same dispatch as the CLI.
+        let req = serde_json::json!({ "id": "x", "cmd": "list", "project": null, "quiet": true });
+        c.writer.send(&ClientMsg::Call { id: "c1".into(), req, proto: None }).unwrap();
+        match next_non_tasks(&mut c) {
+            ServerMsg::Reply { id, reply } => {
+                assert_eq!(id, "c1");
+                assert_eq!(reply["ok"], true, "{reply}");
+            }
+            m => panic!("{m:?}"),
+        }
+        // The phone may not quit the desktop.
+        let req = serde_json::json!({ "id": "x", "cmd": "quit", "commit": true });
+        c.writer.send(&ClientMsg::Call { id: "c2".into(), req, proto: None }).unwrap();
+        match next_non_tasks(&mut c) {
+            ServerMsg::Reply { reply, .. } => assert_eq!(reply["ok"], false),
+            m => panic!("{m:?}"),
+        }
+        // The terminal: the backlog first, then live output, then input.
+        c.writer.send(&ClientMsg::TermOpen { task: "solo".into(), tab: None }).unwrap();
+        match next_non_tasks(&mut c) {
+            ServerMsg::TermReset { task, cols, rows, data, .. } => {
+                assert_eq!(task, "w3");
+                assert_eq!((cols, rows), (80, 24));
+                assert_eq!(termic_remote::unb64(&data).unwrap(), b"hello from the agent");
+            }
+            m => panic!("{m:?}"),
+        }
+        let tap = host.taps.lock().unwrap().get("pty-1").unwrap()[0].clone();
+        tap.send(crate::PtyTapMsg::Data(b"more".to_vec())).unwrap();
+        match next_non_tasks(&mut c) {
+            ServerMsg::TermData { data } => assert_eq!(termic_remote::unb64(&data).unwrap(), b"more"),
+            m => panic!("{m:?}"),
+        }
+        c.writer.send(&ClientMsg::TermInput { data: termic_remote::b64(b"\r") }).unwrap();
+        c.writer.send(&ClientMsg::Keys { task: "solo".into(), tab: None, data: termic_remote::b64(b"\x1b"), id: None, question: None }).unwrap();
+        c.writer.send(&ClientMsg::Ping {}).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Pong {});
+        let inputs = host.pty_inputs.lock().unwrap().clone();
+        assert_eq!(inputs, vec![("pty-1".to_string(), b"\r".to_vec()), ("pty-1".to_string(), b"\x1b".to_vec())]);
+        // The agent exits: the phone is told.
+        tap.send(crate::PtyTapMsg::Detach("exited".into())).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::TermClosed { reason: "exited".into() });
+        // The phone never resized the PTY.
+        assert!(host.resizes.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -2997,24 +3752,79 @@ mod tests {
         assert_eq!(r.error.unwrap().code, ErrorCode::PeerUnreachable);
     }
 
+    /// An answer carries the question it answers; the desktop types it only
+    /// while that question is still on the agent's screen.
+    #[test]
+    fn answers_are_bound_to_the_question_on_screen() {
+        let host = Arc::new(StubHost::default());
+        host.role_ptys.lock().unwrap().insert(("w3".into(), "agent".into()), "pty-1".into());
+        let screen = "Bash command\r\n  npm test\r\nDo you want to proceed?\r\n\u{276f} 1. Yes\r\n  2. No\r\n";
+        host.pty_rings.lock().unwrap().insert("pty-1".into(), (screen.as_bytes().to_vec(), false));
+        let b = machine_with("Mac", host.clone());
+        let v = b.node.start_phone_pairing().unwrap();
+        let key: [u8; 32] = termic_remote::unb64url(v.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap();
+        let mut c = stream_as(&b, &"e5".repeat(16), &key, ClientKind::Phone, &[]).unwrap();
+        let lines = termic_remote::screen::render(screen.as_bytes(), 24, 80);
+        let q = termic_remote::screen::question(&lines).expect("the stub screen holds a question");
+        let yes = q.options[0].keys.clone();
+        // A stale id is refused and nothing is typed.
+        c.writer.send(&ClientMsg::Keys { task: "solo".into(), tab: None, data: yes.clone(), id: Some("k1".into()), question: Some("old".into()) }).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Ack { id: "k1".into(), ok: false, message: Some("stale".into()) });
+        assert!(host.pty_inputs.lock().unwrap().is_empty());
+        // The live id is typed.
+        c.writer.send(&ClientMsg::Keys { task: "solo".into(), tab: None, data: yes, id: Some("k2".into()), question: Some(q.id.clone()) }).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Ack { id: "k2".into(), ok: true, message: None });
+        assert_eq!(host.pty_inputs.lock().unwrap().as_slice(), &[("pty-1".to_string(), b"\r".to_vec())]);
+        // Interrupt picks the agent's own key (claude: Esc).
+        c.writer.send(&ClientMsg::Interrupt { task: "solo".into(), tab: None, id: Some("i1".into()) }).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Ack { id: "i1".into(), ok: true, message: None });
+        assert_eq!(host.pty_inputs.lock().unwrap().last().unwrap().1, b"\x1b".to_vec());
+        // ...and tells the window, which never saw that key: without this the
+        // stopped turn read "working" until the next prompt. Answers do not.
+        let told = host.remote_interrupts.lock().unwrap().clone();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].1, "pty-1");
+    }
+
     #[test]
     fn a_protocol_mismatch_is_named_not_mis_run() {
         let (a, b) = (machine("A"), machine("B"));
         pair(&a, &b, Grant::Drive, Grant::Drive);
         let key = a.node.find("B").unwrap().key().unwrap();
-        let path = format!("{PREFIX}/call");
-        let req = Request { id: "r".into(), token: None, profile: None, peer: None, from_task: None, cmd: Command::PeerList };
-        let msg = Sealed::new(serde_json::to_value(CallBody { proto: 1, request: req }).unwrap(), None);
-        let env = pc::seal(&key, &path, &a.node.self_id(), &b.node.self_id(), &msg.to_bytes());
-        let target: SocketAddr = addr(&b).parse().unwrap();
-        let (status, body) = http(target, "POST", &path, &serde_json::to_vec(&env).unwrap(), Duration::from_secs(5)).unwrap();
-        assert_eq!(status, 200);
-        let env: pc::Envelope = serde_json::from_slice(&body).unwrap();
-        let plain = Sealed::parse(&pc::open(&key, &path, &a.node.self_id(), &env).unwrap()).unwrap();
-        let reply: Reply = serde_json::from_value(plain.body["reply"].clone()).unwrap();
+        let mut c = stream_as(&b, &a.node.self_id(), &key, ClientKind::Computer, &[]).unwrap();
+        let req = serde_json::json!({ "id": "x", "cmd": "list", "project": null, "quiet": true });
+        c.writer.send(&ClientMsg::Call { id: "c".into(), req, proto: Some(1) }).unwrap();
+        let ServerMsg::Reply { reply, .. } = next_non_tasks(&mut c) else { panic!() };
+        let reply: Reply = serde_json::from_value(reply).unwrap();
         let err = reply.error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
         assert!(err.message.contains("protocol"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_paired_computer_is_judged_by_its_version_floor_not_an_exact_match() {
+        let (a, b) = (machine("A"), machine("B"));
+        pair(&a, &b, Grant::Drive, Grant::Drive);
+        let key = a.node.find("B").unwrap().key().unwrap();
+        let req = serde_json::json!({ "id": "x", "cmd": "list", "project": null, "quiet": true });
+        let call = |version: &str, proto: u32| {
+            let mut c = stream_as_version(&b, &a.node.self_id(), &key, ClientKind::Computer, &[], Some(version)).unwrap();
+            c.writer.send(&ClientMsg::Call { id: "c".into(), req: req.clone(), proto: Some(proto) }).unwrap();
+            let ServerMsg::Reply { reply, .. } = next_non_tasks(&mut c) else { panic!() };
+            serde_json::from_value::<Reply>(reply).unwrap()
+        };
+        // At the floor, on an older CLI protocol: still served.
+        let r = call(termic_remote::compat::REQUIRES_DESKTOP, proto::PROTOCOL_VERSION - 1);
+        assert!(r.ok, "{:?}", r.error);
+        // Below it: refused, naming both versions.
+        let r = call("0.0.1", proto::PROTOCOL_VERSION);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("0.0.1") && err.message.contains(termic_remote::compat::REQUIRES_DESKTOP), "{}", err.message);
+        assert!(peer_compatible(Some("1.99.0"), Some(1)));
+        assert!(!peer_compatible(Some("0.0.1"), Some(proto::PROTOCOL_VERSION)));
+        assert!(peer_compatible(None, Some(proto::PROTOCOL_VERSION)));
+        assert!(!peer_compatible(Some("dev"), Some(1)));
     }
 
     #[test]
@@ -3027,20 +3837,23 @@ mod tests {
                 Ok(())
             }
         }
-        // A "peer" that holds the answer for a while.
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let target = l.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let (s, _) = l.accept().unwrap();
-            let _ = read_request(&s);
             std::thread::sleep(Duration::from_millis(300));
-            let _ = respond(s, 200, b"{}");
+            let _ = tx.send(42);
         });
-        let node = machine("A").node;
         let mut sink = Count(0);
-        let r = node.call_with_heartbeat(target, "/x", b"{}".to_vec(), Duration::from_secs(5), true, "r", &mut sink);
-        assert_eq!(r.unwrap().0, 200);
+        assert_eq!(await_with_heartbeat(rx, true, "r", &mut sink), Some(42));
         assert!(sink.0 >= 2, "heartbeats: {}", sink.0);
+        // A single-reply verb gets none: a heartbeat would be read as its answer.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = tx.send(1);
+        });
+        let mut sink = Count(0);
+        assert_eq!(await_with_heartbeat(rx, false, "r", &mut sink), Some(1));
+        assert_eq!(sink.0, 0);
         assert!(streamed(&Command::Wait { task: None, project: None, timeout_ms: None, tab: None, cwd: None }));
         assert!(!streamed(&Command::List { project: None, quiet: false }));
     }

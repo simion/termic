@@ -17,6 +17,7 @@ import { usePrefs } from "@/store/prefs";
 import { SandboxIcon, DockerSandboxIcon, sandboxPickerLabelT } from "@/components/SandboxIcon";
 import { selectionToFields } from "@/lib/types";
 import { useUI } from "@/store/ui";
+import { useRemote, openNewTaskOnServer } from "@/lib/remote";
 import { defaultCliFirst, isTerminalEntry, visibleCliIds } from "@/lib/agents";
 import { importQuickWorktree, readNewTaskMode, writeNewTaskMode, type NewTaskMode } from "@/lib/quickTask";
 import { launcherLastUsed, launcherVisibilityOf, pinnedFirst, recordLauncherUse, splitLauncher } from "@/lib/launcherUsage";
@@ -81,6 +82,10 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
   const loadAll = useApp(s => s.loadAll);
   const setView = useApp(s => s.setView);
   const tasks = useApp(s => s.tasks);
+  // A server project's tasks are made on the box (server_projects.rs):
+  // its New task is the server's dialog, with this project picked.
+  const server = useApp(s => s.projects.find(p => p.id === projectId));
+  const setRemoteDialog = useRemote(s => s.setDialog);
   // Recently archived tasks for THIS project, most-recent first — same
   // sort HistoryView uses, scoped to one project so the launcher menu can
   // offer a one-click shortcut back into a recent one instead of making the
@@ -370,6 +375,14 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
     );
   };
 
+  if (server?.server) {
+    return (
+      <DropdownItem data-testid={`project-server-new-task-${projectId}`} onSelect={() => void openNewTaskOnServer(server.server!, server.name)}>
+        <TerminalSquare className="h-4 w-4" />
+        {t("ctxNewTask")}
+      </DropdownItem>
+    );
+  }
   return (
     <>
       {!canWorktree ? (

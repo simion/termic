@@ -59,6 +59,8 @@ that CI is running.
 ```sh
 # 0. Prune the README roadmap (see "Roadmap upkeep"):
 gh issue list --label planned --state closed
+# 0b. Check the compatibility floors and PROPOSE a bump if the wire broke
+#     (see "Compatibility floors"). Never skip; never bump without asking.
 # 1. Author the changelog entry for the new version (see "Changelog entry").
 #    Add a new "## [x.y.z] - " section at the TOP of CHANGELOG.md.
 # 2. Cut the release:
@@ -83,6 +85,60 @@ git push && git push --tags
    `release: vX` and tags `vX`.
 
 ---
+
+## Compatibility floors (every release, both paths)
+
+Termic does not demand a 1:1 version match with the machines it talks to.
+`termic-remote/src/compat.rs` holds two minimums, and nothing else decides
+compatibility:
+
+- `REQUIRES_SERVER`: the oldest termic-server this desktop works with. A
+  server below it is upgraded AND restarted by itself once no agent is
+  mid-turn. A server at or above it but older than the carried build is
+  upgraded quietly and restarts only when the user clicks Restart now (or
+  the box restarts). A newer server is never downgraded.
+- `REQUIRES_DESKTOP`: the oldest Termic desktop this build works with, as a
+  paired computer (checked both ways) and as the desktop driving a
+  termic-server built from this tree. A desktop below a host's floor is
+  told to update itself.
+
+Most releases change nothing on the wire, and then the floors stay. Raise
+one only when this release stops working with what is older. **Each
+release, before the changelog, do this and tell the maintainer the result
+in one line** ("floors unchanged: no wire changes since v1.25.0", or a
+proposal):
+
+```sh
+last=$(git describe --tags --abbrev=0)
+git diff --stat "$last"..HEAD -- termic-remote termic-proto termic-server \
+  src-tauri/src/remote_server.rs src-tauri/src/remote_client.rs src-tauri/src/peers.rs
+grep -n 'REQUIRES_' termic-remote/src/compat.rs
+```
+
+Read the diff (not just the stat) and ask, per side:
+
+- Does this desktop now SEND something an older server or computer cannot
+  handle and cannot ignore: a new required field, a changed meaning, a
+  request the feature depends on (an unknown request merely fails with
+  "unknown variant", which `explainReply` and the CLI already explain, so
+  an optional new verb is not a break)? Then propose raising the floor for
+  that side to the version that first understands it.
+- Does it now RELY on something older ones do not send (a reply field, a
+  message, a behaviour)? Same.
+- Did `termic_proto::PROTOCOL_VERSION` change? That alone is not a break
+  for paired computers any more (they are judged by version once both
+  send one); look at what changed under it.
+- Additive changes (a new optional field with `#[serde(default)]`, a new
+  message type an old side ignores, a new capability string) are never a
+  break.
+
+A proposal names the side, the new floor, and the one change that forces
+it: "REQUIRES_SERVER 1.25.0 → 1.27.0: the desktop now opens server shells
+with `pty_open2`, which 1.26 servers reject." The floor is always at or
+below the version being released (`remote_client` test
+`this_build_works_with_itself` fails otherwise), and the bump lands in the
+release commit's tree, so edit it before `make release`. Never lower a
+floor to "fix" a refusal without finding why it was raised.
 
 ## Roadmap upkeep (Path A, step 0)
 
@@ -128,6 +184,7 @@ tags it. The previous release commit and tag are left untouched (new commit on
 top, nothing rewritten).
 
 ```sh
+# 0. Check the compatibility floors (see "Compatibility floors").
 # 1. In CHANGELOG.md, edit the TOP (latest) entry in place:
 #      - bump its heading version  (## [0.11.0] → ## [0.11.1])
 #      - append your change as a bullet under one of its existing ### subsections

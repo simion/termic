@@ -248,4 +248,6 @@ Deeper references — read when working in that area:
 - [docs/automation.md](docs/automation.md) — automation bridge, E2E testing (use the `e2e` skill, don't improvise)
 - [docs/e2e-tests.md](docs/e2e-tests.md) — written WebdriverIO e2e suite (run via `make e2e`); authoring lives in the `e2e` skill
 - [docs/e2e-coverage.md](docs/e2e-coverage.md) — e2e coverage checklist + roadmap (what's tested, what's next)
-- [docs/peers.md](docs/peers.md) — LAN pairing (Settings > Agent access, Other computers): discovery, the pairing protocol and its threat model, the per-pair key, what a paired machine may do, `--peer` / the MCP `peer` argument / `peer_call`
+- [docs/remote.md](docs/remote.md) — remote control: the sealed stream (phones, other computers in the sidebar, SSH servers via termic-server), QR phone pairing, answers bound to the question on screen
+- [docs/remote-testing.md](docs/remote-testing.md): run the remote stack on real machines (two desktops, an ssh server, the phone) and check each feature by hand
+- [docs/peers.md](docs/peers.md) — LAN pairing (Settings > Remote, Other computers): discovery, the pairing protocol and its threat model, the per-pair key, what a paired machine may do, `--peer` / the MCP `peer` argument / `peer_call`

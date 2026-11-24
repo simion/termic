@@ -4,6 +4,81 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.0.5] - 2026-11-24
+
+Remote control: your phone, your own servers, and your other computers.
+
+### Phone app
+- Termic Remote for [iPhone](https://testflight.apple.com/join/SqxhPr6a) and [Android](https://play.google.com/store/apps/details?id=dev.termic.remote), free. Pair it by QR code in Settings, Remote control ([#165](https://github.com/simion/termic/issues/165)).
+- Answer an agent's question with one tap, read the conversation (Claude Code, Codex, Antigravity), send prompts, drive any agent's live terminal, start new tasks with the same options as on the computer, stop or restart an agent.
+- It talks straight to your computer: on your Wi-Fi, or away from home over your own VPN (your router's or Tailscale). There is no relay and no account.
+
+### Servers
+- Run agents on a Linux or Mac machine you reach with ssh, so they keep working while your laptop sleeps ([#82](https://github.com/simion/termic/issues/82)).
+- Settings, Servers, Add a server checks the connection and installs termic-server for you over your own ssh: no sudo, no internet needed on the machine, no credentials stored. Updates follow the app by themselves.
+- A server's projects are ordinary projects: the same sidebar, New task, tabs, file tree, editor, diff, git panel and scripts. Add a repo already there, clone one by URL, or add a plain folder. Agent hooks work there too, so a server agent rings when it needs you.
+- Every computer on a server sees the same projects and tasks, with the same names, pins and groups.
+
+### Paired computers
+- Pair two computers running Termic and agents on either can start and drive tasks on the other. A paired computer's tasks show in your sidebar under REMOTE, filed as it files them, following your sidebar settings.
+- Open one of its tasks and work in its terminal from here. One screen shows a terminal at a time: the others say which phone or computer has it, with Continue here to take it back.
+- Stop a task from here and it stops there too; Reopen starts it again in its last session.
+- Copy and paste cross over: what an agent copies lands on your clipboard here, and Ctrl+V with an image attaches it to the agent there, as a local paste does. On a server, the image is put on the server for the agent.
+- Its terminal takes your keys as a local one does: Shift+Enter adds a line, ⌘⌫ and ⌘←/⌘→ edit the line, and app shortcuts reach the app.
+- Right-click one of its tasks to stop it, archive it or copy its branch name, as on a local task.
+- A computer with several profiles lists them in its menu: untick one to leave its tasks out of your sidebar.
+
+### Also new
+- Settings is reorganised around it: MCP & CLI, Remote control (phones and paired computers) and Servers. Remote is marked experimental, and Settings, Appearance turns the REMOTE section off for anyone who does not use it.
+- `termic pin` (MCP `task_pin`) pins or unpins a task.
+- Caffeinate: the mug is filled while it keeps your computer awake, and "Turn back on when Termic restarts" brings it back after a quit or an update.
+- Sidebar: projects, folders and task groups animate open and shut. Its settings in Appearance are grouped by the part of the sidebar they change.
+- The sidebar scrolls without a visible scrollbar.
+- No more "Message queue finished" notice, and archiving from a merged PR's notice no longer adds a second "Archived" one.
+
+### Bug fixes
+- A terminal open on two screens at once (a phone and a Mac, or two Macs) no longer blanks and redraws over and over.
+- A phone watching a terminal hears at once when a Mac takes it back, even while the agent is idle.
+- Connecting to a paired computer no longer waits on addresses it cannot reach (a Mac's virtual network bridges): an Ubuntu machine pairing with a Mac waited seconds per address.
+- A task started with a prompt (New task with a prompt, a PR review, a race) comes back in its Claude session after a restart, instead of a fresh one.
+- With two profile windows open, a running task no longer reads as inactive to `termic status` and MCP.
+- Windows and Linux: closing the last window while agents run asks first, instead of the window vanishing and Cancel leaving Termic with no window.
+- A merged pull request in one profile no longer offers to archive its task in another profile's window.
+- The phone no longer shows a message as Queued after the agent has already read it.
+- Linux: fixed one cause of Termic not starting again by itself after an update.
+- Opening a task from a paired computer marks it read here, as opening it from your phone does.
+- The phone no longer shows every finished task as finished "now" after it reconnects.
+- A paired computer's terminal draws like a local one: an agent's tables and boxes join up, and images it shows appear.
+
+## [1.25.7] - 2026-11-23
+
+Two new features: a phone app to remote-control Termic, and agents on your own servers.
+
+### Features
+- Servers: run agents on a Linux or Mac machine you reach with ssh, so they keep working while your laptop sleeps. Settings, Servers, Add a server checks the connection and installs termic-server there over your own ssh: no sudo, no internet needed on the machine, no credentials stored ([#82](https://github.com/simion/termic/issues/82)).
+- A server's projects are ordinary projects: the same sidebar, New task, tabs, file tree, editor, diff, git panel and run, setup and archive scripts, all on the server. Add a repo already there, clone one by URL, or add a plain folder. Agent hooks are installed there too, so a server agent rings when it needs you, like a local one.
+- Several computers on one server see the same projects and tasks, with the same names, pins and groups.
+- Termic Remote, the phone app ([iPhone](https://testflight.apple.com/join/SqxhPr6a), [Android](https://play.google.com/store/apps/details?id=dev.termic.remote)): pair it by QR code in Settings, Remote control. Answer an agent's question with one tap, read the conversation (Claude Code, Codex, Antigravity), send prompts, use any agent's live terminal, and start new tasks with the same options as here. It talks straight to your computer, on your Wi-Fi or over your own Tailscale; there is no relay ([#165](https://github.com/simion/termic/issues/165)).
+- A paired computer's tasks show in the sidebar under REMOTE, filed in its own groups and folders, and you can rename, pin and move them from here.
+- Settings: Agent access is now three pages, MCP & CLI, Remote control (phones and paired computers) and Servers.
+- `termic pin` (MCP `task_pin`) pins or unpins a task.
+
+### Improvements
+- Sidebar: projects, folders and task groups animate open and shut.
+- Connect a phone says plainly that away from your network the phone needs your own VPN to this computer (your router's VPN or Tailscale), since Termic has no relay.
+- Remote terminals: the last window you work in sets the terminal's size, and the other one shows it scaled to fit. A click or a key in either window takes the size back. Before, a paired computer's terminal was drawn at the other computer's size and scrolled both ways.
+- Remote is marked experimental, and Settings, Appearance, Remote in the sidebar turns the section off for anyone who does not use it.
+- A paired computer's task groups fold open and shut, its projects read like local ones, and its rows no longer show git line counts. Its rows follow your sidebar settings for the PR badge, the location icon and the branch name. A task whose agent is not running is greyed out, as a local one is.
+- The pair list shows each computer's Termic version, and Termic Beta and dev builds name themselves, so the release and a Beta on one Mac no longer look like the same computer twice.
+- The sidebar's New task button under a project's tasks shows only for a project with none yet; the header's + starts the rest. It is still in Settings, Appearance.
+
+### Bug fixes
+- Reopen on a paired computer's task starts its stopped agent again in its last session. It used to do nothing.
+- A finished agent whose reply contains a numbered list no longer shows as "Needs you" on a phone or another computer.
+- A task started with a prompt (New task with a prompt, a PR review, a race) now comes back in its Claude session after a restart, instead of a fresh one.
+- With two profile windows open, a running task no longer reads as inactive to `termic status` and MCP every few seconds.
+- Windows and Linux: closing the last window while agents run asks before the window closes. Before, the window vanished first, and Cancel left Termic in the tray with no window to show.
+
 ## [1.24.6] - 2026-11-20
 
 Monokai theme, window titles that name your task, idle tasks free their build folders.

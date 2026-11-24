@@ -240,6 +240,10 @@ e2e_visible: ## Same as `make e2e`, with the window on screen so you can watch t
 	@TERMIC_E2E_VISIBLE=1 $(MAKE) e2e
 .PHONY: e2e_visible
 
+transcript-audit: ## Run the remote transcript reader over this machine's Claude sessions (local only, after a Claude Code update).
+	@cd termic-remote && cargo test --test transcript_audit -- --ignored --nocapture
+.PHONY: transcript-audit
+
 perf: ## Run both performance suites locally and report each separately.
 	@# Section 1 is the same suite the nightly workflow runs (startup marks +
 	@# RSS growth) — durations and memory, measurable anywhere, reported not

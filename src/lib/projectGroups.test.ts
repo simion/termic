@@ -127,3 +127,11 @@ describe("a mixed-case group name keys the same everywhere", () => {
     expect(sections.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["INFRA", "b"]);
   });
 });
+
+describe("visualProjectOrder with servers", () => {
+  it("puts a server's projects after this computer's, together per server", () => {
+    const p = (id: string, server?: string) => ({ id, name: id, server } as Project);
+    const order = visualProjectOrder([p("a"), p("s1", "box"), p("b"), p("t1", "vps"), p("s2", "box")]).map(x => x.id);
+    expect(order).toEqual(["a", "b", "s1", "s2", "t1"]);
+  });
+});

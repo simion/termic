@@ -41,6 +41,44 @@ function receive(status: CaffeinateStatus): void {
 }
 
 /** One listener per WINDOW, even when both sidebar variants are mounted. */
+// Restore on restart: the backend forgets caffeinate when Termic quits, so
+// the last request is kept here and re-applied at launch when asked to.
+const LS_RESTORE = "caffeinateRestore";
+const LS_LAST = "caffeinateLast";
+export function caffeinateRestoreOn(): boolean {
+  try { return localStorage.getItem(LS_RESTORE) === "1"; } catch { return false; }
+}
+export function setCaffeinateRestore(on: boolean): void {
+  try { localStorage.setItem(LS_RESTORE, on ? "1" : "0"); } catch { /* private mode */ }
+}
+function rememberRequest(request: CaffeinateRequest, now = Date.now()): void {
+  try {
+    if (request.mode === "off") localStorage.removeItem(LS_LAST);
+    else localStorage.setItem(LS_LAST, JSON.stringify({ request, at: now }));
+  } catch { /* private mode */ }
+}
+/** The request to re-apply at launch: the last one, with a timed one turned
+ *  into its absolute end, or null when it has already ended. */
+export function requestToRestore(saved: { request: CaffeinateRequest; at: number } | null, now = Date.now()): CaffeinateRequest | null {
+  if (!saved?.request) return null;
+  const r = saved.request;
+  if (r.mode === "off") return null;
+  if (r.mode === "duration") {
+    const end = saved.at + (r.duration_minutes ?? 0) * 60_000;
+    return end > now ? { mode: "until", until_ms: end, closed_lid: r.closed_lid, display: r.display } : null;
+  }
+  if (r.mode === "until") return (r.until_ms ?? 0) > now ? r : null;
+  return r;
+}
+async function restoreAtLaunch(status: CaffeinateStatus): Promise<void> {
+  if (!caffeinateRestoreOn() || status.mode !== "off" || status.active) return;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LS_LAST) ?? "null"); } catch { return; }
+  const request = requestToRestore(saved);
+  // A closed-lid request needs its permission; without it, only the rest.
+  if (request) await setCaffeinate(request.closed_lid && !status.lid_permission ? { ...request, closed_lid: false } : request).catch(() => {});
+}
+
 export async function initCaffeinate(): Promise<void> {
   if (started) return;
   started = true;
@@ -53,6 +91,7 @@ export async function initCaffeinate(): Promise<void> {
     const before = revision;
     const status = await invoke<CaffeinateStatus>("caffeinate_status");
     if (before === revision) receive(status);
+    void restoreAtLaunch(status);
   } catch (error) {
     unlisten?.();
     started = false;
@@ -62,6 +101,7 @@ export async function initCaffeinate(): Promise<void> {
 export async function setCaffeinate(request: CaffeinateRequest): Promise<void> {
   const status = await invoke<CaffeinateStatus>("caffeinate_set", { request });
   receive(status);
+  rememberRequest(request);
 }
 export async function caffeinatePermission(install: boolean): Promise<void> {
   const status = await invoke<CaffeinateStatus>("caffeinate_permission", { install });

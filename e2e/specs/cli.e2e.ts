@@ -155,6 +155,58 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     expect(dflt.data.data).not.toContain(marker);
   });
 
+  it("send --fresh to a stopped task with no session restarts its own tab, no second agent", async () => {
+    // A phone's message to a stopped task resumes it, and with no session
+    // to resume the desktop retries as fresh (remote_server.rs). Fresh used
+    // to ADD a tab while restoring the default one, so two agents started.
+    const r = await rpc({ cmd: "new", name: "fresh-in-place", mode: "worktree", agent: "fakeagent", project: "fixture-repo" });
+    expect(r.ok).toBe(true);
+    const id = r.data.task.id as string;
+    const agentTabs = () => browser.execute((tid) =>
+      ((window.__termic!.useApp.getState().tabs[tid] ?? []) as any[]).filter(t => t.type === "terminal" && !t.runTab && t.cli),
+    id) as Promise<any[]>;
+    try {
+      await browser.waitUntil(async () => (await agentTabs()).some(t => t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never started" });
+      const pty = (await agentTabs()).find(t => t.ptyId)!.ptyId as string;
+      await browser.execute((p) => window.__termic!.invoke("pty_kill", { ptyId: p }), pty);
+      await browser.waitUntil(async () => (await agentTabs()).every(t => !t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never stopped" });
+      const marker = `FRESH-${Date.now()}`;
+      const sent = await rpc({ cmd: "send", task: "fresh-in-place", prompt: marker, fresh: true });
+      expect(sent.ok).toBe(true);
+      await browser.waitUntil(async () => {
+        const logs = await rpc({ cmd: "logs", task: "fresh-in-place" });
+        return logs.ok && String(logs.data.data).includes(`FAKE-AGENT echo: ${marker}`);
+      }, { timeout: 20_000, timeoutMsg: "the fresh send never reached the agent" });
+      expect((await agentTabs()).length).toBe(1);
+    } finally {
+      await archiveTask(id);
+    }
+  });
+
+  it("stop ends a task's agent and keeps the task; send starts it again", async () => {
+    const id = await openTask("cli-stop");
+    const agentTabs = () => browser.execute((tid) =>
+      ((window.__termic!.useApp.getState().tabs[tid] ?? []) as any[]).filter(t => t.type === "terminal" && !t.runTab && t.cli),
+    id) as Promise<any[]>;
+    try {
+      await browser.waitUntil(async () => (await agentTabs()).some(t => t.ptyId), { timeout: 20_000, timeoutMsg: "the agent never started" });
+      const stopped = await rpc({ cmd: "stop", task: "cli-stop" });
+      expect(stopped.ok).toBe(true);
+      expect(stopped.data.stopped_agents).toBe(1);
+      await browser.waitUntil(async () => (await agentTabs()).every(t => !t.ptyId), { timeout: 20_000, timeoutMsg: "the agent kept running after stop" });
+      // The task is still there, and a send starts its agent again.
+      expect((await rpc({ cmd: "list" })).data.tasks.some((t: any) => t.id === id)).toBe(true);
+      const marker = `AGAIN-${Date.now()}`;
+      expect((await rpc({ cmd: "send", task: "cli-stop", prompt: marker, fresh: true })).ok).toBe(true);
+      await browser.waitUntil(async () => {
+        const logs = await rpc({ cmd: "logs", task: "cli-stop" });
+        return logs.ok && String(logs.data.data).includes(`FAKE-AGENT echo: ${marker}`);
+      }, { timeout: 20_000, timeoutMsg: "send after stop never started the agent" });
+    } finally {
+      await archiveTask(id);
+    }
+  });
+
   it("status lists the strip with the same ids and 1-based indices", async () => {
     // status's tab list is the --tab contract surface: what it prints
     // is what selectors mean.
@@ -730,6 +782,41 @@ describe("termic rename: label only, over the real socket (GH #153)", () => {
     expect(r.ok).toBe(false);
     expect(r.error.code).toBe("conflict");
     expect(r.error.message).toContain("cli-rename-other");
+  });
+});
+
+describe("termic pin: the row's Pin, over the real socket", () => {
+  let taskId: string;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("cli-pin", false);
+  });
+
+  const pinnedInStore = () => browser.execute((i) => !!window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.pinned, taskId);
+  const markOnRow = () => browser.execute((i) => !!document.querySelector(`[data-sidebar-task-id="${i}"] [data-testid="task-pinned-mark"]`), taskId);
+
+  it("pins by default: the reply, the store and the row's mark agree", async () => {
+    const r = await rpc({ cmd: "pin", task: "cli-pin" });
+    expect(r.ok).toBe(true);
+    expect(r.data.kind).toBe("pin");
+    expect(r.data.pinned).toBe(true);
+    expect(r.data.task.id).toBe(taskId);
+    expect(await pinnedInStore()).toBe(true);
+    await browser.waitUntil(markOnRow, { timeout: 5000, timeoutMsg: "the row never showed its pin" });
+  });
+
+  it("unpins with pinned: false, and an unknown task changes nothing", async () => {
+    const r = await rpc({ cmd: "pin", task: "cli-pin", pinned: false });
+    expect(r.ok).toBe(true);
+    expect(r.data.pinned).toBe(false);
+    expect(await pinnedInStore()).toBe(false);
+    await browser.waitUntil(async () => !(await markOnRow()), { timeout: 5000, timeoutMsg: "the pin mark stayed" });
+    const bad = await rpc({ cmd: "pin", task: "no-such-task-xyz" });
+    expect(bad.ok).toBe(false);
   });
 });
 

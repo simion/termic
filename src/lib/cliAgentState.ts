@@ -18,6 +18,7 @@ import { useApp } from "@/store/app";
 import { isTerminalCli, workDoneCapable } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
 import { collectTaskProps, type CollectedProp } from "@/lib/tabProps";
+import { useRemote, type MachineView } from "@/lib/remote";
 
 export interface TaskAgentState {
   /** "working" | "waiting" | "done" | "idle" | "inactive". */
@@ -114,10 +115,23 @@ export function aggregateTabsState(term: TerminalTab[]): "working" | "waiting" |
  *  (attention), then a finished turn (done), else idle. A task with no
  *  terminal tabs reports "inactive" rather than being omitted, so the
  *  CLI can say "no agent open" instead of "unknown". */
-export function computeAgentStates(s: AppState = useApp.getState()): Record<string, TaskAgentState> {
+export function computeAgentStates(s: AppState = useApp.getState(), machines: MachineView[] = useRemote.getState().machines): Record<string, TaskAgentState> {
   const states: Record<string, TaskAgentState> = {};
   for (const task of s.tasks) {
     if (task.archived) continue;
+    // A server project's task whose tabs this desktop has not opened (a
+    // fresh start, another desktop's agent): the box's reading of its
+    // agent, as its sidebar row shows it. Once opened, its tabs read state
+    // like local ones, below.
+    const server = s.projects.find(p => p.id === task.project_id)?.server;
+    const hasLivePty = (s.tabs[task.id] ?? []).some(t => t.type === "terminal" && !!(t as TerminalTab).ptyId);
+    if (server && !hasLivePty) {
+      const remote = machines.find(m => m.id === server)?.tasks.find(t => t.id === task.id)?.state;
+      const state = remote === "working" || remote === "waiting" || remote === "done" || remote === "idle" ? remote : "inactive";
+      const live = state !== "inactive";
+      states[task.id] = { state, tabs: live ? 1 : 0, queued: 0, capable: live, tab_states: [], hydrated: true, props: [] };
+      continue;
+    }
     // undefined means the UI has never loaded this task's tabs (nobody
     // has opened it this session); an empty array means it was loaded and
     // has none. `hydrated` carries that difference to the CLI, which is
@@ -194,6 +208,8 @@ export function initAgentStatePush(): () => void {
     if (s.tabs === prev.tabs && s.tasks === prev.tasks && s.agents === prev.agents) return;
     schedule();
   });
+  // A server task's state moves on the box.
+  const unsubRemote = useRemote.subscribe((s, prev) => { if (s.machines !== prev.machines) schedule(); });
   const interval = window.setInterval(() => push(true), REFRESH_EVERY_MS);
   // Boot snapshot, but only once the store has hydrated: a reload's
   // pre-loadAll push would wipe the cache with an empty map under an
@@ -204,6 +220,7 @@ export function initAgentStatePush(): () => void {
   return () => {
     started = false;
     unsub();
+    unsubRemote();
     window.clearInterval(interval);
     if (timer !== undefined) window.clearTimeout(timer);
   };

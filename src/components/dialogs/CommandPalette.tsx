@@ -5,12 +5,13 @@
 // arrow keys. NO solid backdrop (the old `bg-black/40` overlay flickered the
 // whole screen on open) — just a subtle dim + blur that fades in, ⇧⌘P only.
 
+import { useRemote } from "@/lib/remote";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
-  PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon,
+  PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon, Server, Smartphone,
   FolderCog, RefreshCw, ScrollText, Compass, CalendarClock, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
@@ -658,6 +659,8 @@ export function CommandPalette() {
       ["shortcuts", "commandPalette.cmd.linkShortcuts", Keyboard],
       ["sandbox", "commandPalette.cmd.linkSandbox", ShieldCheck],
       ["cli", "commandPalette.cmd.linkCli", SquareTerminal],
+      ["remote", "commandPalette.cmd.linkRemote", Smartphone],
+      ["servers", "commandPalette.cmd.linkServers", Server],
     ];
     for (const [tab, labelKey, icon] of settingsLinks) {
       cmds.push({
@@ -665,6 +668,12 @@ export function CommandPalette() {
         run: act(() => useApp.getState().openSettings(tab as any)),
       });
     }
+
+    cmds.push({
+      id: "connect-phone", section: "Application", label: t("commandPalette.cmd.connectPhone"), icon: Smartphone,
+      keywords: "phone mobile remote qr pair",
+      run: act(() => useRemote.getState().setDialog({ phoneDialog: true })),
+    });
 
     return cmds;
   }, [view, task, proj, committedTheme, visibleThemes, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, sidebarFiltered, hasGitProject, t]); // eslint-disable-line react-hooks/exhaustive-deps

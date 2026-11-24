@@ -86,7 +86,7 @@ interface View {
    *  and panel state all stay intact while it's open. */
   settingsOpen?: boolean;
   /** When the Settings overlay is open, which section is selected. */
-  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "secrets" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles" | "sync" | "mcp" | "peers";
+  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "secrets" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles" | "sync" | "mcp" | "peers" | "remote" | "servers";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
   /** DOM id to scroll into view + briefly highlight once the settings
@@ -485,6 +485,10 @@ export interface AppState {
    *  `Tab.unread.repeat` and lib/attentionNotify.ts (GH #276). */
   markAttention: (taskId: string, tabId: string, reason: "bell" | "idle" | "exit" | "done" | "attention", message?: string, repeat?: boolean) => void;
   clearAttention: (taskId: string, tabId: string) => void;
+  /** A phone looked at the task (its chat or terminal): what its agents
+   *  finished is read, as a desktop visit reads it, without moving this
+   *  window's active tab. Bails when nothing changes. */
+  markSeenRemotely: (taskId: string) => void;
   /** Per-tab work-progress state. Idempotent — writing the same value is
    *  a no-op so we don't churn React for every OSC 9;4 the agent emits. */
   setWorkState: (taskId: string, tabId: string, state: "idle" | "working" | "done", reason?: string) => void;
@@ -3068,6 +3072,27 @@ export const useApp = create<AppState>((set, get) => ({
         } as Tab
       : t);
     return { tabs: { ...s.tabs, [taskId]: next } };
+  }),
+
+  markSeenRemotely: (taskId) => set(s => {
+    const list = s.tabs[taskId];
+    if (!list) return s;
+    let changed = false;
+    const next = list.map(t => {
+      if (t.type !== "terminal") return t;
+      const patch: Partial<TerminalTab> = {};
+      if (t.workState === "done") {
+        patch.workState = "idle";
+        patch.workProgress = null;
+        patch.workProgressKind = null;
+        patch.workClearedAt = Date.now();
+      }
+      if (unreadClearsOnSight(t.unread)) patch.unread = null;
+      if (!Object.keys(patch).length) return t;
+      changed = true;
+      return { ...t, ...patch };
+    });
+    return changed ? { tabs: { ...s.tabs, [taskId]: next } } : s;
   }),
 
   clearAttention: (taskId, tabId) => set(s => {

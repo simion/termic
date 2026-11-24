@@ -321,7 +321,9 @@ describe("merged-PR lifecycle (issue #21)", () => {
     // archive entry point (branch-delete checkbox and all), not a bare
     // archiveAndRefresh - "ask" mode means the user gets a real say.
     toasts[0].actions[0].onClick();
-    expect(confirmAndArchive).toHaveBeenCalledWith(expect.objectContaining({ id: "ws1" }));
+    // Quiet: the notice the user clicked already said what happens, so no
+    // second "Archived" toast after it.
+    expect(confirmAndArchive).toHaveBeenCalledWith(expect.objectContaining({ id: "ws1" }), { quiet: true });
   });
 
   it("fires a desktop notification alongside the toast, gated on the pref", async () => {
@@ -425,6 +427,24 @@ describe("merged-PR lifecycle (issue #21)", () => {
     seedApp(undefined, { id: "ws-cold", pr_number: 7, pr_provider: "github" });
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
     await usePr.getState().refresh("ws-cold", { force: true });
+    expect(useUI.getState().toasts).toHaveLength(1);
+  });
+
+  it("another profile's task: no toast here, and still unhandled for its own window", async () => {
+    seedApp("ask", { project_id: "p-other" }); // its project lives in another profile's window
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 4242));
+    await usePr.getState().refresh("ws1", { force: true });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 4242));
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(useUI.getState().toasts).toHaveLength(0);
+    expect(ipc.notify).not.toHaveBeenCalled();
+    // The window it belongs to (the project is there) still announces it.
+    useApp.setState({ projects: [{ id: "p-other", name: "theirs" } as Project] });
+    usePr.setState({ byTask: {} });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 4242));
+    await usePr.getState().refresh("ws1", { force: true });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 4242));
+    await usePr.getState().refresh("ws1", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
   });
 

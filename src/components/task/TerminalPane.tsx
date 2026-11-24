@@ -2,6 +2,8 @@
 // the resize/refit dance and the attention/unread heuristics. Stays mounted
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
+import { terminalKeysAfter, terminalKeysBefore } from "@/lib/terminalKeys";
+import { listen } from "@tauri-apps/api/event";
 import { ShellRcBanner } from "@/components/secretsUi/ShellRcBanner";
 import { parseRoleShells, roleShellsKey, setShellPty, shellSecretsArg } from "@/lib/shellSecrets";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,12 +34,11 @@ import { createPtyOutputActivity, lastPtyOutputAt } from "@/lib/ptyOutputActivit
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { ImageAddon } from "@xterm/addon-image";
 import { preserveImagesOnErase } from "@/lib/terminalImagePersistence";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { terminalLook, useTerminalWidths } from "@/lib/terminalLook";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
-import { terminalNewlineBytes } from "@/lib/terminalNewline";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
-import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, terminalPassesToApp, type ShortcutId } from "@/lib/shortcuts";
+import { IS_MAC } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, atUsageLimit, USAGE_LIMIT_WORK, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
@@ -67,7 +68,7 @@ import { sameCounts } from "@/lib/secretsUi";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
-import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
+import { isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
 import { wrapWithDotEnv, loadTaskDotEnv } from "@/lib/dotenv";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
@@ -79,6 +80,7 @@ import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
+import { clearRemoteInterrupt, remoteInterruptAt } from "@/lib/remoteInterrupt";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
@@ -95,6 +97,19 @@ interface Props { task: Task; tab: TerminalTab; active: boolean; }
 // Seconds a finished "Run setup" tab lingers before auto-closing (counter in
 // the "Setup finished." banner; click closes immediately).
 const SETUP_AUTO_CLOSE_S = 5;
+/** Continue here: the overlay lifts once the agent's output has been quiet
+ *  this long after the resize, or after RECLAIM_MAX_MS whatever happens. */
+const RECLAIM_QUIET_MS = 200;
+const RECLAIM_MAX_MS = 1_000;
+/** The in-use overlay's icon by what took the terminal (lucide's smartphone,
+ *  monitor, square-terminal and monitor-smartphone, as path data: the
+ *  overlay is built outside React). */
+const ELSEWHERE_ICONS: Record<string, string> = {
+  phone: '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+  computer: '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  cli: '<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
+  "": '<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/>',
+};
 
 // How long after an interrupt keystroke the TITLE may end a turn. Wide enough
 // for the agent to tear down and repaint (claude took 40-110ms, measured on
@@ -851,10 +866,9 @@ const captureArmedRef = useRef(false);
     if (idx < 0) {
       if (!cur.queueActive) return false;
       // No ordinary item is left, so the loop is over. Future scheduled
-      // items do not keep it running (they never needed it), but they do
-      // mean the queue is not "finished", so no toast while any remain.
+      // items do not keep it running (they never needed it). No toast: the
+      // agent finishing its turn already says so.
       patchTab(task.id, tab.id, { queueActive: false });
-      if (!q.length) useUI.getState().pushToast(i18n.t("task:terminal.queueFinished"));
       return false;
     }
     const head = q[idx];
@@ -1107,6 +1121,12 @@ const captureArmedRef = useRef(false);
     }
   }, []);
 
+  // The task's name, read through a ref: a rename must never re-run the
+  // spawn effect below, which kills and respawns the PTY (it restarted the
+  // agent, and on a server ended it). TERMIC_WORKSPACE_NAME keeps the name
+  // the agent started with; its id is what the CLI and hooks use.
+  const taskNameRef = useRef(task.name);
+  taskNameRef.current = task.name;
   useEffect(() => {
     let cancelled = false;
     let outputActivity: ReturnType<typeof createPtyOutputActivity> | undefined;
@@ -1153,25 +1173,8 @@ const captureArmedRef = useRef(false);
     };
 
     const term = new Terminal({
+      ...terminalLook(),
       cursorBlink: true,
-      fontFamily: currentTerminalStack(),
-      fontSize: usePrefs.getState().terminalFontSize,
-      // Regular 400 / bold 700 — the two static JetBrains Mono masters
-      // bundled with the app. Any other weight forces xterm's WebGL atlas
-      // to interpolate, which WKWebView rasterizes soft. Pinned, not a pref.
-      fontWeight: 400,
-      fontWeightBold: 700,
-      letterSpacing: usePrefs.getState().terminalLetterSpacing,
-      // 1.0 is xterm's default and what TUIs (gemini, claude, etc.) assume.
-      // A larger lineHeight inflates every cell vertically, so any row the TUI
-      // paints with a bg color reads as a visible "ribbon" instead of a tight
-      // band against neighbouring rows.
-      lineHeight: 1.0,
-      theme: currentTerminalTheme() as any,
-      // Keeps CLI truecolor text readable on a light bg — see
-      // currentMinimumContrastRatio (#83).
-      minimumContrastRatio: currentMinimumContrastRatio(),
-      allowProposedApi: true,
       scrollback: usePrefs.getState().terminalScrollback,
       // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
       // pref lives in Appearance. (issue #11)
@@ -1199,9 +1202,7 @@ const captureArmedRef = useRef(false);
     const imagePersistence = /(?:^|\/)pi$/.test(spawnCommandForCli(tab.cli)) || (import.meta.env.VITE_E2E && tab.cli === "fakeagent")
       ? preserveImagesOnErase(term)
       : null;
-    const unicode11 = new Unicode11Addon();
-    term.loadAddon(unicode11);
-    term.unicode.activeVersion = "11";
+    useTerminalWidths(term);
     // Links — Terminal.app / VS Code convention: the WebLinksAddon stays
     // loaded the whole time, so URLs are detected up front and underline
     // on hover. Opening is gated on Cmd/Ctrl inside the handler, so a
@@ -1377,12 +1378,25 @@ const captureArmedRef = useRef(false);
     // underneath and would otherwise consume the event first. Text pastes
     // fall straight through (`imageFromClipboard` returns null), so the
     // common path is untouched.
+    // A server task's agent cannot read this computer's clipboard either (a
+    // headless box has none): the same route, with the file copied onto the
+    // box first and the box's path pasted.
+    const serverOf = () => {
+      const st = useApp.getState();
+      const p = st.projects.find(x => x.id === st.tasks.find(t => t.id === task.id)?.project_id);
+      return p?.server ? { server: p.server, cwd: p.root_path } : null;
+    };
+    const pasteImageAt = async (path: string) => {
+      const srv = serverOf();
+      if (srv) term.paste(pastePathText(await ipc.serverPasteImage(srv.server, srv.cwd, path), false, false));
+      else term.paste(pastePathText(path, true));
+    };
     const onPaste = (e: ClipboardEvent) => {
       // Live read, not the captured `task`: toggling Docker restarts the PTY
       // but does not necessarily re-run this effect, and a stale answer here
       // would either break a native paste or silently drop a caged one.
       const live = useApp.getState().tasks.find(t => t.id === task.id);
-      if (!live?.docker_sandbox_enabled) return;
+      if (!live?.docker_sandbox_enabled && !serverOf()) return;
       const file = imageFromClipboard(e.clipboardData);
       if (!file) return;
       e.preventDefault();
@@ -1390,11 +1404,11 @@ const captureArmedRef = useRef(false);
       file.arrayBuffer()
         .then(buf => ipc.clipboardImageSave(new Uint8Array(buf)))
         .then(path => {
-          // Still Docker, and still a live PTY: this lands an IPC round trip
-          // after the gesture, and either could have changed in between.
+          // Still Docker (or a server), and still a live PTY: this lands an
+          // IPC round trip after the gesture, and either could have changed.
           const now = useApp.getState().tasks.find(t => t.id === task.id);
-          if (!now?.docker_sandbox_enabled || !ptyRef.current) return;
-          term.paste(pastePathText(path, true));
+          if ((!now?.docker_sandbox_enabled && !serverOf()) || !ptyRef.current) return;
+          return pasteImageAt(path);
         })
         .catch(err => {
           // Silence here would read as "paste is broken": the image is gone
@@ -1404,53 +1418,7 @@ const captureArmedRef = useRef(false);
     };
     host.addEventListener("paste", onPaste, true);
 
-    // Shift+Enter → newline-without-submit.
-    //
-    // xterm.js by default sends plain \r for BOTH Enter and Shift+Enter,
-    // so without an override the agent can't tell them apart.
-    //
-    // OpenCode uses its Ctrl+J newline binding (LF); other agents keep
-    // backslash + CR. Resolve the base agent so OpenCode clones work too.
-    //
-    // For the other agents:
-    // We send `\\` + `\r` (literal backslash then CR) — the same
-    // sequence `/terminal-setup` writes into iTerm2 for Claude Code.
-    // Claude's input parser reads the trailing backslash as a
-    // continuation marker and inserts a soft newline instead of
-    // submitting. Gemini + codex also accept this convention.
-    //
-    // ESC+CR (`\x1b\r`, the old Option+Enter convention) was tried
-    // first but recent claude builds no longer recognize it — they
-    // require the explicit backslash-Enter pair.
-    // Global app shortcuts that must still work while the terminal has
-    // focus. xterm would otherwise swallow the keys (send them to the PTY
-    // and preventDefault), so the window-level handler never fires. We
-    // return false for these → xterm ignores the event → it bubbles up to
-    // useShortcuts, which dispatches the command. Read from resolved prefs
-    // so user rebinds are honored.
-    const PASS_TO_APP: ShortcutId[] = [
-      "file-finder", "find-in-files", "broadcast", "open-settings",
-      // Unbound by default; once recorded it reaches the app from a terminal
-      // too, the way double-Shift does (that one is tracked on the window, so
-      // it never needed passing). On macOS with Cmd; elsewhere only when the
-      // chord carries Shift or Alt, since plain Ctrl+letter is the shell's.
-      "search-everywhere",
-    ];
     term.attachCustomKeyEventHandler((e) => {
-      // IME composition guard (Korean/Japanese/Chinese). xterm's
-      // CompositionHelper.keydown() decides "still composing?" purely by
-      // `keyCode === 229`. Chromium sets that for every composition keystroke,
-      // but WKWebView (WebKit) reports the real jamo key instead, so xterm
-      // finalizes the composition on EVERY keystroke — committing the partial
-      // syllable and resetting (안녕하세요 → ㅇㄴㅎ세). Returning false here
-      // short-circuits xterm's keydown BEFORE its composition handler runs and,
-      // crucially, without preventDefault — so the native textarea + xterm's
-      // own compositionstart/update/end listeners assemble the full syllable
-      // and emit it once on compositionend. `isComposing` covers continuation
-      // keystrokes; `keyCode === 229` covers the one that starts composition.
-      if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
-        return false;
-      }
       // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
       // BEFORE the pass-through below, which would hand a Ctrl+Alt chord to
       // the app (off macOS the combo is Ctrl+Alt+F).
@@ -1460,21 +1428,10 @@ const captureArmedRef = useRef(false);
         e.stopPropagation();
         return false;
       }
-      // Ctrl+Shift+W off macOS: not for the PTY, let it bubble to useShortcuts,
-      // which closes the tab (see isTerminalCloseCombo).
-      if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
-      if (e.type === "keydown") {
-        const binds = usePrefs.getState().shortcuts;
-        // macOS: the Cmd press only (Ctrl is the shell's, ⌃R stays reverse
-        // search). Elsewhere: only a binding that also carries Shift or Alt,
-        // since plain Ctrl+letter is the shell's. See terminalPassesToApp.
-        if (terminalPassesToApp(e, binds, PASS_TO_APP)) {
-          return false; // let the global handler take it (file finder, find-in-files, …)
-        }
-        // The same rule for EVERY shortcut, not only the four above: a chord
-        // with Shift or Alt on it is the app's (isAppChordInTerminal).
-        if (isAppChordInTerminal(e, binds)) return false;
-      }
+      // The keys every terminal shares (lib/terminalKeys): the IME guard,
+      // the close chord, the app's shortcuts. AFTER find, which the
+      // pass-through would otherwise hand to the app (Ctrl+Alt+F).
+      if (terminalKeysBefore(e) === false) return false;
       // ctrl+V inside a DOCKER task: attach the clipboard image, the way the
       // agent would if it could reach the pasteboard.
       //
@@ -1496,12 +1453,12 @@ const captureArmedRef = useRef(false);
       if (
         e.type === "keydown" && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
         && (e.key === "v" || e.key === "V")
-        && useApp.getState().tasks.find(t => t.id === task.id)?.docker_sandbox_enabled
+        && (useApp.getState().tasks.find(t => t.id === task.id)?.docker_sandbox_enabled || serverOf())
       ) {
         e.preventDefault();
         e.stopPropagation();
         ipc.clipboardImageCapture()
-          .then(path => { term.paste(pastePathText(path, true)); })
+          .then(path => pasteImageAt(path))
           .catch(() => {
             // No image on the clipboard (or the read failed): hand the agent
             // the keystroke it was going to get anyway and let it answer.
@@ -1536,86 +1493,13 @@ const captureArmedRef = useRef(false);
         return false;
       }
 
-      // Linux/Windows terminal copy/paste. macOS keeps native ⌘C / ⌘V (this
-      // whole block is skipped), so standard Mac behavior is untouched. Defaults
-      // are Ctrl+Shift+C / Ctrl+Shift+V — the Shift keeps plain Ctrl+C as SIGINT
-      // for the shell. Rebindable via Settings > Shortcuts.
-      if (!IS_MAC && e.type === "keydown") {
-        const binds = usePrefs.getState().shortcuts;
-        // Copy only when there's a selection; otherwise fall through so the
-        // combo isn't swallowed.
-        if (bindingMatches(e, binds["terminal-copy"]) && term.hasSelection()) {
-          writeClipboardText(term.getSelection()).catch(() => {});
-          e.preventDefault();
-          e.stopPropagation();
-          return false;
-        }
-        if (bindingMatches(e, binds["terminal-paste"])) {
-          readClipboardText().then(t => term.paste(t)).catch(() => {});
-          e.preventDefault();
-          e.stopPropagation();
-          return false;
-        }
-      }
-      // Linux: Super is held, so this key is an app shortcut (Super+J) and
-      // not text. WebKitGTK reports the chord as a bare letter, which xterm
-      // would send to the PTY; returning false leaves it for useShortcuts.
-      // Keypress too, or the letter is typed after the shortcut fired.
-      // AFTER copy / paste above: those are the terminal's own, and
-      // Super+Shift+V has to paste here like Ctrl+Shift+V does.
-      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
-        return false;
-      }
-      const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
-      if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
-        const pid = ptyRef.current;
-        if (pid) {
-          // For non-OpenCode agents:
-          // `\` + `\r` (0x5c 0x0d) — claude's `hasUsedBackslashReturn`
-          // path. Gemini + codex accept it too.
-          const baseId = builtinBaseId(tab.cli, useApp.getState().agents);
-          ipc.ptyWrite(pid, terminalNewlineBytes(baseId)).catch(() => {});
-        }
-        // BOTH stops are required:
-        //   - return false      → xterm.js skips its keydown handler
-        //                         (otherwise it'd also emit \r)
-        //   - preventDefault    → WKWebView skips inserting `\n` into
-        //                         the helper textarea, which would
-        //                         otherwise fire xterm's input-event
-        //                         listener and submit anyway. This was
-        //                         the bit that took the longest to
-        //                         find: every "right" byte sequence
-        //                         (ESC+CR, \\\r, LF, modifyOtherKeys)
-        //                         was being suffixed by a stray LF
-        //                         from the textarea insertion, so
-        //                         claude always submitted.
-        e.preventDefault();
-        e.stopPropagation();
-        return false;
-      }
-      // Cmd+Backspace → kill line to beginning (\x15, Ctrl+U), matching
-      // macOS Terminal.app and iTerm2. xterm.js does not translate this
-      // combo on its own; without the override WKWebView may also navigate
-      // back, so both preventDefault and return false are required.
-      if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === "Backspace") {
-        const pid = ptyRef.current;
-        if (pid) ipc.ptyWrite(pid, [0x15]).catch(() => {});
-        e.preventDefault();
-        e.stopPropagation();
-        return false;
-      }
-      // Cmd+Left → beginning of line (\x01, Ctrl+A); Cmd+Right → end of line
-      // (\x05, Ctrl+E). macOS Terminal.app / iTerm2 convention. xterm.js does
-      // not send these on its own for Cmd+Arrow on macOS.
-      if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
-        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-          const pid = ptyRef.current;
-          if (pid) ipc.ptyWrite(pid, [e.key === "ArrowLeft" ? 0x01 : 0x05]).catch(() => {});
-          e.preventDefault();
-          e.stopPropagation();
-          return false;
-        }
-      }
+      // The rest every terminal shares (lib/terminalKeys): copy / paste off
+      // macOS, Super chords, Shift+Enter, ⌘⌫ and ⌘←/⌘→.
+      if (terminalKeysAfter(e, {
+        term,
+        write: (bytes) => { const pid = ptyRef.current; if (pid) ipc.ptyWrite(pid, bytes).catch(() => {}); },
+        agentBaseId: () => builtinBaseId(tab.cli, useApp.getState().agents),
+      }) === false) return false;
       return true;
     });
 
@@ -1652,7 +1536,7 @@ const captureArmedRef = useRef(false);
     const wdDebug = (() => { try { return localStorage.getItem("debugWorkDone") === "1"; } catch { return false; } })();
     const wdlog = (msg: string, extra?: unknown) => {
       if (!wdDebug) return;
-      const tag = `[work-done ${task.name}/${tab.cli}]`;
+      const tag = `[work-done ${taskNameRef.current}/${tab.cli}]`;
       if (extra !== undefined) console.log(tag, msg, extra);
       else console.log(tag, msg);
     };
@@ -1779,7 +1663,7 @@ const captureArmedRef = useRef(false);
         if (settleIsStale(armedAt, submitAtRef.current)) {
           settleTimer = null;
           wdlog(`settle dropped, a submit came after it was armed (${reason})`);
-          logWorkState("settle-drop", `task="${task.name}" cli=${tab.cli} armedAgoMs=${Date.now() - armedAt} why=${reason}`);
+          logWorkState("settle-drop", `task="${taskNameRef.current}" cli=${tab.cli} armedAgoMs=${Date.now() - armedAt} why=${reason}`);
           return;
         }
         wdlog(`settle fired → workState=done`);
@@ -1895,6 +1779,7 @@ const captureArmedRef = useRef(false);
       cancelSettle(reason);
       localBusy = false;
       escAtRef.current = 0;
+      clearRemoteInterrupt(ptyRef.current);
       wdlog(`→ interrupted (${reason})`);
       interruptWork(reason);
     };
@@ -2146,8 +2031,10 @@ const captureArmedRef = useRef(false);
         // to stop the spinner, not to notify. The cost of being wrong the
         // other way is a tab that reads "working" until the next prompt, which
         // is the direction to fail in.
-        const interrupted = Date.now() - escAtRef.current < ESC_INTERRUPT_WINDOW_MS
-          && isUserWatching(task.id, tab.id);
+        // A Stop from a phone counts as a watched Escape (lib/remoteInterrupt).
+        const interrupted = (Date.now() - escAtRef.current < ESC_INTERRUPT_WINDOW_MS
+          && isUserWatching(task.id, tab.id))
+          || Date.now() - remoteInterruptAt(ptyRef.current) < ESC_INTERRUPT_WINDOW_MS;
         if (hooksOwnStateRef.current && hookSeenRef.current) {
           if (interrupted) goInterrupted("title idle after interrupt");
           else wdlog("title idle ignored (hooks own done for this agent)");
@@ -2288,7 +2175,7 @@ const captureArmedRef = useRef(false);
       const provesHooks = !hookSeenRef.current;
       if (!hookSeenRef.current) {
         hookSeenRef.current = true;
-        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via OSC 777)`);
+        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} (via OSC 777)`);
       }
       logWorkState("hook-osc", `cli=${tab.cli} osc=777 body=${JSON.stringify(data.slice(0, 120))}`);
       const body = parts.slice(2).join(";") || parts[1] || "";
@@ -2299,7 +2186,7 @@ const captureArmedRef = useRef(false);
       const trusted = parts[1] === HOOK_OSC_TITLE;
       // Kept for Settings (the "Recent hook reports" list), where "did the
       // hook fire at all" is answerable without opening the log file.
-      if (trusted) recordHook(tab.cli, body, tab.id, `${task.name} / ${tab.title || tab.cli}`);
+      if (trusted) recordHook(tab.cli, body, tab.id, `${taskNameRef.current} / ${tab.title || tab.cli}`);
       // READY shares this OSC id and the trusted title with the attention
       // signal, and is told apart by its body alone. It is NOT attention: it
       // reports that the agent is past its own startup and a typed message
@@ -2328,7 +2215,7 @@ const captureArmedRef = useRef(false);
         dbg("osc777-ready", body.slice(0, 200));
         if (!hookSeenRef.current) {
           hookSeenRef.current = true;
-          logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via ready)`);
+          logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} (via ready)`);
         }
         // A "working" that no hook started has nothing left to end it. Before
         // the hooks are proven, the submit-window heuristic can promote a tab
@@ -2404,7 +2291,7 @@ const captureArmedRef = useRef(false);
           : null;
         if (holder) {
           logWorkState("session-foreign",
-            `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`
+            `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} id=${reported}`
             + ` holder=${JSON.stringify(holder.taskName)}`);
           useUI.getState().pushToast(
             `That ${agentDisplayName(tab.cli)} conversation belongs to "${holder.taskName}", so Termic did not save it to this tab.`
@@ -2415,7 +2302,7 @@ const captureArmedRef = useRef(false);
         }
         if (live?.sessionId !== reported) {
           logWorkState("session-reported",
-            `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`);
+            `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} id=${reported}`);
           useApp.getState().setTabSessionId(task.id, tab.id, reported);
         }
         return false;
@@ -2480,12 +2367,12 @@ const captureArmedRef = useRef(false);
           const parked = live?.delegatedWork?.label === "usage_limit";
           if (atUsageLimit(usage)) {
             if (live?.workState === "working" && !live.delegatedWork) {
-              logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+              logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
                 + " window at 100% while working: parked as delegated until it resets");
               patchTab(task.id, tab.id, { delegatedWork: USAGE_LIMIT_WORK, delegatedSince: Date.now() });
             }
           } else if (parked) {
-            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} window reset: unparked`);
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} window reset: unparked`);
             patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
           }
         }
@@ -2527,10 +2414,10 @@ const captureArmedRef = useRef(false);
       // work the first one is the one being asked.
       if (!hookSeenRef.current) {
         hookSeenRef.current = true;
-        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+        logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
           + " first hook delivered; fallbacks stand down for this pty");
       }
-      logWorkState("hook-osc", `cli=${tab.cli} osc=${origin};${sub} task=${JSON.stringify(task.name)}`);
+      logWorkState("hook-osc", `cli=${tab.cli} osc=${origin};${sub} task=${JSON.stringify(taskNameRef.current)}`);
       wdlog(`${origin} ${sub}`);
       dbg("osc133", sub);
       if (sub === "C") {
@@ -2551,14 +2438,14 @@ const captureArmedRef = useRef(false);
           // The working EDGE clears delegated work, but a parked tab never
           // left `working`, so there is no edge: the heartbeat is the signal.
           if (live?.delegatedWork?.label === "usage_limit") {
-            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} working again: unparked`);
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} working again: unparked`);
             patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
           }
           const term = termRef.current;
           if (live?.unread?.reason === "attention" && term
             && Date.now() - attnMarkedAtRef.current > ATTENTION_ECHO_MS
             && !permissionPromptShown(tab.cli, visibleTailRows(term, PERMISSION_PROMPT_TAIL_ROWS))) {
-            logWorkState("attention-cleared", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+            logWorkState("attention-cleared", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
               + " working again with no permission prompt on screen");
             useApp.getState().clearAttention(task.id, tab.id);
           }
@@ -2629,7 +2516,7 @@ const captureArmedRef = useRef(false);
       // everything it decided, because "the badge was wrong" is answerable
       // from this and unanswerable without it.
       logWorkState("hook-delegated",
-        `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+        `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)}`
         + ` held=${delegatedChipText(work)} verdict=${verdict}`
         + ` agentOwned=${isAgentOwned(work)} humanAsked=${humanAsked}`
         + ` was=[${prev?.ids.join(",") ?? ""}] now=[${work.ids.join(",")}]`);
@@ -2704,7 +2591,7 @@ const captureArmedRef = useRef(false);
       if (hooksOwnStateRef.current) {
         if (!native133LoggedRef.current) {
           native133LoggedRef.current = true;
-          logWorkState("native-133-ignored", `cli=${tab.cli} task=${JSON.stringify(task.name)} sub=${sub}`
+          logWorkState("native-133-ignored", `cli=${tab.cli} task=${JSON.stringify(taskNameRef.current)} sub=${sub}`
             + " the agent's own 133 marks are ignored while termic hooks own its state");
         }
         return false;
@@ -3013,7 +2900,7 @@ const captureArmedRef = useRef(false);
             ...Object.fromEntries(
               extraPorts.map(np => [np.name, String(np.port)]),
             ),
-            TERMIC_WORKSPACE_NAME: task.name,
+            TERMIC_WORKSPACE_NAME: taskNameRef.current,
             COLORFGBG: currentColorFgBg(),
             // Settings > Appearance > Share shell history. Read via
             // getState() rather than a subscription: this is consumed once
@@ -3099,7 +2986,7 @@ const captureArmedRef = useRef(false);
         // Find it: python3 -c 'import tempfile; print(tempfile.gettempdir())'
         if (ptyDebugOn) {
           const safe = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
-          const file = `termic-pty-${safe(task.name)}-${tab.cli}-${ptyId}.log`;
+          const file = `termic-pty-${safe(taskNameRef.current)}-${tab.cli}-${ptyId}.log`;
           const t0 = Date.now();
           debugLogRef.current = (tag: string, content: string) => {
             const elapsed = Date.now() - t0;
@@ -3116,7 +3003,7 @@ const captureArmedRef = useRef(false);
           // minted that uuid, so the pairing is exact, not inferred): replay
           // the two side by side and a done we fired while the transcript
           // was still mid-turn is a fact with a timestamp.
-          dbg("spawn", `task=${task.name} cli=${tab.cli} ptyId=${ptyId} file=${file}`
+          dbg("spawn", `task=${taskNameRef.current} cli=${tab.cli} ptyId=${ptyId} file=${file}`
             + ` t0=${t0} t0iso=${new Date(t0).toISOString()}`
             + ` session=${sessionUuid ?? "none"} resume=${decision.kind} cwd=${task.path}`);
         }
@@ -3140,7 +3027,7 @@ const captureArmedRef = useRef(false);
         // (codex, opencode) resumes through `captureResumeOverride`, which
         // decideResume never sees and reports as `fresh`.
         logWorkState("spawn",
-          `task=${JSON.stringify(task.name)} cli=${tab.cli} base=${base}`
+          `task=${JSON.stringify(taskNameRef.current)} cli=${tab.cli} base=${base}`
           + ` inherited=${base !== tab.cli} hooksInstalled=${hooksOwnStateRef.current}`
           + ` hookProven=${hookSeenRef.current}`
           + ` mainCheckout=${!!task.is_main_checkout} primary=${isPrimaryTab}`
@@ -3192,6 +3079,10 @@ const captureArmedRef = useRef(false);
           // next spawn a --resume id that does not exist yet.
           if (decision.kind === "mint" && sessionUuid && !sessionReportedRef.current) {
             pendingSessionUuidRef.current = sessionUuid;
+            // A prompt seeded at launch (seedPromptWhenReady) can land inside
+            // this window, when there was nothing to persist yet: that submit
+            // already happened, so persist now instead of waiting for another.
+            if (submittedSinceSpawnRef.current) persistMintedSession();
           }
           // Cwd-resume agents (codex) + legacy worktree continue: keep the
           // has_resumable_history flag flow so the next worktree spawn (this
@@ -3317,9 +3208,17 @@ const captureArmedRef = useRef(false);
             if (!cancelled) setSudoOffer(show);
           });
         }
-        const unlistenExit = await ipc.onPtyExit(ptyId, (code) => {
+        const unlistenExit = await ipc.onPtyExit(ptyId, (code, restarted) => {
           activity.dispose();
           ptyRef.current = null;
+          // Its server restarted onto a new build (an upgrade, which a
+          // required one does by itself once no agent is mid-turn): start it
+          // again, an agent resuming its session, a run script running
+          // again, as they were before the box went away.
+          if (restarted) {
+            setGen(g => g + 1);
+            return;
+          }
           // Run/setup tabs (GH #54): surface a non-zero exit as "failed" on
           // the tab pill. code === null means the process was killed (Stop
           // button, app quit) rather than actually failing, so that's left
@@ -3343,7 +3242,7 @@ const captureArmedRef = useRef(false);
           // first question to ask of a session that never comes back.
           if (lastSpawnWasResumeRef.current) {
             logWorkState("resume-exit",
-              `task=${JSON.stringify(task.name)} cli=${tab.cli} code=${code}`
+              `task=${JSON.stringify(taskNameRef.current)} cli=${tab.cli} code=${code}`
               + ` afterMs=${Date.now() - spawnStartedAtRef.current} fastExit=${fastExit}`
               + ` storedId=${resumeShape.usedStoredSessionId}`);
           }
@@ -3607,11 +3506,95 @@ const captureArmedRef = useRef(false);
     // "locked" (wheel-up dead at the bottom, or bottom unreachable) until
     // new output happens to scroll the buffer. See lib/xtermViewportSync.
     let wasHiddenAtZeroGeometry = false;
+    // Sized from outside (a phone, another computer, `termic attach`): the
+    // last screen to take a terminal owns its size. Meanwhile this pane hides
+    // its terminal (display:none, so the renderer pauses) behind an overlay,
+    // and only its Continue here takes the size back. Before, it drew the
+    // other size scaled down, and any click in the window took the size
+    // back: two focused screens on one task traded it on every touch, and
+    // each trade blanked and redrew the phone's terminal.
+    let remoteSized = false;
+    const overlay = document.createElement("div");
+    overlay.dataset.testid = "terminal-elsewhere";
+    overlay.className = "absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)] text-[13px] text-[var(--color-fg-dim)]";
+    // What has it, drawn big above the words: a phone, a computer, or the CLI.
+    const overlayIcon = document.createElement("div");
+    overlayIcon.dataset.testid = "terminal-elsewhere-icon";
+    overlayIcon.className = "text-[var(--color-fg-faint)]";
+    const setOverlayIcon = (kind: string | null | undefined) => {
+      overlayIcon.dataset.kind = kind ?? "";
+      overlayIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ELSEWHERE_ICONS[kind ?? ""] ?? ELSEWHERE_ICONS[""]}</svg>`;
+    };
+    setOverlayIcon(null);
+    const overlayText = document.createElement("p");
+    overlayText.className = "text-[14px] text-[var(--color-fg)]";
+    overlayText.textContent = i18n.t("task:terminal.elsewhere");
+    const overlayBtn = document.createElement("button");
+    overlayBtn.type = "button";
+    overlayBtn.dataset.testid = "terminal-continue-here";
+    overlayBtn.className = "rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent-fg)] hover:opacity-90";
+    overlayBtn.textContent = i18n.t("task:terminal.continueHere");
+    overlay.append(overlayIcon, overlayText, overlayBtn);
+    // In the DOM only while shown: a hidden button in every pane is noise
+    // (and was picked up by anything listing a tab's buttons).
+    const showElsewhere = (on: boolean) => {
+      if (on && !overlay.isConnected) host.appendChild(overlay);
+      else if (!on) overlay.remove();
+      if (term.element) term.element.style.display = on ? "none" : "";
+    };
+    // Continue here resizes BEHIND the overlay and lifts it once the agent
+    // has redrawn at this size (output quiet for RECLAIM_QUIET_MS, at most
+    // RECLAIM_MAX_MS). Lifted at once, the pane showed the other screen's
+    // frame stretched to this width until the agent's redraw landed.
+    let reclaimTimers: ReturnType<typeof setTimeout>[] = [];
+    let reclaimSub: { dispose(): void } | null = null;
+    const endReclaim = () => {
+      reclaimTimers.forEach(clearTimeout);
+      reclaimTimers = [];
+      reclaimSub?.dispose();
+      reclaimSub = null;
+    };
+    const reclaim = () => {
+      if (!remoteSized) return;
+      remoteSized = false;
+      endReclaim();
+      if (term.element) term.element.style.display = "";
+      try { fit.fit(); } catch {}
+      const lift = () => {
+        endReclaim();
+        if (remoteSized) return; // taken again meanwhile
+        showElsewhere(false);
+        term.refresh(0, term.rows - 1);
+        term.focus();
+      };
+      let quiet: ReturnType<typeof setTimeout> | undefined;
+      reclaimSub = term.onWriteParsed(() => {
+        if (quiet) clearTimeout(quiet);
+        quiet = setTimeout(lift, RECLAIM_QUIET_MS);
+        reclaimTimers.push(quiet);
+      });
+      reclaimTimers.push(setTimeout(lift, RECLAIM_MAX_MS));
+    };
+    overlayBtn.addEventListener("click", reclaim);
+    const unlistenSized = listen<{ ptyId: string; cols: number; rows: number; by?: string | null; byKind?: string | null }>("termic://pty-resized", ({ payload }) => {
+      if (!payload || payload.ptyId !== ptyRef.current) return;
+      const own = fit.proposeDimensions();
+      remoteSized = !(own && own.cols === payload.cols && own.rows === payload.rows);
+      setOverlayIcon(payload.byKind);
+      overlayText.textContent = payload.by
+        ? i18n.t("task:terminal.elsewhereOn", { name: payload.by })
+        : i18n.t("task:terminal.elsewhere");
+      if (term.cols !== payload.cols || term.rows !== payload.rows) term.resize(payload.cols, payload.rows);
+      if (remoteSized) endReclaim();
+      showElsewhere(remoteSized);
+    });
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) {
         const r = e.contentRect;
         if (r.width === 0 || r.height === 0) { wasHiddenAtZeroGeometry = true; return; }
       }
+      // Another screen owns the size: keep it, the overlay is up.
+      if (remoteSized) return;
       try { fit.fit(); } catch {}
       if (wasHiddenAtZeroGeometry) {
         wasHiddenAtZeroGeometry = false;
@@ -3623,6 +3606,9 @@ const captureArmedRef = useRef(false);
     return () => {
       cancelled = true;
       ro.disconnect();
+      void unlistenSized.then(u => u());
+      endReclaim();
+      overlay.remove();
       // This PTY's conversation is over (closed, or restarted into a new one),
       // so its context reading describes nothing any more.
       useAgentContext.getState().clearTab(task.id, tab.cli ?? "claude", tab.id);
@@ -3658,7 +3644,7 @@ const captureArmedRef = useRef(false);
   // `gen` in the deps array is what makes the Restart button work: it
   // bumps, the effect tears down, the effect runs again, fresh PTY.
   // a shell's role too: switching it respawns that shell.
-  }, [task.id, task.path, task.port, task.name, tab.id, tab.cli, (tab as TerminalTab).secretsRole, patchTab, markAttention, gen]);
+  }, [task.id, task.path, task.port, tab.id, tab.cli, (tab as TerminalTab).secretsRole, patchTab, markAttention, gen]);
 
   // Refit + focus when the tab becomes active OR when its task
   // becomes the active task (e.g., clicking a task in the
@@ -3878,15 +3864,18 @@ const captureArmedRef = useRef(false);
       // corroborated by the terminal going quiet, and it calls
       // `interruptWork` rather than `fireDone`: an interrupt is not a
       // completion, so it earns no badge and spends no done token.
+      const remoteAt = remoteInterruptAt(ptyRef.current);
       const interruptPending = hooksOwn
-        && escAtRef.current > 0
-        && Date.now() - escAtRef.current < INTERRUPT_QUIET_GRACE_MS
-        && isUserWatching(task.id, tab.id);
+        && ((escAtRef.current > 0
+          && Date.now() - escAtRef.current < INTERRUPT_QUIET_GRACE_MS
+          && isUserWatching(task.id, tab.id))
+          || (remoteAt > 0 && Date.now() - remoteAt < INTERRUPT_QUIET_GRACE_MS));
       if (interruptPending
           && cur && cur.type === "terminal" && cur.workState === "working"
           && lastDataAtRef.current > 0
           && Date.now() - lastDataAtRef.current >= QUIET_MS) {
         escAtRef.current = 0;
+        clearRemoteInterrupt(ptyRef.current);
         interruptWork(`interrupt then quiet (quietMs=${Date.now() - lastDataAtRef.current})`);
         return;
       }

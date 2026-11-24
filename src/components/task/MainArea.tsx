@@ -19,6 +19,7 @@
 // (handled in `setActiveTask`). Archived tasks are excluded so
 // their PTYs are freed.
 
+import { useMemo } from "react";
 import { useApp, useActiveTask } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePendingTask } from "@/store/pendingTasks";
@@ -29,6 +30,7 @@ import { ScheduledView } from "@/components/views/Scheduled";
 import { TodosView } from "@/components/views/TodosView";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
+import { RemoteTaskOverlay, ServerCloseDialog } from "@/components/remote/RemoteTaskView";
 
 export function MainArea() {
   const task = useActiveTask();
@@ -40,6 +42,7 @@ export function MainArea() {
   const pending = usePendingTask(!task ? activeTaskId : null);
   const view = useApp(s => s.view.page);
   const tasks = useApp(s => s.tasks);
+  const projects = useApp(s => s.projects);
   const mounted = useApp(s => s.mountedTasks);
   // Windowless mode (window closed to the menu bar / `--headless` CLI launch):
   // the ACTIVE pane loses its display exemption too, so every mounted terminal
@@ -90,6 +93,8 @@ export function MainArea() {
             zIndex:  w.id === activeId ? 1 : 0,
           }}
         >
+          {/* A server project's task too: its terminals run on the box
+              (pty_spawn routes them there), drawn by the same view. */}
           <TaskView task={w} />
         </div>
       ))}
@@ -98,6 +103,10 @@ export function MainArea() {
           {overlay}
         </div>
       )}
+      {/* A task on another machine, over everything local (which stays
+          mounted underneath, PTYs alive). */}
+      <RemoteTaskOverlay />
+      <ServerCloseDialog />
     </div>
   );
 }
