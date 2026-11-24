@@ -1345,6 +1345,15 @@ impl Node {
         }
         let their_grant = msg.body.get("grant").and_then(|v| v.as_str()).and_then(Grant::parse).unwrap_or_default();
         let replaces_existing = self.store.lock().unwrap().peers.iter().any(|p| p.id == inc.peer.id);
+        // The pairing goes both ways, the connection one way: the machine
+        // whose person asked (and typed the code) connects; here a new pair
+        // starts switched off in the sidebar until turned on. Both connecting
+        // at once listed each machine's tasks on the other, which nobody
+        // asked for. Set before the record lands, so the link the record
+        // starts is already off. A re-pair keeps the switch as it was.
+        if !replaces_existing {
+            let _ = crate::remote_client::set_connected(&inc.peer.id, false);
+        }
         self.persist_pair(new_record(&inc.peer, inc.ip, &inc.key, their_grant));
         self.close_pair_mode();
         self.ui.pairing(&PairingView {

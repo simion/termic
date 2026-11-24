@@ -352,10 +352,33 @@ interface RemoteStore {
   /** Per machine, the host profiles this window leaves out of its sidebar. */
   hiddenProfiles: Record<string, string[]>;
   toggleProfile(machine: string, profile: string): void;
+  /** Paired computers in the order dragged in the sidebar (ids). */
+  machineOrder: string[];
+  setMachineOrder(ids: string[]): void;
 }
 
 const LS_REMOTE_FOLDED = "termic.remoteFolded";
 const LS_REMOTE_HIDDEN_PROFILES = "termic.remoteHiddenProfiles";
+const LS_REMOTE_MACHINE_ORDER = "termic.remoteMachineOrder";
+
+function loadMachineOrder(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_REMOTE_MACHINE_ORDER) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Machines in the dragged order: those in `order` first, as placed; any not
+ *  in it (paired since) after them, in the order they came. */
+export function orderMachines<T extends { id: string }>(list: T[], order: string[]): T[] {
+  const at = new Map(order.map((id, i) => [id, i] as const));
+  return list
+    .map((m, i) => ({ m, k: at.has(m.id) ? at.get(m.id)! : order.length + i }))
+    .sort((a, b) => a.k - b.k)
+    .map(x => x.m);
+}
 
 function loadHiddenProfiles(): Record<string, string[]> {
   try {
@@ -385,6 +408,7 @@ export const useRemote = create<RemoteStore>((set, get) => ({
   open: null,
   folded: loadFolds(),
   hiddenProfiles: loadHiddenProfiles(),
+  machineOrder: loadMachineOrder(),
   alerts: [],
   setMachines(list) {
     if (sameList(get().machines, list)) return;
@@ -412,6 +436,12 @@ export const useRemote = create<RemoteStore>((set, get) => ({
     const hiddenProfiles = { ...get().hiddenProfiles, [machine]: next };
     try { localStorage.setItem(LS_REMOTE_HIDDEN_PROFILES, JSON.stringify(hiddenProfiles)); } catch { /* per-viewer convenience */ }
     set({ hiddenProfiles });
+  },
+  setMachineOrder(ids) {
+    const cur = get().machineOrder;
+    if (cur.length === ids.length && cur.every((x, i) => x === ids[i])) return;
+    try { localStorage.setItem(LS_REMOTE_MACHINE_ORDER, JSON.stringify(ids)); } catch { /* per-viewer convenience */ }
+    set({ machineOrder: ids });
   },
 }));
 

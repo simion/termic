@@ -7,7 +7,7 @@
 // local row, and a local change never re-renders these.
 
 import { invoke } from "@tauri-apps/api/core";
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Bell, Check, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, MonitorSmartphone, Smartphone } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
@@ -35,7 +35,7 @@ import type { ForgeProvider } from "@/lib/types";
 import { openPath, peerUnpair } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
 import { archiveRemoteTask, stopRemoteAgent } from "@/components/remote/RemoteTaskView";
-import { joinableGroups, layoutRemote, profilesOf, visibleTasks, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
+import { joinableGroups, layoutRemote, orderMachines, profilesOf, visibleTasks, remoteCall, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
  *  with the label, a fold, and its actions on the right. */
@@ -110,11 +110,54 @@ export function RemoteFooterButton({ className }: { className: string }) {
   );
 }
 
+/** Drag a paired computer by its header to reorder the list. Pointer
+ *  events, as the project drag does (WKWebView's HTML5 drag is unreliable):
+ *  past 4px it is a drag, the order follows the cursor live, and the click
+ *  that ends it does not also fold the computer. */
+function useMachineDrag(ids: string[]) {
+  const [id, setId] = useState<string | null>(null);
+  const live = useRef(ids);
+  live.current = ids;
+  const down = (e: ReactPointerEvent, machine: string) => {
+    if (e.button !== 0 || !(e.target as HTMLElement).closest("[data-machine-head]")) return;
+    if ((e.target as HTMLElement).closest("[role=switch], [data-no-drag]")) return;
+    const startY = e.clientY;
+    let active = false;
+    const move = (ev: PointerEvent) => {
+      if (!active) {
+        if (Math.abs(ev.clientY - startY) < 4) return;
+        active = true;
+        setId(machine);
+      }
+      const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-machine-id]"));
+      const over = rows.find(r => { const b = r.getBoundingClientRect(); return ev.clientY >= b.top && ev.clientY < b.bottom; });
+      const target = over?.dataset.machineId;
+      if (!target || target === machine) return;
+      const next = live.current.filter(x => x !== machine);
+      next.splice(next.indexOf(target) + (live.current.indexOf(target) > live.current.indexOf(machine) ? 1 : 0), 0, machine);
+      useRemote.getState().setMachineOrder(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!active) return;
+      setId(null);
+      // The drag ended on the header's fold button: eat that one click.
+      window.addEventListener("click", ev => { ev.stopPropagation(); ev.preventDefault(); }, { capture: true, once: true });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return { id, down };
+}
+
 export function RemoteSidebarSection({ projects, renderProject }: { projects: Project[]; renderProject: (p: Project) => ReactNode }) {
   const { t } = useTranslation("remote");
   const all = useRemote(s => s.machines);
   const servers = useMemo(() => all.filter(m => m.kind === "server" && mine(m)), [all]);
-  const computers = useMemo(() => all.filter(m => m.kind !== "server" && mine(m)), [all]);
+  const order = useRemote(s => s.machineOrder);
+  const computers = useMemo(() => orderMachines(all.filter(m => m.kind !== "server" && mine(m)), order), [all, order]);
+  const drag = useMachineDrag(computers.map(m => m.id));
   const folded = useRemote(s => !!s.folded["section:remote"]);
   const toggle = useRemote(s => s.toggleFold);
   const { t: ts } = useTranslation("settings");
@@ -131,7 +174,11 @@ export function RemoteSidebarSection({ projects, renderProject }: { projects: Pr
       {!folded && (
         <div className="flex flex-col gap-1">
           {servers.map(m => <ServerBlock key={m.id} m={m} projects={projects.filter(p => p.server === m.id)} renderProject={renderProject} />)}
-          {computers.map(m => <MachineSection key={m.id} m={m} />)}
+          {computers.map(m => (
+            <div key={m.id} data-machine-id={m.id} onPointerDown={e => drag.down(e, m.id)} className={cn(drag.id === m.id && "opacity-60")}>
+              <MachineSection m={m} />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -370,6 +417,7 @@ const MachineSection = memo(function MachineSection({ m: all }: { m: MachineView
     <div data-testid={`remote-machine-${m.id}`} data-state={m.state}>
       <MachineContextMenu m={m}>
       <div
+        data-machine-head=""
         className={cn(
           "group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
           !online && "opacity-70",

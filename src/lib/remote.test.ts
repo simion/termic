@@ -144,3 +144,14 @@ describe("a paired computer's profiles", () => {
     expect(visibleTasks(tasks, undefined)).toBe(tasks);
   });
 });
+
+describe("orderMachines", () => {
+  const m = (id: string) => ({ id });
+  it("puts dragged ones first as placed, and new ones after in arrival order", async () => {
+    const { orderMachines } = await import("./remote");
+    expect(orderMachines([m("a"), m("b"), m("c")], []).map(x => x.id)).toEqual(["a", "b", "c"]);
+    expect(orderMachines([m("a"), m("b"), m("c")], ["c", "a"]).map(x => x.id)).toEqual(["c", "a", "b"]);
+    // A computer unpaired since keeps its slot in the saved order harmlessly.
+    expect(orderMachines([m("a"), m("b")], ["gone", "b"]).map(x => x.id)).toEqual(["b", "a"]);
+  });
+});

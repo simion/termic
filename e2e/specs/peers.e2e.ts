@@ -539,6 +539,9 @@ describe("LAN pairing", () => {
     // gave way to the "paired" one.
     await waitFor("pairing mode closed", status, v => v.pair_mode === null);
     await waitGone('[data-testid="peer-code-dialog"]');
+    // The pairing goes both ways, the connection one way: the machine that
+    // asked connects; here, where the code was shown, it starts switched off.
+    await waitForAttr(`[data-testid="machine-switch-${incoming.id}"]`, "aria-checked", "false");
 
     // The after-pairing dialog: who, what pairing means, what it is for.
     await waitVisible(dialog("incoming"));
