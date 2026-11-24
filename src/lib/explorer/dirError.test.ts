@@ -16,9 +16,9 @@ describe("explainDirError", () => {
     expect(e.detail).toBe("/Users/x/task/build: Permission denied (os error 13)");
   });
 
-  it("calls out a symlink escape, which retrying can never fix", () => {
-    const e = explainDirError("path escapes task: vendor -> /opt/homebrew/lib");
-    expect(e.short).toBe("This folder links outside the task");
+  it("calls out a link into termic's data, which retrying can never fix", () => {
+    const e = explainDirError("path escapes task: vendor -> /Users/u/termic/cli-token");
+    expect(e.short).toBe("This folder links into Termic's own data");
   });
 
   it("falls back to the raw message rather than a generic sentence (GH #250)", () => {

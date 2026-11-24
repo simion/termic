@@ -70,6 +70,19 @@ const MIN_WIDTH = 120;
 // tab. Each segment is individually clickable: a folder reveals/expands that
 // folder in the tree, the filename reveals the file. The locate button on the
 // right reveals the file too.
+function ReadOnlyBadge({ tip }: { tip: string }) {
+  const { t } = useTranslation("task");
+  return (
+    <span
+      data-testid="breadcrumb-read-only"
+      title={tip}
+      className="shrink-0 rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)]"
+    >
+      {t("breadcrumb.readOnly")}
+    </span>
+  );
+}
+
 function EditorBreadcrumb({ task }: { task: Task }) {
   const { t } = useTranslation("task");
   const activeId = useActiveTabId(task.id);
@@ -170,9 +183,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
         <span className="min-w-0 flex-1 truncate text-[var(--color-fg-faint)]" title={tab.path}>
           {tab.path}
         </span>
-        <span className="shrink-0 rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)]">
-          {t("breadcrumb.readOnly")}
-        </span>
+        <ReadOnlyBadge tip={t("breadcrumb.readOnlyExternalTip")} />
         <button
           data-testid="syntax-button"
           onClick={() => openSyntaxPalette(task.id, tab.id)}
@@ -256,6 +267,8 @@ function EditorBreadcrumb({ task }: { task: Task }) {
         })}
       </div>
       <div className="ml-1 flex shrink-0 items-center gap-0.5">
+        {/* A file behind a link termic reads but will not write through. */}
+        {tab.type === "edit" && tab.readOnly && <ReadOnlyBadge tip={t("breadcrumb.readOnlyLinkTip")} />}
         {/* Sublime puts the syntax picker bottom-right; termic has no status
             bar, and inventing one to hold a single control would cost the
             terminal an edge. It goes on the bar this file already has, next

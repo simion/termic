@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { dataDir } from "../../wdio.conf.js";
 import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, rmTree } from "../helpers";
 
 // The seeded fixture repo every spec in this file works against.
@@ -897,20 +898,17 @@ describe("file tree", () => {
     }
   });
 
-  // A folder that is a symlink OUT of the task reads as a directory but can
-  // never be listed: safe_task_path canonicalizes and rejects it. Retrying is
-  // hopeless, so the row has to say why (GH #250). This is also the shape a
-  // permanently-stuck folder takes in a real repo (a linked vendor dir, a
-  // shared cache), which is the leading suspect for that report.
-  it("says a folder links outside the task instead of offering a pointless retry", async () => {
+  // A folder that is a symlink out of the task lists wherever it lands,
+  // except into termic's own data dir (the CLI token, logins), which the
+  // tree never opens. That one reads as a directory but can never be listed,
+  // so retrying is hopeless and the row has to say why (GH #250).
+  it("says a folder links into termic's data instead of offering a pointless retry", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = taskId ?? (await openTask("e2e-tree"));
 
-    const outside = path.join(fixture, "..", "e2e-outside-target");
+    const outside = dataDir;
     const link = path.join(fixture, "e2e-escaped");
-    mkdirSync(outside, { recursive: true });
-    writeFileSync(path.join(outside, "secret.txt"), "s\n");
     // From Node rather than `ln -s`: Git Bash's ln copies the folder unless
     // told otherwise, and a copy escapes nothing. A junction on Windows
     // needs no privilege, unlike a directory symlink.
@@ -940,14 +938,13 @@ describe("file tree", () => {
           return { short: el.dataset.reason, title: el.title };
         },
       );
-      expect(reason.short).toBe("This folder links outside the task");
+      expect(reason.short).toBe("This folder links into Termic's own data");
       expect(reason.title).toContain("path escapes task");
-      expect(reason.title).toContain("e2e-outside-target");
+      expect(reason.title).toContain(path.basename(dataDir));
     } finally {
       // A directory symlink is a directory to Windows: unlink refuses it
       // (EISDIR / EPERM) and rmdir removes the link without its target.
       try { unlinkSync(link); } catch { try { rmdirSync(link); } catch { /* gone */ } }
-      rmTree(outside, { bestEffort: true });
     }
   });
 

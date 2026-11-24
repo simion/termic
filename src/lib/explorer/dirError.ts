@@ -24,8 +24,9 @@ export interface DirError {
 // switch applies to the next failed read. The regexes match the raw Rust
 // error text, which never localizes.
 const RULES: Array<[RegExp, string]> = [
-  // A symlinked folder pointing outside the task. It always fails, and no
-  // amount of retrying changes that, so say so instead of offering hope.
+  // A symlinked folder pointing into termic's own data dir, the one place a
+  // link out of the task never opens (`safe_task_read_path`). It always
+  // fails, and no amount of retrying changes that, so say so.
   [/path escapes task/i, "escapesTask"],
   [/`\.\.` segments not allowed|absolute paths not allowed/i, "pathNotAllowed"],
   [/os error 2\b|no such file or directory/i, "gone"],

@@ -132,10 +132,12 @@ export function MarkdownPane(
   useEffect(() => () => { if (debounceRef.current != null) window.clearTimeout(debounceRef.current); }, [srcKey]);
 
   // The preview's write path, through this buffer (docs/markdown.md,
-  // "Edits"). An external file is read-only, so its preview can look but not
-  // edit; a pad edits its buffer like any other and flushes itself. The save
-  // policy (prefs.markdownSavePreviewEdits) is read when an edit lands.
-  const canEditPreview = tab.type !== "external";
+  // "Edits"). An external file, or a task file behind a link termic will not
+  // write through (`EditTab.readOnly`), is read-only, so its preview can look
+  // but not edit; a pad edits its buffer like any other and flushes itself.
+  // The save policy (prefs.markdownSavePreviewEdits) is read when an edit
+  // lands.
+  const canEditPreview = tab.type !== "external" && !(tab.type === "edit" && tab.readOnly);
   const isPad = tab.type === "scratch" && !tab.path;
   // only a task file auto-saves a preview edit: its save re-reads disk first
   // and refuses when the file moved on. A scratch-tree file has no such check.

@@ -811,6 +811,11 @@ export const taskPathStat = (id: string, path: string) =>
   invoke<{ exists: boolean; is_dir: boolean }>("task_path_stat", { id, path });
 export const taskFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("task_file_write", { id, path, content });
+/** Would `taskFileWrite` accept this path? False for a file reached through
+ *  any link out of the task (the main checkout's `.claude`, notes linked
+ *  in from elsewhere); the editor opens those read-only. */
+export const taskFileWritable = (id: string, path: string) =>
+  invoke<boolean>("task_file_writable", { id, path });
 export const taskFiles    = (id: string) => invoke<string[]>("task_files", { id });
 
 // ─────────────────────────── scratchpads (GH #244) ───────────────────────────
