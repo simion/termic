@@ -4,6 +4,16 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.0.6] - 2026-11-24
+
+Fixes for remote control, paired computers and the phone app.
+
+### Bug fixes
+- A paired computer's terminal works like a local one: links open on Cmd+click, and selecting text in its agent copies it here.
+- Paired computers' tasks and groups have the local right-click menus, and each remote project has its own New task button.
+- Pairing connects one way: the computer that asked connects, the other stays switched off until you turn it on. Drag paired computers to reorder them.
+- Profile windows keep their window buttons in place after a rename.
+
 ## [2.0.5] - 2026-11-24
 
 Remote control: your phone, your own servers, and your other computers.
