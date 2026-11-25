@@ -53,7 +53,11 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             }
             continue;
         }
-        if v.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
+        // A subagent's conversation, and what Claude writes for itself: the
+        // summary it continues from after a compaction is a "user" line
+        // nobody typed (isCompactSummary, isVisibleInTranscriptOnly).
+        let flag = |k: &str| v.get(k).and_then(|s| s.as_bool()) == Some(true);
+        if flag("isSidechain") || flag("isCompactSummary") || flag("isVisibleInTranscriptOnly") || flag("isMeta") {
             continue;
         }
         let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -94,7 +98,8 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                 if kind == "user" {
                     sent(&mut queue, text);
                 }
-                push(&mut out, kind, text.clone(), None, None);
+                let text = if kind == "user" { unwrap_pastes(text) } else { text.clone() };
+                push(&mut out, kind, text, None, None);
             }
             serde_json::Value::Array(blocks) => {
                 for b in blocks {
@@ -107,6 +112,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                             if kind == "user" {
                                 sent(&mut queue, &text);
                             }
+                            let text = if kind == "user" { unwrap_pastes(&text) } else { text };
                             push(&mut out, kind, text, None, None);
                         }
                         Some("tool_use") if kind == "assistant" => {
@@ -136,6 +142,20 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
+}
+
+/// A prompt with pasted text: the paste is the person's words, the
+/// `<pasted_content id="...">` tags around it are Claude Code's.
+fn unwrap_pastes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("<pasted_content") {
+        out.push_str(&rest[..at]);
+        let Some(open_end) = rest[at..].find('>') else { break };
+        rest = &rest[at + open_end + 1..];
+    }
+    out.push_str(rest);
+    out.replace("</pasted_content>", "")
 }
 
 /// Text Claude records as a user line that is not the person's words: slash
@@ -191,6 +211,29 @@ fn inline_patch(script: &str) -> Option<String> {
     (!body.is_empty()).then_some(body)
 }
 
+/// The shell command inside a Codex `exec` script
+/// (`tools.exec_command({cmd:"npm test", ...})`), unescaped: what the call
+/// does, where the script around it is only plumbing.
+fn exec_command_of(script: &str) -> Option<String> {
+    let at = script.find("exec_command(")?;
+    let rest = &script[at..];
+    let key = rest.find("cmd:").or_else(|| rest.find("\"cmd\":"))?;
+    let rest = rest[key..].split_once(':')?.1.trim_start();
+    let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    let mut esc = false;
+    for c in rest[1..].chars() {
+        match (esc, c) {
+            (true, 'n') => { out.push(' '); esc = false; }
+            (true, c) => { out.push(c); esc = false; }
+            (false, '\\') => esc = true,
+            (false, c) if c == quote => return Some(out),
+            (false, c) => out.push(c),
+        }
+    }
+    None
+}
+
 /// Codex wraps a command's output in a header ("Exit code: 0\nWall time:
 /// ...\nOutput:\n"); the output is the part worth showing.
 fn codex_output(text: &str) -> String {
@@ -204,9 +247,9 @@ fn codex_output(text: &str) -> String {
 /// test run's tail or a real diff, not a whole file.
 const DETAIL_CHARS: usize = 4000;
 
-/// `s` cut to `DETAIL_CHARS`, trimmed; None when empty.
+/// `s` cut to `DETAIL_CHARS`, blank lines around it trimmed; None when empty.
 fn bounded(s: &str) -> Option<String> {
-    let s = s.trim_end();
+    let s = s.trim_end().trim_start_matches(['\n', '\r']);
     if s.trim().is_empty() {
         return None;
     }
@@ -330,7 +373,8 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
                     let summary = one_line(&files.join(", "));
                     push(&mut out, "tool", summary, Some(str_of("name").to_string()), bounded(&patch));
                 } else {
-                    push(&mut out, "tool", one_line(input), Some(str_of("name").to_string()), None);
+                    let summary = exec_command_of(input).unwrap_or_else(|| input.to_string());
+                    push(&mut out, "tool", one_line(&summary), Some(str_of("name").to_string()), None);
                 }
             }
             ("web_search_call", _) => {
@@ -789,6 +833,25 @@ mod tests {
         assert_eq!(t[0].text, "src/a.ts");
         assert_eq!(t[0].detail.as_deref(), Some("*** Update File: src/a.ts\n@@\n-old \"q\"\n+new"));
         assert_eq!(inline_patch("no patch here"), None);
+    }
+
+    #[test]
+    fn a_codex_exec_call_is_summarised_by_its_command() {
+        assert_eq!(exec_command_of(r#"const r = await tools.exec_command({cmd:"echo \"hi\" && ls", yield_time_ms: 1000}); text(r);"#).as_deref(), Some(r#"echo "hi" && ls"#));
+        assert_eq!(exec_command_of("text(1)"), None);
+        assert_eq!(bounded("\n\nout\n").as_deref(), Some("out"));
+    }
+
+    #[test]
+    fn claude_writes_some_user_lines_for_itself() {
+        let jsonl = [
+            r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"content":"This session is being continued from a previous conversation."}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill: /x"}]}}"#,
+            r#"{"type":"user","message":{"content":"look: <pasted_content id=\"ab12\">\nline one\n</pasted_content> thanks"}}"#,
+        ]
+        .join("\n");
+        let t: Vec<String> = parse_claude_jsonl(&jsonl).into_iter().map(|t| t.text).collect();
+        assert_eq!(t, vec!["look: \nline one\n thanks".to_string()]);
     }
 
     #[test]
