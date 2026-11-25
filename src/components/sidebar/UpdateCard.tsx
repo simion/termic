@@ -19,10 +19,11 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate, entryFor, cmpVersion } from "@/store/update";
 import { cn } from "@/lib/utils";
-import { X, ArrowDownToLine, RotateCw, ArrowRight, Sparkles } from "lucide-react";
+import { X, ArrowDownToLine, RotateCw, ArrowRight, Sparkles, Check } from "lucide-react";
+import { releasedAgo, releaseKind } from "@/lib/updateNotice";
 
 export function UpdateCard() {
-  const { t } = useTranslation("sidebar");
+  const { t, i18n } = useTranslation("sidebar");
   const compact = useApp(s => s.compactSidebar);
   const openChangelog = useUI(s => s.openChangelog);
 
@@ -57,83 +58,103 @@ export function UpdateCard() {
   const summary =
     entry?.summary ||
     (mode === "update" ? t("updateCard.defaultSummary") : "");
+  // A patch merge reuses its release's entry, so its summary is one the user
+  // has already read: the version and its age are the news. A patch is a
+  // single quiet row; a minor or major release keeps the card.
+  const kind = releaseKind(mode === "update" ? currentVersion : lastSeenVersion, version!);
+  const ago = releasedAgo(mode === "update" ? update!.date : entry?.date, Date.now(), i18n.language);
+  const stamp = ago ? `v${version} · ${ago}` : `v${version}`;
+  const dismiss = () => (mode === "update" ? dismissUpdate() : dismissWhatsNew());
 
+  if (kind === "patch") {
+    return (
+      <div data-testid="update-patch" className="mx-2 mb-2 flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-soft)] pl-2 pr-1 text-[12px] text-[var(--color-fg-dim)]">
+        {mode === "update"
+          ? <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+          : <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+        <button
+          type="button"
+          title={summary}
+          onClick={() => { openChangelog(); if (mode === "whatsnew") dismissWhatsNew(); }}
+          className="min-w-0 flex-1 truncate text-left hover:text-[var(--color-fg)]"
+        >
+          {mode === "update" ? t("updateCard.patch") : t("updateCard.updated")} <span className="tabular-nums text-[var(--color-fg-faint)]">{stamp}</span>
+        </button>
+        {mode === "update" && (
+          <button
+            type="button"
+            onClick={() => void install()}
+            disabled={installing !== null}
+            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium text-[var(--color-accent)] hover:bg-[var(--color-hover)] disabled:opacity-70"
+          >
+            {installing === null ? t("updateCard.update") : (
+              <><RotateCw className="h-3 w-3 animate-spin" />{installing === "downloading" ? t("updateCard.downloading") : t("updateCard.restarting")}</>
+            )}
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label={t("dismiss", { ns: "common" })}
+          onClick={dismiss}
+          className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  // A minor or major release: drawn like the app's notifications
+  // (ui/Toaster.tsx ToastFrame), lighter: the title with the release's age,
+  // the summary, and the actions along the bottom.
+  const cell = "flex min-h-[32px] flex-1 items-center justify-center gap-1.5 px-2 text-[12px] font-medium outline-none hover:bg-[var(--color-hover)] focus-visible:bg-[var(--color-hover)] disabled:opacity-70";
   return (
-    <div className="relative mx-2 mb-2 shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-3">
-      {/* Dismiss — absolute so the content starts at the card's top
-          padding, no empty header row. */}
+    <div data-testid="update-card" className="group relative mx-2 mb-2 shrink-0 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-[0_10px_30px_-8px_rgba(0,0,0,0.55)]">
+      <div className="flex gap-2.5 p-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2 pr-4">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px] font-semibold text-[var(--color-fg)]">
+              {/* Just the name and version: a longer title truncated beside the
+                  age. The update's arrow is on its button; what's new, which has
+                  no button, says so with a small sparkle here. */}
+              {mode === "whatsnew" && <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />}
+              {t("updateCard.title", { version })}
+            </div>
+            {ago && <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-fg-faint)]">{ago}</span>}
+          </div>
+          <p className="mt-0.5 line-clamp-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">{summary}</p>
+        </div>
+      </div>
       <button
         type="button"
         aria-label={t("dismiss", { ns: "common" })}
-        onClick={() => (mode === "update" ? dismissUpdate() : dismissWhatsNew())}
+        onClick={dismiss}
         className="absolute right-1.5 top-1.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >
         <X className="h-3.5 w-3.5" />
       </button>
-
-      {/* "What's new" eyebrow — what's-new mode only; the update card's
-          "Update now" button already signals what it is. A quiet accent
-          kicker (icon + text), not a filled badge. */}
-      {mode === "whatsnew" && (
-        <div className="mb-1.5 flex items-center gap-1 text-[var(--color-accent)]">
-          <Sparkles className="h-3.5 w-3.5 shrink-0" />
-          <span className="text-[11px] font-semibold">{t("updateCard.whatsNew")}</span>
-        </div>
-      )}
-
-      {/* `pr-5` on the update card keeps the first line clear of the
-          absolute × (the what's-new badge already pushes text below it). */}
-      <p
-        className={cn(
-          "text-[12.5px] leading-snug text-[var(--color-fg-dim)]",
-          mode === "update" && "pr-5",
-        )}
-      >
-        {summary}
-      </p>
-
-      <button
-        type="button"
-        onClick={() => {
-          openChangelog();
-          // In what's-new mode the card is a one-shot nudge — opening the
-          // full changelog satisfies it, so dismiss it. The update card stays
-          // (the user still needs the "Update now" button).
-          if (mode === "whatsnew") dismissWhatsNew();
-        }}
-        className="mt-2 flex items-center gap-1 text-[12px] font-medium text-[var(--color-accent)] hover:underline"
-      >
-        {t("updateCard.changelog")}
-        <ArrowRight className="h-3 w-3" />
-      </button>
-
-      {mode === "update" && (
+      <div className="flex divide-x divide-[var(--color-border-soft)] border-t border-[var(--color-border-soft)]">
         <button
           type="button"
-          onClick={() => void install()}
-          disabled={installing !== null}
-          className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-deep)] px-2 py-1.5 text-[12px] font-medium text-white hover:bg-[#8a3a1c] disabled:opacity-70"
+          onClick={() => {
+            openChangelog();
+            // What's new is a one-shot nudge: opening the changelog satisfies
+            // it. The update stays (the user still needs to install it).
+            if (mode === "whatsnew") dismissWhatsNew();
+          }}
+          className={cn(cell, "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]")}
         >
-          {installing === null && (
-            <>
-              <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
-              <span>{t("updateCard.updateNow")}</span>
-            </>
-          )}
-          {installing === "downloading" && (
-            <>
-              <RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <span>{t("updateCard.downloading")}</span>
-            </>
-          )}
-          {installing === "installing" && (
-            <>
-              <RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <span>{t("updateCard.restarting")}</span>
-            </>
-          )}
+          {t("updateCard.changelog")}
+          <ArrowRight className="h-3 w-3" />
         </button>
-      )}
+        {mode === "update" && (
+          <button type="button" onClick={() => void install()} disabled={installing !== null} className={cn(cell, "text-[var(--color-accent)]")}>
+            {installing === null && (<><ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />{t("updateCard.updateNow")}</>)}
+            {installing === "downloading" && (<><RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />{t("updateCard.downloading")}</>)}
+            {installing === "installing" && (<><RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />{t("updateCard.restarting")}</>)}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

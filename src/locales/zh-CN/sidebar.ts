@@ -177,6 +177,10 @@ export default {
   compactDone: "已完成",
   compactWorking: "进行中",
   updateCard: {
+    title: "Termic {{version}}",
+    patch: "补丁",
+    updated: "已更新到",
+    update: "更新",
     whatsNew: "更新亮点",
     defaultSummary: "新版本 Termic 已就绪，可以安装。",
     changelog: "更新日志",

@@ -177,6 +177,10 @@ export default {
   compactDone: "done",
   compactWorking: "working",
   updateCard: {
+    title: "Termic {{version}}",
+    patch: "Patch",
+    updated: "Updated to",
+    update: "Update",
     whatsNew: "What's new",
     defaultSummary: "A new version of Termic is ready to install.",
     changelog: "Changelog",

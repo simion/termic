@@ -373,21 +373,34 @@ A prior version so the Changelog dialog has history to scroll.
 
 /** Dev-only fake Update — cast through unknown; the app only ever
  *  touches version / currentVersion / downloadAndInstall(). */
-function makeMockUpdate(version: string): Update {
+function makeMockUpdate(version: string, currentVersion = "0.4.0"): Update {
   return {
     version,
-    currentVersion: "0.4.0",
+    currentVersion,
+    // Shipped two hours ago, for the card's "v… · 2 hours ago".
+    date: new Date(Date.now() - 2 * 3600_000).toISOString(),
     downloadAndInstall: async () => { console.log("[updater] mock install, no-op in dev"); },
   } as unknown as Update;
 }
 
 /** Fully self-contained mock state (no network) for `npm run tauri dev`
- *  with VITE_MOCK_UPDATE=available | whatsnew. */
+ *  with VITE_MOCK_UPDATE=available | patch | whatsnew. */
 function devMockState(mode: string): Partial<UpdateState> {
   if (mode === "whatsnew") {
     return {
       currentVersion: MOCK_CHANGELOG[0].version,
       lastSeenVersion: "0.0.0",
+      changelog: MOCK_CHANGELOG,
+      changelogMarkdown: MOCK_CHANGELOG_MD,
+      changelogStatus: "ready",
+    };
+  }
+  // "patch": a patch on the running release, drawn as the slim row.
+  if (mode === "patch") {
+    return {
+      currentVersion: MOCK_CHANGELOG[1].version,
+      lastSeenVersion: MOCK_CHANGELOG[1].version,
+      update: makeMockUpdate(MOCK_CHANGELOG[0].version, MOCK_CHANGELOG[1].version),
       changelog: MOCK_CHANGELOG,
       changelogMarkdown: MOCK_CHANGELOG_MD,
       changelogStatus: "ready",

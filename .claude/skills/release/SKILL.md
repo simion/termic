@@ -369,6 +369,7 @@ verify against). Mock it with an env var:
 ```sh
 VITE_MOCK_UPDATE=available npm run tauri dev   # update-available card + pill
 VITE_MOCK_UPDATE=whatsnew  npm run tauri dev   # post-update "what's new" card
+VITE_MOCK_UPDATE=patch     npm run tauri dev   # a patch update: the slim one-line row
 ```
 
 The mock is fully self-contained (no network) — see `src/store/update.ts`.
