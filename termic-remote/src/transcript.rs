@@ -175,6 +175,22 @@ fn push_turn(out: &mut Vec<Turn>, role: &str, text: String, tool: Option<String>
     }
 }
 
+/// The patch inside a Codex `exec` script: `"*** Begin Patch\n...*** End
+/// Patch"` as a string literal, so its newlines and quotes are escaped.
+/// Without the Begin/End lines, like apply_patch's.
+fn inline_patch(script: &str) -> Option<String> {
+    let start = script.find("*** Begin Patch")? + "*** Begin Patch".len();
+    let end = start + script[start..].find("*** End Patch")?;
+    let body = &script[start..end];
+    let body = if body.contains('\n') {
+        body.to_string()
+    } else {
+        body.replace("\\n", "\n").replace("\\t", "\t").replace("\\\"", "\"").replace("\\'", "'").replace("\\\\", "\\")
+    };
+    let body = body.trim_matches('\n').to_string();
+    (!body.is_empty()).then_some(body)
+}
+
 /// Codex wraps a command's output in a header ("Exit code: 0\nWall time:
 /// ...\nOutput:\n"); the output is the part worth showing.
 fn codex_output(text: &str) -> String {
@@ -276,8 +292,13 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
             }
             // A call's output, by its call_id. apply_patch keeps its patch.
             ("function_call_output" | "custom_tool_call_output", _) => {
+                // A string, an array of content items (`input_text`), or an
+                // object with `content`, by version and tool.
                 let text = match p.get("output") {
                     Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(serde_json::Value::Array(items)) => {
+                        items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n")
+                    }
                     Some(o) => o.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string(),
                     None => String::new(),
                 };
@@ -285,17 +306,32 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
                     t.detail = bounded(&codex_output(&text));
                 }
             }
-            // apply_patch: its input is the patch, so name the files it touches.
+            // apply_patch: its input is the patch, so name the files it
+            // touches and keep the patch. Any other custom tool (`exec`, a
+            // script) is summarised by its input; its output is its detail.
             ("custom_tool_call", _) => {
-                let files: Vec<&str> = str_of("input")
-                    .lines()
-                    .filter_map(|l| {
-                        ["*** Update File: ", "*** Add File: ", "*** Delete File: "].iter().find_map(|k| l.strip_prefix(k))
-                    })
-                    .collect();
                 calls.insert(str_of("call_id").to_string(), out.len());
-                let patch: Vec<&str> = str_of("input").lines().filter(|l| !l.starts_with("*** Begin Patch") && !l.starts_with("*** End Patch")).collect();
-                push(&mut out, "tool", one_line(&files.join(", ")), Some(str_of("name").to_string()), bounded(&patch.join("\n")));
+                let input = str_of("input");
+                if str_of("name") == "apply_patch" {
+                    let files: Vec<&str> = input
+                        .lines()
+                        .filter_map(|l| {
+                            ["*** Update File: ", "*** Add File: ", "*** Delete File: "].iter().find_map(|k| l.strip_prefix(k))
+                        })
+                        .collect();
+                    let patch: Vec<&str> = input.lines().filter(|l| !l.starts_with("*** Begin Patch") && !l.starts_with("*** End Patch")).collect();
+                    push(&mut out, "tool", one_line(&files.join(", ")), Some(str_of("name").to_string()), bounded(&patch.join("\n")));
+                } else if let Some(patch) = inline_patch(input) {
+                    // An edit through `exec`: the patch is a string in the script.
+                    let files: Vec<&str> = patch
+                        .lines()
+                        .filter_map(|l| ["*** Update File: ", "*** Add File: ", "*** Delete File: "].iter().find_map(|k| l.strip_prefix(k)))
+                        .collect();
+                    let summary = one_line(&files.join(", "));
+                    push(&mut out, "tool", summary, Some(str_of("name").to_string()), bounded(&patch));
+                } else {
+                    push(&mut out, "tool", one_line(input), Some(str_of("name").to_string()), None);
+                }
             }
             ("web_search_call", _) => {
                 let action = p.get("action");
@@ -384,25 +420,35 @@ fn codex_session_cwd(f: &std::path::Path) -> Option<String> {
 /// reads as nothing rather than as noise.
 const AGY_USER: i64 = 14;
 const AGY_AGENT: i64 = 15;
+/// A tool call's result: its call id at [5,4,1], a command's output at
+/// [140,2,3,10,3,4] (measured on agy's run_command, 2026-11).
+const AGY_RESULT: i64 = 132;
 
 pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8])>) -> Vec<Turn> {
     use crate::pb;
     let mut out: Vec<Turn> = Vec::new();
-    let mut push = |role: &str, text: String, tool: Option<String>| {
-        let text = text.trim().to_string();
-        if !text.is_empty() || tool.is_some() {
-            out.push(Turn { role: role.into(), text, tool, ts: None, detail: None });
-        }
-    };
+    // A call's place in `out`, by its id, for its result step to land on.
+    let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (kind, payload) in steps {
         match kind {
-            AGY_USER => push("user", pb::text(payload, &[19, 2]).unwrap_or_default(), None),
+            AGY_USER => push_turn(&mut out, "user", pb::text(payload, &[19, 2]).unwrap_or_default(), None, None, None),
             AGY_AGENT => {
-                push("assistant", pb::text(payload, &[20, 1]).unwrap_or_default(), None);
+                push_turn(&mut out, "assistant", pb::text(payload, &[20, 1]).unwrap_or_default(), None, None, None);
                 for call in pb::get(payload, &[20, 7]) {
                     let Some(name) = pb::text(call, &[2]) else { continue };
                     let args = pb::text(call, &[3]).and_then(|a| serde_json::from_str::<serde_json::Value>(&a).ok());
-                    push("tool", tool_summary(args.as_ref()), Some(name));
+                    if let Some(id) = pb::text(call, &[1]) {
+                        calls.insert(id, out.len());
+                    }
+                    let diff = args.as_ref().and_then(agy_edit_diff);
+                    push_turn(&mut out, "tool", tool_summary(args.as_ref()), Some(name), None, diff);
+                }
+            }
+            // A call's result: a command's terminal output. An edit keeps its diff.
+            AGY_RESULT => {
+                let at = pb::text(payload, &[5, 4, 1]).and_then(|id| calls.get(&id).copied());
+                if let Some(t) = at.and_then(|i| out.get_mut(i)).filter(|t| t.detail.is_none()) {
+                    t.detail = pb::text(payload, &[140, 2, 3, 10, 3, 4]).and_then(|o| bounded(&o.replace("\r\n", "\n")));
                 }
             }
             _ => {}
@@ -411,6 +457,18 @@ pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
+}
+
+/// What an agy editing call changes, as `-`/`+` lines: edit_file's
+/// `Target`/`Replacement`, write_file's `Content` (all added).
+fn agy_edit_diff(args: &serde_json::Value) -> Option<String> {
+    let s = |k: &str| args.get(k).and_then(|v| v.as_str());
+    if let (Some(old), Some(new)) = (s("Target"), s("Replacement")) {
+        let mut d: Vec<String> = old.lines().map(|l| format!("-{l}")).collect();
+        d.extend(new.lines().map(|l| format!("+{l}")));
+        return bounded(&d.join("\n"));
+    }
+    s("Content").and_then(|c| bounded(&c.lines().map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n")))
 }
 
 /// Read an agy conversation file. Read-only: agy may be writing it (WAL).
@@ -704,6 +762,36 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_custom_tool_that_is_not_a_patch_keeps_its_output() {
+        // Newer Codex: `exec` as a custom tool, outputs as input_text items.
+        let jsonl = [
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"c1","input":"ls -la\nnpm test"}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"total 0"},{"type":"input_text","text":"3 passing"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"{}","call_id":"c2"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":[{"type":"input_text","text":"done"}]}}"#,
+        ]
+        .join("\n");
+        let t = parse_codex_jsonl(&jsonl);
+        assert_eq!(t[0].text, "ls -la npm test");
+        assert_eq!(t[0].detail.as_deref(), Some("total 0\n3 passing"));
+        assert_eq!(t[1].detail.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_codex_edit_through_exec_shows_its_patch() {
+        let script = r#"const patch = "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old \"q\"\n+new\n*** End Patch";\ntext(await tools.apply_patch(patch));"#;
+        let jsonl = format!(
+            "{}\n{}",
+            serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"c1","input":script}}),
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"Success."}]}}"#,
+        );
+        let t = parse_codex_jsonl(&jsonl);
+        assert_eq!(t[0].text, "src/a.ts");
+        assert_eq!(t[0].detail.as_deref(), Some("*** Update File: src/a.ts\n@@\n-old \"q\"\n+new"));
+        assert_eq!(inline_patch("no patch here"), None);
+    }
+
+    #[test]
     fn codex_output_drops_its_header() {
         assert_eq!(codex_output("Exit code: 0\nWall time: 1s\nOutput:\nok\n"), "ok\n");
         assert_eq!(codex_output("plain"), "plain");
@@ -776,6 +864,22 @@ mod tests {
             inner.extend(ld(7, &[ld(1, b"call_1"), ld(2, name.as_bytes()), ld(3, args.as_bytes())].concat()));
         }
         [int(1, 15), ld(20, &inner)].concat()
+    }
+
+    #[test]
+    fn an_antigravity_call_carries_its_output_or_its_diff() {
+        use crate::pb::enc::*;
+        let call = |id: &str, name: &str, args: &str| ld(7, &[ld(1, id.as_bytes()), ld(2, name.as_bytes()), ld(3, args.as_bytes())].concat());
+        let agent = [int(1, 15), ld(20, &[
+            call("c1", "run_command", r#"{"CommandLine":"npm test"}"#),
+            call("c2", "edit_file", r#"{"Path":"/Users/u/a.ts","Target":"a\nb","Replacement":"c"}"#),
+            call("c3", "write_file", r#"{"Path":"/Users/u/b.ts","Content":"x"}"#),
+        ].concat())].concat();
+        // The result step as agy writes it: the call at 5.4, the terminal's output deep in 140.
+        let result = |id: &str, out: &str| [ld(5, &ld(4, &ld(1, id.as_bytes()))), ld(140, &ld(2, &ld(3, &ld(10, &ld(3, &ld(4, out.as_bytes()))))))].concat();
+        let (r1, r2) = (result("c1", "3 passing\r\ndone"), result("c2", "edited"));
+        let d: Vec<Option<String>> = parse_antigravity_steps([(15, &agent[..]), (132, &r1[..]), (132, &r2[..])]).into_iter().filter(|t| t.role == "tool").map(|t| t.detail).collect();
+        assert_eq!(d, vec![Some("3 passing\ndone".into()), Some("-a\n-b\n+c".into()), Some("+x".into())]);
     }
 
     #[test]

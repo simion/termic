@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [2.0.8] - 2026-11-25
+## [2.0.9] - 2026-11-25
 
 Fixes for remote control, paired computers and the phone app.
 
@@ -15,7 +15,7 @@ Fixes for remote control, paired computers and the phone app.
 - Profile windows keep their window buttons in place after a rename.
 - A paired computer's task waiting on a subagent or background shell shows the waiting ring, not a spinner.
 - A PR whose checks are still running no longer shows green in the sidebar.
-- The phone app can show what a tool call did: an edit's change, or a command's output.
+- The phone app can show what a tool call did, for Claude, Codex and Antigravity tasks: an edit's change, or a command's output.
 
 ## [2.0.5] - 2026-11-24
 
