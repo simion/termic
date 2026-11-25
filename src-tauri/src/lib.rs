@@ -12122,10 +12122,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
         }
     };
     #[cfg(target_os = "macos")]
-    let traffic_y: f64 = std::env::var("TERMIC_TRAFFIC_Y")
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .unwrap_or_else(|| if is_macos_tahoe() { 21.0 } else { 16.0 });
+    let traffic_y = profile_traffic_y();
 
     #[allow(unused_mut)]
     let mut builder = tauri::WebviewWindowBuilder::new(
@@ -29739,17 +29736,28 @@ fn cleanup_children(app: &tauri::AppHandle) {
     }
 }
 
+/// Where a profile window's traffic lights sit: x is fixed, y lower on
+/// Tahoe, which stopped centering them in an overlay title bar.
+/// `TERMIC_TRAFFIC_Y` overrides it, to find the exact value by eye.
+#[cfg(target_os = "macos")]
+fn profile_traffic_y() -> f64 {
+    std::env::var("TERMIC_TRAFFIC_Y")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or_else(|| if is_macos_tahoe() { 21.0 } else { 16.0 })
+}
+
 /// Retitle a profile window, keeping its traffic lights where we put them.
 ///
 /// Changing an NSWindow's title makes AppKit lay its title bar out again,
 /// which puts the window controls back at the system's spot (further in and
-/// lower than our `traffic_light_position`). tao only re-applies the custom
-/// position when its view draws, so they stayed misplaced until the next
-/// resize: only profile windows other than the root are ever retitled, which
-/// is why one profile's window had them off and the other's did not. The
-/// title is set and a redraw asked for in one main-thread step, so the redraw
-/// lands after that layout. An unchanged title is left alone: config sync
-/// re-set every window's title on each sync.
+/// lower than our `traffic_light_position`). Only profile windows other than
+/// the root are ever retitled, which is why one profile's window had them off
+/// and the other's did not. Asking for a redraw so tao would re-apply its
+/// position did not hold on screen (2.0.6), so the buttons are moved back
+/// here directly, the way tao places them (`inset_traffic_lights`), in the
+/// same main-thread step as the title. An unchanged title is left alone:
+/// config sync re-set every window's title on each sync.
 pub(crate) fn set_profile_window_title(win: &tauri::WebviewWindow, title: &str) {
     if win.title().ok().as_deref() == Some(title) {
         return;
@@ -29763,8 +29771,9 @@ pub(crate) fn set_profile_window_title(win: &tauri::WebviewWindow, title: &str) 
         let Ok(ns_window) = win.ns_window() else { let _ = win.set_title(title); return };
         let ns_window = ns_window as usize;
         let title = title.to_string();
+        let y = profile_traffic_y();
         let _ = win.run_on_main_thread(move || {
-            use objc2::runtime::{AnyObject, Bool};
+            use objc2::runtime::AnyObject;
             use objc2::{class, msg_send};
             let ns_window = ns_window as *mut AnyObject;
             let Ok(c) = std::ffi::CString::new(title) else { return };
@@ -29774,12 +29783,68 @@ pub(crate) fn set_profile_window_title(win: &tauri::WebviewWindow, title: &str) 
                 let s: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()];
                 if s.is_null() { return; }
                 let _: () = msg_send![ns_window, setTitle: s];
-                let view: *mut AnyObject = msg_send![ns_window, contentView];
-                if !view.is_null() {
-                    let _: () = msg_send![view, setNeedsDisplay: Bool::new(true)];
-                }
+                inset_traffic_lights(ns_window, 16.0, y);
             }
         });
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsPoint { x: f64, y: f64 }
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsSize { w: f64, h: f64 }
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsRect { origin: NsPoint, size: NsSize }
+#[cfg(target_os = "macos")]
+unsafe impl objc2::Encode for NsPoint {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+}
+#[cfg(target_os = "macos")]
+unsafe impl objc2::Encode for NsSize {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+}
+#[cfg(target_os = "macos")]
+unsafe impl objc2::Encode for NsRect {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGRect", &[NsPoint::ENCODING, NsSize::ENCODING]);
+}
+
+/// Put the window's close/minimize/zoom buttons at (x, y) from its top-left,
+/// as tao's `inset_traffic_lights` does: the title bar container is sized to
+/// the buttons plus y, and the buttons spaced as AppKit spaced them.
+///
+/// # Safety
+/// On the main thread, with `ns_window` a live NSWindow.
+#[cfg(target_os = "macos")]
+unsafe fn inset_traffic_lights(ns_window: *mut objc2::runtime::AnyObject, x: f64, y: f64) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let button = |kind: usize| -> *mut AnyObject { msg_send![ns_window, standardWindowButton: kind] };
+    // NSWindowCloseButton = 0, NSWindowMiniaturizeButton = 1, NSWindowZoomButton = 2.
+    let (close, mini, zoom) = (button(0), button(1), button(2));
+    if close.is_null() || mini.is_null() || zoom.is_null() {
+        return;
+    }
+    let parent: *mut AnyObject = msg_send![close, superview];
+    if parent.is_null() { return; }
+    let container: *mut AnyObject = msg_send![parent, superview];
+    if container.is_null() { return; }
+    let close_rect: NsRect = msg_send![close, frame];
+    let window_rect: NsRect = msg_send![ns_window, frame];
+    let mut bar: NsRect = msg_send![container, frame];
+    bar.size.h = close_rect.size.h + y;
+    bar.origin.y = window_rect.size.h - bar.size.h;
+    let _: () = msg_send![container, setFrame: bar];
+    let mini_rect: NsRect = msg_send![mini, frame];
+    let gap = mini_rect.origin.x - close_rect.origin.x;
+    for (i, b) in [close, mini, zoom].into_iter().enumerate() {
+        let r: NsRect = msg_send![b, frame];
+        let _: () = msg_send![b, setFrameOrigin: NsPoint { x: x + i as f64 * gap, y: r.origin.y }];
     }
 }
 
