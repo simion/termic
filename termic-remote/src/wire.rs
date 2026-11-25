@@ -458,6 +458,11 @@ pub struct Turn {
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,
+    /// For a tool call: what it did in full, bounded (transcript.rs): an
+    /// edit's diff (`-`/`+` lines) or what the call returned. Absent from
+    /// an older host, and for a call with nothing to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl ClientMsg {

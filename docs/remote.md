@@ -130,7 +130,12 @@ phone read "working" until its next prompt (docs/agent-hooks.md,
 
 **Transcripts** (the phone's chat) come from each agent's own session
 log, read by `termic-remote/src/transcript.rs` into the same turns
-(prompt, reply, one line per tool call). A server task's log is on the
+(prompt, reply, one line per tool call). A tool call also carries a
+bounded `detail` (4000 characters) that the phone shows when the call is
+opened: an edit's `-`/`+` lines (Claude's Edit, MultiEdit and Write,
+Codex's apply_patch patch), else what the call returned (Claude's
+tool_result by `tool_use_id`, Codex's function_call_output by `call_id`,
+its "Output:" header dropped). A server task's log is on the
 box, so the desktop reads it there through `exec` (`task_host.rs`, as
 `termic result` does): Claude's file, and Codex's rollout found by a
 script on the box (`CODEX_ROLLOUT_SH`, the same lookup as below).

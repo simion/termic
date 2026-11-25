@@ -26,6 +26,8 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
     // empties it (Claude drains its queue when a turn ends). Without these,
     // a long session left consumed prompts on the phone as Queued for good.
     let mut queue: Vec<(String, Option<String>)> = Vec::new();
+    // A tool call's place in `out`, by its id, for its result to land on.
+    let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let sent = |queue: &mut Vec<(String, Option<String>)>, text: &str| {
         if let Some(i) = queue.iter().position(|(q, _)| q == text.trim()) {
             queue.remove(i);
@@ -67,7 +69,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                 let text = text.trim();
                 sent(&mut queue, text);
                 if !text.is_empty() {
-                    out.push(Turn { role: "user".into(), text: text.into(), tool: None, ts });
+                    out.push(Turn { role: "user".into(), text: text.into(), tool: None, ts, detail: None });
                 }
             }
             continue;
@@ -79,11 +81,8 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             queue.clear();
         }
         let Some(content) = v.pointer("/message/content") else { continue };
-        let mut push = |role: &str, text: String, tool: Option<String>| {
-            let text = text.trim().to_string();
-            if !text.is_empty() || tool.is_some() {
-                out.push(Turn { role: role.into(), text, tool, ts: ts.clone() });
-            }
+        let push = |out: &mut Vec<Turn>, role: &str, text: String, tool: Option<String>, detail: Option<String>| {
+            push_turn(out, role, text, tool, ts.clone(), detail)
         };
         match content {
             serde_json::Value::String(text) => {
@@ -95,7 +94,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                 if kind == "user" {
                     sent(&mut queue, text);
                 }
-                push(kind, text.clone(), None);
+                push(&mut out, kind, text.clone(), None, None);
             }
             serde_json::Value::Array(blocks) => {
                 for b in blocks {
@@ -108,11 +107,23 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                             if kind == "user" {
                                 sent(&mut queue, &text);
                             }
-                            push(kind, text, None);
+                            push(&mut out, kind, text, None, None);
                         }
                         Some("tool_use") if kind == "assistant" => {
                             let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("tool").to_string();
-                            push("tool", tool_summary(b.get("input")), Some(name));
+                            if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
+                                calls.insert(id.to_string(), out.len());
+                            }
+                            push(&mut out, "tool", tool_summary(b.get("input")), Some(name), edit_diff(b.get("input")));
+                        }
+                        // A call's result arrives in the next user line,
+                        // by the call's id. An edit keeps its diff: "the
+                        // file was updated" says less than the change.
+                        Some("tool_result") if kind == "user" => {
+                            let at = b.get("tool_use_id").and_then(|i| i.as_str()).and_then(|i| calls.get(i)).copied();
+                            if let Some(t) = at.and_then(|i| out.get_mut(i)).filter(|t| t.detail.is_none()) {
+                                t.detail = result_text(b.get("content"));
+                            }
                         }
                         _ => {}
                     }
@@ -121,7 +132,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             _ => {}
         }
     }
-    out.extend(queue.into_iter().filter(|(t, _)| !injected(t)).map(|(text, ts)| Turn { role: "queued".into(), text, tool: None, ts }));
+    out.extend(queue.into_iter().filter(|(t, _)| !injected(t)).map(|(text, ts)| Turn { role: "queued".into(), text, tool: None, ts, detail: None }));
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
@@ -155,6 +166,71 @@ fn tool_summary(input: Option<&serde_json::Value>) -> String {
     }
 }
 
+/// One turn onto `out`, unless it says nothing (a tool call always says
+/// which tool).
+fn push_turn(out: &mut Vec<Turn>, role: &str, text: String, tool: Option<String>, ts: Option<String>, detail: Option<String>) {
+    let text = text.trim().to_string();
+    if !text.is_empty() || tool.is_some() {
+        out.push(Turn { role: role.into(), text, tool, ts, detail });
+    }
+}
+
+/// Codex wraps a command's output in a header ("Exit code: 0\nWall time:
+/// ...\nOutput:\n"); the output is the part worth showing.
+fn codex_output(text: &str) -> String {
+    match text.split_once("\nOutput:\n") {
+        Some((_, out)) => out.to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// A tool call's detail is cut to this many characters: enough for a
+/// test run's tail or a real diff, not a whole file.
+const DETAIL_CHARS: usize = 4000;
+
+/// `s` cut to `DETAIL_CHARS`, trimmed; None when empty.
+fn bounded(s: &str) -> Option<String> {
+    let s = s.trim_end();
+    if s.trim().is_empty() {
+        return None;
+    }
+    Some(if s.chars().count() > DETAIL_CHARS { format!("{}\n...", s.chars().take(DETAIL_CHARS).collect::<String>()) } else { s.to_string() })
+}
+
+/// What an editing call changes, as `-`/`+` lines: Claude's Edit
+/// (`old_string`/`new_string`), MultiEdit (`edits`) and Write (`content`,
+/// all added).
+fn edit_diff(input: Option<&serde_json::Value>) -> Option<String> {
+    let input = input?;
+    let pair = |e: &serde_json::Value| -> Option<String> {
+        let old = e.get("old_string")?.as_str()?;
+        let new = e.get("new_string")?.as_str()?;
+        let mut d: Vec<String> = old.lines().map(|l| format!("-{l}")).collect();
+        d.extend(new.lines().map(|l| format!("+{l}")));
+        Some(d.join("\n"))
+    };
+    if let Some(edits) = input.get("edits").and_then(|e| e.as_array()) {
+        return bounded(&edits.iter().filter_map(pair).collect::<Vec<_>>().join("\n@@\n"));
+    }
+    if let Some(d) = pair(input) {
+        return bounded(&d);
+    }
+    let content = input.get("content")?.as_str()?;
+    input.get("file_path")?;
+    bounded(&content.lines().map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n"))
+}
+
+/// A tool_result's text: a string, or its text blocks joined.
+fn result_text(content: Option<&serde_json::Value>) -> Option<String> {
+    match content? {
+        serde_json::Value::String(s) => bounded(s),
+        serde_json::Value::Array(blocks) => bounded(
+            &blocks.iter().filter_map(|b| b.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n"),
+        ),
+        _ => None,
+    }
+}
+
 // ───────────────────────────── codex ──────────────────────────────────
 
 /// Codex's rollout JSONL -> turns. Its `user` messages also carry what
@@ -166,6 +242,7 @@ fn tool_summary(input: Option<&serde_json::Value>) -> String {
 /// the one source that covers both.
 pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
     let mut out: Vec<Turn> = Vec::new();
+    let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for line in jsonl.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v.get("type").and_then(|t| t.as_str()) != Some("response_item") {
@@ -174,11 +251,8 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
         let ts = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
         let Some(p) = v.get("payload") else { continue };
         let str_of = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("");
-        let mut push = |role: &str, text: String, tool: Option<String>| {
-            let text = text.trim().to_string();
-            if !text.is_empty() || tool.is_some() {
-                out.push(Turn { role: role.into(), text, tool, ts: ts.clone() });
-            }
+        let push = |out: &mut Vec<Turn>, role: &str, text: String, tool: Option<String>, detail: Option<String>| {
+            push_turn(out, role, text, tool, ts.clone(), detail)
         };
         match (str_of("type"), str_of("role")) {
             ("message", role @ ("user" | "assistant")) => {
@@ -193,11 +267,23 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
                     .filter(|t| role == "assistant" || !codex_injected(t))
                     .collect::<Vec<_>>()
                     .join("\n");
-                push(role, text, None);
+                push(&mut out, role, text, None, None);
             }
             ("function_call", _) => {
                 let args = serde_json::from_str::<serde_json::Value>(str_of("arguments")).ok();
-                push("tool", tool_summary(args.as_ref()), Some(str_of("name").to_string()));
+                calls.insert(str_of("call_id").to_string(), out.len());
+                push(&mut out, "tool", tool_summary(args.as_ref()), Some(str_of("name").to_string()), None);
+            }
+            // A call's output, by its call_id. apply_patch keeps its patch.
+            ("function_call_output" | "custom_tool_call_output", _) => {
+                let text = match p.get("output") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(o) => o.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string(),
+                    None => String::new(),
+                };
+                if let Some(t) = calls.get(str_of("call_id")).and_then(|&i| out.get_mut(i)).filter(|t| t.detail.is_none()) {
+                    t.detail = bounded(&codex_output(&text));
+                }
             }
             // apply_patch: its input is the patch, so name the files it touches.
             ("custom_tool_call", _) => {
@@ -207,11 +293,13 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
                         ["*** Update File: ", "*** Add File: ", "*** Delete File: "].iter().find_map(|k| l.strip_prefix(k))
                     })
                     .collect();
-                push("tool", one_line(&files.join(", ")), Some(str_of("name").to_string()));
+                calls.insert(str_of("call_id").to_string(), out.len());
+                let patch: Vec<&str> = str_of("input").lines().filter(|l| !l.starts_with("*** Begin Patch") && !l.starts_with("*** End Patch")).collect();
+                push(&mut out, "tool", one_line(&files.join(", ")), Some(str_of("name").to_string()), bounded(&patch.join("\n")));
             }
             ("web_search_call", _) => {
                 let action = p.get("action");
-                push("tool", tool_summary(action), Some("web_search".into()));
+                push(&mut out, "tool", tool_summary(action), Some("web_search".into()), None);
             }
             _ => {}
         }
@@ -303,7 +391,7 @@ pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8
     let mut push = |role: &str, text: String, tool: Option<String>| {
         let text = text.trim().to_string();
         if !text.is_empty() || tool.is_some() {
-            out.push(Turn { role: role.into(), text, tool, ts: None });
+            out.push(Turn { role: role.into(), text, tool, ts: None, detail: None });
         }
     };
     for (kind, payload) in steps {
@@ -609,6 +697,40 @@ mod tests {
             ]
         );
         assert_eq!(turns[0].ts.as_deref(), Some("2026-01-01T10:00:01Z"));
+        // A command's output is its detail; the patch is apply_patch's.
+        assert_eq!(turns[1].detail.as_deref(), Some("1 failing"));
+        assert_eq!(turns[2].detail.as_deref(), Some("*** Update File: src/login.ts\n@@\n-a\n+b\n*** Add File: src/login.test.ts\n+x"));
+        assert_eq!(turns[3].detail, None);
+    }
+
+    #[test]
+    fn codex_output_drops_its_header() {
+        assert_eq!(codex_output("Exit code: 0\nWall time: 1s\nOutput:\nok\n"), "ok\n");
+        assert_eq!(codex_output("plain"), "plain");
+    }
+
+    #[test]
+    fn a_claude_tool_call_carries_its_result_or_its_diff() {
+        let jsonl = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm test"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"3 passing"}]}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/Users/u/a.ts","old_string":"a\nb","new_string":"c"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"The file was updated."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"/Users/u/b.ts","content":"x\ny"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t4","name":"Read","input":{"file_path":"/Users/u/c.ts"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","content":"   "}]}}"#,
+        ]
+        .join("\n");
+        let d: Vec<Option<String>> = parse_claude_jsonl(&jsonl).into_iter().map(|t| t.detail).collect();
+        assert_eq!(d, vec![Some("3 passing".into()), Some("-a\n-b\n+c".into()), Some("+x\n+y".into()), None]);
+    }
+
+    #[test]
+    fn a_tool_detail_is_bounded() {
+        let long = "x".repeat(DETAIL_CHARS + 50);
+        let b = bounded(&long).unwrap();
+        assert!(b.ends_with("\n...") && b.chars().count() == DETAIL_CHARS + 4);
+        assert_eq!(bounded(" \n "), None);
     }
 
     #[test]
