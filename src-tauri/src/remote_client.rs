@@ -103,8 +103,22 @@ pub(crate) struct ServerRecord {
     /// profile (server_projects.rs). None for a server added before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Where the box keeps its repos, for Add project to discover them in
+    /// (server_projects.rs server_discover_repos): the server's own
+    /// repos_dir, as Settings > General holds this machine's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repos_dir: Option<String>,
 }
 
+
+/// Set (or clear, with an empty string) a server's repos folder.
+pub(crate) fn set_server_repos_dir(id: &str, dir: &str) -> Result<(), String> {
+    let mut list = load_servers();
+    let rec = list.iter_mut().find(|r| r.id == id).ok_or("no such server")?;
+    let dir = dir.trim();
+    rec.repos_dir = (!dir.is_empty()).then(|| dir.to_string());
+    save_servers(&list)
+}
 
 fn servers_path() -> Option<PathBuf> {
     crate::global_dir().ok().map(|d| d.join(SERVERS_FILE))
@@ -1262,6 +1276,7 @@ pub(crate) fn add_server_in(ssh: &str, name: &str, profile: Option<String>) -> R
         command: None,
         added_at_ms: chrono::Utc::now().timestamp_millis(),
         profile,
+        repos_dir: None,
     };
     list.push(rec.clone());
     save_servers(&list)?;
@@ -1904,7 +1919,7 @@ mod tests {
     /// set_state once froze every reader of the machine list).
     #[test]
     fn an_unreachable_server_goes_offline_without_blocking_readers() {
-        let rec = ServerRecord { id: "x".into(), name: "nowhere".into(), ssh: "nobody@no-such-host.invalid".into(), command: None, added_at_ms: 0, profile: None };
+        let rec = ServerRecord { id: "x".into(), name: "nowhere".into(), ssh: "nobody@no-such-host.invalid".into(), command: None, added_at_ms: 0, profile: None, repos_dir: None };
         let l = Arc::new(Link {
             id: "x".into(),
             kind: MachineKind::Server,
@@ -1960,7 +1975,7 @@ mod tests {
         assert!(p.reached, "{:?} {}", p.error, p.details);
         let version = install(None, &dest).expect("install");
         assert_eq!(probe(&dest).installed.as_deref(), Some(version.as_str()));
-        let rec = ServerRecord { id: "t".into(), name: "box".into(), ssh: dest.clone(), command: None, added_at_ms: 0, profile: None };
+        let rec = ServerRecord { id: "t".into(), name: "box".into(), ssh: dest.clone(), command: None, added_at_ms: 0, profile: None, repos_dir: None };
         let ((welcome, mut reader, mut writer), mut child) = connect_server(&rec).expect("connect");
         assert!(matches!(welcome, ServerMsg::Welcome { kind: wire::HostKind::Server, .. }), "{welcome:?}");
         writer.send(&ClientMsg::Call { id: "1".into(), req: serde_json::json!({ "id": "1", "cmd": "project_list" }), proto: None }).unwrap();

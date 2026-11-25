@@ -1,11 +1,12 @@
 // Add Project dialog with discovered-repos shortcut.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation, Trans } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
-import { useRemote } from "@/lib/remote";
+import { remoteCall, req, useRemote } from "@/lib/remote";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -57,6 +58,36 @@ export function NewProjectDialog() {
   const loadAll = useApp(s => s.loadAll);
   const projects = useApp(s => s.projects);
   const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
+  // A server's Add project (server_projects.rs): the same dialog, with its
+  // repos folder, discovery and add done on that box. Browse, clone and
+  // multi-repo are this machine's (a native folder picker, a local
+  // terminal), so they are left out there; the path field takes a box path.
+  const server = useUI(s => s.newProjectServer);
+  const serverName = useRemote(s => (server ? s.machines.find(m => m.id === server)?.name : undefined));
+  const io = useMemo(() => server ? {
+    loadReposDir: () => invoke<string>("server_repos_dir", { server }),
+    saveReposDir: (dir: string) => invoke<void>("server_set_repos_dir", { server, dir }),
+    discover: (dir: string) => invoke<DiscoveredRepo[]>("server_discover_repos", { server, dir }),
+    add: async (p: string, asNonGit: boolean): Promise<Project> => {
+      const r = await remoteCall(server, req("project_add", { path: p, ...(asNonGit ? { non_git: true } : {}) }));
+      if (!r.ok) throw new Error(r.error?.message ?? "could not add the project");
+      const name = (r.data?.project?.name ?? r.data?.name) as string | undefined;
+      // The box's project reaches this desktop through its mirror
+      // (server_projects.rs): wait for it, as the server dialog did.
+      for (let i = 0; i < 40; i++) {
+        const hit = useApp.getState().projects.find(x => x.server === server && (x.name === name || x.root_path === p));
+        if (hit) return hit;
+        await useApp.getState().loadAll();
+        await new Promise(res => setTimeout(res, 250));
+      }
+      throw new Error(`added on the server, but ${name ?? p} has not shown up here yet`);
+    },
+  } : {
+    loadReposDir: async () => (await settingsLoad()).repos_dir || "",
+    saveReposDir: async (dir: string) => { const cur = await settingsLoad(); await settingsSave({ ...cur, repos_dir: dir }); },
+    discover: discoverRepos,
+    add: (p: string, asNonGit: boolean) => projectAdd(p, asNonGit),
+  }, [server]);
   // Project type picker — defaults to "repo" (today's single-repo
   // flow). Switching to "multi" swaps the body to the host-picker +
   // member-multi-select form. Both flows reuse the same Add button.
@@ -148,23 +179,23 @@ export function NewProjectDialog() {
     setListedDir(""); setPreviewStatus(null);
     (async () => {
       try {
-        const s = await settingsLoad();
-        setReposDir(s.repos_dir || "");
-        setReposDirDraft(s.repos_dir || "");
+        const reposDirSaved = await io.loadReposDir();
+        setReposDir(reposDirSaved);
+        setReposDirDraft(reposDirSaved);
         // PROPOSE the repos folder when there is one, and leave the field
         // empty when there is not. Nothing is invented here: a default the
         // user never chose would be carried straight into a shell command and
         // create a directory somewhere they did not ask for.
-        setCloneParent(s.repos_dir || "");
-        if (s.repos_dir) {
-          const repos = await discoverRepos(s.repos_dir);
+        setCloneParent(reposDirSaved);
+        if (reposDirSaved) {
+          const repos = await io.discover(reposDirSaved);
           setDiscovered(repos.filter(r => !r.already_added));
-          setListedDir(s.repos_dir);
+          setListedDir(reposDirSaved);
         } else { setDiscovered([]); }
       } catch { setDiscovered([]); }
       finally { setReposDirKnown(true); }
     })();
-  }, [open]);
+  }, [open, io]);
 
   /** Scan a folder for repos and remember it as THE repos folder.
    *
@@ -179,9 +210,8 @@ export function NewProjectDialog() {
     if (!dir || scanning) return;
     setScanning(true); setErr(null);
     try {
-      const repos = await discoverRepos(dir);
-      const cur = await settingsLoad();
-      await settingsSave({ ...cur, repos_dir: dir });
+      const repos = await io.discover(dir);
+      await io.saveReposDir(dir);
       setReposDir(dir); setReposDirDraft(dir); setReposDirEditing(false);
       setDiscovered(repos.filter(r => !r.already_added)); setListedDir(dir);
       setSelected(new Set()); setFilter("");
@@ -207,7 +237,7 @@ export function NewProjectDialog() {
     let cancelled = false;
     const id = window.setTimeout(() => {
       setPreviewStatus("scanning");
-      discoverRepos(dir).then(repos => {
+      io.discover(dir).then(repos => {
         if (cancelled) return;
         setDiscovered(repos.filter(r => !r.already_added)); setListedDir(dir);
         setSelected(new Set()); setFilter(""); setPreviewStatus(null);
@@ -216,7 +246,7 @@ export function NewProjectDialog() {
       }).catch(() => { if (!cancelled) setPreviewStatus("missing"); });
     }, REPOS_DIR_SETTLE_MS);
     return () => { cancelled = true; window.clearTimeout(id); };
-  }, [reposFormShown, reposDirDraft, reposDir]);
+  }, [reposFormShown, reposDirDraft, reposDir, io]);
 
   /** Adding a repo from a list read out of a typed folder is the user
    *  confirming that folder: save it as THE repos folder, as "Find repos"
@@ -225,8 +255,7 @@ export function NewProjectDialog() {
     const dir = listedDirRef.current;
     if (!dir || dir === reposDir) return;
     try {
-      const cur = await settingsLoad();
-      await settingsSave({ ...cur, repos_dir: dir });
+      await io.saveReposDir(dir);
       setReposDir(dir); setReposDirDraft(dir); setReposDirEditing(false);
       setCloneParent(prev => prev || dir);
     } catch {}
@@ -252,6 +281,9 @@ export function NewProjectDialog() {
   // straight through; a plain folder pops the confirm. Returns the
   // resolved non-git flag, or null if the user backed out.
   async function classify(p: string, kind: ConfirmKind): Promise<boolean | null> {
+    // A server path is not on this machine: the box's own add says whether
+    // it is a repo (add() offers the plain folder when it is not).
+    if (server) return false;
     const isGit = await pathIsGitRepo(p).catch(() => false);
     if (isGit) return false;
     const choice = await confirmNonGit(kind);
@@ -343,10 +375,10 @@ export function NewProjectDialog() {
    *  several and must stay open, the single typed path is done. The clone flow
    *  passes it explicitly, because its destination is never the `path` field
    *  and inferring would leave the dialog open on a finished one-shot. */
-  async function add(p: string, asNonGit: boolean, closeAfter?: boolean) {
+  async function add(p: string, asNonGit: boolean, closeAfter?: boolean): Promise<string | null> {
     setBusy(true); setErr(null);
     try {
-      const proj = await projectAdd(p, asNonGit);
+      const proj = await io.add(p, asNonGit);
       // Newly-added projects start expanded so the "+ Get started"
       // CTA is visible without an extra click — the empty-defaults-
       // to-collapsed fallback in Sidebar would otherwise hide it.
@@ -357,7 +389,7 @@ export function NewProjectDialog() {
       if (listed && discovered.some(r => r.path === p)) await rememberListedDir();
       // Refresh discovery in case the same folder has more candidates.
       if (listed) {
-        const repos = await discoverRepos(listed).catch(() => []);
+        const repos = await io.discover(listed).catch(() => [] as DiscoveredRepo[]);
         const nextDiscovered = repos.filter(r => !r.already_added);
         setDiscovered(nextDiscovered);
         // If the current filter would leave the list empty after the
@@ -374,7 +406,8 @@ export function NewProjectDialog() {
         }
       }
       if (closeAfter ?? (p === path)) close();
-    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+      return null;
+    } catch (e) { setErr(String(e)); return String(e); } finally { setBusy(false); }
   }
 
   /** Add every checked repo, in one sweep.
@@ -396,7 +429,7 @@ export function NewProjectDialog() {
     for (const p of paths) {
       const name = discovered.find(r => r.path === p)?.name ?? p;
       try {
-        const proj = await projectAdd(p, false);
+        const proj = await io.add(p, false);
         setProjectCollapsed(proj.id, false);
         results.push({ path: p, name: proj.name });
       } catch (e) {
@@ -413,7 +446,7 @@ export function NewProjectDialog() {
     const listed = listedDirRef.current;
     if (listed) {
       if (results.some(r => !r.error)) await rememberListedDir();
-      const repos = await discoverRepos(listed).catch(() => []);
+      const repos = await io.discover(listed).catch(() => [] as DiscoveredRepo[]);
       setDiscovered(repos.filter(r => !r.already_added));
     }
     setBusy(false);
@@ -438,6 +471,16 @@ export function NewProjectDialog() {
   async function handleAdd() {
     const p = path.trim();
     if (!p) return;
+    if (server) {
+      // The box says whether it is a repo: refused as one, offer it as a
+      // plain folder, as the local flow does before adding.
+      const e = await add(path, false);
+      if (e && /not a git repository/i.test(e)) {
+        setErr(null);
+        if ((await confirmNonGit("project")) === "folder") await add(path, true);
+      }
+      return;
+    }
     const ng = await classify(p, "project");
     if (ng === null) return;
     await add(path, ng);
@@ -544,7 +587,7 @@ export function NewProjectDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title={t("newProject.title")}
+      title={server ? t("newProject.titleOnServer", { name: serverName ?? server }) : t("newProject.title")}
       // Fixed width across both modes so toggling between Repository
       // and Multi-repo doesn't resize the dialog mid-decision. Sized
       // for multi-repo: per-member rows each have three script
@@ -560,7 +603,7 @@ export function NewProjectDialog() {
           and the user reads "choose one of two", not "primary CTA +
           afterthought". Two-line tiles (icon + name + descriptor) make
           the difference obvious before committing. */}
-      <div className="mb-5 grid grid-cols-3 gap-2 text-[13px]">
+      {!server && <div className="mb-5 grid grid-cols-3 gap-2 text-[13px]">
         {([
           { id: "repo",  icon: Folder, label: t("newProject.modeRepo"),  hint: t("newProject.modeRepoHint") },
           { id: "clone", icon: Download, label: t("newProject.modeClone"), hint: t("newProject.modeCloneHint") },
@@ -589,16 +632,16 @@ export function NewProjectDialog() {
             </button>
           );
         })}
-      </div>
+      </div>}
       {/* A project on another machine is added through its server, whose
           projects then join the sidebar (docs/remote.md, Servers). */}
-      <p className="-mt-3 mb-4 text-[12px] text-[var(--color-fg-dim)]">
+      {!server && <p className="-mt-3 mb-4 text-[12px] text-[var(--color-fg-dim)]">
         {t("newProject.onServer")}{" "}
         <button type="button" data-testid="new-project-add-server" className="text-[var(--color-accent)] hover:underline"
           onClick={() => { close(); useRemote.getState().setDialog({ serverDialog: true }); }}>
           {t("newProject.addServer")}
         </button>
-      </p>
+      </p>}
 
       {mode === "clone" ? (
         <>
@@ -719,7 +762,7 @@ export function NewProjectDialog() {
                 onKeyDown={submitOnEnter(canAddMulti, handleAddMulti)}
                 placeholder="~/Notes/team-knowledge"
               />
-              <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>
+              {!server && <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>}
             </div>
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
               <Trans ns="dialogs" i18nKey="newProject.hostHint" components={{ code: <code className="mono" /> }} />
@@ -836,7 +879,7 @@ export function NewProjectDialog() {
               className="flex-1 font-mono"
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
-            <Button variant="secondary" size="lg" onClick={browseReposDir} disabled={scanning}>{t("common:browse")}</Button>
+            {!server && <Button variant="secondary" size="lg" onClick={browseReposDir} disabled={scanning}>{t("common:browse")}</Button>}
             <Button variant="secondary" size="lg" data-testid="repos-dir-apply"
               disabled={!reposDirDraft.trim() || scanning}
               onClick={() => void applyReposDir(reposDirDraft)}>
@@ -991,14 +1034,15 @@ export function NewProjectDialog() {
                     {r.path}
                   </span>
                 </button>
-                <button
+                {/* Hiding a repo from discovery is this machine's list. */}
+                {!server && <button
                   onClick={() => dismissRepo(r.path, true)}
                   title={t("newProject.hideFromDiscovery")}
                   aria-label={t("newProject.hideAria", { name: r.name })}
                   className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] focus-visible:opacity-100 group-hover:opacity-100"
                 >
                   <X className="h-3.5 w-3.5" />
-                </button>
+                </button>}
               </div>
             ))}
           </div>
@@ -1050,7 +1094,7 @@ export function NewProjectDialog() {
             onKeyDown={submitOnEnter(!!path.trim() && !busy, handleAdd)}
             placeholder="/path/to/repo"
           />
-          <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>
+          {!server && <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>}
         </div>
         {/* Issue #4: a plain folder (e.g. a parent dir of several repos)
             works too — it becomes a repo-root-only project (agents run at
@@ -1076,7 +1120,7 @@ export function NewProjectDialog() {
             {busy ? t("newProject.addingDots") : t(selected.size === 1 ? "newProject.addProjectsOne" : "newProject.addProjectsMany", { count: selected.size })}
           </Button>
         ) : (
-          <Button variant="primary" disabled={!path || busy} onClick={handleAdd}>
+          <Button variant="primary" data-testid="new-project-add" disabled={!path || busy} onClick={handleAdd}>
             <FolderPlus className="h-4 w-4" /> {t("common:add")}
           </Button>
         )}
@@ -1102,7 +1146,8 @@ export function NewProjectDialog() {
             <Button variant="ghost" data-testid="new-project-confirm-cancel" onClick={() => resolveConfirm(null)}>{t("common:cancel")}</Button>
             {/* A project only: a host or member keeps its own copy, and a
                 member is already a repo or deliberately not one. */}
-            {confirm.kind === "project" && (
+            {/* Not on a server: git init would run on this machine. */}
+            {confirm.kind === "project" && !server && (
               <Button variant="ghost" data-testid="new-project-make-git" onClick={() => resolveConfirm("git")}>
                 <GitBranch className="h-4 w-4" /> {t("newProject.makeGitRepo")}
               </Button>

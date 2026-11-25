@@ -861,12 +861,17 @@ through `taskWorkBadge()` in `src/lib/taskWorkState.ts`, which ranks
 **attention > done > working**. Keep it that way: a blocked agent is more
 actionable than a finished one, and both beat one still chugging.
 
-`computeAgentStates()` in `src/lib/cliAgentState.ts` ranks the same inputs
-**working > attention > done**. That is not a bug to go and fix: it feeds
-`TaskSummary.work_state` over the CLI wire, which is a published additive
-contract, so flipping it changes what `termic list` reports. It IS a trap,
-because the two functions read identical tab state and answer differently, and
-a reader who finds one will reasonably assume the other agrees.
+`computeAgentStates()` in `src/lib/cliAgentState.ts` (the state the CLI,
+MCP and remote clients read) ranks **attention > working > done**, flipped from
+working-first on 2026-11-25. An agent that asks mid-turn (Claude's
+AskUserQuestion) is still `working` while it waits, and its heartbeat kept the
+reported state there: a phone showed the question for a second and lost it,
+and `termic wait` kept waiting for a turn that could not end without the user.
+The values did not change, only which wins: a task blocked on the user now
+reads `waiting` (wait returns NeedsInput), as the badge already ranked it.
+The two functions still differ on done vs working (the badge ranks a finished
+turn above a running one; the wire reports the running one), so read the one
+you are changing.
 
 Related: `data-testid="work-badge"` stopped being unique when the dashboard
 started drawing it. The sidebar is always mounted and the dashboard is an

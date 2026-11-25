@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
-import { ProjectActionsMenuItems } from "@/components/sidebar/ProjectActionsMenuItems";
+import { ProjectActionsMenuItems, ProjectNewTaskRoot } from "@/components/sidebar/ProjectActionsMenuItems";
 
 export function Dashboard() {
   const { t } = useTranslation("chrome");
@@ -116,7 +116,7 @@ export function Dashboard() {
             icon={<FolderPlus className="h-5 w-5" />}
             label={t("dashboard.addProject")}
             hint={t("dashboard.addProjectHint")}
-            onClick={openNewProject}
+            onClick={() => openNewProject()}
           />
           <ActionCard
             icon={<Compass className="h-5 w-5" />}
@@ -154,7 +154,7 @@ export function Dashboard() {
 
         {/* Projects */}
         {projects.length === 0 ? (
-          <EmptyProjectsCard onClick={openNewProject} />
+          <EmptyProjectsCard onClick={() => openNewProject()} />
         ) : (
           <>
             <div className="mb-3 flex items-baseline justify-between">
@@ -466,7 +466,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
           {/* Shared per-agent "Open repo with X" + New worktree menu —
               same component the sidebar uses, so the option list stays
               identical everywhere. */}
-          <DropdownRoot>
+          <ProjectNewTaskRoot projectId={projectId}>
             <DropdownTrigger asChild>
               <button
                 title={t("dashboard.newTaskTip")}
@@ -476,7 +476,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
             <DropdownMenu align="end" sideOffset={4} className="w-[276px]">
               <ProjectActionsMenuItems projectId={projectId} />
             </DropdownMenu>
-          </DropdownRoot>
+          </ProjectNewTaskRoot>
         </div>
       </header>
       {children}

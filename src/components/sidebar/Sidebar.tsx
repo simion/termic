@@ -4,6 +4,7 @@
 import { ThemePicker } from "@/components/ThemePicker";
 import { CaffeinateControl } from "./CaffeinateControl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
@@ -19,7 +20,7 @@ import { stopRemoteAgent } from "@/components/remote/RemoteTaskView";
 import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Pin, PinOff, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
-import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
+import { ProjectActionsMenuItems, ProjectNewTaskRoot } from "./ProjectActionsMenuItems";
 import { NewTabMenuItems } from "@/components/task/NewTabMenuItems";
 import { newScratchTab, openOrCreateScopedScratchTab } from "@/lib/scratchTabs";
 import { UpdateCard } from "./UpdateCard";
@@ -118,6 +119,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // it FLIPS, so scrolling costs no re-render of the sidebar per frame.
   const projectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [moreBelow, setMoreBelow] = useState(false);
+  const [remoteDrawer, setRemoteDrawer] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = projectsScrollRef.current;
     if (!el || !compact) { setMoreBelow(false); return; }
@@ -1304,6 +1306,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
 
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* The project list and the update card floating over its end. The
+          card floats (it never pushes the list or the REMOTE drawer below
+          it), anchored to the list's bottom edge, which is the drawer's top,
+          so it covers neither the drawer nor the footer. Renders nothing in
+          compact mode or when there's no pending update / unseen release. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+        <div className="pointer-events-auto">
+          <UpdateCard />
+        </div>
+      </div>
       <div
         ref={projectsScrollRef}
         // Scrolls (wheel, trackpad, keyboard) with no visible bar, compact or not.
@@ -1496,7 +1509,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             )}
             {/* The ONE Add project button (GH #280 removed the footer copy):
                 it belongs next to the list it acts on. */}
-            <Tip content={t("addProjectTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-project" data-guide="add-project" onClick={openNewProject}>
+            <Tip content={t("addProjectTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-project" data-guide="add-project" onClick={() => openNewProject()}>
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
@@ -1743,7 +1756,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           {/* Hover-only while the button under the tasks shows
                               (bottomNewTask): one always-visible `+` per project, and the
                               header's still a hover away for a long list. */}
-                          <DropdownRoot
+                          <ProjectNewTaskRoot
+                            projectId={p.id}
                             onOpenChange={(o) => setMenuOpenProjectId(o ? p.id : null)}
                           >
                             <Tip content={t("newTaskForProjectTip")}>
@@ -1822,7 +1836,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                 }}
                               />
                             </DropdownMenu>
-                          </DropdownRoot>
+                          </ProjectNewTaskRoot>
                           <ProjectFilterToggle
                             projectId={p.id}
                             active={filterOn}
@@ -2190,7 +2204,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     className="ml-3 mr-1 mb-px"
                     onClick={e => e.stopPropagation()}
                   >
-                    <DropdownRoot>
+                    <ProjectNewTaskRoot projectId={p.id}>
                       <DropdownTrigger asChild>
                         <button
                           data-testid={`project-empty-new-task-${p.id}`}
@@ -2231,7 +2245,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                 }}
                               />
                       </DropdownMenu>
-                    </DropdownRoot>
+                    </ProjectNewTaskRoot>
                   </div>
                 )}
 
@@ -2500,10 +2514,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               {/* data-inactive-fold marks this as a separate drag domain:
                   rows here are ungrouped inactive projects, so drags across
                   the fold reorder only and never touch group labels. */}
-              {!queryOn && hideInactiveProjects && showInactive && (
-                <div data-inactive-fold className="flex flex-col gap-0.5">
-                  {inactiveProjects.map(renderProject)}
-                </div>
+              {!queryOn && hideInactiveProjects && (
+                <Expand open={showInactive}>
+                  <div data-inactive-fold className="flex flex-col gap-0.5">
+                    {inactiveProjects.map(renderProject)}
+                  </div>
+                </Expand>
               )}
               {/* What the filter took away, said once at the bottom instead
                   of as a row of empty project headers. */}
@@ -2534,12 +2550,28 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </div>
               )}
-              {!compact && <RemoteSidebarSection projects={activeProjects.filter(p => !!p.server)} renderProject={renderProject} />}
+              {/* Other computers live in the drawer pinned above the footer
+                  (the slot below the scroll), so local work keeps the top. */}
+              {!compact && remoteDrawer && createPortal(
+                <RemoteSidebarSection projects={projects.filter(p => !!p.server)} renderProject={renderProject} isActive={projectIsActive} />,
+                remoteDrawer,
+              )}
             </>
           );
           })()}
         </div>
       </div>
+      </div>
+        {/* The REMOTE drawer: other computers, pinned above the footer and
+            scrolling on their own once they would take more than about half
+            the sidebar. Filled by a portal from the project list above. */}
+        {!compact && (
+          <div
+            ref={setRemoteDrawer}
+            data-testid="remote-drawer"
+            className="no-scrollbar max-h-[55%] shrink-0 overflow-y-auto border-t border-[var(--color-border-soft)] px-2 pb-1.5 empty:hidden"
+          />
+        )}
         {/* The compact rail scrolls with no visible bar (a 10px bar is a sixth
             of a 56px rail), so the fade is what says there is more below. */}
         {compact && moreBelow && (
@@ -2558,14 +2590,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           time, and it would silently drift the moment either bar changed
           height. `bottom-full` is the same answer in both states. */}
       <div className="relative">
-        {/* UpdateCard floats above the bottom stack so it stays visible
-            regardless of scroll position. Renders nothing in compact mode or
-            when there's no pending update / unseen release. */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-full z-20">
-          <div className="pointer-events-auto">
-            <UpdateCard />
-          </div>
-        </div>
 
         {/* The profile indicator, above the footer and below the project
             list. Renders nothing until a profile exists. */}
@@ -3925,7 +3949,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
       </div>
 
       {/* Tab children — terminal tabs only; edit/diff are transient file views */}
-      {!collapsed && terminalTabs.map(tab => {
+      <Expand open={!collapsed}>{terminalTabs.map(tab => {
         const isTabActive = isActive && tab.id === activeTabId;
         const isTabHot = isTabActive;
         const showBell    = attentionIndicator && tab.unread?.reason === "attention";
@@ -4179,7 +4203,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             )}
           </div>
         );
-      })}
+      })}</Expand>
     </div>
   );
 }

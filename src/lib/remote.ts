@@ -57,6 +57,8 @@ export interface RemoteGroup {
   id: string;
   name: string;
   color?: string;
+  /** Folded shut in the host's own sidebar. */
+  collapsed?: boolean;
 }
 
 export interface RemotePr {
@@ -84,6 +86,8 @@ export interface RemoteTask {
   // How the host's sidebar files and marks it (absent from older hosts).
   group?: RemoteGroup;
   project_group?: RemoteGroup;
+  /** Its project is folded shut in the host's own sidebar. */
+  project_collapsed?: boolean;
   pinned?: boolean;
   project_order?: number;
   order?: number;
@@ -352,12 +356,31 @@ interface RemoteStore {
   alerts: RemoteAlert[];
   openTask(o: OpenRemote | null): void;
   toggleFold(id: string): void;
+  /** A fold here over what the host's own sidebar shows, with the host's
+   *  state it was made against: it holds until the host changes that fold
+   *  (hostFold). This window's session only, so a reconnect shows the
+   *  host's sidebar as it is. */
+  foldOver: Record<string, FoldOver>;
+  toggleHostFold(key: string, host: boolean): void;
+  /** Drop a fold made here once the host's state moved off the one it was
+   *  made against: kept, it came back the moment the host returned to it. */
+  dropStaleFold(key: string, host: boolean): void;
   /** Per machine, the host profiles this window leaves out of its sidebar. */
   hiddenProfiles: Record<string, string[]>;
   toggleProfile(machine: string, profile: string): void;
   /** Paired computers in the order dragged in the sidebar (ids). */
   machineOrder: string[];
   setMachineOrder(ids: string[]): void;
+}
+
+export type FoldOver = { folded: boolean; host: boolean };
+
+/** Whether a paired computer's project, task group or folder is folded
+ *  here: as the host's own sidebar has it, unless it was folded or opened
+ *  here since. That holds only while the host keeps the state it was made
+ *  against; once the host changes that fold, the host's wins again. */
+export function hostFold(over: FoldOver | undefined, host: boolean): boolean {
+  return over && over.host === host ? over.folded : host;
 }
 
 const LS_REMOTE_FOLDED = "termic.remoteFolded";
@@ -410,6 +433,7 @@ export const useRemote = create<RemoteStore>((set, get) => ({
   setDialog(d) { set(d); },
   open: null,
   folded: loadFolds(),
+  foldOver: {},
   hiddenProfiles: loadHiddenProfiles(),
   machineOrder: loadMachineOrder(),
   alerts: [],
@@ -432,6 +456,16 @@ export const useRemote = create<RemoteStore>((set, get) => ({
     const folded = { ...get().folded, [id]: !get().folded[id] };
     try { localStorage.setItem(LS_REMOTE_FOLDED, JSON.stringify(folded)); } catch { /* per-viewer convenience */ }
     set({ folded });
+  },
+  toggleHostFold(key, host) {
+    const now = hostFold(get().foldOver[key], host);
+    set({ foldOver: { ...get().foldOver, [key]: { folded: !now, host } } });
+  },
+  dropStaleFold(key, host) {
+    const over = get().foldOver[key];
+    if (!over || over.host === host) return;
+    const { [key]: _gone, ...rest } = get().foldOver;
+    set({ foldOver: rest });
   },
   toggleProfile(machine, profile) {
     const cur = get().hiddenProfiles[machine] ?? [];
@@ -630,7 +664,8 @@ export async function openNewTaskOnServer(serverId: string, projectName?: string
   const mine = useApp.getState().projects.filter(p => p.server === serverId);
   const p = (projectName && mine.find(x => x.name === projectName)) || mine[0];
   if (!p) {
-    useRemote.getState().setDialog({ newTaskOn: serverId, newTaskAdding: true });
+    // No project there yet: add one first, from the box's repos folder.
+    useUI.getState().openNewProject(serverId);
     return;
   }
   requestAnimationFrame(() => useUI.getState().openNewTask(p.id, baseBranch ? { baseBranch } : undefined));

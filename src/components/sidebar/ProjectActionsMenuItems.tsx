@@ -9,7 +9,7 @@
 // Wrap in a `<DropdownMenu>` at the call site; this component renders only
 // the items (so the caller can also customize positioning).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { projectSandboxDefault, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
@@ -23,7 +23,7 @@ import { importQuickWorktree, readNewTaskMode, writeNewTaskMode, type NewTaskMod
 import { launcherLastUsed, launcherVisibilityOf, pinnedFirst, recordLauncherUse, splitLauncher } from "@/lib/launcherUsage";
 import { taskImportableWorktrees, taskRestore, projectBranchContext, projectUpdate } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
-import { DropdownItem, DropdownSeparator, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
+import { DropdownItem, DropdownRoot, DropdownSeparator, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2, FolderGit2, Flag, Check, ChevronRight, History, Zap, GitPullRequest, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Agent, BranchContext, ImportableWorktree, Project } from "@/lib/types";
@@ -57,6 +57,20 @@ function SectionHeader({ title, hint }: { title: string; hint: string }) {
       <div className="text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">{title}</div>
       <div className="text-[11.5px] leading-snug text-[var(--color-fg-dim)]">{hint}</div>
     </div>
+  );
+}
+
+/** The root of a project's New task menu. A server project's menu holds one
+ *  item (its New task dialog, where every choice is made), so a click opens
+ *  that dialog straight away instead of a menu to click through. */
+export function ProjectNewTaskRoot({ projectId, onOpenChange, children }: { projectId: string; onOpenChange?: (open: boolean) => void; children: ReactNode }) {
+  const project = useApp(s => s.projects.find(p => p.id === projectId));
+  const server = project?.server;
+  if (!server) return <DropdownRoot onOpenChange={onOpenChange}>{children}</DropdownRoot>;
+  return (
+    <DropdownRoot open={false} onOpenChange={open => { if (open) void openNewTaskOnServer(server, project.name); }}>
+      {children}
+    </DropdownRoot>
   );
 }
 

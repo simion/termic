@@ -12,6 +12,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
+import { useUI } from "@/store/ui";
 import { CopyRow } from "@/components/settings/McpSection";
 import { serverAdd, serverInstall, serverProbe, serverRemove, serverTrust, useMachine, useRemote, type ServerProbe } from "@/lib/remote";
 
@@ -214,7 +215,7 @@ function AddServerBody({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-3">
             <p data-testid="server-done" className="text-[13px] text-[var(--color-fg)]">{t("addServer.connectedDone", { name: machine.name })}</p>
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" size="sm" onClick={() => { onClose(); useRemote.getState().setDialog({ newTaskOn: machine.id, newTaskAdding: true }); }}>
+              <Button variant="secondary" size="sm" onClick={() => { onClose(); useUI.getState().openNewProject(machine.id); }}>
                 {t("addServer.addProject", { name: machine.name })}
               </Button>
               <Button variant="primary" size="sm" data-testid="server-done-button" onClick={onClose}>{t("addServer.done")}</Button>

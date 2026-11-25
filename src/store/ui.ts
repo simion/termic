@@ -114,6 +114,9 @@ export interface NewTaskSeed {
 interface UIState {
   // dialog visibility
   newProjectOpen: boolean;
+  /** Add project for a server (its id): the same dialog, reading and adding
+   *  on that box. null = this machine. */
+  newProjectServer: string | null;
   newTaskProjectId: string | null;  // null = closed
   /** Optional seed for the New worktree dialog — when set, the dialog
    *  pre-fills fields with these values. Used by the "Duplicate task" flow
@@ -355,7 +358,7 @@ interface UIState {
   fileTreeNonce: number;
 
   // actions
-  openNewProject: () => void;
+  openNewProject: (server?: string) => void;
   closeNewProject: () => void;
   openNewTask: (projectId: string, seed?: NewTaskSeed) => void;
   closeNewTask: () => void;
@@ -576,6 +579,7 @@ const NO_QUERY_FOLDS: Readonly<Record<string, boolean>> = Object.freeze({});
 
 export const useUI = create<UIState>((set, get) => ({
   newProjectOpen: false,
+  newProjectServer: null,
   newTaskProjectId: null,
   newTaskSeed: null,
   customCommandProjectId: null,
@@ -647,7 +651,7 @@ export const useUI = create<UIState>((set, get) => ({
   consumeSidebarFilterFocus: () => { if (get().sidebarFilterFocusPending) set({ sidebarFilterFocusPending: false }); },
   toasts: [],
 
-  openNewProject:    () => set({ newProjectOpen: true }),
+  openNewProject:    (server) => set({ newProjectOpen: true, newProjectServer: server ?? null }),
   closeNewProject:   () => set({ newProjectOpen: false }),
   // Every open carries a fresh nonce, including a seedless one: "open the New
   // Task dialog" means a fresh form even when it is already up for the same

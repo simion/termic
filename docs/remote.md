@@ -274,6 +274,33 @@ src/lib/remote.ts: folders at their first project, a group gathered at
 its first member), keep the host's order rather than re-sorting, and map
 the accent key to their own palette.
 
+**The REMOTE drawer.** Other computers live in a drawer pinned above the
+sidebar's footer (`remote-drawer` in Sidebar.tsx, filled by a portal from
+the project list), so local work keeps the top; it scrolls on its own past
+about half the sidebar. The update card floats over the end of the project
+list, anchored just above the drawer, so it moves neither and covers
+neither. Each computer's projects nest one step in
+under it, the idle ones folded into its own Inactive projects (a server
+project by the local activity rule, a paired computer's when every task's
+agent is stopped). Offline and switched-off computers gather in one
+"N offline" line at the bottom, never hidden; a single one is itself.
+REMOTE has its own display menu (`remoteDisplay` in prefs: the New task
+"+" always / on hover / never, the connect switch on the row, counts on a
+folded computer, Inactive projects, offline gathered or each), so remote
+rows can be quieter than local ones; Connect and Disconnect are always in
+the computer's ⋯ menu. Every fold, local and remote, opens and closes
+through the same animated `Expand` (ui/Expand.tsx).
+
+**Folded like the host folds them.** A row says what the host's sidebar has
+folded shut: its project (`project_collapsed`), its task group and its
+folder (`collapsed` on `group` and `project_group`), from the folds the
+desktop pushes with `remote_set_sidebar_folds`. A desktop viewing a paired
+computer, and the phone, open on that state. A fold made on the viewing
+desktop holds only while the host keeps the state it was made against
+(`hostFold` in src/lib/remote.ts, session-only): once the host changes that
+fold, the host's state wins and the local one is dropped, or it would come
+back the moment the host returned to the old state.
+
 **Every tab, not only the agent.** `tasks[].tabs` lists the task's whole
 strip as the host's webview reports it (`cliAgentState.ts`): each tab's
 `kind` (`agent`, `shell`, `terminal`, `run`) and whether a PTY is `live`
@@ -477,6 +504,19 @@ the connection: green, amber while connecting, faded otherwise. Add a
 server is also linked from Add project. Settings' rail lists projects the same way. A server belongs to
 the profile whose window added it (`ServerRecord.profile`, a window
 label); one added before that field keeps its projects where they are.
+
+**Add project on a server** is the local Add project dialog
+(`NewProjectDialog`, opened with `openNewProject(serverId)`), reading and
+adding on the box: its repos folder is the server's own
+(`ServerRecord.repos_dir` in servers.json, also set in Settings > Remote
+on the server's row), discovery runs on the box through `exec`
+(`server_discover_repos`: folders holding `.git` up to three levels down,
+`~` the box's home), and each add is the server's `project_add`, the
+dialog waiting for the mirror to list it. Browse, clone, multi-repo and
+hiding a repo are this machine's and are left out there; a folder the box
+refuses as a repo is offered as a plain folder, without "make it a git
+repo", which would run git here. A server project's `+` opens its New
+task dialog directly (`ProjectNewTaskRoot`): its menu held one item.
 
 **Running things on the box.** termic-server offers two general
 primitives, and the desktop sends its existing code through them rather

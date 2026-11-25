@@ -741,15 +741,22 @@ fn state_loop(s: &Session) {
                 // (or made), not now; after a restart every row said "now".
                 // Done counts as at rest: this map is per connection, so a
                 // phone reconnecting stamped every finished task "now".
+                // When its current turn started, as the webview stamped it: a
+                // client that connects mid-turn counts "Working" from there,
+                // not from when it joined.
+                let started = snap.states.get(&t.id)
+                    .and_then(|st| st.tab_states.iter().filter_map(|x| x.working_since).min())
+                    .filter(|&ms| ms > 0)
+                    .map(|ms| ms.min(now));
                 let first = || {
                     let at_rest = matches!(state.as_str(), "inactive" | "idle" | "unknown" | "done");
                     let when = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_millis());
                     let rested = t.last_active_at.as_deref().and_then(when).into_iter().chain(when(&t.created)).max();
-                    if at_rest { rested.unwrap_or(now).min(now) } else { now }
+                    if at_rest { rested.unwrap_or(now).min(now) } else if state == "working" { started.unwrap_or(now) } else { now }
                 };
                 let entry = since.entry(t.id.clone()).or_insert_with(|| (state.clone(), first()));
                 if entry.0 != state {
-                    *entry = (state.clone(), now);
+                    *entry = (state.clone(), if state == "working" { started.unwrap_or(now) } else { now });
                 }
                 let activity = screen.as_deref().filter(|_| state == "working").and_then(termic_remote::screen::activity);
                 if state != "waiting" {

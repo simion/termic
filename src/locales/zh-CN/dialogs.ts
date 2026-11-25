@@ -312,6 +312,7 @@ export default {
   },
   newProject: {
     title: "添加项目",
+    titleOnServer: "在 {{name}} 上添加项目",
     modeRepo: "仓库",
     modeRepoHint: "单个 git 仓库。工作树由其分支而来。",
     modeClone: "从 URL 克隆",

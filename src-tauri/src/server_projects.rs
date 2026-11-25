@@ -559,6 +559,53 @@ mod tests {
     }
 }
 
+/// The repos under `dir` on a server, for its Add project: the same
+/// list `discover_repos` makes for this machine's repos folder. A repo is a
+/// folder holding `.git`, up to three levels down; `~` is the box's home.
+/// `already_added` names the ones this desktop already has from that
+/// server. Nothing is dismissed: that list is this machine's.
+#[tauri::command]
+pub(crate) async fn server_discover_repos(server: String, dir: String) -> Result<Vec<crate::DiscoveredRepo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let script = r#"d="$1"; case "$d" in "~") d="$HOME";; "~/"*) d="$HOME/${d#??}";; esac
+[ -d "$d" ] || { echo "no such folder: $d" >&2; exit 3; }
+find "$d" -mindepth 1 -maxdepth 3 -name node_modules -prune -o -name .git -print 2>/dev/null | sed 's#/\.git$##' | sort"#;
+        let (code, out, err) = exec_on(&server, std::path::Path::new("/"), &["/bin/sh", "-c", script, "sh", dir.trim()], &[])?;
+        if code != 0 {
+            return Err(if err.trim().is_empty() { format!("could not read {dir} on the server") } else { err.trim().to_string() });
+        }
+        let added: std::collections::HashSet<String> = crate::load_projects_all()
+            .into_iter()
+            .filter(|p| p.server.as_deref() == Some(server.as_str()))
+            .map(|p| p.root_path)
+            .collect();
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|path| crate::DiscoveredRepo {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                already_added: added.contains(path),
+                dismissed: false,
+                path: path.to_string(),
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A server's repos folder (servers.json), or "" when it has none.
+#[tauri::command]
+pub(crate) fn server_repos_dir(server: String) -> String {
+    crate::remote_client::load_servers().into_iter().find(|r| r.id == server).and_then(|r| r.repos_dir).unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) fn server_set_repos_dir(server: String, dir: String) -> Result<(), String> {
+    crate::remote_client::set_server_repos_dir(&server, &dir)
+}
+
 /// Which of `programs` a server project's box can run: each looked up on
 /// its login shell's PATH (the TaskHost `which`,
 /// docs/remote.md, Servers). The desktop's own agent registry decides

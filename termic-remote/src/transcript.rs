@@ -28,6 +28,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
     let mut queue: Vec<(String, Option<String>)> = Vec::new();
     // A tool call's place in `out`, by its id, for its result to land on.
     let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
     let sent = |queue: &mut Vec<(String, Option<String>)>, text: &str| {
         if let Some(i) = queue.iter().position(|(q, _)| q == text.trim()) {
             queue.remove(i);
@@ -38,6 +39,9 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
         if v.get("type").and_then(|t| t.as_str()) == Some("queue-operation") {
             let text = v.get("content").and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
             match v.get("operation").and_then(|o| o.as_str()) {
+                // A subagent's hand-back is queued like a prompt but is not
+                // the person's: it shows once Claude takes it (below).
+                Some("enqueue") if text.contains("<agent-message") => {}
                 Some("enqueue") if !text.is_empty() => {
                     queue.push((text, v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string)))
                 }
@@ -57,6 +61,18 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
         // summary it continues from after a compaction is a "user" line
         // nobody typed (isCompactSummary, isVisibleInTranscriptOnly).
         let flag = |k: &str| v.get(k).and_then(|s| s.as_bool()) == Some(true);
+        // A subagent's final report, handed back to this session: Claude
+        // writes it as an isMeta "user" line ("Another Claude session sent a
+        // message: <agent-message ...>"). Its own turn, so a client can show
+        // it as the agent's report rather than drop it or call it the user's.
+        if flag("isMeta") && !flag("isSidechain") {
+            let text = v.pointer("/message/content").and_then(|c| c.as_str()).unwrap_or("");
+            if let Some(report) = agent_report(text) {
+                let ts = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
+                out.push(Turn { role: "agent".into(), text: report, tool: Some("Subagent".into()), ts, detail: None, pending: false });
+                continue;
+            }
+        }
         if flag("isSidechain") || flag("isCompactSummary") || flag("isVisibleInTranscriptOnly") || flag("isMeta") {
             continue;
         }
@@ -73,7 +89,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                 let text = text.trim();
                 sent(&mut queue, text);
                 if !text.is_empty() {
-                    out.push(Turn { role: "user".into(), text: text.into(), tool: None, ts, detail: None });
+                    out.push(Turn { role: "user".into(), text: text.into(), tool: None, ts, detail: None, pending: false });
                 }
             }
             continue;
@@ -126,6 +142,9 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
                         // by the call's id. An edit keeps its diff: "the
                         // file was updated" says less than the change.
                         Some("tool_result") if kind == "user" => {
+                            if let Some(id) = b.get("tool_use_id").and_then(|i| i.as_str()) {
+                                results.insert(id.to_string());
+                            }
                             let at = b.get("tool_use_id").and_then(|i| i.as_str()).and_then(|i| calls.get(i)).copied();
                             if let Some(t) = at.and_then(|i| out.get_mut(i)).filter(|t| t.detail.is_none()) {
                                 t.detail = result_text(b.get("content"));
@@ -138,7 +157,8 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             _ => {}
         }
     }
-    out.extend(queue.into_iter().filter(|(t, _)| !injected(t)).map(|(text, ts)| Turn { role: "queued".into(), text, tool: None, ts, detail: None }));
+    mark_pending(&mut out, &calls, &results);
+    out.extend(queue.into_iter().filter(|(t, _)| !injected(t)).map(|(text, ts)| Turn { role: "queued".into(), text, tool: None, ts, detail: None, pending: false }));
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
@@ -147,15 +167,36 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
 /// A prompt with pasted text: the paste is the person's words, the
 /// `<pasted_content id="...">` tags around it are Claude Code's.
 fn unwrap_pastes(text: &str) -> String {
+    // Opening and closing tags both, each with or without attributes:
+    // Claude Code writes `</pasted_content id="c771">` as well as the bare one.
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(at) = rest.find("<pasted_content") {
+    loop {
+        let at = [rest.find("<pasted_content"), rest.find("</pasted_content")].into_iter().flatten().min();
+        let Some(at) = at else { break };
         out.push_str(&rest[..at]);
-        let Some(open_end) = rest[at..].find('>') else { break };
-        rest = &rest[at + open_end + 1..];
+        let Some(end) = rest[at..].find('>') else { break };
+        rest = &rest[at + end + 1..];
     }
     out.push_str(rest);
-    out.replace("</pasted_content>", "")
+    out.trim().to_string()
+}
+
+/// The report inside a subagent's hand-back (`<agent-message from="…">`):
+/// what follows Claude Code's "The report follows:" preamble, with the two
+/// spaces it indents every line by taken off. None when it is not one.
+fn agent_report(text: &str) -> Option<String> {
+    let start = text.find("<agent-message")?;
+    let body = &text[start..];
+    let body = &body[body.find('>')? + 1..];
+    let body = body.split("</agent-message>").next().unwrap_or(body);
+    let body = match body.find("The report follows:") {
+        Some(i) => &body[i + "The report follows:".len()..],
+        None => body,
+    };
+    let report = body.lines().map(|l| l.strip_prefix("  ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
+    let report = report.trim().to_string();
+    (!report.is_empty()).then_some(report)
 }
 
 /// Text Claude records as a user line that is not the person's words: slash
@@ -186,12 +227,23 @@ fn tool_summary(input: Option<&serde_json::Value>) -> String {
     }
 }
 
+/// The tool calls in `calls` whose result never arrived are still running.
+fn mark_pending(out: &mut [Turn], calls: &std::collections::HashMap<String, usize>, done: &std::collections::HashSet<String>) {
+    for (id, &i) in calls {
+        if !done.contains(id) {
+            if let Some(t) = out.get_mut(i) {
+                t.pending = true;
+            }
+        }
+    }
+}
+
 /// One turn onto `out`, unless it says nothing (a tool call always says
 /// which tool).
 fn push_turn(out: &mut Vec<Turn>, role: &str, text: String, tool: Option<String>, ts: Option<String>, detail: Option<String>) {
     let text = text.trim().to_string();
     if !text.is_empty() || tool.is_some() {
-        out.push(Turn { role: role.into(), text, tool, ts, detail });
+        out.push(Turn { role: role.into(), text, tool, ts, detail, pending: false });
     }
 }
 
@@ -302,6 +354,7 @@ fn result_text(content: Option<&serde_json::Value>) -> Option<String> {
 pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
     let mut out: Vec<Turn> = Vec::new();
     let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in jsonl.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v.get("type").and_then(|t| t.as_str()) != Some("response_item") {
@@ -335,6 +388,7 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
             }
             // A call's output, by its call_id. apply_patch keeps its patch.
             ("function_call_output" | "custom_tool_call_output", _) => {
+                results.insert(str_of("call_id").to_string());
                 // A string, an array of content items (`input_text`), or an
                 // object with `content`, by version and tool.
                 let text = match p.get("output") {
@@ -384,6 +438,7 @@ pub fn parse_codex_jsonl(jsonl: &str) -> Vec<Turn> {
             _ => {}
         }
     }
+    mark_pending(&mut out, &calls, &results);
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
@@ -473,6 +528,7 @@ pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8
     let mut out: Vec<Turn> = Vec::new();
     // A call's place in `out`, by its id, for its result step to land on.
     let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut results: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (kind, payload) in steps {
         match kind {
             AGY_USER => push_turn(&mut out, "user", pb::text(payload, &[19, 2]).unwrap_or_default(), None, None, None),
@@ -490,6 +546,9 @@ pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8
             }
             // A call's result: a command's terminal output. An edit keeps its diff.
             AGY_RESULT => {
+                if let Some(id) = pb::text(payload, &[5, 4, 1]) {
+                    results.insert(id);
+                }
                 let at = pb::text(payload, &[5, 4, 1]).and_then(|id| calls.get(&id).copied());
                 if let Some(t) = at.and_then(|i| out.get_mut(i)).filter(|t| t.detail.is_none()) {
                     t.detail = pb::text(payload, &[140, 2, 3, 10, 3, 4]).and_then(|o| bounded(&o.replace("\r\n", "\n")));
@@ -498,6 +557,7 @@ pub fn parse_antigravity_steps<'a>(steps: impl IntoIterator<Item = (i64, &'a [u8
             _ => {}
         }
     }
+    mark_pending(&mut out, &calls, &results);
     let skip = out.len().saturating_sub(TRANSCRIPT_TURNS);
     out.drain(..skip);
     out
@@ -852,6 +912,37 @@ mod tests {
         .join("\n");
         let t: Vec<String> = parse_claude_jsonl(&jsonl).into_iter().map(|t| t.text).collect();
         assert_eq!(t, vec!["look: \nline one\n thanks".to_string()]);
+        // The closing tag can carry the id too.
+        assert_eq!(unwrap_pastes("<pasted_content id=\"c771\">\nwhat is next?\n</pasted_content id=\"c771\">"), "what is next?");
+    }
+
+    #[test]
+    fn a_tool_call_without_its_result_is_still_running() {
+        let jsonl = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm test"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"sleep 60"}}]}}"#,
+        ]
+        .join("\n");
+        let p: Vec<bool> = parse_claude_jsonl(&jsonl).into_iter().map(|t| t.pending).collect();
+        assert_eq!(p, vec![false, true]);
+        let codex = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make\"}","call_id":"c1"}}"#;
+        assert!(parse_codex_jsonl(codex)[0].pending);
+    }
+
+    #[test]
+    fn a_subagent_report_is_its_own_turn_not_the_users() {
+        let handback = "Another Claude session sent a message:\n<agent-message from=\"a0f6\">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Linux reports itself.\n\n  **Still to do:** run CI.\n</agent-message>";
+        let jsonl = [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue","content": handback}).to_string(),
+            serde_json::json!({"type":"user","isMeta":true,"message":{"content": handback}}).to_string(),
+        ]
+        .join("\n");
+        let t = parse_claude_jsonl(&jsonl);
+        assert_eq!(t.len(), 1, "queued once, shown once it is taken: {t:?}");
+        assert_eq!(t[0].role, "agent");
+        assert_eq!(t[0].text, "Linux reports itself.\n\n**Still to do:** run CI.");
+        assert_eq!(agent_report("plain text"), None);
     }
 
     #[test]

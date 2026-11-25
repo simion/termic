@@ -463,6 +463,10 @@ pub struct Turn {
     /// an older host, and for a call with nothing to show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// For a tool call: no result yet, so it is still running (a client
+    /// draws "Running"). Absent from an older host, and once it returns.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 impl ClientMsg {

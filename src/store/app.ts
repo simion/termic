@@ -3209,8 +3209,10 @@ export const useApp = create<AppState>((set, get) => ({
       if (effective !== "working") {
         patch.workProgress = null;
         patch.workProgressKind = null;
+        patch.workStartedAt = undefined;
       } else {
         patch.workDoneAt = undefined;
+        patch.workStartedAt = Date.now();
         // The agent went back to work after we called it done, so the bullet
         // this turn produced was wrong — drop it rather than leaving a "this
         // finished" mark on a tab that is visibly working. An `attention`

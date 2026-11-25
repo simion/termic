@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker, idleBuildDirs, remote, secrets] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists, forgeRate, draftTracker, idleBuildDirs, remote, secrets, update] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -88,6 +88,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/idleBuildDirs"),
         import("@/lib/remote"),
         import("@/store/secrets"),
+        import("@/store/update"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -118,6 +119,9 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // Remote control (docs/remote.md): other machines and the open remote
       // task, so a spec can read what the sidebar is drawing from.
       useRemote: remote.useRemote,
+      // The pending update, so a spec can draw the update card without a
+      // signed release to find (check() never returns one in a test build).
+      useUpdate: update.useUpdate,
       // Secrets roles as this window holds them: a spec that clears roles on
       // disk waits for the reload (on Settings close) to land here.
       useSecrets: secrets.useSecrets,

@@ -4909,6 +4909,10 @@ pub struct TabAgentState {
     /// opaque for the remote rows (remote_server.rs). Absent: none.
     #[serde(default)]
     pub delegated: Option<serde_json::Value>,
+    /// Epoch ms the tab's current turn started, while it is working: what a
+    /// client connecting mid-turn counts "Working" from (remote_server.rs).
+    #[serde(default)]
+    pub working_since: Option<i64>,
 }
 
 struct AgentCacheInner {
@@ -9906,7 +9910,7 @@ mod tests {
         live: bool,
         is_default: bool,
     ) -> TabAgentState {
-        TabAgentState { props: Default::default(), delegated: None,
+        TabAgentState { props: Default::default(), delegated: None, working_since: None,
             id: id.into(),
             kind: kind.into(),
             cli: cli.into(),

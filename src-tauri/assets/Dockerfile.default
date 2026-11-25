@@ -75,7 +75,12 @@ RUN npm install -g @earendil-works/pi-coding-agent
 # PI_INSTALL_DIR default, measured 18.6.0), OUTSIDE the mounted ~/.omp, so the
 # mount cannot shadow it. The npm package needs a Bun runtime this image does
 # not carry; the binary is self-contained. POSIX sh, not bash (its shebang).
-RUN curl -fsSL https://omp.sh/install | sh
+# Optional like muse below, and capped: its build host (build.stencil.so)
+# served the 19.2.0 binary (~235 MB) at ~30 KB/s and then reset the stream
+# (curl 92, 2026-11-25), which hung every image build ~9 minutes and then
+# failed it, for everyone, including people who never run omp.
+RUN timeout 300 sh -c 'curl -fsSL https://omp.sh/install | sh' \
+    || echo "WARNING: omp install failed, oh-my-pi will be missing from this image"
 # https://developer.meta.com/ai/resources/blog/build-with-muse-code/ - curl
 # is the only install path Meta publishes (no npm package). The shim lands in
 # ~/.local/bin (already on PATH above) and re-execs a versioned sibling

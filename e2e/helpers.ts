@@ -86,6 +86,7 @@ export interface TermicApi {
   useUI: { getState: () => any; setState: (p: any) => void };
   pinWindowFocus: (focused: boolean | null) => void;
   useRemote: { getState: () => any; setState: (p: any) => void };
+  useUpdate: { getState: () => any; setState: (p: any) => void };
   usePrefs: { getState: () => any; setState: (p: any) => void; subscribe: (fn: (s: any, prev: any) => void) => () => void };
   useRace: { getState: () => any };
   /** PR/MR store (src/store/pr.ts). Specs seed `byTask` directly to render

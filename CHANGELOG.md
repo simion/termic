@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [2.0.10] - 2026-11-25
+## [2.0.11] - 2026-11-25
 
 Fixes for remote control, paired computers and the phone app.
 
@@ -18,6 +18,12 @@ Fixes for remote control, paired computers and the phone app.
 - The phone app no longer shows Claude's notes to itself (the summary after a compaction, skill text) as your messages.
 - Profile windows keep their window buttons in place after a rename.
 - A patch update shows as one quiet line with its version and age, instead of repeating the release's card.
+- Other computers live in a REMOTE drawer above the sidebar's footer: each computer's projects nest under it, idle ones in their own Inactive projects, and offline computers gather in one line. REMOTE has its own display options, and folds open and close with an animation.
+- Adding a project on a server uses the same Add project dialog, with the server's own repos folder, and a server project's New task button opens New task directly.
+- A paired computer's sidebar is folded the way it is on that computer.
+- An agent asking a question mid-turn shows as waiting, on the phone and in `termic list` and `termic wait`, instead of working.
+- The phone app shows which tool call is still running, keeps the working timer across reconnects, and no longer shows a subagent's report or a long pasted message as your own.
+- The Docker sandbox image builds even when an optional agent's download is slow.
 
 ## [2.0.5] - 2026-11-24
 

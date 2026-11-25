@@ -7,7 +7,7 @@ members = ["../termic-proto", "../termic-cli", "../termic-remote", "../termic-se
 
 [package]
 name = "termic"
-version = "2.0.10"
+version = "2.0.11"
 description = "Run claude, gemini, and codex in parallel — each in its own git worktree."
 authors = ["Simion Agavriloaei"]
 edition = "2021"
@@ -208,3 +208,14 @@ termic-cli = { path = "../termic-cli" }
 # feature, not a profile check.)
 [features]
 e2e = ["dep:tauri-plugin-wdio-webdriver"]
+
+# Build-time code (proc-macro libraries, build scripts) is not stripped in a
+# release build. Since Rust 1.77 release strips debuginfo by default, and with
+# Xcode 27.2's `strip` (ld-27106.1) the stripped proc-macro dylibs came out
+# with a misaligned LINKEDIT string pool that dlopen refuses ("can't find
+# crate for `serde_derive`" and the like), so every clean release build on
+# that toolchain failed. Measured 2026-11-25: a clean `cargo build --release`
+# failed twice with the default, passed with stripping off. The shipped
+# binary is unaffected: this override only applies to code run at build time.
+[profile.release.build-override]
+strip = "none"

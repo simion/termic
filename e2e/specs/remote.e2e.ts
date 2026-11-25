@@ -460,15 +460,21 @@ chmod +x ~/${BOX_DIR}/agent.sh`);
     }, `${boxHome}/${BOX_DIR}/agent.sh`);
     // The server's Add project (its menu): a real box may already have
     // projects, so its + would open New task for one of those instead.
-    await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id, newTaskAdding: true }), serverId);
-    // Add project on a server is only that: a path, no New task form.
-    await waitVisible('[data-testid="remote-add-project-dialog"]');
-    expect(await browser.execute(() => ["remote-new-prompt", "remote-new-start", "remote-new-project"].some(id => !!document.querySelector(`[data-testid="${id}"]`)))).toBe(false);
+    await browser.execute((id) => window.__termic!.useUI.getState().openNewProject(id), serverId);
+    // The local Add project, on the box: its repos folder lists the box's
+    // repos, and this machine's own controls (Browse, clone, multi-repo,
+    // hiding a repo) are left out.
+    await waitVisible('[data-testid="new-project-path"]');
+    expect(await browser.execute(() => ["project-mode-clone", "project-mode-multi", "new-project-add-server"].some(id => !!document.querySelector(`[data-testid="${id}"]`)))).toBe(false);
+    await setInputValue('[data-testid="repos-dir-input"]', `~/${BOX_DIR}`);
+    await clickPresent('[data-testid="repos-dir-apply"]');
+    await waitVisible('[data-testid="discovered-check-repo"]', 20_000);
+    expect(await browser.execute((sid) => window.__termic!.invoke("server_repos_dir", { server: sid }), serverId)).toBe(`~/${BOX_DIR}`);
     await snap("remote-server-add-project.png");
-    await setInputValue('[data-testid="remote-project-path"]', `~/${BOX_DIR}/repo`);
-    await clickPresent('[data-testid="remote-project-add"]');
+    await clickPresent('[data-testid="discovered-check-repo"]');
+    await clickPresent('[data-testid="add-selected-projects"]');
     // Added: the dialog closes once the project is listed, as locally.
-    await waitGone('[data-testid="remote-add-project-dialog"]', 40_000);
+    await waitGone('[data-testid="new-project-path"]', 40_000);
     expect(await browser.execute(() => !!document.querySelector('[role="dialog"] [data-testid="new-task-name"]'))).toBe(false);
     const projectId = await browser.execute((sid) => (window.__termic!.useApp.getState().projects.find((p: any) => p.server === sid && String(p.root_path).includes("termic-e2e-box")) as any)?.id as string, serverId);
     expect(projectId).toBeTruthy();
@@ -679,6 +685,24 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await browser.waitUntil(async () => (await logs()).includes("fake agent ready"), { timeout: 20_000, timeoutMsg: "the agent never started on the box" });
     await typeIntoAgent(task, "hello\r");
     await browser.waitUntil(async () => (await logs()).includes("box says: hello"), { timeout: 20_000, timeoutMsg: "the agent never answered" });
+    // The project's + opens the server's New task dialog at once: its menu
+    // held that one item, so it was a click on the way to the same place.
+    // The header's + (always there; the row under the tasks shows only while
+    // there are few projects).
+    const plus = `[data-testid="project-new-task-${projectId}"]`;
+    await browser.waitUntil(() => browser.execute((sel) => !!document.querySelector(sel), plus), { timeout: 10_000, timeoutMsg: "the server project has no New task +" });
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const o = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as PointerEventInit;
+      el.dispatchEvent(new PointerEvent("pointerdown", o));
+      el.dispatchEvent(new PointerEvent("pointerup", o));
+      el.click();
+    }, plus);
+    // A server project's New task is the ordinary dialog, on that project.
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[role="dialog"] [data-testid="new-task-name"]')), { timeout: 5_000, timeoutMsg: "the server project's + did not open its New task dialog" });
+    expect(await browser.execute((pid) => !!document.querySelector(`[data-testid="project-server-new-task-${pid}"]`), projectId)).toBe(false);
+    await browser.keys("Escape");
+    await browser.waitUntil(() => browser.execute(() => !document.querySelector('[role="dialog"] [data-testid="new-task-name"]')), { timeout: 5_000, timeoutMsg: "the dialog did not close" });
     // The old per-server section is gone for servers.
     expect(await browser.execute((id) => !!document.querySelector(`[data-testid="remote-machine-${id}"]`), serverId)).toBe(false);
     await snap("remote-local-server-row.png");
@@ -694,16 +718,17 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // Outside any repo (the box's HOME may itself sit in one).
     const plain = path.join(mkdtempSync(path.join(os.tmpdir(), "termic-plain-")), "notes");
     mkdirSync(plain, { recursive: true });
-    await browser.execute((id) => window.__termic!.useRemote.getState().setDialog({ newTaskOn: id, newTaskAdding: true }), serverId);
-    await waitVisible('[data-testid="remote-add-project-dialog"]');
-    await setInputValue('[data-testid="remote-project-path"]', plain);
-    await clickPresent('[data-testid="remote-project-add"]');
-    // Refused as a repo, offered as a folder (no CLI flag named).
-    await waitVisible('[data-testid="remote-project-add-plain"]');
-    expect(await browser.execute(() => document.querySelector('[data-testid="remote-new-error"]')?.textContent ?? "")).not.toContain("--non-git");
+    await browser.execute((id) => window.__termic!.useUI.getState().openNewProject(id), serverId);
+    await waitVisible('[data-testid="new-project-path"]');
+    await setInputValue('[data-testid="new-project-path"]', plain);
+    await clickPresent('[data-testid="new-project-add"]');
+    // Refused as a repo by the box, offered as a folder; "make it a git
+    // repo" is not, since that would run git on this machine.
+    await waitVisible('[data-testid="new-project-add-folder"]', 20_000);
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="new-project-make-git"]'))).toBe(false);
     await snap("remote-server-add-plain.png");
-    await clickPresent('[data-testid="remote-project-add-plain"]');
-    await waitGone('[data-testid="remote-add-project-dialog"]', 20_000);
+    await clickPresent('[data-testid="new-project-add-folder"]');
+    await waitGone('[data-testid="new-project-path"]', 20_000);
     // The desktop's copy knows it is a plain folder, so its tasks never
     // ask for a worktree.
     const nonGit = await browser.waitUntil(
@@ -781,9 +806,9 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     expect(await browser.execute(() => !!document.querySelector('[data-testid="remote-sidebar-section"]') && !document.querySelector('[data-testid="sidebar-footer-remote"]'))).toBe(true);
     await snap("remote-server-menu.png");
     await clickPresent('[data-testid="server-menu-add-project"]');
-    await waitVisible('[data-testid="remote-project-path"]');
+    await waitVisible('[data-testid="new-project-path"]');
     await browser.keys("Escape");
-    await waitGone('[data-testid="remote-project-path"]');
+    await waitGone('[data-testid="new-project-path"]');
     // Disconnect: the row stays, reads "Disconnected", its projects fold
     // away and no link runs; Connect brings it back online with them.
     await openServerMenu();
@@ -792,7 +817,13 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await waitGone(row());
     expect(await browser.execute((sid) => window.__termic!.invoke("remote_machines").then((l: any) => l.find((m: any) => m.id === sid)?.state), serverId)).toBe("disconnected");
     await snap("remote-server-disconnected.png");
-    // The row's own switch turns it back on.
+    // The row's own switch turns it back on, when REMOTE's display menu
+    // puts it there (off by default; Connect is always in the ⋯ menu).
+    // Reset first: the options live in localStorage, which outlives a reseed.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", connectSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
+    expect(await browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId)).toBe(false);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ connectSwitch: true }));
+    await browser.waitUntil(() => browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId), { timeout: 5_000, timeoutMsg: "the display menu's switch setting did not put it on the row" });
     expect(await browser.execute((sid) => document.querySelector(`[data-testid="machine-switch-${sid}"]`)?.getAttribute("aria-checked"), serverId)).toBe("false");
     await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
     await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "online", 30_000);

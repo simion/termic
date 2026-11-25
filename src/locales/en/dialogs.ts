@@ -313,6 +313,7 @@ export default {
   },
   newProject: {
     title: "Add project",
+    titleOnServer: "Add a project on {{name}}",
     modeRepo: "Repository",
     modeRepoHint: "One git repo. Worktrees branch off it.",
     modeClone: "Clone from URL",

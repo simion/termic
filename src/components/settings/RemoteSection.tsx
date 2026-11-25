@@ -13,6 +13,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { Input } from "@/components/ui/Input";
 import { Plus, RefreshCw, Server, Smartphone } from "lucide-react";
 import { PEER_CHANGED_EVENT, peerStatus } from "@/lib/ipc";
 import type { PeerStatus } from "@/lib/types";
@@ -225,9 +227,12 @@ function ServerRow({ machine }: { machine: MachineView }) {
       renameLabel={t("servers.renameLabel")}
       onRename={async next => { await serverRename(machine.id, next).catch(e => useUI.getState().pushToast(String(e), "error")); }}
       status={<><span className="font-mono">{machine.ssh}</span> · {state}</>}
-      detail={machine.state !== "online" && machine.error
-        ? <div data-testid={`server-error-${machine.id}`} className="px-1.5 text-[12px] text-[var(--color-warn)]">{machine.error}</div>
-        : undefined}
+      detail={<>
+        {machine.state !== "online" && machine.error
+          ? <div data-testid={`server-error-${machine.id}`} className="px-1.5 text-[12px] text-[var(--color-warn)]">{machine.error}</div>
+          : null}
+        <ServerReposDir server={machine.id} />
+      </>}
       actions={<>
         {machine.state !== "online" && (
           <Button variant="ghost" size="sm" onClick={() => void remoteReconnect()}>
@@ -240,6 +245,38 @@ function ServerRow({ machine }: { machine: MachineView }) {
         </Button>
       </>}
     />
+  );
+}
+
+/** A server's repos folder: where its Add project looks for repos on the
+ *  box (server_discover_repos), as Settings > General's is this machine's.
+ *  Saved on blur or Enter; an empty field clears it. */
+function ServerReposDir({ server }: { server: string }) {
+  const { t } = useTranslation("remote");
+  const [value, setValue] = useState("");
+  const saved = useRef("");
+  useEffect(() => {
+    void invoke<string>("server_repos_dir", { server }).then(v => { saved.current = v; setValue(v); }).catch(() => {});
+  }, [server]);
+  const save = () => {
+    if (value.trim() === saved.current) return;
+    saved.current = value.trim();
+    void invoke("server_set_repos_dir", { server, dir: value.trim() }).catch(e => useUI.getState().pushToast(String(e), "error"));
+  };
+  return (
+    <label className="flex items-center gap-2 px-1.5 text-[12px] text-[var(--color-fg-dim)]">
+      <span className="shrink-0">{t("servers.reposDir")}</span>
+      <Input
+        id={`server-repos-dir-${server}`}
+        data-testid={`server-repos-dir-${server}`}
+        value={value}
+        placeholder="~/code"
+        onChange={e => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}
+        className="h-7 font-mono text-[12px]"
+      />
+    </label>
   );
 }
 

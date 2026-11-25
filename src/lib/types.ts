@@ -1764,6 +1764,10 @@ export interface TerminalTab extends BaseTab {
    *  title classifier (gemini/codex). `working` → spinner; `done` →
    *  blue bullet; cleared on next user keystroke (NOT on tab view). */
   workState?: "idle" | "working" | "done";
+  /** When this tab last went into "working": the start of the turn, so a
+   *  phone that connects mid-turn shows how long it has really run rather
+   *  than counting from when it joined (remote_server.rs). Runtime-only. */
+  workStartedAt?: number;
   /** Work the agent DELEGATED and had not finished as of its last done hook:
    *  a subagent it is waiting on, a shell it left running. Reported by the
    *  hook (`lib/agentHooks.ts` `HOOK_OSC_DELEGATED_PREFIX`), decided by

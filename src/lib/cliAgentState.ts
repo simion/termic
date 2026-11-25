@@ -72,6 +72,8 @@ export interface TabAgentState {
   props: { key: string; value: string }[];
   /** The tab's delegated work, for the remote rows (remote_server.rs). */
   delegated: DelegatedWork | null;
+  /** Epoch ms its current turn started, while working; else null. */
+  working_since: number | null;
 }
 
 /** The wire shape for one strip tab. Exported for tests. */
@@ -81,9 +83,13 @@ export function computeTabState(t: TerminalTab, agents: AppState["agents"]): Tab
     : isTerminalCli(t.cli, agents) ? "terminal"
     : "agent";
   const capable = kind === "agent" && workDoneCapable(t.cli, agents);
+  // Attention outranks working: an agent that asks mid-turn (Claude's
+  // AskUserQuestion) is still "working", and its heartbeat kept the state
+  // there, so a phone showed the question for a second and then lost it.
+  // Blocked on the user is the stronger fact, as the sidebar badge ranks it.
   const state = !capable ? null
-    : t.workState === "working" ? "working"
     : t.unread?.reason === "attention" ? "waiting"
+    : t.workState === "working" ? "working"
     : t.workState === "done" ? "done"
     : "idle";
   return {
@@ -98,25 +104,27 @@ export function computeTabState(t: TerminalTab, agents: AppState["agents"]): Tab
     is_default: !!t.is_default,
     props: (t.props ?? []).map(p => ({ key: p.key, value: p.value })),
     delegated: t.delegatedWork ?? null,
+    working_since: t.workState === "working" ? t.workStartedAt ?? null : null,
   };
 }
 
 type AppState = ReturnType<typeof useApp.getState>;
 
-/** One state for a task's terminal tabs: working wins, then a tab blocked
- *  on the user (attention), then a finished turn (done), else idle. Shared
+/** One state for a task's terminal tabs: a tab blocked on the user
+ *  (attention) wins, even mid-turn, then working, then a finished turn
+ *  (done), else idle. Shared
  *  with the sidebar's notification filter (lib/taskFilter.ts) so the
  *  per-project bell count always adds up to the tray's numeral. */
 export function aggregateTabsState(term: TerminalTab[]): "working" | "waiting" | "done" | "idle" {
-  if (term.some(t => t.workState === "working")) return "working";
   if (term.some(t => t.unread?.reason === "attention")) return "waiting";
+  if (term.some(t => t.workState === "working")) return "working";
   if (term.some(t => t.workState === "done")) return "done";
   return "idle";
 }
 
 /** Aggregate one state per LIVE task, matching the sidebar's own signal
- *  (lib/waitingAgents.ts): working wins, then a tab blocked on the user
- *  (attention), then a finished turn (done), else idle. A task with no
+ *  (lib/waitingAgents.ts): a tab blocked on the user (attention) wins,
+ *  then working, then a finished turn (done), else idle. A task with no
  *  terminal tabs reports "inactive" rather than being omitted, so the
  *  CLI can say "no agent open" instead of "unknown". */
 export function computeAgentStates(s: AppState = useApp.getState(), machines: MachineView[] = useRemote.getState().machines): Record<string, TaskAgentState> {

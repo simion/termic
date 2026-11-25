@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addressKind, countdown, isTerminalReply, joinableGroups, layoutRemote, nameFromPrompt, profilesOf, remoteAlerts, remoteProps, remoteTaskRequest, visibleTasks, type RemoteTask } from "@/lib/remote";
+import { addressKind, countdown, hostFold, isTerminalReply, joinableGroups, layoutRemote, nameFromPrompt, profilesOf, remoteAlerts, remoteProps, remoteTaskRequest, visibleTasks, type RemoteTask } from "@/lib/remote";
 
 describe("isTerminalReply", () => {
   it("drops xterm's automatic answers to terminal queries", () => {
@@ -161,5 +161,18 @@ describe("remoteTaskRequest: tab and open", () => {
     expect(remoteTaskRequest("t1", { kind: "tab", tab: { tab: "default" } })).toMatchObject({ cmd: "tab", task: "t1", kind: { tab: "default" } });
     expect(remoteTaskRequest("t1", { kind: "tab", tab: { tab: "agent", id: "codex" } })).toMatchObject({ cmd: "tab", task: "t1", kind: { tab: "agent", id: "codex" } });
     expect(remoteTaskRequest("t1", { kind: "open" })).toMatchObject({ cmd: "open", task: "t1" });
+  });
+});
+
+describe("hostFold", () => {
+  it("follows the host's own sidebar until folded here, and the host again once it changes", () => {
+    expect(hostFold(undefined, true)).toBe(true);
+    expect(hostFold(undefined, false)).toBe(false);
+    // Opened here while the host had it folded: open, as long as the host keeps it folded.
+    const over = { folded: false, host: true };
+    expect(hostFold(over, true)).toBe(false);
+    // The host opened it (or folded it again later): the host's state wins.
+    expect(hostFold(over, false)).toBe(false);
+    expect(hostFold({ folded: true, host: false }, true)).toBe(true);
   });
 });
