@@ -1,3 +1,4 @@
+import type { DelegatedWork } from "./delegatedWork";
 // Per-task agent state, aggregated and PUSHED down to the Rust cache
 // (cli_server.rs cli_agent_states) so the CLI's `list`/`status` read a
 // cache instead of a webview round-trip and `wait` blocks on flips
@@ -69,6 +70,8 @@ export interface TabAgentState {
   is_default: boolean;
   /** The tab's own properties (GH #358), in the order they were set. */
   props: { key: string; value: string }[];
+  /** The tab's delegated work, for the remote rows (remote_server.rs). */
+  delegated: DelegatedWork | null;
 }
 
 /** The wire shape for one strip tab. Exported for tests. */
@@ -94,6 +97,7 @@ export function computeTabState(t: TerminalTab, agents: AppState["agents"]): Tab
     live: !!t.ptyId,
     is_default: !!t.is_default,
     props: (t.props ?? []).map(p => ({ key: p.key, value: p.value })),
+    delegated: t.delegatedWork ?? null,
   };
 }
 

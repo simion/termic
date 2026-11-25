@@ -130,6 +130,7 @@ export default {
     stateDraft: "draft",
     stateOpen: "open",
     checksFailing: "checks failing",
+    checksRunning: "checks running",
     approved: "approved",
     openOn: "Open on {{forge}}",
     new: "New",

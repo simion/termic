@@ -1,3 +1,4 @@
+import type { DelegatedWork } from "./delegatedWork";
 // Remote control, the desktop's half (docs/remote.md): phones paired with
 // this computer, other machines this computer is connected to (paired
 // computers and SSH servers), and their tasks.
@@ -47,6 +48,8 @@ export interface RemoteTab {
   viewable?: boolean;
   /** What the tab's agent labelled it with (`termic prop`). */
   props?: { key: string; value: string }[];
+  /** Work its agent handed off and is waiting on; absent: none. */
+  delegated?: DelegatedWork | null;
 }
 
 /** A task group or a project folder. `color` is an accent KEY (accents.ts). */

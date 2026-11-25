@@ -51,7 +51,10 @@ export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false
   // alarm colour belongs only to something you are meant to act on.
   const failing = checks === "failing" && (state === "open" || state === "draft");
   const { color, struck } = prBadgeAppearance(state, checks);
+  // Running checks say so too: the dim number alone reads as "no PR state yet".
+  const running = checks === "pending" && state === "open";
   const failingSuffix = (failing ? ` · ${t("taskPrBadge.checksFailing")}` : "")
+    + (running ? ` · ${t("taskPrBadge.checksRunning")}` : "")
     + (approved ? ` · ${t("taskPrBadge.approved")}` : "");
   const { Icon, label } =
     state === "merged" ? { Icon: GitMerge, label: t("taskPrBadge.stateMerged") } :

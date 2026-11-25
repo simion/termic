@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [2.0.6] - 2026-11-24
+## [2.0.7] - 2026-11-25
 
 Fixes for remote control, paired computers and the phone app.
 
@@ -13,6 +13,8 @@ Fixes for remote control, paired computers and the phone app.
 - Paired computers' tasks and groups have the local right-click menus, and each remote project has its own New task button.
 - Pairing connects one way: the computer that asked connects, the other stays switched off until you turn it on. Drag paired computers to reorder them.
 - Profile windows keep their window buttons in place after a rename.
+- A paired computer's task waiting on a subagent or background shell shows the waiting ring, not a spinner.
+- A PR whose checks are still running no longer shows green in the sidebar.
 
 ## [2.0.5] - 2026-11-24
 

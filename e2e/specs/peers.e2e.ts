@@ -869,7 +869,22 @@ describe("LAN pairing", () => {
       expect(Number(await dimmed("rt-3"))).toBe(1);
       pushTasks!(baseTasks().map((x: any) => x.id === "rt-3" ? { ...x, state: "inactive" } : x));
       await browser.waitUntil(async () => Number(await dimmed("rt-3")) < 1, { timeout: 3_000, timeoutMsg: "an inactive remote task was not greyed" });
+      // An agent waiting on work it handed off (a subagent, a background
+      // shell) draws the local row's ring, not the spinner: working or not,
+      // no model is computing. Gone again once nothing is delegated.
+      const badge = () => browser.execute(() => {
+        const b = document.querySelector('[data-testid="remote-task-rt-3"] [data-testid="remote-work-badge"]');
+        return b ? `${b.getAttribute("data-work-state")}:${b.getAttribute("data-delegated")}` : null;
+      });
+      const delegating = (state: string) => baseTasks().map((x: any) => x.id === "rt-3"
+        ? { ...x, state, tabs: [{ id: "a", title: "claude", agent: "claude", state, is_default: true, kind: "agent", live: true, delegated: { label: "shell", count: 2, ids: ["s1", "s2"] } }] }
+        : x);
+      pushTasks!(delegating("working"));
+      await browser.waitUntil(async () => (await badge()) === "working:shell", { timeout: 3_000, timeoutMsg: "a delegating working task drew no ring" });
+      pushTasks!(delegating("idle"));
+      await browser.waitUntil(async () => (await badge()) === "delegated:shell", { timeout: 3_000, timeoutMsg: "an idle task with shells running drew no ring" });
       pushTasks!(baseTasks());
+      await browser.waitUntil(async () => (await badge()) === null, { timeout: 3_000, timeoutMsg: "the ring outlived its delegated work" });
     });
 
     it("rings the desktop when a paired computer's task starts needing you, and when it finishes", async () => {

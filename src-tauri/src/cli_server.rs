@@ -4905,6 +4905,10 @@ pub struct TabAgentState {
     /// The tab's own properties (GH #358), in the order they were set.
     #[serde(default)]
     pub props: Vec<proto::PropEntry>,
+    /// The tab's `delegatedWork` as the webview holds it, passed through
+    /// opaque for the remote rows (remote_server.rs). Absent: none.
+    #[serde(default)]
+    pub delegated: Option<serde_json::Value>,
 }
 
 struct AgentCacheInner {
@@ -9902,7 +9906,7 @@ mod tests {
         live: bool,
         is_default: bool,
     ) -> TabAgentState {
-        TabAgentState { props: Default::default(),
+        TabAgentState { props: Default::default(), delegated: None,
             id: id.into(),
             kind: kind.into(),
             cli: cli.into(),

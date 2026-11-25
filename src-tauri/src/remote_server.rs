@@ -708,6 +708,9 @@ fn state_loop(s: &Session) {
                     // Every tab, not only agents: a client switches to a
                     // second agent, a shell or the run output like the strip.
                     .map(|tab| TabRow {
+                        delegated: snap.states.get(&t.id)
+                            .and_then(|st| st.tab_states.iter().find(|x| x.id == tab.id))
+                            .and_then(|x| x.delegated.clone()),
                         // Only agent and run tabs keep a retained output
                         // ring and are addressable by id; a shell or custom
                         // terminal opens on this computer only.

@@ -431,6 +431,11 @@ pub struct TabRow {
     /// What the tab's agent labelled it with, in the order first set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<RowProp>,
+    /// Work the agent handed off and is waiting on (the desktop's
+    /// `DelegatedWork`: label, count, partial), so a client draws the
+    /// waiting ring, not a spinner, while its subagents run. Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -572,7 +577,7 @@ mod tests {
             project: "api".into(),
             agent: "claude".into(),
             state: "idle".into(),
-            tabs: vec![TabRow { id: "t".into(), title: "claude".into(), agent: "claude".into(), state: "idle".into(), is_default: true, kind: "agent".into(), live: Some(true), viewable: None, props: vec![RowProp { key: "ticket".into(), value: "ABC-1".into() }] }],
+            tabs: vec![TabRow { id: "t".into(), title: "claude".into(), agent: "claude".into(), state: "idle".into(), is_default: true, kind: "agent".into(), live: Some(true), viewable: None, props: vec![RowProp { key: "ticket".into(), value: "ABC-1".into() }], delegated: None }],
             group: Some(RowGroup { id: "g".into(), name: "Auth".into(), color: Some("teal".into()), ..Default::default() }),
             project_group: Some(RowGroup { id: "Backend".into(), name: "Backend".into(), color: None, ..Default::default() }),
             pinned: true,

@@ -40,8 +40,12 @@ describe("prBadgeAppearance", () => {
     expect(prBadgeAppearance("open", "failing")).toEqual({ color: WARN, alarming: true, struck: false });
   });
 
-  it("leaves an open PR its own green while nothing is failing", () => {
-    for (const checks of ["pending", "passing", "none", null] as const) {
+  it("dims an open PR whose checks are still running: no verdict, no green", () => {
+    expect(prBadgeAppearance("open", "pending")).toEqual({ color: "var(--color-fg-dim)", alarming: false, struck: false });
+  });
+
+  it("leaves an open PR its own green once checks pass, or with none", () => {
+    for (const checks of ["passing", "none", null] as const) {
       expect(prBadgeAppearance("open", checks), `open with checks=${checks}`)
         .toEqual({ color: OPEN, alarming: false, struck: false });
     }

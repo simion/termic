@@ -129,6 +129,7 @@ export default {
     stateDraft: "草稿",
     stateOpen: "开放",
     checksFailing: "检查失败",
+    checksRunning: "检查运行中",
     approved: "已批准",
     openOn: "在 {{forge}} 上打开",
     new: "新",

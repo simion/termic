@@ -9,7 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, Check, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, MonitorSmartphone, Smartphone, Cable } from "lucide-react";
+import { Bell, Check, ChevronDown, ChevronRight, Folder, MoreVertical, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Monitor, Pin, Plus, RefreshCw, Server, MonitorSmartphone, Smartphone, Plug } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
@@ -37,6 +37,8 @@ import { copyToClipboard } from "@/lib/clipboard";
 import { archiveRemoteTask, remoteArchivingKey, stopRemoteAgent } from "@/components/remote/RemoteTaskView";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
+import { TaskWorkBadge } from "@/components/TaskWorkBadge";
+import type { DelegatedWork } from "@/lib/delegatedWork";
 import { copyRemoteAgentBriefing } from "@/lib/agentBriefing";
 import { joinableGroups, layoutRemote, orderMachines, profilesOf, visibleTasks, remoteCall, req, remoteProps, remoteReconnect, remoteSetConnected, remoteTaskRequest, serverRemove, useRemote, type RemoteTaskAction, type MachineView, type RemoteGroup, type RemoteProject, type RemoteTask, openNewTaskOnServer } from "@/lib/remote";
 
@@ -173,7 +175,7 @@ export function RemoteSidebarSection({ projects, renderProject }: { projects: Pr
         <RemoteAddMenu>
           {/* The same button as PROJECTS' Add project beside it, with an icon
               for connecting: a phone, a computer or a server. */}
-          <Button size="icon" variant="icon" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")}><Cable className="h-[18px] w-[18px]" /></Button>
+          <Button size="icon" variant="icon" data-testid="sidebar-add-remote" aria-label={t("sidebar.addRemote")}><Plug className="h-4 w-4" /></Button>
         </RemoteAddMenu>
       </SidebarSectionHeader>
       {!folded && (
@@ -388,8 +390,13 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject }: { 
 });
 
 /** The glyph a task's state draws, the desktop's own language
- *  (docs/agent-states.md): amber bell, spinner, blue dot, nothing. */
-export function StateGlyph({ state, size = 13 }: { state: string; size?: number }) {
+ *  (docs/agent-states.md): amber bell, spinner, blue dot, nothing; and the
+ *  local row's ring while the agent waits on work it handed off (a subagent,
+ *  a background shell), which is not a model computing. */
+export function StateGlyph({ state, size = 13, delegated }: { state: string; size?: number; delegated?: DelegatedWork | null }) {
+  if (delegated && state !== "waiting") {
+    return <TaskWorkBadge reason={state === "working" ? "working" : state === "done" ? "done" : "delegated"} delegated={delegated} testId="remote-work-badge" />;
+  }
   if (state === "waiting") return <Bell className="shrink-0 text-[var(--color-warn)]" style={{ width: size, height: size }} />;
   if (state === "working") return <Spinner size={size - 1} />;
   if (state === "done") return <span className="block h-2 w-2 shrink-0 rounded-full bg-[var(--color-info)]" />;
@@ -759,7 +766,7 @@ const RemoteTaskRow = memo(function RemoteTaskRow({ m, task }: { m: MachineView;
       {branchMode === "right" && branch ? <TaskBranchText branch={branch} placement="right" /> : <span className="flex-1" />}
       {task.pinned && <Pin data-testid="remote-task-pinned" aria-hidden className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />}
       {prMode !== "none" && <RemotePrBadge task={task} showIcon={prMode !== "number"} showNumber={prMode !== "icon"} />}
-      <span className="flex w-4 shrink-0 justify-center"><StateGlyph state={task.state} /></span>
+      <span className="flex w-4 shrink-0 justify-center"><StateGlyph state={task.state} delegated={task.tabs.find(x => x.delegated)?.delegated} /></span>
     </div>
   );
   if (!canAct) return row;

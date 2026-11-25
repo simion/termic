@@ -317,7 +317,7 @@ impl Daemon {
                     agent: t.agent.clone(),
                     branch: (!t.branch.is_empty()).then(|| t.branch.clone()),
                     state: v.state.clone(),
-                    tabs: vec![TabRow { id: AGENT_TAB.into(), title: t.agent.clone(), agent: t.agent.clone(), state: v.state.clone(), is_default: true, kind: "agent".into(), live: Some(live.contains(&t.id)), viewable: None, props: Vec::new() }],
+                    tabs: vec![TabRow { id: AGENT_TAB.into(), title: t.agent.clone(), agent: t.agent.clone(), state: v.state.clone(), is_default: true, kind: "agent".into(), live: Some(live.contains(&t.id)), viewable: None, props: Vec::new(), delegated: None }],
                     diff: diffs.get(&t.id).cloned(),
                     created: (!t.created.is_empty()).then(|| t.created.clone()),
                     is_main_checkout: t.is_main_checkout,

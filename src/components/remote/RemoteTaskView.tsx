@@ -86,7 +86,7 @@ export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskI
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
         <span className={cn("shrink-0", CLI_BRAND_COLOR[icon])}><CliIcon cli={icon} className="h-4 w-4" /></span>
         <span className="truncate text-[14px] font-medium text-[var(--color-fg)]">{task.name}</span>
-        <StateGlyph state={task.state} />
+        <StateGlyph state={task.state} delegated={task.tabs.find(x => x.delegated)?.delegated} />
         <span className="shrink-0 text-[12px] text-[var(--color-fg-faint)]">{t(`states.${task.state}`, { defaultValue: task.state })}</span>
         <span className="mx-1 h-4 w-px shrink-0 bg-[var(--color-border-soft)]" />
         <MIcon className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
@@ -139,7 +139,7 @@ export function RemoteTaskView({ machineId, taskId }: { machineId: string; taskI
               >
                 {TabIcon ? <TabIcon className="h-3.5 w-3.5 shrink-0" /> : <span className={cn("shrink-0", CLI_BRAND_COLOR[ti])}><CliIcon cli={ti} className="h-3.5 w-3.5" /></span>}
                 <span className="truncate">{tab.title}</span>
-                {kind === "agent" && <StateGlyph state={tab.state} size={12} />}
+                {kind === "agent" && <StateGlyph state={tab.state} size={12} delegated={tab.delegated} />}
               </button>
             );
           })}

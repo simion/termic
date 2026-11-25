@@ -55,9 +55,12 @@ export function prBadgeAppearance(state: PrBadgeState, checks: PrChecks | null):
       // The glyph is the only PR signal visible without opening the Git tab,
       // so a broken build must not look identical to a healthy one here. Warn,
       // not err: go and look at this, as against this is on fire.
-      return failing
-        ? { color: "var(--color-warn)", alarming: true, struck: false }
-        : { color: "var(--color-pr-open)", alarming: false, struck: false };
+      // Green is a verdict. Checks still running (or required ones not yet
+      // reported) have none, and a green number there read as "passed" on a
+      // PR whose CI was still going: dim, until they pass or fail.
+      if (failing) return { color: "var(--color-warn)", alarming: true, struck: false };
+      if (checks === "pending") return { color: "var(--color-fg-dim)", alarming: false, struck: false };
+      return { color: "var(--color-pr-open)", alarming: false, struck: false };
     default:
       // A cached `pr_url` with no lookup yet: an identity, not a state.
       return { color: "var(--color-fg-faint)", alarming: false, struck: false };
