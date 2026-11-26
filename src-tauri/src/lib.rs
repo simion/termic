@@ -35707,6 +35707,63 @@ mod tests {
     }
 
     #[test]
+    fn resolve_pr_with_keeps_settled_pr_pinned_off_branch_or_detached() {
+        let mk = |n: u64, state: &str, head: &str| forge::PrStatus {
+            provider: "github".into(),
+            number: n,
+            url: format!("https://github.com/acme/app/pull/{n}"),
+            title: format!("PR {n}"),
+            state: state.into(),
+            checks: "none".into(),
+            review: "none".into(),
+            base: "main".into(),
+            head: head.into(),
+        };
+        let known_settled = |st: &'static str| Some(KnownPr {
+            number: 7, provider: Some("github"), state: Some(st), head: Some("feat"),
+        });
+
+        for (cur_branch, cached_state) in [
+            (Some("other"), "merged"),
+            (Some("other"), "closed"),
+            (None, "merged"),
+            (None, "closed"),
+            (Some("pr-7-feat"), "merged"),
+        ] {
+            let mut calls = Vec::new();
+            let res = resolve_pr_with(cur_branch, known_settled(cached_state), |num, hint| {
+                calls.push((num, hint));
+                match num {
+                    Some(7) => Ok(Some(mk(7, cached_state, "feat"))),
+                    None => panic!("settled PR off its branch or detached must never call by-branch lookup"),
+                    _ => unreachable!(),
+                }
+            });
+            assert_eq!(res.unwrap().unwrap().number, 7);
+            assert_eq!(calls, vec![(Some(7), None)], "cur_branch={cur_branch:?}, state={cached_state}");
+        }
+
+        // Cached state was still open before switching branches / detaching, and live check shows it settled:
+        // stays pinned on #7 without falling through to by-branch lookup.
+        for cur_branch in [Some("other"), None] {
+            let mut calls = Vec::new();
+            let known_open = Some(KnownPr {
+                number: 7, provider: Some("github"), state: Some("open"), head: Some("feat"),
+            });
+            let res = resolve_pr_with(cur_branch, known_open, |num, hint| {
+                calls.push((num, hint));
+                match num {
+                    Some(7) => Ok(Some(mk(7, "merged", "feat"))),
+                    None => panic!("must stay pinned when stored PR is already settled"),
+                    _ => unreachable!(),
+                }
+            });
+            assert_eq!(res.unwrap().unwrap().number, 7);
+            assert_eq!(calls, vec![(Some(7), None)], "cur_branch={cur_branch:?}");
+        }
+    }
+
+    #[test]
     fn preview_mime_for_ext_known_extensions() {
         assert_eq!(preview_mime_for_ext(Path::new("a/b.png")), Some("image/png"));
         assert_eq!(preview_mime_for_ext(Path::new("shot.JPG")), Some("image/jpeg"));
