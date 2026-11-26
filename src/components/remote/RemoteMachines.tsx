@@ -6,6 +6,7 @@
 // Reads only the remote store's slice: a remote update never re-renders a
 // local row, and a local change never re-renders these.
 
+import { claimTerminal } from "@/lib/claimTerminal";
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -876,7 +877,7 @@ const RemoteTaskRow = memo(function RemoteTaskRow({ m, task }: { m: MachineView;
       tabIndex={0}
       data-testid={`remote-task-${task.id}`}
       data-state={task.state}
-      onClick={() => openTask({ machine, task: task.id })}
+      onClick={() => { openTask({ machine, task: task.id }); claimTerminal(task.id); }}
       onKeyDown={e => { if (e.key === "Enter") openTask({ machine, task: task.id }); }}
       className={cn(
         "ml-3 flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 text-[13px] transition-colors",

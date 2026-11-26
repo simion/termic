@@ -1251,6 +1251,12 @@ describe("LAN pairing", () => {
       // Continue here takes it again.
       await clickPresent('[data-testid="terminal-continue-here"]');
       await browser.waitUntil(async () => { const v = await view(); return v.owner === "true" && !v.hidden && !v.overlay; }, { timeout: 5_000, timeoutMsg: "Continue here did not take the size back" });
+      // Picking the task in the sidebar takes it back too: having clicked it
+      // here is the "use it here", so there is no overlay left to click.
+      hostSend({ t: "term_resize", cols: 200, rows: 60 });
+      await browser.waitUntil(async () => (await view()).overlay, { timeout: 5_000, timeoutMsg: "the host taking the size again did not raise the overlay" });
+      await clickPresent(`[data-testid="remote-task-${remoteTask.id}"]`);
+      await browser.waitUntil(async () => { const v = await view(); return v.owner === "true" && !v.hidden && !v.overlay; }, { timeout: 5_000, timeoutMsg: "picking the task in the sidebar did not take the size back" });
       // The terminal and nothing else: the phone's card, transcript and
       // composer stand in for a keyboard, and this window has one.
       const extras = await browser.execute(() =>

@@ -1,6 +1,7 @@
 // Left sidebar: traffic-light spacer, toggle, primary nav, projects tree, footer.
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
+import { claimTerminal } from "@/lib/claimTerminal";
 import { ThemePicker } from "@/components/ThemePicker";
 import { CaffeinateControl } from "./CaffeinateControl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
@@ -3412,6 +3413,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           // The click that trails a drop is not a selection.
           if (clickSuppressed?.current) { clickSuppressed.current = false; return; }
           setActive(w.id);
+          // Picked here, so used here: no "Continue here" to click.
+          claimTerminal(w.id);
           // Leave a paired computer's task open over the main area. Its own
           // close rule (RemoteGlobal) fires on a CHANGE of active task, so
           // clicking the task that was already active underneath did nothing.
@@ -4016,6 +4019,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               // as seen, which must be this row's tab, not the one the task
               // last showed (a manual unread mark on that one would go).
               setActiveTabId(w.id, tab.id);
+              claimTerminal(w.id);
               setActive(w.id);
             }}
             onDoubleClick={(e) => {

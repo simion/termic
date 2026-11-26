@@ -11,6 +11,7 @@
 // already has a terminal answering those, and a duplicate answer arrives as
 // typed garbage.
 
+import { onClaimTerminal } from "@/lib/claimTerminal";
 import { useArchivingTasks } from "@/store/archivingTasks";
 import { terminalKeysAfter, terminalKeysBefore } from "@/lib/terminalKeys";
 import { builtinBaseId } from "@/lib/agents";
@@ -332,6 +333,9 @@ function RemoteTerminal({ machineId, taskId, tabId, agent }: { machineId: string
     // screen has it: a click anywhere did before, and two focused screens
     // traded the size on every touch.
     continueHere.current = () => { claim(); term.focus(); };
+    // Picked in the sidebar: take it back as Continue here would (claim
+    // does nothing when this window already has the size).
+    const unclaim = onClaimTerminal(taskId, () => continueHere.current?.());
     // While this window owns the size it follows the pane (debounced: a
     // drag sends one size); otherwise a resize here only rescales.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -358,6 +362,7 @@ function RemoteTerminal({ machineId, taskId, tabId, agent }: { machineId: string
       clearTimeout(timer);
       ro.disconnect();
       continueHere.current = null;
+      unclaim();
       sub.dispose();
       disposeCopyOnSelect();
       if (reopening.current) reopening.current = false;

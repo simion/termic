@@ -2,6 +2,7 @@
 // the resize/refit dance and the attention/unread heuristics. Stays mounted
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
+import { onClaimTerminal } from "@/lib/claimTerminal";
 import { terminalKeysAfter, terminalKeysBefore } from "@/lib/terminalKeys";
 import { listen } from "@tauri-apps/api/event";
 import { ShellRcBanner } from "@/components/secretsUi/ShellRcBanner";
@@ -3533,6 +3534,12 @@ const captureArmedRef = useRef(false);
       reclaimTimers.push(setTimeout(lift, RECLAIM_MAX_MS));
     };
     overlayBtn.addEventListener("click", reclaim);
+    // Picked in the sidebar: the tab on screen takes its size back as the
+    // button would (reclaim does nothing unless another screen has it).
+    const unclaim = onClaimTerminal(task.id, () => {
+      const s = useApp.getState();
+      if (s.activeTaskId === task.id && (s.activeTab[task.id] ?? tab.id) === tab.id) reclaim();
+    });
     const unlistenSized = listen<{ ptyId: string; cols: number; rows: number; by?: string | null; byKind?: string | null }>("termic://pty-resized", ({ payload }) => {
       if (!payload || payload.ptyId !== ptyRef.current) return;
       const own = fit.proposeDimensions();
@@ -3564,6 +3571,7 @@ const captureArmedRef = useRef(false);
       cancelled = true;
       ro.disconnect();
       void unlistenSized.then(u => u());
+      unclaim();
       endReclaim();
       overlay.remove();
       // This PTY's conversation is over (closed, or restarted into a new one),
