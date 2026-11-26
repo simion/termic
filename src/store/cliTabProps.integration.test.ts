@@ -124,3 +124,24 @@ describe("termic prop: reading a task not opened this session", () => {
     expect(useApp.getState().mountedTasks.size).toBe(0);
   });
 });
+
+describe("termic prop: split-pane tabs", () => {
+  it("sets and collects properties on a split-pane tab by id", async () => {
+    useApp.setState({
+      tasks: [task()],
+      tabs: {
+        ws1: [
+          term({ id: "main", cli: "claude", is_default: true }),
+          term({ id: "pane-1", paneId: "leaf-1", cli: "codex", title: "Split Codex" }),
+        ],
+      },
+      mountedTasks: new Set(["ws1"]),
+      agents: AGENTS,
+    } as never);
+    const r = await tabPropsHandler({ taskId: "ws1", set: { tabId: "pane-1", key: "role", value: "reviewer" } });
+    expect(r.collected).toEqual([{ key: "role", values: ["reviewer"] }]);
+    expect(r.tabs).toEqual([
+      { tab_id: "pane-1", cli: "codex", title: "Split Codex", props: [{ key: "role", value: "reviewer" }] },
+    ]);
+  });
+});

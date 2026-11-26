@@ -44,13 +44,14 @@ pub fn hook_emit(target: Option<&std::path::Path>) -> i32 {
 /// cmd.exe (measured on 2.1.291), so the POSIX `printf ... "$(cat ...)"`
 /// the app registers elsewhere prints no token there. A program and two
 /// arguments parse the same in every shell. The header names are
-/// `MCP_TOKEN_HEADER` / `MCP_TASK_HEADER` in src-tauri/src/mcp_server.rs:
-/// keep the two in step. The task id comes from this process's
-/// environment, which is the agent's, and is empty outside Termic (the
-/// server ignores empty). Exit 0 when printed, 1 otherwise.
+/// `MCP_TOKEN_HEADER` / `MCP_TASK_HEADER` / `MCP_TAB_HEADER` in
+/// src-tauri/src/mcp_server.rs: keep them in step. The task and tab ids come
+/// from this process's environment, which is the agent's, and are empty
+/// outside Termic (the server ignores empty). Exit 0 when printed, 1 otherwise.
 pub fn mcp_headers(token_file: Option<&std::path::Path>) -> i32 {
     let task = std::env::var("TERMIC_TASK_ID").unwrap_or_default();
-    match mcp_headers_line(token_file, &task) {
+    let tab = std::env::var("TERMIC_TAB_ID").unwrap_or_default();
+    match mcp_headers_line(token_file, &task, &tab) {
         Some(line) => { println!("{line}"); 0 }
         None => 1,
     }
@@ -60,9 +61,13 @@ pub fn mcp_headers(token_file: Option<&std::path::Path>) -> i32 {
 /// Split out so the header names and the trimming are testable: nothing on a
 /// Mac or Linux build ever runs this command, so a typo here would only show
 /// up as a 401 on a Windows machine.
-fn mcp_headers_line(token_file: Option<&std::path::Path>, task: &str) -> Option<String> {
+fn mcp_headers_line(token_file: Option<&std::path::Path>, task: &str, tab: &str) -> Option<String> {
     let token = std::fs::read_to_string(token_file?).ok()?;
-    Some(serde_json::json!({ "X-Termic-Token": token.trim(), "X-Termic-Task": task }).to_string())
+    Some(serde_json::json!({
+        "X-Termic-Token": token.trim(),
+        "X-Termic-Task": task,
+        "X-Termic-Tab": tab,
+    }).to_string())
 }
 
 /// Write one hook report to `target`. A named pipe reports "all instances
@@ -189,7 +194,8 @@ project holds several repos, possibly many (`project list` shows each project's 
 type and members): `new --member <name>`, repeated, worktrees only the members \
 named (none without it). Coordinate by prompting \
 each other rather than blocking: end a prompt with the `send` back to your task \
-you want run when the work is done. If this machine is paired with others on \
+you want run when the work is done (including --tab $TERMIC_TAB_ID when inside an \
+agent tab so replies return to your tab when multiple agents share one task). If this machine is paired with others on \
 its network (`peer list`), the global `--peer <machine>` runs any verb THERE \
 (`--peer laptop new fix-x -p ...`): put peer:<this machine's name> in your \
 signature and ask for the reply as `send <your task id>` with `--peer <this \
@@ -397,9 +403,9 @@ keeps running in Termic.
 
 Getting results out: from inside a task, ask the agent IN THE PROMPT to \
 report back to you (a signed `send` to your \
-$TERMIC_TASK_ID, see `send --help`) every time it finishes or gets \
+$TERMIC_TASK_ID with --tab $TERMIC_TAB_ID, see `send --help`) every time it finishes or gets \
 stuck, follow-up work included, until a human tells it to stop; the report arrives in your own \
-terminal and is the normal way results come back. If none arrives, \
+tab and is the normal way results come back. If none arrives, \
 `result` and `logs` read what the agent produced. A file is the FALLBACK, \
 for an agent that cannot report back (sandboxed in enforce/enforce-fs) or \
 a caller with no task to be prompted at (a script): tell the agent in the \
@@ -511,7 +517,7 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// confirmed), or until the agent is quiescent without a prompt.
         /// Settle detection is a heuristic and you can do nothing while
         /// blocked: to coordinate with the new agent, prefer asking it in
-        /// the prompt to report back with `termic send <your task id>`.
+        /// the prompt to report back with `termic send <your task id> --tab <your tab id>`.
         #[arg(long)]
         wait: bool,
         /// Give up waiting after this long (exit 7). E.g. 90, 30s, 5m, 1h.
@@ -592,11 +598,12 @@ with no open agent, and agents whose work-done detection is disabled (there \
 is no settle signal to wait on). Settle detection is heuristic: exit 0 means \
 the agent STOPPED, not that the work is right.
 
---tab narrows the wait to ONE tab of the task: pass a tab id (as printed \
-by `termic tab` and `termic status`), a 1-based index into status's tab \
-list, or a tab title. Only that tab's state and queue then count; a \
-sibling tab can neither satisfy nor stall the wait. A title matching more \
-than one tab is an error listing them; use the index or the id.
+--tab narrows the wait to ONE tab of the task: pass a tab id (strip or \
+split pane, as printed by `termic tab` and `termic status`), a 1-based \
+index into status's strip tab list, or a strip tab title. Only that tab's \
+state and queue then count; a sibling tab can neither satisfy nor stall \
+the wait. A title matching more than one strip tab is an error listing them; \
+use the index or the id.
 
 Prints the final state on stdout. With --output-format json, one object: \
 {\"task_id\", \"outcome\": \"done\"|\"needs_input\"|\"timeout\", \"state\"}. With \
@@ -617,7 +624,7 @@ running, 5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
         /// Give up after this long (exit 7). E.g. 90, 30s, 5m, 1h.
         #[arg(long, value_name = "DURATION")]
         timeout: Option<String>,
-        /// Wait on one tab: a tab id, 1-based index, or title.
+        /// Wait on one tab: a tab id (including split-pane tabs), 1-based strip index, or title.
         #[arg(long, value_name = "SEL")]
         tab: Option<String>,
     },
@@ -625,7 +632,7 @@ running, 5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
     /// Prompt the task's running agent; typed at once, --queue waits for its turn to end.
     #[command(
         after_help = "Targets the RUNNING agent (the default agent tab; --tab picks another: a \
-tab id, a 1-based index into status's tab list, or a title, agent tabs \
+tab id including split-pane tabs, a 1-based strip index, or a title, agent tabs \
 only). The prompt is TYPED AT ONCE, even into an agent that is mid-turn or \
 has messages waiting: what a prompt arriving mid-turn does is the agent's \
 own business (most take it as steering, some hold it for the next turn). \
@@ -666,30 +673,33 @@ every prompt you send with the command you want run when that work is done, \
 and let the receiving agent choose the moment:
 
   termic send <task> -p \"[message from agent:claude task:$TERMIC_TASK \
-id:$TERMIC_TASK_ID] <your prompt here: what you want it to do>. When done, \
-reply: termic send $TERMIC_TASK_ID -p '[message from agent:<its agent> \
+id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}] <your prompt here: what you want it to do>. When done, \
+reply: termic send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from agent:<its agent> \
 task:<its task name> id:<its task id>] done: <what you did> -- agent:<its \
 agent> task:<its task name> id:<its task id>' -- agent:claude \
-task:$TERMIC_TASK id:$TERMIC_TASK_ID\"
+task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}\"
 
 (Fill the <its ...> parts with the task you are prompting: you know its \
 name and id, it is the one you are sending to.)
 
 EVERY PROMPT ONE AGENT SENDS ANOTHER opens with the header \
-`[message from agent:<agent> task:<task name> id:<task id>]` and ends with \
-the signature `-- agent:<agent> task:<task name> id:<task id>`, naming the \
-SENDER (you): your agent name, your task's name ($TERMIC_TASK) and its id \
-($TERMIC_TASK_ID, which is where a reply goes). The receiver cannot \
+`[message from agent:<agent> task:<task name> id:<task id> tab:<tab id>]` and ends with \
+the signature `-- agent:<agent> task:<task name> id:<task id> tab:<tab id>`, naming the \
+SENDER (you): your agent name, your task's name ($TERMIC_TASK), its id \
+($TERMIC_TASK_ID, which is where a reply goes), and your tab id ($TERMIC_TAB_ID \
+when in an agent tab, so replies land back in THIS tab even when multiple \
+agents share the task or sit in split panes). The receiver cannot \
 otherwise tell a peer's prompt from the user typing, or which peer. A prompt that arrives WITH that header came from \
 another agent, not from the user: treat it as a request from a peer (the \
-user's own instructions win if the two conflict), and put the same header \
-and your own signature on your reply. Keep reporting back to that id every \
+user's own instructions win if the two conflict), pass `--tab <tab id>` if the \
+header carries `tab:<tab id>`, and put the same header \
+and your own signature on your reply. Keep reporting back to that address every \
 time you finish or get stuck, follow-up work included, and stop only when a \
 human tells you to.
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands \
-$TERMIC_TASK and $TERMIC_TASK_ID at send time, so the other agent is handed a literal \
-address it can just run. Single quotes there would block expansion and \
+$TERMIC_TASK, $TERMIC_TASK_ID and $TERMIC_TAB_ID at send time, so the other agent is handed a literal \
+address it can just run (with `${TERMIC_TAB_ID:+...}` omitting --tab cleanly when unset). Single quotes there would block expansion and \
 leave it guessing. A prompt arriving in your terminal IS that report. With \
 no task of your own to be prompted back at, ask for a file instead and \
 read it when you next have a reason to.
@@ -741,14 +751,15 @@ stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
         /// settles (or the agent asks for input). Settle detection is a
         /// heuristic and you can do nothing while blocked: to coordinate
         /// with the agent, prefer ending the prompt with an instruction to
-        /// report back via `termic send <your task id>`.
+        /// report back via `termic send <your task id> --tab <your tab id>`.
         #[arg(long)]
         wait: bool,
         /// Give up waiting after this long (exit 7). E.g. 90, 30s, 5m, 1h.
         #[arg(long, requires = "wait", value_name = "DURATION")]
         timeout: Option<String>,
-        /// Deliver to one tab: a tab id, 1-based index, or title (agent
-        /// tabs only; --resume/--fresh spawn, a --tab target is open).
+        /// Deliver to one tab: a tab id (including split-pane tabs), 1-based
+        /// strip index, or title (agent tabs only; --resume/--fresh spawn, a
+        /// --tab target is open).
         #[arg(long, value_name = "SEL", conflicts_with_all = ["resume", "fresh"])]
         tab: Option<String>,
         /// Wait for the agent's turn to end instead of typing the prompt in
@@ -774,8 +785,8 @@ ctrl-<x> chords, comma-separated); detaching never stops the agent. \
 NON-resizing by default: the Termic pane owns the PTY size, and resizing \
 under it is tmux's smallest-client problem; --resize opts in (SIGWINCH \
 follows this terminal). --shell attaches to the task's aux terminal \
-instead of the agent; --tab attaches to one strip tab (a tab id, a \
-1-based index into status's tab list, or a title; agent tabs only, since \
+instead of the agent; --tab attaches to one tab (a tab id across strip or split panes, a \
+1-based index into status's strip tab list, or a strip title; agent tabs only, since \
 shell and terminal tabs are write-only from the CLI). The aux terminal is \
 not a strip tab, so --shell and --tab exclude each other. Without <TASK>, \
 resolves from the current directory.
@@ -798,7 +809,7 @@ target closed underneath the session (agent exited or task archived)."
         /// Attach to the task's aux terminal instead of the agent.
         #[arg(long)]
         shell: bool,
-        /// Attach to one tab: a tab id, 1-based index, or title.
+        /// Attach to one tab: a tab id (including split-pane tabs), 1-based strip index, or title.
         #[arg(long, value_name = "SEL", conflicts_with = "shell")]
         tab: Option<String>,
         /// Follow this terminal's size (SIGWINCH -> PTY resize). Off by
@@ -815,9 +826,10 @@ target closed underneath the session (agent exited or task archived)."
         after_help = "Dumps the retained tail of the agent PTY's output (a 256 KB ring, ANSI \
 escapes intact; long tails are trimmed to fit the 1 MB reply line once \
 JSON-escaped) to stdout; --shell reads the aux terminal instead, --tab \
-reads one strip tab (a tab id, a 1-based index into status's tab list, or \
-a title; agent tabs, or a run tab's id from `run`, since shell and terminal \
-tabs retain no output). This is the rendered terminal stream, useful for a quick look; for the \
+reads one tab (a tab id across strip or split panes, a 1-based index \
+into status's strip tab list, or a strip title; agent tabs, or a run \
+tab's id from `run`, since shell and terminal tabs retain no output). \
+This is the rendered terminal stream, useful for a quick look; for the \
 agent's structured answer prefer `termic result` or the RESULT.md file \
 convention. A note goes to stderr when older output was already dropped. \
 Without <TASK>, resolves from the current directory.
@@ -839,7 +851,7 @@ terminal open), 4 app not running, 5 CLI disabled, 6 refused, \
         /// Read the task's aux terminal instead of the agent.
         #[arg(long)]
         shell: bool,
-        /// Read one tab: a tab id, 1-based index, or title.
+        /// Read one tab: a tab id (including split-pane tabs), 1-based strip index, or title.
         #[arg(long, value_name = "SEL", conflicts_with = "shell")]
         tab: Option<String>,
         /// Print only the last N bytes of the retained tail.
@@ -2721,6 +2733,7 @@ fn execute_new(
         timeout_ms,
         cwd,
         parent_task: if *no_group { None } else { parent_task_from_env() },
+        parent_tab: if *no_group { None } else { parent_tab_from_env() },
         pr: None,
         members: members.clone(),
     };
@@ -2763,6 +2776,7 @@ fn execute_review(
         timeout_ms,
         cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         parent_task: if *no_group { None } else { parent_task_from_env() },
+        parent_tab: if *no_group { None } else { parent_tab_from_env() },
         pr: Some(number),
         members: Vec::new(),
     };
@@ -2818,6 +2832,12 @@ fn run_new_wire(
 /// grouping without being told about it.
 fn parent_task_from_env() -> Option<String> {
     own_env("TERMIC_TASK_ID").map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The agent tab this CLI runs inside, if any (`$TERMIC_TAB_ID`), so a child
+/// task remembers which tab initiated it.
+fn parent_tab_from_env() -> Option<String> {
+    own_env("TERMIC_TAB_ID").map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// `$TERMIC_TASK_ID` / `$TERMIC_TAB_ID`, the "your own task" defaults, unless
@@ -2950,6 +2970,7 @@ fn execute_send(
         // resume/fresh spawn an agent, so there is no turn to skip.
         now: !*queue && !*resume && !*fresh,
         cwd,
+        caller_task: parent_task_from_env(),
     };
     if *wait && format == OutputFormat::Text {
         eprintln!("termic: watching the agent (Ctrl-C stops watching; the task keeps running)");
@@ -4069,14 +4090,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("mcp token");
         std::fs::write(&file, "s3cret\r\n").unwrap();
-        let line = mcp_headers_line(Some(&file), "task-1").expect("a readable token file prints");
+        let line = mcp_headers_line(Some(&file), "task-1", "tab-2").expect("a readable token file prints");
         let v: serde_json::Value = serde_json::from_str(&line).expect("one JSON object");
-        assert_eq!(v, serde_json::json!({ "X-Termic-Token": "s3cret", "X-Termic-Task": "task-1" }));
+        assert_eq!(v, serde_json::json!({ "X-Termic-Token": "s3cret", "X-Termic-Task": "task-1", "X-Termic-Tab": "tab-2" }));
         assert!(!line.contains('\n'), "a headers helper emits exactly one line");
-        // Outside Termic there is no task: the header is still sent, empty.
+        // Outside Termic there is no task/tab: the headers are still sent, empty.
         let bare: serde_json::Value =
-            serde_json::from_str(&mcp_headers_line(Some(&file), "").unwrap()).unwrap();
+            serde_json::from_str(&mcp_headers_line(Some(&file), "", "").unwrap()).unwrap();
         assert_eq!(bare["X-Termic-Task"], "");
+        assert_eq!(bare["X-Termic-Tab"], "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4085,8 +4107,8 @@ mod tests {
         // No argument, or a file that is not there: exit 1 and print nothing,
         // so the client reports a broken helper instead of an unauthenticated
         // request that the server answers 401.
-        assert_eq!(mcp_headers_line(None, "t"), None);
-        assert_eq!(mcp_headers_line(Some(std::path::Path::new("/nonexistent/termic/mcp-token")), "t"), None);
+        assert_eq!(mcp_headers_line(None, "t", "tab"), None);
+        assert_eq!(mcp_headers_line(Some(std::path::Path::new("/nonexistent/termic/mcp-token")), "t", "tab"), None);
         assert_eq!(mcp_headers(None), 1);
     }
 

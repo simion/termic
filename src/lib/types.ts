@@ -344,6 +344,9 @@ export interface Task {
    *  joins none, and this is its only link back (the sidebar draws it on
    *  hover, src/components/sidebar/SpawnLinks.tsx). */
   spawned_by?: string;
+  /** Initiating tab id on `spawned_by` when spawned by an agent tab; lets
+   *  unqualified child replies route back to that tab. */
+  spawned_by_tab?: string;
   /** The recurring schedule this task is the parent of (GH #300). Absent on
    *  every other task. Its runs carry `spawned_by` + this task's group, and
    *  `schedule.history` holds their ids. */
@@ -1063,6 +1066,10 @@ export interface McpStatus {
   /** Claude accounts still missing it while others have it, by name. */
   claude_missing: string[];
   codex_registered: boolean;
+  /** True on macOS/Linux when a registered Termic helper predates X-Termic-Tab
+   *  and should be re-added so agents carry tab lineage. */
+  claude_needs_update?: boolean;
+  codex_needs_update?: boolean;
 }
 
 /** What a paired machine may do on THIS computer. "reply": send a prompt

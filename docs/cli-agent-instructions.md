@@ -73,38 +73,40 @@ run once that work is done, and let the receiving agent pick the moment.
 Ask for that report every time it finishes or gets stuck, follow-up
 work included, until a human tells it to stop:
 
-    "$TERMIC_CLI" send review-auth -p "[message from agent:claude
-    task:$TERMIC_TASK id:$TERMIC_TASK_ID] <your prompt here: what you want
-    it to do>. When done, reply: \"\$TERMIC_CLI\" send $TERMIC_TASK_ID -p
-    '[message from agent:codex task:review-auth id:<its id>] done: <what
-    you did> -- agent:codex task:review-auth id:<its id>'
-    -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID"
+    "$TERMIC_CLI" send review-auth -p "[message from agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}] <your prompt here: what you want it to do>. When done, reply: \"\$TERMIC_CLI\" send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from agent:codex task:review-auth id:<its id>] done: <what you did> -- agent:codex task:review-auth id:<its id>' -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}"
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands
-`$TERMIC_TASK` and `$TERMIC_TASK_ID` at send time, so the other agent receives a literal
-address it can just run. Single quotes there would block expansion and
-leave it guessing at where to reply. `\$TERMIC_CLI` is escaped for the
-opposite reason: the OTHER agent expands its own copy of that one.
+`$TERMIC_TASK`, `$TERMIC_TASK_ID`, and `$TERMIC_TAB_ID` at send time (using
+`${TERMIC_TAB_ID:+...}` so `tab:` and `--tab` are included only when
+running inside an agent tab), so the other agent receives a literal address
+it can just run. Single quotes there would block expansion and leave it
+guessing at where to reply. `\$TERMIC_CLI` is escaped for the opposite reason:
+the OTHER agent expands its own copy of that one.
 
 Every prompt you send another agent opens with a header and ends with a
 signature, both naming YOU, the sender: your agent name, your task's name
-(`$TERMIC_TASK`) and its id (`$TERMIC_TASK_ID`, the address a reply goes
-to). The reply you ask for carries the RECEIVER's identity the same way;
-you know it, since it is the task you are prompting.
+(`$TERMIC_TASK`), its id (`$TERMIC_TASK_ID`, the address a reply goes to),
+and when `$TERMIC_TAB_ID` is set, `tab:$TERMIC_TAB_ID` (your tab, whether
+on the strip or inside a split pane). The reply you ask for carries the
+RECEIVER's identity the same way; you know it, since it is the task you are
+prompting.
 
-    [message from agent:<agent> task:<task name> id:<task id>]
+    [message from agent:<agent> task:<task name> id:<task id> tab:<tab id>]
     ...
-    -- agent:<agent> task:<task name> id:<task id>
+    -- agent:<agent> task:<task name> id:<task id> tab:<tab id>
 
 A prompt typed by the user and a prompt sent by an agent arrive in the
 same terminal looking identical, so without this the receiver cannot tell
-a peer's request from the user's instruction, or which peer sent it. The same goes the other
-way: a prompt that arrives WITH that header came from another agent, not
-from the user. Treat it as a request from a peer (the user's own
-instructions win if the two conflict), and put the header and your own
-signature on your reply. Keep reporting back to that id every time you
-finish or get stuck, follow-up work included, and stop only when a human
-tells you to.
+a peer's request from the user's instruction, or which peer sent it. The
+same goes the other way: a prompt that arrives WITH that header came from
+another agent, not from the user. Treat it as a request from a peer (the
+user's own instructions win if the two conflict), put the header and your
+own signature on your reply, and pass `--tab <tab id>` (MCP `tab`) when
+the incoming header includes `tab:<tab id>` (and note that direct replies
+from a spawned child default back to the initiating parent tab even when
+`--tab` is omitted while that tab is still live). Keep reporting back to
+that id every time you finish or get stuck, follow-up work included, and
+stop only when a human tells you to.
 
 A prompt arriving in your own terminal is one of those reports; act on
 it and reply the same way. This is the preferred protocol because it
@@ -168,14 +170,7 @@ arguments; each value is one argv element, so a flag and its value are
 two occurrences. Explicit `--model` is appended after `--arg` values and
 wins when the agent treats the last model flag as authoritative:
 
-    "$TERMIC_CLI" new implement-auth --agent codex --yolo \
-      --arg=--reasoning-effort --arg=low --model <model-id> \
-      -p "[message from agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID]
-          Implement the approved authentication plan. When done, reply:
-          \"\$TERMIC_CLI\" send $TERMIC_TASK_ID -p '[message from
-          agent:codex task:implement-auth id:<its id>] done: <what you
-          did> -- agent:codex task:implement-auth id:<its id>'
-          -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID"
+    "$TERMIC_CLI" new implement-auth --agent codex --yolo --arg=--reasoning-effort --arg=low --model <model-id> -p "[message from agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}] Implement the approved authentication plan. When done, reply: \"\$TERMIC_CLI\" send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from agent:codex task:implement-auth id:<its id>] done: <what you did> -- agent:codex task:implement-auth id:<its id>' -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}"
 
 If no report arrives (the agent stopped early, or you need the answer
 before it replies), `"$TERMIC_CLI" result <task>` reads a claude agent's
@@ -298,11 +293,12 @@ scripts; then start it yourself. Over MCP: `task_run` (`setup`, `stop`,
   `--resume` (restore the last session) or `--fresh` (new agent, no
   context). `-p -` reads stdin. This is the notification channel above:
   ask for a report back rather than adding `--wait`.
-- A task can hold SEVERAL agent tabs. `"$TERMIC_CLI" tab <task>
-  --agent <id> -p "<text>"` opens one and prompts it; record the
-  printed tab id and pass `--tab <id>` to `send`/`wait`/`logs` to keep
-  addressing that tab (ids are stable; indexes shift, and a title the
-  agent sets for itself changes mid-turn).
+- A task can hold SEVERAL agent tabs (both on the top tab strip and
+  inside split panes). `"$TERMIC_CLI" tab <task> --agent <id> -p "<text>"`
+  opens one and prompts it; record the printed tab id and pass
+  `--tab <id>` to `send`/`wait`/`logs` to keep addressing that tab (ids
+  are stable across strip and split panes; strip indexes shift, and a
+  title the agent sets for itself changes mid-turn).
 - Name the tab when you open it with `--title <name>` (unique in the
   task, not a bare number) and `--tab <name>` works just as well: a
   title you set survives the agent retitling itself and a relaunch.
@@ -387,15 +383,11 @@ on both screens). `"$TERMIC_CLI" peer list` names this machine and the
 ones paired with it. The global `--peer <machine>` runs any verb THERE
 instead of here:
 
-    "$TERMIC_CLI" --peer laptop new fix-x --yolo -p "[message from
-    agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID peer:studio]
-    <work>. When done, reply: termic --peer studio send $TERMIC_TASK_ID
-    -p '[message from agent:<its agent> task:fix-x id:<its id>
-    peer:laptop] done: <what you did> -- ...' -- agent:claude
-    task:$TERMIC_TASK id:$TERMIC_TASK_ID peer:studio"
+    "$TERMIC_CLI" --peer laptop new fix-x --yolo -p "[message from agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID} peer:studio] <work>. When done, reply: \"\$TERMIC_CLI\" --peer studio send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from agent:<its agent> task:fix-x id:<its id> peer:laptop] done: <what you did> -- ...' -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID} peer:studio"
 
 Task names, paths and `--profile` are the other machine's; your own task
-is not a default there, so name the task. Put `peer:<this machine's
+and tab are not defaults under `--peer`, so name the task (and pass
+`--tab` when the header includes `tab:<id>`). Put `peer:<this machine's
 name>` in your header, and a prompt whose header carries `peer:<machine>`
 came from that machine: answer it with `--peer <machine>`. That machine
 may only let this one reply to tasks that contacted it, and exit 12

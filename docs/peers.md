@@ -313,7 +313,7 @@ computer is followed.
   the peer verbs say `target` for the same reason), the `peer_*` verbs,
   and `ErrorCode::PeerUnreachable`, **exit 12**: nothing ran there. A
   refusal by the grant is `auth`, exit 6.
-- What does not cross: `cwd`, `parent_task` and `caller_task` are
+- What does not cross: `cwd`, `parent_task`, `parent_tab` and `caller_task` are
   stripped on both ends (they name the caller's machine), the CLI drops
   its `$TERMIC_TASK_ID` / `$TERMIC_TAB_ID` defaults under `--peer`, and
   `attach` and `send --here` are refused. Task names, paths and

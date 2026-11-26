@@ -341,6 +341,7 @@ export default {
     codexHint: "Writes <1>~/.codex/config.toml</1>, keeping a backup of the current file.",
     addToClaude: "Add to Claude Code",
     claudeHint: "Registers through claude's own command. Needs Claude Code 2.1.238 or newer.",
+    needsTabUpdate: "Registered by an older Termic version without X-Termic-Tab support. Re-add and restart running sessions so replies route back to the originating agent tab.",
     bindFailed: "The endpoint could not bind. Check the log, or toggle the setting off and on.",
     noToken: "The endpoint is not running, so there is no token",
     adding: "Adding…",

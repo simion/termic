@@ -57,6 +57,10 @@ pub(crate) const MCP_TOKEN_HEADER: &str = "X-Termic-Token";
 /// like the CLI's env var, so it only ever DEFAULTS a target the token
 /// holder could name explicitly anyway; it grants nothing.
 pub(crate) const MCP_TASK_HEADER: &str = "X-Termic-Task";
+/// The agent tab the calling agent runs in (`$TERMIC_TAB_ID`), sent alongside
+/// `X-Termic-Task`. Used to record `parent_tab` on child spawns and default
+/// `tab` on `task_prop` writes; empty outside a Termic agent tab.
+pub(crate) const MCP_TAB_HEADER: &str = "X-Termic-Tab";
 
 const MAX_BODY: usize = 4 * 1024 * 1024;
 /// Cap on the request line + headers together, enforced pre-auth (the
@@ -311,6 +315,9 @@ struct HttpRequest {
     /// `X-Termic-Task` (MCP_TASK_HEADER): the caller's own task id, empty
     /// when the helper ran outside a Termic task.
     termic_task: Option<String>,
+    /// `X-Termic-Tab` (MCP_TAB_HEADER): the caller's own agent tab id, empty
+    /// when outside an agent tab.
+    termic_tab: Option<String>,
     /// `Host`, checked against the loopback names: the DNS-rebinding
     /// stop, since a rebound page's request is same-origin and so
     /// carries no `Origin` to reject.
@@ -347,6 +354,7 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpRequest, u16>>
     let mut host = None;
     let mut termic_token = None;
     let mut termic_task = None;
+    let mut termic_tab = None;
     let mut chunked = false;
     let mut bad_length = false;
     loop {
@@ -399,6 +407,9 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpRequest, u16>>
                 _ if k.eq_ignore_ascii_case(MCP_TASK_HEADER) => {
                     termic_task = Some(v.trim().to_string()).filter(|v| !v.is_empty())
                 }
+                _ if k.eq_ignore_ascii_case(MCP_TAB_HEADER) => {
+                    termic_tab = Some(v.trim().to_string()).filter(|v| !v.is_empty())
+                }
                 "host" => host = Some(v.to_string()),
                 "transfer-encoding" => chunked = v.to_ascii_lowercase().contains("chunked"),
                 _ => {}
@@ -447,6 +458,7 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Result<HttpRequest, u16>>
         host,
         termic_token,
         termic_task,
+        termic_tab,
         body,
     }))
 }
@@ -769,7 +781,13 @@ fn rpc_response(server: &McpServer, req: &HttpRequest) -> (u16, Vec<u8>) {
             })),
         ),
         "tools/list" => tools_list(id),
-        "tools/call" => tools_call(server, id, &params, req.termic_task.as_deref()),
+        "tools/call" => tools_call(
+            server,
+            id,
+            &params,
+            req.termic_task.as_deref(),
+            req.termic_tab.as_deref(),
+        ),
         // A method this server does not implement is 404 at the HTTP
         // layer; the JSON-RPC body is what separates it from a 404 out
         // of something that is not an MCP endpoint at all.
@@ -782,7 +800,7 @@ fn rpc_response(server: &McpServer, req: &HttpRequest) -> (u16, Vec<u8>) {
 /// (`agent_overview!` in termic-cli/src/lib.rs): keep the two in step. The
 /// point is the first sentence: an agent that does not realise it is running
 /// INSIDE a Termic task never thinks to start siblings or report back.
-const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it is typed at once, even into a busy agent mid-turn, and queue=true waits for that turn to end instead) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); start your task's dev server with task_run when it has a run script configured (it runs in the task's Run tab, where the user sees and stops it; status=true shows the script), rather than launching your own `npm run dev` or similar in a shell; retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. A multi-repo project holds several repos, possibly many (project_list shows each project's type and members): task_new worktrees only the members you name in members (none without it). Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id), and ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. Report back there every time you finish or get stuck, follow-up work included, and stop only when a human tells you to. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id; a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
+const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it is typed at once, even into a busy agent mid-turn, and queue=true waits for that turn to end instead) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); start your task's dev server with task_run when it has a run script configured (it runs in the task's Run tab, where the user sees and stops it; status=true shows the script), rather than launching your own `npm run dev` or similar in a shell; retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; tab defaults from TERMIC_TAB_ID when writing to your own task); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. A multi-repo project holds several repos, possibly many (project_list shows each project's type and members): task_new worktrees only the members you name in members (none without it). Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id with tab set to your TERMIC_TAB_ID), and ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID> tab:<your TERMIC_TAB_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID> tab:<your TERMIC_TAB_ID>, with the values written out (omit tab:<...> if TERMIC_TAB_ID is unset; there is no shell here to fill them in, and TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is the task to reply to, and tab (when present) is the exact tab to pass as tab so your reply reaches the initiating tab instead of another agent in that task (a plain tab id also reaches an agent tab inside a split pane). Report back there every time you finish or get stuck, follow-up work included, and stop only when a human tells you to. When Termic set this client up, it tells the server which task and tab you run in, so task_rename, task_group, task_tab and task_prop default to your own task (and task_prop writes default tab to your own tab; task_new and task_review also record your tab so direct replies from that child default back to it when tab is omitted), exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id (and tab if present); a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id (and tab) in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
 
 /// UnsupportedProtocolVersionError. The `supported` list has to be
 /// machine-readable in `data`: that is what a client retries from, and
@@ -1050,8 +1068,22 @@ const P_TAB: ParamDef = ParamDef {
     name: "tab",
     json_type: "string",
     required: false,
-    description: "Target one tab instead of the task's default: a tab id, a 1-based strip index, or a title. Omitted means the default tab.",
+    description: "Target one tab: a tab id (strip or split pane), a 1-based strip index, or a strip title.",
     cli_flag: Some("--tab"),
+};
+const P_PARENT_TASK: ParamDef = ParamDef {
+    name: "parentTask",
+    json_type: "string",
+    required: false,
+    description: "Group under this task instead of your own (the default when you run inside Termic).",
+    cli_flag: None,
+};
+const P_PARENT_TAB: ParamDef = ParamDef {
+    name: "parentTab",
+    json_type: "string",
+    required: false,
+    description: "Initiating tab id on the parent task (defaults from X-Termic-Tab when grouping under your own task).",
+    cli_flag: None,
 };
 const P_TIMEOUT: ParamDef = ParamDef {
     name: "timeoutMs",
@@ -1101,7 +1133,7 @@ const TOOLS: &[ToolDef] = &[
         params: &[
             ParamDef { name: "name", json_type: "string", required: true, description: "Task (and branch) name.", cli_flag: Some("name") },
             ParamDef { name: "project", json_type: "string", required: false, description: "Project to create in (required when more than one is registered).", cli_flag: Some("--project") },
-            ParamDef { name: "prompt", json_type: "string", required: false, description: "First prompt for the agent. From an agent: sign it as task_send says and ask for a report back (a task_send to your task id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
+            ParamDef { name: "prompt", json_type: "string", required: false, description: "First prompt for the agent. From an agent: sign it as task_send says (including your TERMIC_TAB_ID) and ask for a report back (a task_send to your task id with your tab id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
             ParamDef { name: "agent", json_type: "string", required: false, description: "Agent CLI id (see the project's registry); default is the project's.", cli_flag: Some("--agent") },
             // The CLI splits this into --worktree/--main; the wire field
             // is one string, and a tool enum beats two mutually
@@ -1110,9 +1142,11 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "mode", json_type: "string", required: false, description: "\"worktree\" for a task on its own git worktree and branch, or \"main\" to work in the project's main checkout. Omitted means the app's last-used mode, so pass it when the answer matters.", cli_flag: None },
             ParamDef { name: "base", json_type: "string", required: false, description: "Base branch for a worktree task.", cli_flag: Some("--base") },
             ParamDef { name: "checkout", json_type: "string", required: false, description: "Existing branch to check out instead of creating one (local, or on the remote: fetched and tracked). Implies worktree mode.", cli_flag: Some("--checkout") },
-            // Defaults to the caller's task (MCP_TASK_HEADER), the way the
-            // CLI reads $TERMIC_TASK_ID; explicit to group under another.
-            ParamDef { name: "parentTask", json_type: "string", required: false, description: "Group under this task instead of your own (the default when you run inside Termic).", cli_flag: None },
+            // Defaults to the caller's task/tab (MCP_TASK_HEADER / MCP_TAB_HEADER),
+            // the way the CLI reads $TERMIC_TASK_ID / $TERMIC_TAB_ID; explicit
+            // to group under or track another.
+            P_PARENT_TASK,
+            P_PARENT_TAB,
             ParamDef { name: "noGroup", json_type: "boolean", required: false, description: "Keep the new task out of your task group.", cli_flag: Some("--no-group") },
             P_LIBRARY,
             ParamDef { name: "model", json_type: "string", required: false, description: "Model for the new task's agent (appended after args, so it wins).", cli_flag: Some("--model") },
@@ -1151,6 +1185,7 @@ const TOOLS: &[ToolDef] = &[
             cwd: None,
             // --no-group wins over the caller default AND an explicit parent.
             parent_task: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTask")? },
+            parent_tab: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTab")? },
             pr: None,
             members: arg_str_list(a, "members")?,
         }),
@@ -1166,6 +1201,8 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "prompt", json_type: "string", required: false, description: "Text added after it.", cli_flag: Some("--prompt") },
             ParamDef { name: "agent", json_type: "string", required: false, description: "Agent CLI id.", cli_flag: Some("--agent") },
             ParamDef { name: "main", json_type: "boolean", required: false, description: "Use the main checkout, not a worktree.", cli_flag: Some("--main") },
+            P_PARENT_TASK,
+            P_PARENT_TAB,
             ParamDef { name: "noGroup", json_type: "boolean", required: false, description: "Keep it out of your task group.", cli_flag: Some("--no-group") },
             ParamDef { name: "sandbox", json_type: "string", required: false, description: "off, monitor, enforce or enforce-fs.", cli_flag: Some("--sandbox") },
             ParamDef { name: "yolo", json_type: "boolean", required: false, description: "The agent's YOLO flag.", cli_flag: Some("--yolo") },
@@ -1204,8 +1241,9 @@ const TOOLS: &[ToolDef] = &[
                 wait: arg_bool(a, "wait")?,
                 timeout_ms: arg_u64(a, "timeoutMs")?,
                 cwd: None,
-                // Filled with the caller's task by with_caller_defaults.
+                // Filled with the caller's task and tab by with_caller_defaults.
                 parent_task: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTask")? },
+                parent_tab: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTab")? },
                 pr: Some(pr),
                 members: Vec::new(),
             })
@@ -1214,7 +1252,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_send",
         cli_verb: "send",
-        description: "Prompt the task's running agent, typed at once even mid-turn (queue waits for the turn to end; not while it waits on its subagents). With no agent running, resume restores the last session and fresh spawns a new one. Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id>] first, the same after -- last).",
+        description: "Prompt the task's running agent, typed at once even mid-turn (queue waits for the turn to end; not while it waits on its subagents). With no agent running, resume restores the last session and fresh spawns a new one. Without tab, direct replies from a spawned child route to its initiating parent tab while live, otherwise falling back to the default (or sole live) strip agent tab (exited split-pane tabs are not reopened on resume). Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id> tab:<your tab id>] first, the same after -- last), and pass tab when replying to a tab:<id> header.",
         params: &[
             ParamDef { name: "task", json_type: "string", required: false, description: "Task name or id. Required unless here.", cli_flag: Some("task") },
             P_PROJECT,
@@ -1251,12 +1289,13 @@ const TOOLS: &[ToolDef] = &[
             // now. resume/fresh spawn, so there is no turn to skip.
             now: !arg_bool(a, "queue")? && !arg_bool(a, "resume")? && !arg_bool(a, "fresh")?,
             cwd: None,
+            caller_task: None,
         }),
     },
     ToolDef {
         name: "task_wait",
         cli_verb: "wait",
-        description: "Block until the task's agent is quiescent (settled turn, empty queue) or the timeout expires, whichever is first; returns {outcome, state}. Bounded: loop on outcome \"timeout\" to keep waiting. Settle detection is heuristic.",
+        description: "Block until the task is quiescent (settled turn, empty queue) or the timeout expires, whichever is first; returns {outcome, state}. Bounded: loop on outcome \"timeout\" to keep waiting. Settle detection is heuristic. Without tab, waits on the whole task (aggregate state and queue); with tab, waits only on that tab.",
         params: &[P_TASK, P_PROJECT, P_TAB, P_TIMEOUT, P_PEER],
         destructive: false,
         read_only: true,
@@ -1284,7 +1323,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_log",
         cli_verb: "logs",
-        description: "Recent terminal output of the task's agent (or aux shell).",
+        description: "Recent terminal output of the task's agent (default agent tab when tab is omitted; shell=true reads the aux shell).",
         params: &[
             P_TASK,
             P_PROJECT,
@@ -1585,7 +1624,7 @@ const TOOLS: &[ToolDef] = &[
             // typo must not land the caller in the wrong semantics.
             ParamDef { name: "kind", json_type: "string", required: false, description: "When opening: \"agent\" (needs agentId), \"terminal\" (needs agentId naming a terminal entry), \"shell\" for a plain login shell, or \"default\" for another tab of whatever the task already runs.", cli_flag: None },
             ParamDef { name: "agentId", json_type: "string", required: false, description: "Registry id for the agent and terminal kinds; see task_agents. Ignored by the other kinds.", cli_flag: Some("--agent") },
-            ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only). From an agent: sign it as task_send says and ask for a report back (a task_send to your task id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
+            ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only). From an agent: sign it as task_send says (including your TERMIC_TAB_ID) and ask for a report back (a task_send to your task id with your tab id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
             ParamDef { name: "model", json_type: "string", required: false, description: "Model override for this tab only. Requires agent kind; passed after args.", cli_flag: Some("--model") },
             ParamDef { name: "args", json_type: "array", required: false, description: "Additional argv strings for this tab only, such as provider-specific reasoning settings. Requires agent kind.", cli_flag: Some("--arg") },
             P_LIBRARY,
@@ -1672,14 +1711,14 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_prop",
         cli_verb: "prop",
-        description: "Tab properties shown on the task's sidebar row (ticket=ABC-1). key+value+tab sets (\"\" clears); otherwise lists.",
+        description: "Tab properties shown on the task's sidebar row (ticket=ABC-1). key+value sets on tab (or your own tab from X-Termic-Tab, \"\" clears); otherwise lists.",
         params: &[
             // A flag on the CLI (`prop <key> <value>` takes the positionals).
             ParamDef { name: "task", json_type: "string", required: false, description: "Omitted: your own task.", cli_flag: Some("--task") },
             P_PROJECT,
             ParamDef { name: "key", json_type: "string", required: false, description: "[a-z0-9_-], max 32.", cli_flag: Some("key") },
             ParamDef { name: "value", json_type: "string", required: false, description: "One line, max 40.", cli_flag: Some("value") },
-            ParamDef { name: "tab", json_type: "string", required: false, description: "Tab id, index or title.", cli_flag: Some("--tab") },
+            ParamDef { name: "tab", json_type: "string", required: false, description: "Tab id (strip or split pane), index or title; defaults from X-Termic-Tab on writes to your own task.", cli_flag: Some("--tab") },
         ],
         destructive: false,
         read_only: false,
@@ -2021,7 +2060,13 @@ impl cli_server::EventSink for NoopSink {
     }
 }
 
-fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Value, caller: Option<&str>) -> (u16, Vec<u8>) {
+fn tools_call(
+    server: &McpServer,
+    id: serde_json::Value,
+    params: &serde_json::Value,
+    caller: Option<&str>,
+    caller_tab: Option<&str>,
+) -> (u16, Vec<u8>) {
     let Some(name) = params.get("name").and_then(|n| n.as_str()) else {
         return rpc_error(id, 200, -32602, "params.name is required");
     };
@@ -2050,12 +2095,12 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
         };
         let mut inner = args.clone();
         inner.remove("peer");
-        match build_call(tool, &inner, None) {
+        match build_call(tool, &inner, None, None) {
             Ok(c) => (c, Some(peer.to_string())),
             Err(msg) => return rpc_error(id, 200, -32602, &msg),
         }
     } else {
-        match build_call(tool, args, caller) {
+        match build_call(tool, args, caller, caller_tab) {
             Ok(c) => (c, None),
             Err(msg) => return rpc_error(id, 200, -32602, &msg),
         }
@@ -2081,7 +2126,12 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
 
 /// One tool call's arguments, validated and built into the wire command:
 /// the strict-argument rule, the caller's own-task defaults, the wait cap.
-fn build_call(tool: &ToolDef, args: &Args, caller: Option<&str>) -> Result<Command, String> {
+fn build_call(
+    tool: &ToolDef,
+    args: &Args,
+    caller: Option<&str>,
+    caller_tab: Option<&str>,
+) -> Result<Command, String> {
     // Every schema advertises `additionalProperties: false`; enforce it
     // rather than trusting clients to validate. Silently ignoring a typo
     // like `timeoutMS` would change behaviour without saying so (that
@@ -2089,9 +2139,9 @@ fn build_call(tool: &ToolDef, args: &Args, caller: Option<&str>) -> Result<Comma
     if let Some(unknown) = args.keys().find(|k| !tool.params.iter().any(|p| p.name == k.as_str())) {
         return Err(format!("unknown argument \"{unknown}\" for tool \"{}\"", tool.name));
     }
-    // The CLI's "your own task" defaults, from the caller's task header. An
-    // argument the caller passed always wins; nothing is filled without it.
-    let args = with_caller_defaults(tool.name, args, caller);
+    // The CLI's "your own task" defaults, from the caller's task/tab headers.
+    // An argument the caller passed always wins; nothing is filled without it.
+    let args = with_caller_defaults(tool.name, args, caller, caller_tab);
     if SELF_DEFAULT_TOOLS.contains(&tool.name) && !args.contains_key("task") {
         return Err(
             "name the task: this client did not say which Termic task it runs in (re-run Termic's MCP setup for your client to have it send that)".into(),
@@ -2099,9 +2149,9 @@ fn build_call(tool: &ToolDef, args: &Args, caller: Option<&str>) -> Result<Comma
     }
     let mut cmd = (tool.build)(&args)?;
     clamp_wait(&mut cmd);
-    // Who is asking, for the one verb where that changes what happens: an
-    // agent inside a task is never merged into another group by name.
-    if let Command::Group { caller_task, .. } = &mut cmd {
+    // Who is asking: `group` avoids cross-group merges; `send` prefers the
+    // initiating parent tab when a spawned child replies without `tab`.
+    if let Command::Group { caller_task, .. } | Command::Send { caller_task, .. } = &mut cmd {
         *caller_task = caller.map(str::to_string);
     }
     Ok(cmd)
@@ -2135,7 +2185,7 @@ fn peer_call_command(args: &Args) -> Result<(Command, String), String> {
     if SELF_DEFAULT_TOOLS.contains(&tool.name) && !inner.contains_key("task") {
         return Err(format!("name the task: {name} on another machine has no task of yours to default to"));
     }
-    Ok((build_call(tool, inner, None)?, peer))
+    Ok((build_call(tool, inner, None, None)?, peer))
 }
 
 /// Tools whose `task` defaults to the caller's own, as the CLI's `rename`,
@@ -2147,10 +2197,17 @@ const SELF_DEFAULT_TOOLS: &[&str] = &[
     "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
 ];
 
-/// `args` with the caller's task filled in where the CLI would have used
-/// `$TERMIC_TASK_ID`: `task_new`'s parent (grouping) and the self-targeting
-/// tools' `task`. Only absent keys are filled.
-fn with_caller_defaults(tool: &str, args: &Args, caller: Option<&str>) -> Args {
+/// `args` with the caller's task (and tab) filled in where the CLI would have
+/// used `$TERMIC_TASK_ID` / `$TERMIC_TAB_ID`: `task_new`/`task_review`'s
+/// `parentTask`/`parentTab`, `task_prop` write's `tab`, and the
+/// self-targeting tools' `task`. Only absent keys are filled, and `caller_tab`
+/// never crosses onto another explicit task.
+fn with_caller_defaults(
+    tool: &str,
+    args: &Args,
+    caller: Option<&str>,
+    caller_tab: Option<&str>,
+) -> Args {
     let mut out = args.clone();
     let Some(caller) = caller else { return out };
     let key = match tool {
@@ -2161,6 +2218,21 @@ fn with_caller_defaults(tool: &str, args: &Args, caller: Option<&str>) -> Args {
         _ => return out,
     };
     out.entry(key.to_string()).or_insert_with(|| serde_json::Value::String(caller.to_string()));
+    if matches!(tool, "task_new" | "task_review") {
+        if let Some(tab) = caller_tab {
+            if out.get("parentTask").and_then(|v| v.as_str()) == Some(caller) {
+                out.entry("parentTab".to_string())
+                    .or_insert_with(|| serde_json::Value::String(tab.to_string()));
+            }
+        }
+    } else if tool == "task_prop" && args.get("value").is_some_and(|v| !v.is_null()) {
+        if let Some(tab) = caller_tab {
+            if out.get("task").and_then(|v| v.as_str()) == Some(caller) {
+                out.entry("tab".to_string())
+                    .or_insert_with(|| serde_json::Value::String(tab.to_string()));
+            }
+        }
+    }
     out
 }
 
@@ -2550,6 +2622,10 @@ pub(crate) struct McpStatus {
     /// The claude accounts still missing it while others have it, by name.
     claude_missing: Vec<String>,
     codex_registered: bool,
+    /// True on macOS/Linux when an existing Termic-managed helper omits
+    /// `X-Termic-Tab` so Settings can prompt the user to re-add it.
+    claude_needs_update: bool,
+    codex_needs_update: bool,
 }
 
 /// Settings-UI probe. Reads the live handle, so it reflects reality
@@ -2574,6 +2650,9 @@ pub(crate) fn mcp_status() -> McpStatus {
     });
     let claude_dirs = claude_config_dirs();
     let claude_total = claude_dirs.len();
+    let claude_needs_update = claude_dirs
+        .iter()
+        .any(|c| claude_needs_tab_update(c.dir.as_deref()));
     let claude_missing: Vec<String> = claude_dirs
         .into_iter()
         .filter(|c| !claude_has_termic(c.dir.as_deref()))
@@ -2592,6 +2671,8 @@ pub(crate) fn mcp_status() -> McpStatus {
         claude_registered: claude_missing.is_empty(),
         claude_missing: if claude_missing.len() < claude_total { claude_missing } else { Vec::new() },
         codex_registered: codex_has_termic(),
+        claude_needs_update,
+        codex_needs_update: codex_needs_tab_update(),
     }
 }
 
@@ -2677,6 +2758,49 @@ fn codex_text_has_termic(text: &str) -> bool {
         .is_some()
 }
 
+/// True ONLY for older Termic inline shell helpers that already carry
+/// `X-Termic-Token` + `X-Termic-Task` without `X-Termic-Tab`. Windows's CLI
+/// helper (`termic-cli mcp-headers`) and custom user helpers return false.
+fn helper_needs_tab_header(helper: &str) -> bool {
+    helper.contains(MCP_TOKEN_HEADER)
+        && helper.contains(MCP_TASK_HEADER)
+        && !helper.contains(MCP_TAB_HEADER)
+}
+
+fn claude_needs_tab_update(dir: Option<&std::path::Path>) -> bool {
+    claude_json_path(dir)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|doc| claude_doc_needs_tab_update(&doc))
+}
+
+fn claude_doc_needs_tab_update(doc: &serde_json::Value) -> bool {
+    doc.get("mcpServers")
+        .and_then(|m| m.get("termic"))
+        .and_then(|s| s.get("headersHelper"))
+        .and_then(|v| v.as_str())
+        .is_some_and(helper_needs_tab_header)
+}
+
+fn codex_needs_tab_update() -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    std::fs::read_to_string(home.join(".codex/config.toml"))
+        .is_ok_and(|t| codex_text_needs_tab_update(&t))
+}
+
+fn codex_text_needs_tab_update(text: &str) -> bool {
+    text.parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|doc| {
+            doc.get("mcp_servers")?
+                .get("termic")?
+                .get("http_headers_helper")?
+                .as_str()
+                .map(helper_needs_tab_header)
+        })
+        .unwrap_or(false)
+}
+
 /// The live credential, for the Settings "Copy token" affordance only.
 /// Clients that take a pasted value (Claude Desktop and friends) cannot
 /// read the file themselves, and the UI hands this straight to the
@@ -2735,11 +2859,12 @@ fn sh_helper_command(token_path: &Path) -> String {
     // Single-quoted for the shell, with any embedded apostrophe closed,
     // escaped and reopened, so a path like /Users/O'Brien still parses.
     let quoted = format!("'{}'", token_path.to_string_lossy().replace('\'', "'\\''"));
-    // The task header comes from the AGENT's environment: the client runs
-    // this helper as its own child, so $TERMIC_TASK_ID is whatever task the
-    // agent runs in, and empty outside Termic (the server ignores empty).
+    // The task/tab headers come from the AGENT's environment: the client runs
+    // this helper as its own child, so $TERMIC_TASK_ID / $TERMIC_TAB_ID are
+    // whatever task and agent tab it runs in, and empty outside Termic (the
+    // server ignores empty).
     format!(
-        "printf '{{\"{MCP_TOKEN_HEADER}\":\"%s\",\"{MCP_TASK_HEADER}\":\"%s\"}}' \"$(cat {quoted})\" \"${{TERMIC_TASK_ID:-}}\""
+        "printf '{{\"{MCP_TOKEN_HEADER}\":\"%s\",\"{MCP_TASK_HEADER}\":\"%s\",\"{MCP_TAB_HEADER}\":\"%s\"}}' \"$(cat {quoted})\" \"${{TERMIC_TASK_ID:-}}\" \"${{TERMIC_TAB_ID:-}}\""
     )
 }
 
@@ -4079,7 +4204,13 @@ mod tests {
         // the sidebar, which a remote client's task menu needs too.
         // 29914: project_add's `clone`, parity with `termic project add
         // --clone`: the one way a repo gets onto a termic-server box.
-        const RECORDED: usize = 30389;
+        // 31030: tab-scoped reply lineage and split-pane exact id support:
+        // task_new's `parentTab`, plus concise `TERMIC_TAB_ID` / `X-Termic-Tab`
+        // notes on P_TAB, task_new/task_tab prompts, task_send, and task_prop.
+        // 31286: shared P_PARENT_TASK / P_PARENT_TAB on task_review, generic
+        // selector-only P_TAB, and per-tool omitted-tab docs on send/wait/log.
+        // 31360: document exited split-pane fallback on task_send.
+        const RECORDED: usize = 31360;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -4399,10 +4530,10 @@ mod tests {
         assert!(matches!(c, Command::Tab { timeout_ms: None, .. }));
 
         // send --wait is clamped; send without wait is left alone.
-        let mut c = Command::Send { task: Some("t".into()), project: None, prompt: "p".into(), prompt_ref: None, resume: false, fresh: false, wait: true, timeout_ms: None, tab: None, now: false, cwd: None };
+        let mut c = Command::Send { task: Some("t".into()), project: None, prompt: "p".into(), prompt_ref: None, resume: false, fresh: false, wait: true, timeout_ms: None, tab: None, now: false, cwd: None, caller_task: None };
         clamp_wait(&mut c);
         assert!(matches!(c, Command::Send { timeout_ms: Some(MCP_WAIT_CAP_MS), .. }));
-        let mut c = Command::Send { task: Some("t".into()), project: None, prompt: "p".into(), prompt_ref: None, resume: false, fresh: false, wait: false, timeout_ms: None, tab: None, now: false, cwd: None };
+        let mut c = Command::Send { task: Some("t".into()), project: None, prompt: "p".into(), prompt_ref: None, resume: false, fresh: false, wait: false, timeout_ms: None, tab: None, now: false, cwd: None, caller_task: None };
         clamp_wait(&mut c);
         assert!(matches!(c, Command::Send { timeout_ms: None, .. }));
     }
@@ -4428,6 +4559,7 @@ mod tests {
                 queued: 0,
                 capable: true,
                 tab_states: Vec::new(),
+                pane_tab_states: Vec::new(),
                 hydrated: true,
             },
         )]);
@@ -4832,11 +4964,17 @@ command = \"/bin/true\"\n";
 
     /// Run the helper the way a client does (through sh, in the agent's
     /// environment) and parse what it prints.
-    fn run_helper(token_file: &Path, task: Option<&str>) -> serde_json::Value {
+    fn run_helper(token_file: &Path, task: Option<&str>, tab: Option<&str>) -> serde_json::Value {
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(sh_helper_command(token_file)).env_remove("TERMIC_TASK_ID");
+        cmd.arg("-c")
+            .arg(sh_helper_command(token_file))
+            .env_remove("TERMIC_TASK_ID")
+            .env_remove("TERMIC_TAB_ID");
         if let Some(t) = task {
             cmd.env("TERMIC_TASK_ID", t);
+        }
+        if let Some(tab_id) = tab {
+            cmd.env("TERMIC_TAB_ID", tab_id);
         }
         let out = cmd.output().unwrap();
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("helper printed non-JSON ({e}): {:?}", String::from_utf8_lossy(&out.stdout)))
@@ -4847,11 +4985,14 @@ command = \"/bin/true\"\n";
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("mcp-token");
         std::fs::write(&f, "tok123").unwrap();
-        let inside = run_helper(&f, Some("task-abc"));
+        let inside = run_helper(&f, Some("task-abc"), Some("tab-xyz"));
         assert_eq!(inside[MCP_TOKEN_HEADER], "tok123");
         assert_eq!(inside[MCP_TASK_HEADER], "task-abc");
-        // Outside Termic the header is empty, which the server ignores.
-        assert_eq!(run_helper(&f, None)[MCP_TASK_HEADER], "");
+        assert_eq!(inside[MCP_TAB_HEADER], "tab-xyz");
+        // Outside Termic both headers are empty, which the server ignores.
+        let outside = run_helper(&f, None, None);
+        assert_eq!(outside[MCP_TASK_HEADER], "");
+        assert_eq!(outside[MCP_TAB_HEADER], "");
     }
 
     fn build(tool: &str, args: serde_json::Value) -> Result<Command, String> {
@@ -4861,12 +5002,12 @@ command = \"/bin/true\"\n";
 
     #[test]
     fn task_new_takes_the_cli_new_flags() {
-        let Command::New { agent_args, sandbox, yolo, account, open, from, resume, prompt_ref, parent_task, .. } = build(
+        let Command::New { agent_args, sandbox, yolo, account, open, from, resume, prompt_ref, parent_task, parent_tab, .. } = build(
             "task_new",
             serde_json::json!({
                 "name": "x", "args": ["--effort", "low"], "model": "worker", "sandbox": "monitor",
                 "yolo": true, "account": "work", "open": true, "from": "/w", "resume": "S1", "library": "builtin:review",
-                "parentTask": "p",
+                "parentTask": "p", "parentTab": "tab-1",
             }),
         ).unwrap() else { panic!() };
         // Composed exactly as `termic new --arg ... --model ...` composes it.
@@ -4875,9 +5016,10 @@ command = \"/bin/true\"\n";
         assert_eq!(account.as_deref(), Some("work"));
         assert_eq!((from.as_deref(), resume.as_deref(), prompt_ref.as_deref()), (Some("/w"), Some("S1"), Some("builtin:review")));
         assert_eq!(parent_task.as_deref(), Some("p"));
+        assert_eq!(parent_tab.as_deref(), Some("tab-1"));
         // noGroup beats an explicit parent AND the caller default.
-        let Command::New { parent_task, .. } = build("task_new", serde_json::json!({ "name": "x", "parentTask": "p", "noGroup": true })).unwrap() else { panic!() };
-        assert_eq!(parent_task, None);
+        let Command::New { parent_task, parent_tab, .. } = build("task_new", serde_json::json!({ "name": "x", "parentTask": "p", "parentTab": "tab-1", "noGroup": true })).unwrap() else { panic!() };
+        assert_eq!((parent_task, parent_tab), (None, None));
         assert!(build("task_new", serde_json::json!({ "name": "x", "args": [1] })).is_err(), "argv entries are strings");
         // `members` is `--member` repeated, names passed through for the server to resolve.
         let Command::New { members, .. } = build("task_new", serde_json::json!({ "name": "x", "members": ["api", "Web"] })).unwrap() else { panic!() };
@@ -4897,27 +5039,46 @@ command = \"/bin/true\"\n";
     #[test]
     fn caller_defaults_fill_only_what_the_cli_would_and_never_override() {
         let empty = Args::new();
-        let d = with_caller_defaults("task_new", &empty, Some("me"));
+        let d = with_caller_defaults("task_new", &empty, Some("me"), Some("tab-me"));
         assert_eq!(d.get("parentTask").and_then(|v| v.as_str()), Some("me"));
+        assert_eq!(d.get("parentTab").and_then(|v| v.as_str()), Some("tab-me"));
+        let r = with_caller_defaults("task_review", &empty, Some("me"), Some("tab-me"));
+        assert_eq!(r.get("parentTask").and_then(|v| v.as_str()), Some("me"));
+        assert_eq!(r.get("parentTab").and_then(|v| v.as_str()), Some("tab-me"));
+        // Explicit parentTask must NOT pick up the caller's tab id.
+        let mut other_parent = Args::new();
+        other_parent.insert("parentTask".into(), "other".into());
+        let op = with_caller_defaults("task_new", &other_parent, Some("me"), Some("tab-me"));
+        assert_eq!(op.get("parentTask").and_then(|v| v.as_str()), Some("other"));
+        assert!(op.get("parentTab").is_none());
         for t in SELF_DEFAULT_TOOLS {
-            assert_eq!(with_caller_defaults(t, &empty, Some("me")).get("task").and_then(|v| v.as_str()), Some("me"));
+            assert_eq!(with_caller_defaults(t, &empty, Some("me"), Some("tab-me")).get("task").and_then(|v| v.as_str()), Some("me"));
         }
+        // `task_prop` writes default `tab` to the caller's tab only when targeting self; reads do not.
+        let mut prop_write = Args::new();
+        prop_write.insert("key".into(), "ticket".into());
+        prop_write.insert("value".into(), "ABC-1".into());
+        assert_eq!(with_caller_defaults("task_prop", &prop_write, Some("me"), Some("tab-me"))["tab"], "tab-me");
+        assert!(with_caller_defaults("task_prop", &empty, Some("me"), Some("tab-me")).get("tab").is_none());
+        let mut prop_other = prop_write.clone();
+        prop_other.insert("task".into(), "other".into());
+        assert!(with_caller_defaults("task_prop", &prop_other, Some("me"), Some("tab-me")).get("tab").is_none());
         // Explicit arguments win.
         let mut given = Args::new();
         given.insert("task".into(), "other".into());
-        assert_eq!(with_caller_defaults("task_rename", &given, Some("me"))["task"], "other");
+        assert_eq!(with_caller_defaults("task_rename", &given, Some("me"), Some("tab-me"))["task"], "other");
         // `send --here` is the only way send aims at the caller.
         let mut here = Args::new();
         here.insert("here".into(), true.into());
-        assert_eq!(with_caller_defaults("task_send", &here, Some("me"))["task"], "me");
+        assert_eq!(with_caller_defaults("task_send", &here, Some("me"), Some("tab-me"))["task"], "me");
         for t in ["scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list", "scratchpad_remove", "scratchpad_clear"] {
-            assert_eq!(with_caller_defaults(t, &empty, Some("me"))["task"], "me", "{t}");
+            assert_eq!(with_caller_defaults(t, &empty, Some("me"), Some("tab-me"))["task"], "me", "{t}");
         }
         // Verbs the CLI never aims at "your own task" are left alone.
-        assert!(with_caller_defaults("task_archive", &empty, Some("me")).is_empty());
-        assert!(with_caller_defaults("task_send", &empty, Some("me")).is_empty());
+        assert!(with_caller_defaults("task_archive", &empty, Some("me"), Some("tab-me")).is_empty());
+        assert!(with_caller_defaults("task_send", &empty, Some("me"), Some("tab-me")).is_empty());
         // No header, no defaults.
-        assert!(with_caller_defaults("task_new", &empty, None).is_empty());
+        assert!(with_caller_defaults("task_new", &empty, None, Some("tab-me")).is_empty());
     }
 
     #[test]
@@ -4953,6 +5114,170 @@ command = \"/bin/true\"\n";
         let (_, _, resp) = post(addr, Some(&token), &headers(None), &body(serde_json::json!({})));
         let v: serde_json::Value = serde_json::from_slice(&resp).unwrap();
         assert!(v["error"]["message"].as_str().unwrap().contains("did not say which Termic task"), "{v}");
+    }
+
+    #[test]
+    fn x_termic_tab_header_defaults_parent_tab_prop_tab_and_child_reply_routing() {
+        let mut stub = StubHost::default();
+        let mut child = cli_server::test_support::task(
+            "child1",
+            "child-task",
+            "p1",
+            "/tasks/web/child-task",
+        );
+        child.spawned_by = Some("w3".into());
+        child.spawned_by_tab = Some("tab-pane".into());
+        stub.tasks.push(child);
+        let host = Arc::new(stub);
+        let mk_tab = |id: &str, cli: &str, is_default: bool| cli_server::TabAgentState {
+            id: id.into(),
+            kind: "agent".into(),
+            cli: cli.into(),
+            title: cli.into(),
+            state: Some("idle".into()),
+            queued: 0,
+            capable: true,
+            live: true,
+            is_default,
+            delegated: None,
+            working_since: None,
+            props: Vec::new(),
+        };
+        host.push_states(&[(
+            "w3",
+            cli_server::TaskAgentState {
+                props: Default::default(),
+                state: "idle".into(),
+                tabs: 2,
+                queued: 0,
+                capable: true,
+                tab_states: vec![mk_tab("tab-a", "claude", true)],
+                pane_tab_states: vec![mk_tab("tab-pane", "codex", false)],
+                hydrated: true,
+            },
+        )]);
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        host.script_rpc("tab_props", Ok(serde_json::json!({ "tabs": [], "collected": [] })));
+        host.script_rpc(
+            "send_prompt",
+            Ok(serde_json::json!({ "mode": "delivered", "capable": true, "tabId": "tab-pane" })),
+        );
+        let (addr, token, _sd) = spawn_with(host.clone(), Box::new(|| true));
+
+        let call_with = |tool: &'static str, task: Option<&'static str>, tab: Option<&'static str>, args: serde_json::Value| {
+            let mut b = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": tool, "arguments": args },
+            });
+            b["params"]["_meta"] = meta();
+            let mut h = vec![
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", tool),
+                ("MCP-Protocol-Version", SPEC_REVISION),
+                ("Content-Type", "application/json"),
+            ];
+            if let Some(t) = task {
+                h.push((MCP_TASK_HEADER, t));
+            }
+            if let Some(tb) = tab {
+                h.push((MCP_TAB_HEADER, tb));
+            }
+            let (status, _, resp) = post(addr, Some(&token), &h, &b.to_string());
+            assert_eq!(status, 200);
+            serde_json::from_slice::<serde_json::Value>(&resp).unwrap()
+        };
+
+        // 1. task_new with X-Termic-Task + X-Termic-Tab records both parentTaskId and parentTabId.
+        let v = call_with("task_new", Some("w3"), Some("tab-pane"), serde_json::json!({ "name": "kid", "project": "web" }));
+        assert_eq!(v["result"]["isError"], false, "{v}");
+        // 2. task_prop write without explicit `tab` uses X-Termic-Tab (including a split-pane tab!).
+        let v = call_with("task_prop", Some("w3"), Some("tab-pane"), serde_json::json!({ "key": "role", "value": "worker" }));
+        assert_eq!(v["result"]["isError"], false, "{v}");
+        // 3. Child replying via task_send carries caller_task from X-Termic-Task so preferredTabId resolves to tab-pane.
+        let v = call_with("task_send", Some("child1"), Some("child-tab"), serde_json::json!({ "task": "solo", "prompt": "done" }));
+        assert_eq!(v["result"]["isError"], false, "{v}");
+
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, new_params) = calls.iter().find(|(m, _)| m == "new_task").unwrap();
+        assert_eq!(new_params["parentTaskId"], "w3");
+        assert_eq!(new_params["parentTabId"], "tab-pane");
+        let (_, prop_params) = calls.iter().find(|(m, _)| m == "tab_props").unwrap();
+        assert_eq!(prop_params["set"]["tabId"], "tab-pane");
+        let (_, send_params) = calls.iter().find(|(m, _)| m == "send_prompt").unwrap();
+        assert_eq!(send_params["preferredTabId"], "tab-pane");
+    }
+
+    #[test]
+    fn task_review_accepts_explicit_parent_task_and_parent_tab() {
+        let mut stub = StubHost::default();
+        stub.tasks.push(cli_server::test_support::task(
+            "p-other",
+            "other-parent",
+            "p1",
+            "/tasks/web/other-parent",
+        ));
+        let host = Arc::new(stub);
+        host.script_rpc(
+            "list_prompts",
+            Ok(serde_json::json!({ "prompts": [{
+                "id": "builtin:review", "title": "Code review", "body": "Review",
+                "labels": ["code-review"], "review": true, "builtin": true, "enabled": true, "modified": false,
+            }] })),
+        );
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw-rev", "spawned": false })));
+        let (addr, token, _sd) = spawn_with(host.clone(), Box::new(|| true));
+
+        let mut b = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "task_review",
+                "arguments": {
+                    "pr": "42",
+                    "project": "web",
+                    "parentTask": "p-other",
+                    "parentTab": "explicit-tab"
+                }
+            },
+        });
+        b["params"]["_meta"] = meta();
+        let headers = [
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "task_review"),
+            ("MCP-Protocol-Version", SPEC_REVISION),
+            ("Content-Type", "application/json"),
+            (MCP_TASK_HEADER, "w3"),
+            (MCP_TAB_HEADER, "caller-tab"),
+        ];
+        let (status, _, resp) = post(addr, Some(&token), &headers, &b.to_string());
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(v["result"]["isError"], false, "{v}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, new_params) = calls.iter().find(|(m, _)| m == "new_task").unwrap();
+        assert_eq!(new_params["parentTaskId"], "p-other");
+        assert_eq!(new_params["parentTabId"], "explicit-tab");
+    }
+
+    #[test]
+    fn detects_older_termic_helpers_missing_tab_header() {
+        let old_sh = r#"printf '{"X-Termic-Token":"%s","X-Termic-Task":"%s"}' "$(cat '/tmp/mcp-token')" "${TERMIC_TASK_ID:-}""#;
+        let new_sh = sh_helper_command(Path::new("/tmp/mcp-token"));
+        let win_cli = r#""C:\Program Files\Termic\termic-cli.exe" mcp-headers "C:\Users\x\.termic\mcp-token""#;
+
+        assert!(helper_needs_tab_header(old_sh));
+        assert!(!helper_needs_tab_header(&new_sh));
+        assert!(!helper_needs_tab_header(win_cli));
+        assert!(!helper_needs_tab_header("custom-helper --flag"));
+
+        let claude_old = serde_json::json!({ "mcpServers": { "termic": { "headersHelper": old_sh } } });
+        let claude_new = serde_json::json!({ "mcpServers": { "termic": { "headersHelper": new_sh } } });
+        assert!(claude_doc_needs_tab_update(&claude_old));
+        assert!(!claude_doc_needs_tab_update(&claude_new));
+
+        let codex_old = codex_config_with_termic("", "http://127.0.0.1:99/mcp", old_sh).unwrap();
+        let codex_new = codex_config_with_termic("", "http://127.0.0.1:99/mcp", &new_sh).unwrap();
+        assert!(codex_text_needs_tab_update(&codex_old));
+        assert!(!codex_text_needs_tab_update(&codex_new));
     }
 
     #[test]
