@@ -239,6 +239,67 @@ describe("send --tab: explicit target (GH #138 part 2)", () => {
     expect(deliverMessage).toHaveBeenCalledWith("pty-1", "run tests");
   });
 
+  it("falls back to the default strip tab when an initiating split-pane preferredTabId exited", async () => {
+    seed([
+      term(),
+      term({ id: "t-pane", paneId: "leaf-2", cli: "codex", is_default: false, ptyId: undefined }),
+    ]);
+    const r = await send({ preferredTabId: "t-pane" });
+    expect(r).toEqual({ mode: "delivered", capable: true, tabId: "t-default" });
+    expect(deliverMessage).toHaveBeenCalledWith("pty-1", "run tests");
+  });
+
+  it("excludes persisted split-pane tabs on resume and restores the default strip tab instead", async () => {
+    vi.useFakeTimers();
+    try {
+      useApp.setState({
+        tasks: [{
+          id: "ws1", project_id: "p1", name: "fix-auth", cli: "claude",
+          archived: false, has_resumable_history: true,
+          persisted_tabs: [
+            { id: "t-pane", pane_leaf_id: "leaf-2", cli: "codex", is_default: false, session_id: "S-PANE" },
+            { id: "orig-default", cli: "claude", is_default: true, session_id: "S-DEF" },
+          ],
+        } as unknown as Task],
+        tabs: {
+          ws1: [term({ id: "sh-1", cli: "shell", is_default: false, ptyId: "pty-sh" })],
+        },
+        mountedTasks: new Set(["ws1"]),
+        agents: AGENTS,
+        detectedClis: {},
+      } as never);
+
+      const pending = send({ resume: true, preferredTabId: "t-pane", promptId: "pid-pane-resume-fallback" });
+      expect(takeUnattendedSpawn("ws1")).toBe(false);
+      const tabs = useApp.getState().tabs.ws1 ?? [];
+      expect(tabs.some(t => t.id === "t-pane")).toBe(false);
+      const restored = tabs.find(t => t.id === "orig-default");
+      expect(restored).toBeDefined();
+      expect((restored as { cli?: string }).cli).toBe("claude");
+      expect((restored as { sessionId?: string }).sessionId).toBe("S-DEF");
+
+      useApp.setState(s => ({
+        tabs: {
+          ws1: (s.tabs.ws1 ?? []).map(t =>
+            t.id === "orig-default"
+              ? { ...t, ptyId: "pty-def", firstOutputAt: Date.now(), lastOutputAt: Date.now(), agentReadyAt: Date.now() }
+              : t,
+          ),
+        },
+      } as never));
+      await vi.advanceTimersByTimeAsync(150);
+
+      const res = await pending;
+      expect(res.tabId).toBe("orig-default");
+
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(deliverMessage).toHaveBeenCalledWith("pty-def", "run tests", { verifyEcho: false });
+      expect(deliverMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never misroutes preferredTabId onto a sibling whose title matches the stale id", async () => {
     seed([
       term(),

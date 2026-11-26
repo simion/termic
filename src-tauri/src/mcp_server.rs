@@ -1252,7 +1252,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_send",
         cli_verb: "send",
-        description: "Prompt the task's running agent, typed at once even mid-turn (queue waits for the turn to end; not while it waits on its subagents). With no agent running, resume restores the last session and fresh spawns a new one. Without tab, direct replies from a spawned child route to its initiating parent tab while live, otherwise the default (or sole live) agent tab. Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id> tab:<your tab id>] first, the same after -- last), and pass tab when replying to a tab:<id> header.",
+        description: "Prompt the task's running agent, typed at once even mid-turn (queue waits for the turn to end; not while it waits on its subagents). With no agent running, resume restores the last session and fresh spawns a new one. Without tab, direct replies from a spawned child route to its initiating parent tab while live, otherwise falling back to the default (or sole live) strip agent tab (exited split-pane tabs are not reopened on resume). Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id> tab:<your tab id>] first, the same after -- last), and pass tab when replying to a tab:<id> header.",
         params: &[
             ParamDef { name: "task", json_type: "string", required: false, description: "Task name or id. Required unless here.", cli_flag: Some("task") },
             P_PROJECT,
@@ -4209,7 +4209,8 @@ mod tests {
         // notes on P_TAB, task_new/task_tab prompts, task_send, and task_prop.
         // 31286: shared P_PARENT_TASK / P_PARENT_TAB on task_review, generic
         // selector-only P_TAB, and per-tool omitted-tab docs on send/wait/log.
-        const RECORDED: usize = 31286;
+        // 31360: document exited split-pane fallback on task_send.
+        const RECORDED: usize = 31360;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
