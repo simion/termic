@@ -23,9 +23,9 @@
 //   3. Focus and turn end. Activating a task or refocusing the window with
 //      one in front runs an unforced refresh for it (at most one per task
 //      per 30s); one of its agents finishing a turn does too while the task
-//      has no PR yet, or only a closed one (at most one per task per
+//      has no PR yet, or only a closed/merged one (at most one per task per
 //      minute). That is what DISCOVERS a PR the agent opened itself,
-//      including one replacing a PR it closed. See `initPrRefreshOnFocus`.
+//      including one replacing a PR it closed or merged. See `initPrRefreshOnFocus`.
 //      A PR found while its task is not in front is highlighted on the
 //      sidebar mark until the task is visited (`unseen`).
 //
@@ -299,6 +299,37 @@ function landLookup(taskId: string, cur: PrEntry, lookup: PrLookup | null, membe
   landLookups([{ taskId, cur, lookup, members }]);
 }
 
+/** Patch a discovered or created PR's identity onto the in-memory Task record
+ *  without calling loadAll() (which is re-entrant and fans out across every
+ *  mounted task). No-op when all synced fields already match (bear trap 8). */
+function syncTaskPrIdentity(taskId: string, found: PrStatus) {
+  const known = useApp.getState().tasks.find(t => t.id === taskId);
+  if (!known) return;
+  if (
+    known.pr_number === found.number
+    && known.pr_provider === found.provider
+    && known.pr_url === found.url
+    && known.pr_state === found.state
+    && known.pr_title === found.title
+    && (!found.head || known.pr_head === found.head)
+  ) {
+    return;
+  }
+  useApp.setState(st => ({
+    tasks: st.tasks.map(t => t.id === taskId
+      ? {
+          ...t,
+          pr_number: found.number,
+          pr_provider: found.provider,
+          pr_url: found.url,
+          pr_title: found.title,
+          pr_state: found.state,
+          ...(found.head ? { pr_head: found.head } : {}),
+        }
+      : t),
+  }));
+}
+
 /** What a landed lookup that differs from `prev` means. Not run for a
  *  raced write (its lookup wins the state, so its transitions are the NEXT
  *  refresh's business), nor for a null lookup: on the main-checkout path
@@ -312,31 +343,25 @@ function landTransitions(taskId: string, prev: PrLookup | null | undefined, look
   // `pr_provider`, so until that happened a PR discovered in THIS
   // session was never watched: the bell rendered as armed and no
   // comment ever queued.
-  //
-  // Patch the three fields rather than calling loadAll(): a full reload
-  // from inside a poll is re-entrant (it can kick off more refreshes)
-  // and replaces every task object, which fans out through every
-  // mounted task's selectors. Guarded on the transition, so a steady
-  // poll of an already-known PR writes nothing at all - see
-  // docs/performance.md bear trap 8 on unchanged store writes.
   const found = lookup.pr;
   if (found) {
     const known = useApp.getState().tasks.find(t => t.id === taskId);
     if (known && (known.pr_number !== found.number || known.pr_provider !== found.provider)) {
-      // A PR new to this task, found while you were elsewhere. Only one
-      // that APPEARED: an earlier ok poll this session saw no PR. A task
-      // started on an existing PR's branch finds it on its first poll.
-      const appeared = prev?.status === "ok" && !prev.pr;
-      if (appeared && known.pr_number !== found.number && useApp.getState().activeTaskId !== taskId) {
+      // A PR new to this task, found while you were elsewhere. Covers a
+      // task's first PR as well as one replacing a closed/merged PR on the
+      // same branch. A task started on an existing PR's branch finds it on
+      // its first poll (prev == null).
+      const prevPr = prev?.pr;
+      const replacedSettled = !!prevPr
+        && (prevPr.state === "merged" || prevPr.state === "closed")
+        && (prevPr.number !== found.number || prevPr.provider !== found.provider);
+      const appeared = prev?.status === "ok" && (!prevPr || replacedSettled);
+      if (appeared && useApp.getState().activeTaskId !== taskId) {
         const unseen = { ...usePr.getState().unseen, [taskId]: found.number };
         usePr.setState({ unseen });
         persistUnseen(unseen);
       }
-      useApp.setState(st => ({
-        tasks: st.tasks.map(t => t.id === taskId
-          ? { ...t, pr_number: found.number, pr_provider: found.provider, pr_url: found.url }
-          : t),
-      }));
+      syncTaskPrIdentity(taskId, found);
     }
   }
 }
@@ -446,6 +471,7 @@ export const usePr = create<PrStore>((set, get) => ({
       snapshots: snapshotsAfter(s.snapshots, taskId, lookup),
     }));
     if (get().snapshots !== before) persistSnapshots(get().snapshots);
+    if (lookup.pr) syncTaskPrIdentity(taskId, lookup.pr);
   },
 
   setWatch: async (taskId, watch) => {
@@ -552,11 +578,12 @@ export function batchable(w: Task): boolean {
     && !!w.pr_url && /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/\d+/.test(w.pr_url)
     && !(w.composition?.length);
 }
-/** A merged or closed PR is settled: it only changes on a reopen, so it is
- *  re-checked hourly (and on focus, by the focus trigger) instead of every
- *  few minutes. Without this every finished-but-unarchived task kept taking
- *  one of the MAX_PER_TICK slots, and open PRs waited behind them. */
+/** A merged or closed PR on a per-task CLI path is settled and re-checked
+ *  hourly (and on focus/turn-end) so finished tasks don't consume MAX_PER_TICK
+ *  subprocesses. Batchable GitHub PRs share one GraphQL call and let Rust's
+ *  3-minute `RECHECK_SECS` gate scan for same-branch replacement PRs. */
 const SETTLED_STALE_MS = 60 * 60_000;
+const SETTLED_BATCH_STALE_MS = 3 * 60_000;
 
 /** Whether the LIVE lookup says the PR is settled. The remembered snapshot
  *  does not count: after a launch the board reads the live lookup, and a
@@ -589,7 +616,9 @@ export function pollableTasks(): Task[] {
       if (w.archived || !hasPrIdentity(w)) return false;
       const entry = byTask[w.id];
       if (entry?.loading) return false;
-      const stale = isSettled(entry) ? SETTLED_STALE_MS : batchable(w) ? BATCH_STALE_MS : STATUS_STALE_MS;
+      const stale = isSettled(entry)
+        ? (batchable(w) ? SETTLED_BATCH_STALE_MS : SETTLED_STALE_MS)
+        : batchable(w) ? BATCH_STALE_MS : STATUS_STALE_MS;
       return staleness(w.id) >= stale;
     })
     .sort((a, b) => staleness(b.id) - staleness(a.id))
@@ -708,11 +737,11 @@ function refreshFocused() {
 }
 
 /** Turn-end lookups are DISCOVERY only, at most one per task per this long.
- *  A task that already has a PR stays on the background tick, so a busy
+ *  A task that already has an open PR stays on the background tick, so a busy
  *  agent never turns into a `gh` call per turn. The exception is a PR whose
- *  live lookup is closed: settled, so the tick only re-checks it hourly,
- *  and an agent that closes #5 and opens #6 on the same branch would show
- *  #5 until then. */
+ *  state is closed or merged: settled, so the tick only re-checks it hourly,
+ *  and an agent that continues on the same branch and opens #6 after #5 was
+ *  closed or merged would otherwise show #5 until then. */
 const TURN_LOOKUP_MS = 60_000;
 const lastTurnLookup = new Map<string, number>();
 
@@ -756,11 +785,18 @@ export function initPrRefreshOnFocus() {
       const now = Date.now();
       for (const id of tasksThatStoppedWorking(s.tabs, prev.tabs)) {
         const task = s.tasks.find(t => t.id === id);
-        const closed = usePr.getState().byTask[id]?.lookup?.pr?.state === "closed";
-        if (!task || (hasPrIdentity(task) && !closed) || !prFocusEligible(id)) continue;
+        const entry = usePr.getState().byTask[id];
+        const state = entry?.lookup?.pr?.state ?? task?.pr_state;
+        const settled = state === "closed" || state === "merged";
+        const anyMemberSettled = (entry?.members ?? []).some(
+          m => m.pr?.state === "closed" || m.pr?.state === "merged",
+        );
+        if (!task || (hasPrIdentity(task) && !settled && !anyMemberSettled) || !prFocusEligible(id)) continue;
         if (now - (lastTurnLookup.get(id) ?? 0) < TURN_LOOKUP_MS) continue;
         lastTurnLookup.set(id, now);
-        void usePr.getState().refresh(id, { background: true });
+        // Bypass the 30s store floor when a settled PR's turn just ended so a
+        // replacement created at the end of a turn isn't dropped behind a recent batch poll.
+        void usePr.getState().refresh(id, { force: settled || anyMemberSettled, background: true });
       }
     }),
   ];
@@ -1122,7 +1158,10 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
   const project = app.projects.find(p => p.id === task.project_id);
   if (!project) return;
   const knewPr = prev?.pr != null || task.pr_number != null;
-  const wasMerged = prev?.pr?.state === "merged";
+  const samePr = !!prev?.pr
+    && prev.pr.number === next.pr.number
+    && prev.pr.provider === next.pr.provider;
+  const wasMerged = samePr && prev?.pr?.state === "merged";
   if (!knewPr || wasMerged) {
     // Either we never knew about a PR (nothing "completed" from the
     // user's perspective) or we already showed it merged this session.
@@ -1187,7 +1226,14 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
  *  the very first fetch), which is "already known", not "just opened". */
 function maybeHandleOpened(taskId: string, prev: PrLookup | null | undefined, next: PrLookup) {
   if (next.status !== "ok" || !next.pr) return;
-  if (prev == null || prev.pr != null) return;
+  if (prev == null) return;
+  const prevPr = prev.pr;
+  if (prevPr != null) {
+    const replacedSettled = (prevPr.state === "merged" || prevPr.state === "closed")
+      && (prevPr.number !== next.pr.number || prevPr.provider !== next.pr.provider)
+      && (next.pr.state === "open" || next.pr.state === "draft");
+    if (!replacedSettled) return;
+  }
   if (useApp.getState().activeTaskId !== taskId) return;
   const label = prLabelShort(next.pr.provider, next.pr.number);
   const task = useApp.getState().tasks.find(t => t.id === taskId);

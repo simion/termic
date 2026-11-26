@@ -988,7 +988,7 @@ fn azure_whoami(bin: &str, org: &str) -> String {
 
 /// Normalized PR/MR snapshot — the union of what `gh pr view --json` and
 /// `glab mr view -F json` report, flattened to what the PR card renders.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PrStatus {
     pub provider: String,
     pub number: u64,
@@ -1089,13 +1089,29 @@ fn classify_stderr(provider: &str, err: &str) -> ForgeError {
 /// deleted after a merge, which breaks by-branch lookup on GitLab).
 /// Ok(None) = the CLI worked and there is genuinely no PR yet.
 pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+    pr_status_with_hint(provider, cwd, number, None)
+}
+
+/// Live PR/MR status for the task's current branch, carrying `old_number` as a
+/// source-ownership / monotonicity hint when resolving a branch after a prior
+/// PR/MR settled or when multiple active PRs/MRs share a branch name.
+pub fn pr_status_for_branch(provider: &str, cwd: &Path, old_number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+    pr_status_with_hint(provider, cwd, None, old_number)
+}
+
+fn pr_status_with_hint(
+    provider: &str,
+    cwd: &Path,
+    number: Option<u64>,
+    old_number: Option<u64>,
+) -> Result<Option<PrStatus>, ForgeError> {
     // reprobe, not the cache: a CLI installed mid-session must resolve on
     // the next call, not after the next detect() pass (which the user
     // reaches only via Settings or a card hint).
     let bin = reprobe_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
     match provider {
-        GITLAB => gitlab_mr_status(&bin, cwd, number),
-        AZURE => azure_pr_status(&bin, cwd, number),
+        GITLAB => gitlab_mr_status(&bin, cwd, number, old_number),
+        AZURE => azure_pr_status(&bin, cwd, number, old_number),
         _ => github_pr_status(&bin, cwd, number),
     }
 }
@@ -1170,7 +1186,11 @@ pub const PR_BATCH_MAX: usize = 50;
 
 /// The same fields `github_pr_status` asks `gh pr view` for, in GraphQL.
 /// The rollup is the head commit's, which is what gh reads too.
+/// `isCrossRepository` + `headRepositoryOwner` identify fork ownership so a
+/// same-branch replacement lookup never adopts a stranger's fork PR that
+/// shares a branch name.
 const PR_STATUS_SELECTION: &str = "number url title state isDraft reviewDecision baseRefName headRefName \
+isCrossRepository headRepositoryOwner { login } \
 latestReviews(first: 20) { nodes { state } } \
 commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { \
 __typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }";
@@ -1221,24 +1241,258 @@ fn normalize_graphql_pr(pr: &serde_json::Value) -> serde_json::Value {
     v
 }
 
+/// One answered PR in a batch plus the fork-ownership fields needed when a
+/// settled PR checks for a same-branch replacement without adopting another
+/// contributor's fork PR that shares the branch name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrBatchItem {
+    pub status: PrStatus,
+    pub cross_repository: bool,
+    pub head_owner: Option<String>,
+}
+
+/// One settled task's branch to check for a newer PR on the same branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchReplacementRef {
+    pub owner: String,
+    pub repo: String,
+    pub branch: String,
+    pub old_number: u64,
+    pub old_cross_repository: bool,
+    pub old_head_owner: Option<String>,
+}
+
+/// Maximum aliases per page when scanning settled branches for replacements.
+pub const PR_REPLACEMENT_BATCH_MAX: usize = 15;
+
+/// Lightweight fields fetched while scanning candidate PRs on a branch; full
+/// checks/reviews are hydrated afterwards for selected replacements only.
+const PR_REPLACEMENT_SCAN_SELECTION: &str =
+    "number state headRefName isCrossRepository headRepositoryOwner { login }";
+const PR_REPLACEMENT_PAGE_SIZE: usize = 20;
+const MAX_REPLACEMENT_PAGES: usize = 5;
+
+/// Outcome of scanning one settled PR's branch for a newer same-branch PR.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReplacementOutcome {
+    KeepOld,
+    Replace(PrStatus),
+    Retry,
+}
+
 /// The answer to a batch, in `refs` order. None for a PR the query could
 /// not see (deleted repo, wrong number, no access): one bad alias does not
 /// fail the rest.
+#[cfg(test)]
 fn parse_pr_batch(data: &serde_json::Value, n: usize) -> Vec<Option<PrStatus>> {
+    parse_pr_batch_items(data, n)
+        .into_iter()
+        .map(|o| o.map(|i| i.status))
+        .collect()
+}
+
+fn parse_pr_batch_items(data: &serde_json::Value, n: usize) -> Vec<Option<PrBatchItem>> {
     (0..n).map(|i| {
         let pr = &data[format!("p{i}")]["pullRequest"];
-        pr.is_object().then(|| github_pr_status_from(&normalize_graphql_pr(pr)))
+        pr.is_object().then(|| PrBatchItem {
+            status: github_pr_status_from(&normalize_graphql_pr(pr)),
+            cross_repository: pr["isCrossRepository"].as_bool().unwrap_or(false),
+            head_owner: pr["headRepositoryOwner"]["login"].as_str().map(str::to_string),
+        })
     }).collect()
 }
 
-/// Status for up to `PR_BATCH_MAX` PRs on one host, in one query.
-pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef]) -> Result<Vec<Option<PrStatus>>, ForgeError> {
+/// Status (with fork metadata) for up to `PR_BATCH_MAX` PRs on one host.
+pub fn github_pr_status_batch_meta(
+    host: &str,
+    feature: &'static str,
+    refs: &[PrRef],
+) -> Result<Vec<Option<PrBatchItem>>, ForgeError> {
     if refs.is_empty() {
         return Ok(Vec::new());
     }
     // The background poller's call, always: it waits out termic's budget too.
     let ans = gh_graphql(host, feature, true, &pr_batch_selection(refs))?;
-    Ok(parse_pr_batch(&ans.data, refs.len()))
+    Ok(parse_pr_batch_items(&ans.data, refs.len()))
+}
+
+/// Status for up to `PR_BATCH_MAX` PRs on one host, in one query.
+#[cfg(test)]
+pub fn github_pr_status_batch(host: &str, feature: &'static str, refs: &[PrRef]) -> Result<Vec<Option<PrStatus>>, ForgeError> {
+    Ok(github_pr_status_batch_meta(host, feature, refs)?
+        .into_iter()
+        .map(|o| o.map(|i| i.status))
+        .collect())
+}
+
+fn branch_replacement_page_selection(items: &[(usize, &BranchReplacementRef, Option<&str>)]) -> String {
+    items.iter().map(|(idx, r, cursor)| {
+        let after = cursor.map_or_else(String::new, |c| format!(", after: {}", gql_str(c)));
+        format!(
+            "b{idx}: repository(owner: {}, name: {}) {{ pullRequests(headRefName: {}, first: {PR_REPLACEMENT_PAGE_SIZE}{after}, orderBy: {{ field: CREATED_AT, direction: DESC }}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {PR_REPLACEMENT_SCAN_SELECTION} }} }} }}",
+            gql_str(&r.owner), gql_str(&r.repo), gql_str(&r.branch),
+        )
+    }).collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Default)]
+struct BranchScanAcc {
+    best_open: Option<u64>,
+    best_newer: Option<u64>,
+    saw_old_or_older: bool,
+}
+
+/// Scan one page of candidate PRs on the same branch (`r.branch`) and matching
+/// repo ownership, ignoring older PRs (`<= old_number`) and unrelated forks.
+fn scan_branch_replacement_nodes(
+    nodes: &[serde_json::Value],
+    r: &BranchReplacementRef,
+    acc: &mut BranchScanAcc,
+) {
+    for node in nodes {
+        if !node.is_object() {
+            continue;
+        }
+        let number = node["number"].as_u64().unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+        if number <= r.old_number {
+            acc.saw_old_or_older = true;
+            continue;
+        }
+        let head = node["headRefName"].as_str().unwrap_or("");
+        if head != r.branch {
+            continue;
+        }
+        let cross = node["isCrossRepository"].as_bool().unwrap_or(false);
+        let head_owner = node["headRepositoryOwner"]["login"].as_str();
+        let same_origin = if r.old_cross_repository {
+            cross && r.old_head_owner.as_deref()
+                .is_some_and(|exp| head_owner.is_some_and(|act| act.eq_ignore_ascii_case(exp)))
+        } else {
+            !cross
+        };
+        if !same_origin {
+            continue;
+        }
+        if node["state"].as_str() == Some("OPEN") {
+            if acc.best_open.map_or(true, |b| number > b) {
+                acc.best_open = Some(number);
+            }
+        } else if acc.best_newer.map_or(true, |b| number > b) {
+            acc.best_newer = Some(number);
+        }
+    }
+}
+
+enum ScanPageOutcome {
+    Selected(u64),
+    NextPage(String),
+    NoneFound,
+    AliasFailed,
+}
+
+fn eval_branch_replacement_alias(
+    alias_val: &serde_json::Value,
+    r: &BranchReplacementRef,
+    acc: &mut BranchScanAcc,
+) -> ScanPageOutcome {
+    let prs = &alias_val["pullRequests"];
+    let Some(nodes) = prs["nodes"].as_array() else {
+        return ScanPageOutcome::AliasFailed;
+    };
+    scan_branch_replacement_nodes(nodes, r, acc);
+    if let Some(open) = acc.best_open {
+        return ScanPageOutcome::Selected(open);
+    }
+    let has_next = prs["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false);
+    let end_cursor = prs["pageInfo"]["endCursor"].as_str().filter(|s| !s.is_empty());
+    if has_next && !acc.saw_old_or_older {
+        if let Some(c) = end_cursor {
+            return ScanPageOutcome::NextPage(c.to_string());
+        }
+    }
+    if let Some(newer) = acc.best_newer {
+        ScanPageOutcome::Selected(newer)
+    } else {
+        ScanPageOutcome::NoneFound
+    }
+}
+
+/// Batched same-branch replacement lookup for settled (`merged` / `closed`)
+/// GitHub PRs on one host. Scans lightweight candidates across pages until a
+/// matching source is found or older PRs are reached, then hydrates selected
+/// candidates via `github_pr_status_batch_meta`.
+pub fn github_branch_pr_replacements_batch(
+    host: &str,
+    feature: &'static str,
+    refs: &[BranchReplacementRef],
+) -> Result<Vec<ReplacementOutcome>, ForgeError> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut outcomes: Vec<Option<ReplacementOutcome>> = vec![None; refs.len()];
+    let mut accs: Vec<BranchScanAcc> = (0..refs.len()).map(|_| BranchScanAcc::default()).collect();
+    let mut chosen: Vec<(usize, u64)> = Vec::new();
+    let mut pending: Vec<(usize, Option<String>)> = (0..refs.len()).map(|i| (i, None)).collect();
+
+    for page in 0..MAX_REPLACEMENT_PAGES {
+        if pending.is_empty() {
+            break;
+        }
+        let query_items: Vec<(usize, &BranchReplacementRef, Option<&str>)> = pending
+            .iter()
+            .map(|(i, c)| (*i, &refs[*i], c.as_deref()))
+            .collect();
+        let ans = match gh_graphql(host, feature, true, &branch_replacement_page_selection(&query_items)) {
+            Ok(a) => a,
+            Err(e) => {
+                if page == 0 || matches!(e, ForgeError::RateLimited { .. }) {
+                    return Err(e);
+                }
+                for (i, _) in pending {
+                    outcomes[i] = Some(ReplacementOutcome::Retry);
+                }
+                pending = Vec::new();
+                break;
+            }
+        };
+        let mut next_pending = Vec::new();
+        for (i, _) in pending {
+            match eval_branch_replacement_alias(&ans.data[format!("b{i}")], &refs[i], &mut accs[i]) {
+                ScanPageOutcome::Selected(n) => chosen.push((i, n)),
+                ScanPageOutcome::NextPage(c) => next_pending.push((i, Some(c))),
+                ScanPageOutcome::NoneFound => outcomes[i] = Some(ReplacementOutcome::KeepOld),
+                ScanPageOutcome::AliasFailed => outcomes[i] = Some(ReplacementOutcome::Retry),
+            }
+        }
+        pending = next_pending;
+    }
+    for (i, _) in pending {
+        if let Some(n) = accs[i].best_open.or(accs[i].best_newer) {
+            chosen.push((i, n));
+        } else {
+            outcomes[i] = Some(ReplacementOutcome::Retry);
+        }
+    }
+
+    for chunk in chosen.chunks(PR_BATCH_MAX) {
+        let hydrate_refs: Vec<PrRef> = chunk.iter().map(|(i, num)| PrRef {
+            owner: refs[*i].owner.clone(),
+            repo: refs[*i].repo.clone(),
+            number: *num,
+        }).collect();
+        let hydrated = github_pr_status_batch_meta(host, feature, &hydrate_refs)?;
+        for ((idx, num), item) in chunk.iter().zip(hydrated) {
+            outcomes[*idx] = Some(match item {
+                Some(it) if it.status.number == *num => ReplacementOutcome::Replace(it.status),
+                _ => ReplacementOutcome::Retry,
+            });
+        }
+    }
+
+    Ok(outcomes.into_iter().map(|o| o.unwrap_or(ReplacementOutcome::KeepOld)).collect())
 }
 
 // ───────────────────────── batched lists (GitHub) ─────────────────────────
@@ -1507,7 +1761,81 @@ fn rollup_to_checks(rollup: &serde_json::Value) -> String {
     if pending { "pending".into() } else { "passing".into() }
 }
 
-fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+fn gitlab_open_mrs_api_target(branch: &str, server_repo: Option<&str>) -> Result<(Option<String>, String), ForgeError> {
+    let encoded: String = percent_encoding::utf8_percent_encode(branch, percent_encoding::NON_ALPHANUMERIC).collect();
+    let suffix = format!("merge_requests?state=opened&source_branch={encoded}&order_by=created_at&sort=desc&per_page=20");
+    if let Some(repo_url) = server_repo {
+        let host = host_of_remote(repo_url)
+            .ok_or_else(|| ForgeError::Other(format!("cannot parse GitLab host from {repo_url}")))?;
+        let project = path_of_remote(repo_url)
+            .ok_or_else(|| ForgeError::Other(format!("cannot parse GitLab project path from {repo_url}")))?;
+        let enc_proj: String = percent_encoding::utf8_percent_encode(&project, percent_encoding::NON_ALPHANUMERIC).collect();
+        return Ok((Some(host), format!("projects/{enc_proj}/{suffix}")));
+    }
+    Ok((None, format!("projects/:id/{suffix}")))
+}
+
+fn gitlab_mr_source_project(bin: &str, cwd: &Path, iid: u64, server_repo: Option<&str>) -> Option<u64> {
+    let num_s = iid.to_string();
+    let mut args = vec!["mr", "view", &num_s, "--output", "json"];
+    if let Some(repo) = server_repo {
+        args.extend(["-R", repo]);
+    }
+    let o = run(bin, &args, Some(cwd)).ok().filter(|o| o.status.success())?;
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
+    v["source_project_id"].as_u64()
+}
+
+fn pick_gitlab_branch_mr_iid(
+    list: &[serde_json::Value],
+    old_number: Option<u64>,
+    expected_source_project: Option<u64>,
+) -> Option<u64> {
+    let mut eligible: Vec<(u64, &serde_json::Value)> = list.iter()
+        .filter_map(|m| m["iid"].as_u64().filter(|&iid| iid > 0).map(|iid| (iid, m)))
+        .filter(|(iid, _)| old_number.map_or(true, |old| *iid > old))
+        .collect();
+    if let Some(src) = expected_source_project {
+        eligible.retain(|(_, m)| m["source_project_id"].as_u64() == Some(src));
+    } else if eligible.iter().any(|(_, m)| m["source_project_id"].is_u64() && m["source_project_id"] == m["target_project_id"]) {
+        // Without a known prior MR, prefer upstream same-repo MRs when fork MRs also match the branch name.
+        eligible.retain(|(_, m)| m["source_project_id"].is_u64() && m["source_project_id"] == m["target_project_id"]);
+    }
+    eligible.into_iter().map(|(iid, _)| iid).max()
+}
+
+/// Newest open MR iid for `branch`, used when `glab mr view` reports multiple
+/// open MRs on the same source branch.
+fn gitlab_newest_open_mr_iid(
+    bin: &str,
+    cwd: &Path,
+    branch: &str,
+    server_repo: Option<&str>,
+    old_number: Option<u64>,
+) -> Result<Option<u64>, ForgeError> {
+    let (host, path) = gitlab_open_mrs_api_target(branch, server_repo)?;
+    let mut args = vec!["api"];
+    if let Some(h) = host.as_deref() {
+        args.extend(["--hostname", h]);
+    }
+    args.push(path.as_str());
+    let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(GITLAB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("glab returned unparseable JSON: {e}")))?;
+    let list = v.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let distinct_sources: HashSet<u64> = list.iter().filter_map(|m| m["source_project_id"].as_u64()).collect();
+    let expected_src = if distinct_sources.len() > 1 {
+        old_number.and_then(|old| gitlab_mr_source_project(bin, cwd, old, server_repo))
+    } else {
+        None
+    };
+    Ok(pick_gitlab_branch_mr_iid(list, old_number, expected_src))
+}
+
+fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>, old_number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
     // A folder on a server: name the branch and the repo (glab has no
     // checkout here to read them from), as github_pr_status does.
     let server = server_branch(cwd);
@@ -1526,10 +1854,39 @@ fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         if err.contains("no open merge request") || err.contains("no merge request") || err.contains("404") {
             return Ok(None);
         }
+        // Multiple open MRs on the same source branch (e.g. targeting two base
+        // branches) make `glab mr view` fail trying to prompt. Pick the newest
+        // opened MR matching the tracked MR's source project via REST, then fetch its view.
+        if number.is_none() && (err.contains("multiple") || err.contains("more than one")) {
+            let branch = server.as_ref().map(|(b, _)| b.clone()).or_else(|| {
+                crate::git(&["branch", "--show-current"], cwd)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|b| !b.is_empty())
+            });
+            if let Some(b) = branch {
+                let server_repo = server.as_ref().map(|(_, r)| r.as_str());
+                if let Some(iid) = gitlab_newest_open_mr_iid(bin, cwd, &b, server_repo, old_number)? {
+                    return gitlab_mr_status(bin, cwd, Some(iid), None);
+                }
+                return Ok(None);
+            }
+        }
         return Err(classify_failure(GITLAB, &o));
     }
     let v: serde_json::Value = serde_json::from_slice(&o.stdout)
         .map_err(|e| ForgeError::Other(format!("glab returned unparseable JSON: {e}")))?;
+    let iid = v["iid"].as_u64().unwrap_or(0);
+    if number.is_none() {
+        if let (Some(old), Some(cand_src)) = (old_number.filter(|&o| o != iid), v["source_project_id"].as_u64()) {
+            let server_repo = server.as_ref().map(|(_, r)| r.as_str());
+            if let Some(old_src) = gitlab_mr_source_project(bin, cwd, old, server_repo) {
+                if old_src != cand_src {
+                    return gitlab_mr_status(bin, cwd, Some(old), None);
+                }
+            }
+        }
+    }
     let state = match v["state"].as_str().unwrap_or("") {
         "merged" => "merged",
         "closed" => "closed",
@@ -1544,7 +1901,6 @@ fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         "running" | "pending" | "created" | "preparing" | "scheduled" | "waiting_for_resource" => "pending",
         _ => "none",
     };
-    let iid = v["iid"].as_u64().unwrap_or(0);
     // Only an in-flight MR has a review decision worth a second call; a
     // merged/closed one is settled and the extra request is pure latency.
     let review = if state == "open" || state == "draft" {
@@ -1794,7 +2150,7 @@ pub(crate) fn remote_for_display(url: &str) -> String {
     }
 }
 
-fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>, old_number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
     let (org, project, repo) = azure_scope(cwd)?;
     let v: serde_json::Value = if let Some(n) = number {
         let o = run(
@@ -1842,7 +2198,7 @@ fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<
         // Prefer the live one; a branch with only settled PRs reports the
         // NEWEST one (list order isn't documented - a recycled branch name
         // could surface an old abandoned PR ahead of the recent completed).
-        match pick_azure_branch_pr(&list) {
+        match pick_azure_branch_pr(&list, old_number) {
             Some(p) => p,
             None => return Ok(None),
         }
@@ -2301,18 +2657,34 @@ fn azure_identities_cache() -> &'static Mutex<HashMap<String, MembersHit>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn azure_fork_source_id(p: &serde_json::Value) -> Option<&str> {
+    p["forkSource"]["repository"]["id"].as_str().filter(|s| !s.is_empty())
+}
+
 /// The PR a branch query should surface: the active one when there is one,
 /// else the most recently CREATED (ADO's list order isn't documented, and
 /// a branch name recycled after an abandoned PR would otherwise resolve to
-/// the stale record).
-fn pick_azure_branch_pr(list: &[serde_json::Value]) -> Option<serde_json::Value> {
-    // The NEWEST active one - a branch can have several active PRs to
-    // different targets and the list order isn't documented, so first-in-
-    // list would pick an arbitrary one.
-    list.iter()
+/// the stale record). When `old_number` is present, matches fork origin and
+/// rejects older PRs when the tracked one already settled.
+fn pick_azure_branch_pr(list: &[serde_json::Value], old_number: Option<u64>) -> Option<serde_json::Value> {
+    let old_item = old_number.and_then(|old| list.iter().find(|p| p["pullRequestId"].as_u64() == Some(old)));
+    let old_settled = old_item.is_some_and(|p| matches!(p["status"].as_str(), Some("completed") | Some("abandoned")));
+    let expected_fork = old_item.map(azure_fork_source_id);
+    let eligible: Vec<&serde_json::Value> = list.iter()
+        .filter(|p| expected_fork.map_or(true, |exp| azure_fork_source_id(p) == exp))
+        .filter(|p| {
+            if !old_settled {
+                return true;
+            }
+            old_number.map_or(true, |old| p["pullRequestId"].as_u64().is_some_and(|id| id > old))
+        })
+        .collect();
+    eligible.iter()
+        .copied()
         .filter(|p| p["status"].as_str() == Some("active"))
         .max_by_key(|p| p["creationDate"].as_str().unwrap_or(""))
-        .or_else(|| list.iter().max_by_key(|p| p["creationDate"].as_str().unwrap_or("")))
+        .or_else(|| eligible.iter().copied().max_by_key(|p| p["creationDate"].as_str().unwrap_or("")))
+        .or(old_item)
         .cloned()
 }
 
@@ -3271,7 +3643,7 @@ fn azure_pr_create(
     // "TF401179: An active pull request for the source and target branch
     // already exists" — carries no URL, so resolve the existing one.
     if stderr.to_lowercase().contains("already exists") {
-        if let Ok(Some(pr)) = azure_pr_status(bin, cwd, None) {
+        if let Ok(Some(pr)) = azure_pr_status(bin, cwd, None, None) {
             if !pr.url.is_empty() {
                 return Ok(pr.url);
             }
@@ -3303,7 +3675,14 @@ fn extract_pr_url(text: &str) -> Option<String> {
 
 /// Trailing number of a PR/MR URL ("…/pull/123" / "…/merge_requests/45").
 pub fn pr_number_from_url(url: &str) -> Option<u64> {
-    url.rsplit('/').next()?.parse().ok()
+    url.trim()
+        .split(['?', '#'])
+        .next()?
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -4257,21 +4636,34 @@ code.internal.acme.com configured to use ssh protocol.\n";
     #[test]
     fn azure_branch_pr_pick() {
         let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
-        let active = j(r#"{"status":"active","creationDate":"2024-01-01"}"#);
-        let old_abandoned = j(r#"{"status":"abandoned","creationDate":"2024-01-01"}"#);
-        let new_completed = j(r#"{"status":"completed","creationDate":"2025-06-01"}"#);
-        // Active beats newer settled.
-        assert_eq!(pick_azure_branch_pr(&[new_completed.clone(), active.clone()]), Some(active));
+        let active = j(r#"{"pullRequestId":5,"status":"active","creationDate":"2024-01-01"}"#);
+        let old_abandoned = j(r#"{"pullRequestId":6,"status":"abandoned","creationDate":"2024-01-01"}"#);
+        let new_completed = j(r#"{"pullRequestId":7,"status":"completed","creationDate":"2025-06-01"}"#);
+        // Active beats newer settled when no settled PR is tracked.
+        assert_eq!(pick_azure_branch_pr(&[new_completed.clone(), active.clone()], None), Some(active.clone()));
         // No active: the newest settled PR wins, whatever the list order.
         assert_eq!(
-            pick_azure_branch_pr(&[new_completed.clone(), old_abandoned.clone()]),
+            pick_azure_branch_pr(&[new_completed.clone(), old_abandoned.clone()], None),
             Some(new_completed.clone())
         );
         assert_eq!(
-            pick_azure_branch_pr(&[old_abandoned, new_completed.clone()]),
-            Some(new_completed)
+            pick_azure_branch_pr(&[old_abandoned, new_completed.clone()], None),
+            Some(new_completed.clone())
         );
-        assert_eq!(pick_azure_branch_pr(&[]), None);
+        assert_eq!(pick_azure_branch_pr(&[], None), None);
+
+        // Once newer PR #7 is completed, an older active PR (#5 against another base) must not replace it.
+        assert_eq!(
+            pick_azure_branch_pr(&[new_completed.clone(), active.clone()], Some(7)),
+            Some(new_completed.clone())
+        );
+        // A newer active PR (#9) from the same repo replaces completed #7, while a fork PR (#10) does not.
+        let newer_active = j(r#"{"pullRequestId":9,"status":"active","creationDate":"2025-07-01"}"#);
+        let fork_active = j(r#"{"pullRequestId":10,"status":"active","creationDate":"2025-08-01","forkSource":{"repository":{"id":"fork-1"}}}"#);
+        assert_eq!(
+            pick_azure_branch_pr(&[new_completed, active, fork_active, newer_active.clone()], Some(7)),
+            Some(newer_active)
+        );
     }
 
     #[test]
@@ -4382,6 +4774,128 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert!(branch_matches_pr("pr-9-feat", "feat", 9));
         assert!(!branch_matches_pr("other", "feat", 9));
         assert!(!branch_matches_pr("pr-10", "feat", 9));
+    }
+
+    #[test]
+    fn branch_replacement_selection_aliases_and_escapes() {
+        let r = BranchReplacementRef {
+            owner: "acme".into(), repo: "app".into(), branch: "feat/a\"b".into(),
+            old_number: 5, old_cross_repository: false, old_head_owner: Some("acme".into()),
+        };
+        let sel = branch_replacement_page_selection(&[(0, &r, None), (2, &r, Some("c1"))]);
+        assert!(sel.contains(r#"b0: repository(owner: "acme", name: "app") { pullRequests(headRefName: "feat/a\"b", first: 20, orderBy: { field: CREATED_AT, direction: DESC }) { pageInfo { hasNextPage endCursor } nodes {"#), "{sel}");
+        assert!(sel.contains(r#"b2: repository(owner: "acme", name: "app") { pullRequests(headRefName: "feat/a\"b", first: 20, after: "c1","#), "{sel}");
+        assert!(sel.contains("isCrossRepository headRepositoryOwner { login }"));
+    }
+
+    #[test]
+    fn pick_branch_replacement_prefers_open_same_owner_and_ignores_forks_or_older() {
+        let node = |n: u64, state: &str, head: &str, cross: bool, owner: &str| serde_json::json!({
+            "number": n, "state": state, "headRefName": head,
+            "isCrossRepository": cross, "headRepositoryOwner": { "login": owner }
+        });
+        let scan = |nodes: Vec<serde_json::Value>, r: &BranchReplacementRef| {
+            let mut acc = BranchScanAcc::default();
+            scan_branch_replacement_nodes(&nodes, r, &mut acc);
+            (acc.best_open.or(acc.best_newer), acc.saw_old_or_older)
+        };
+        let r = BranchReplacementRef {
+            owner: "acme".into(), repo: "app".into(), branch: "feat".into(),
+            old_number: 5, old_cross_repository: false, old_head_owner: Some("acme".into()),
+        };
+        // Only the old PR, an older open PR (#3 against another base), and a fork PR exist: keep old.
+        let nodes = vec![
+            node(99, "OPEN", "feat", true, "stranger"),
+            node(5, "MERGED", "feat", false, "acme"),
+            node(3, "OPEN", "feat", false, "acme"),
+        ];
+        assert_eq!(scan(nodes, &r), (None, true));
+
+        // New open same-repo PR on the same branch wins over older/fork PRs.
+        let with_open = vec![
+            node(99, "OPEN", "feat", true, "stranger"),
+            node(6, "OPEN", "feat", false, "acme"),
+            node(5, "MERGED", "feat", false, "acme"),
+        ];
+        assert_eq!(scan(with_open, &r).0, Some(6));
+
+        // A PR opened on a different branch never matches even if returned.
+        let wrong_branch = vec![node(7, "OPEN", "other", false, "acme")];
+        assert_eq!(scan(wrong_branch, &r), (None, false));
+
+        // A newer already-merged PR (#6 > #5) created while offline still updates.
+        let offline_merged = vec![
+            node(6, "MERGED", "feat", false, "acme"),
+            node(5, "MERGED", "feat", false, "acme"),
+        ];
+        assert_eq!(scan(offline_merged, &r).0, Some(6));
+
+        // When the tracked PR itself came from a fork, only that fork owner's PRs match.
+        let fork_ref = BranchReplacementRef {
+            owner: "acme".into(), repo: "app".into(), branch: "feat".into(),
+            old_number: 5, old_cross_repository: true, old_head_owner: Some("bob".into()),
+        };
+        let fork_nodes = vec![
+            node(8, "OPEN", "feat", true, "stranger"),
+            node(9, "OPEN", "feat", true, "Bob"),
+        ];
+        assert_eq!(scan(fork_nodes, &fork_ref).0, Some(9));
+    }
+
+    #[test]
+    fn eval_branch_replacement_alias_handles_pagination_and_partial_errors() {
+        let r = BranchReplacementRef {
+            owner: "acme".into(), repo: "app".into(), branch: "feat".into(),
+            old_number: 5, old_cross_repository: false, old_head_owner: Some("acme".into()),
+        };
+        let node = |n: u64, cross: bool, owner: &str| serde_json::json!({
+            "number": n, "state": "OPEN", "headRefName": "feat",
+            "isCrossRepository": cross, "headRepositoryOwner": { "login": owner }
+        });
+        // Full page of unrelated forks -> requests next page via cursor.
+        let page1 = serde_json::json!({
+            "pullRequests": {
+                "pageInfo": { "hasNextPage": true, "endCursor": "cur-1" },
+                "nodes": [node(12, true, "alice"), node(11, true, "bob")]
+            }
+        });
+        let mut acc = BranchScanAcc::default();
+        assert!(matches!(eval_branch_replacement_alias(&page1, &r, &mut acc), ScanPageOutcome::NextPage(ref c) if c == "cur-1"));
+        // Next page contains matching PR #6.
+        let page2 = serde_json::json!({
+            "pullRequests": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [node(6, false, "acme")]
+            }
+        });
+        assert!(matches!(eval_branch_replacement_alias(&page2, &r, &mut acc), ScanPageOutcome::Selected(6)));
+
+        // Null alias (GraphQL error) -> AliasFailed rather than claiming NoneFound.
+        let mut err_acc = BranchScanAcc::default();
+        assert!(matches!(eval_branch_replacement_alias(&serde_json::Value::Null, &r, &mut err_acc), ScanPageOutcome::AliasFailed));
+    }
+
+    #[test]
+    fn gitlab_open_mrs_target_and_fork_picker() {
+        let local = gitlab_open_mrs_api_target("feat/a", None).unwrap();
+        assert_eq!(local.0, None);
+        assert!(local.1.starts_with("projects/:id/merge_requests?state=opened&source_branch=feat%2Fa&"));
+
+        let srv = gitlab_open_mrs_api_target("feat/a", Some("https://gitlab.example.io/group/sub/app")).unwrap();
+        assert_eq!(srv.0.as_deref(), Some("gitlab.example.io"));
+        assert!(srv.1.starts_with("projects/group%2Fsub%2Fapp/merge_requests?state=opened&source_branch=feat%2Fa&"), "{}", srv.1);
+
+        let list = vec![
+            serde_json::json!({"iid": 14, "source_project_id": 99, "target_project_id": 7}),
+            serde_json::json!({"iid": 12, "source_project_id": 7, "target_project_id": 7}),
+            serde_json::json!({"iid": 5, "source_project_id": 7, "target_project_id": 7}),
+        ];
+        // Same-repo tracked MR #10 ignores newer fork MR !14 and older same-repo MR !5.
+        assert_eq!(pick_gitlab_branch_mr_iid(&list, Some(10), Some(7)), Some(12));
+        // Fork tracked MR #10 matches fork MR !14.
+        assert_eq!(pick_gitlab_branch_mr_iid(&list, Some(10), Some(99)), Some(14));
+        // No old number known: prefers upstream same-repo MR !12 over fork MR !14.
+        assert_eq!(pick_gitlab_branch_mr_iid(&list, None, None), Some(12));
     }
 
     #[test]

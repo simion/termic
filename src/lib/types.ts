@@ -294,6 +294,10 @@ export interface TaskMember {
    *  Empty = the member repo's own `.termic.yaml` list is resolved on
    *  restore instead. */
   files_to_copy?: string[];
+  pr_number?: number | null;
+  pr_provider?: ForgeProvider | null;
+  pr_state?: "open" | "draft" | "merged" | "closed" | null;
+  pr_head?: string | null;
 }
 
 /** One frozen extra named port (GH #196): configured env var name +
@@ -472,6 +476,8 @@ export interface Task {
   pr_title?: string | null;
   pr_state?: "open" | "draft" | "merged" | "closed" | null;
   pr_state_at?: string | null;
+  /** Source branch (`PrStatus.head`) of the cached PR/MR. */
+  pr_head?: string | null;
   /** Comment-watcher opt-in (the PR card bell). Watching only runs while
    *  the task has a LIVE agent - there's nobody to tell otherwise. */
   pr_watch?: boolean;

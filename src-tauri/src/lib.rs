@@ -724,6 +724,10 @@ pub struct Task {
     pub pr_state: Option<String>,
     #[serde(default)]
     pub pr_state_at: Option<String>,
+    /// Source branch (`PrStatus.head`) of the cached PR/MR, written alongside
+    /// `pr_state` so replacement discovery stays scoped to the same branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_head: Option<String>,
     /// Comment watcher opt-in for this task (the bell on the PR
     /// card). Persisted so a relaunch resumes watching. The per-project
     /// `watch_pr_comments` setting force-enables it for every task
@@ -1018,6 +1022,17 @@ pub struct TaskMember {
     /// creation copied in.
     #[serde(default)]
     pub files_to_copy: Vec<String>,
+    /// Cached PR/MR identity for this member repo (matching `Task::pr_*`),
+    /// keeping settled GitLab MRs pinned after branch deletion and scoping
+    /// same-branch replacements cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_head: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -7571,6 +7586,10 @@ fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port
             // Frozen, not applied: repo mode symlinks the live checkout,
             // which already holds its own gitignored files.
             files_to_copy:  pm.files_to_copy.clone(),
+            pr_number:      None,
+            pr_provider:    None,
+            pr_state:       None,
+            pr_head:        None,
         });
     }
     composition
@@ -7829,6 +7848,7 @@ async fn task_open_repo(
         pr_title: None,
         pr_state: None,
         pr_state_at: None,
+        pr_head: None,
         pr_watch: false,
         pr_comments_seen_at: None,
         // New tasks are unordered: they append below any manually
@@ -8312,6 +8332,7 @@ fn task_import_worktree(
         pr_title: None,
         pr_state: None,
         pr_state_at: None,
+        pr_head: None,
         pr_watch: false,
         pr_comments_seen_at: None,
         // New tasks are unordered: they append below any manually
@@ -8810,6 +8831,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         pr_title: None,
         pr_state: None,
         pr_state_at: None,
+        pr_head: None,
         pr_watch: false,
         pr_comments_seen_at: None,
         // New tasks are unordered: they append below any manually
@@ -9245,6 +9267,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         pr_title: None,
         pr_state: None,
         pr_state_at: None,
+        pr_head: None,
         pr_watch: false,
         pr_comments_seen_at: None,
         // New tasks are unordered: they append below any manually
@@ -9467,6 +9490,10 @@ fn materialize_member(
                 run_script:     mp.run_script.clone(),
                 archive_script: mp.archive_script.clone(),
                 files_to_copy:  mp.files_to_copy.clone(),
+                pr_number:      None,
+                pr_provider:    None,
+                pr_state:       None,
+                pr_head:        None,
             })
         }
         MemberMode::Worktree => {
@@ -9528,6 +9555,10 @@ fn materialize_member(
                 run_script:     mp.run_script.clone(),
                 archive_script: mp.archive_script.clone(),
                 files_to_copy:  mp.files_to_copy.clone(),
+                pr_number:      None,
+                pr_provider:    None,
+                pr_state:       None,
+                pr_head:        None,
             })
         }
     }
@@ -16293,17 +16324,162 @@ pub struct PrLookup {
     pub retry_at: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+struct KnownPr<'a> {
+    number: u64,
+    provider: Option<&'a str>,
+    state: Option<&'a str>,
+    head: Option<&'a str>,
+}
+
+/// Whether a PR found by branch lookup should replace the task's known PR.
+///
+/// When the known PR is settled (`merged` / `closed`), a replacement is
+/// accepted only while the checkout is still on that same branch (`known_head`
+/// and `candidate.head` both match `cur_branch`). Never regresses from a
+/// known PR to an older settled PR (`candidate.number < known_number`).
+fn accept_branch_candidate(
+    cur_branch: Option<&str>,
+    known_number: u64,
+    known_state: Option<&str>,
+    known_head: Option<&str>,
+    candidate: &forge::PrStatus,
+) -> bool {
+    if matches!(known_state, Some("merged") | Some("closed")) {
+        if candidate.number <= known_number {
+            return false;
+        }
+        let Some(b) = cur_branch else { return false };
+        if candidate.head != b {
+            return false;
+        }
+        return known_head.map_or(true, |h| h == b);
+    }
+    true
+}
+
+fn resolve_pr_with<F>(
+    cur_branch: Option<&str>,
+    known: Option<KnownPr<'_>>,
+    mut fetch: F,
+) -> Result<Option<forge::PrStatus>, forge::ForgeError>
+where
+    F: FnMut(Option<u64>, Option<u64>) -> Result<Option<forge::PrStatus>, forge::ForgeError>,
+{
+    let Some(k) = known else {
+        return fetch(None, None);
+    };
+    let resolve_after_live = |live: forge::PrStatus, fetch: &mut F| -> Result<Option<forge::PrStatus>, forge::ForgeError> {
+        let live_settled = live.state == "merged" || live.state == "closed";
+        if live_settled {
+            if cur_branch.is_some_and(|b| b == live.head) {
+                return match fetch(None, Some(live.number)) {
+                    Ok(Some(cand)) if cand.number != live.number => {
+                        if accept_branch_candidate(cur_branch, live.number, Some(&live.state), Some(&live.head), &cand) {
+                            Ok(Some(cand))
+                        } else {
+                            Ok(Some(live))
+                        }
+                    }
+                    Ok(Some(same)) => Ok(Some(same)),
+                    Ok(None) | Err(_) => Ok(Some(live)),
+                };
+            }
+            return Ok(Some(live));
+        }
+        if !cur_branch.is_some_and(|b| forge::branch_matches_pr(b, &live.head, live.number)) {
+            return match fetch(None, None) {
+                Ok(Some(moved)) => Ok(Some(moved)),
+                _ => Ok(Some(live)),
+            };
+        }
+        Ok(Some(live))
+    };
+
+    // Legacy record missing `pr_head`: resolve by stored number first to
+    // backfill the true head branch before evaluating same-branch rollover.
+    let Some(k_head) = k.head else {
+        return match fetch(Some(k.number), None) {
+            Ok(Some(live)) => resolve_after_live(live, &mut fetch),
+            Ok(None) => fetch(None, None),
+            Err(e) => Err(e),
+        };
+    };
+
+    let settled = matches!(k.state, Some("merged") | Some("closed"));
+    let same_checkout = cur_branch.is_some_and(|b| {
+        if settled { b == k_head } else { forge::branch_matches_pr(b, k_head, k.number) }
+    });
+    if !same_checkout {
+        if settled {
+            return fetch(Some(k.number), None);
+        }
+        // Cached state was active, but checkout moved off `k_head`: inspect
+        // `k.number` first so a PR that settled before switching stays pinned.
+        return match fetch(Some(k.number), None) {
+            Ok(Some(old_pr)) if old_pr.state == "merged" || old_pr.state == "closed" => Ok(Some(old_pr)),
+            Ok(Some(old_pr)) => match fetch(None, None) {
+                Ok(Some(moved)) => Ok(Some(moved)),
+                _ => Ok(Some(old_pr)),
+            },
+            Ok(None) => fetch(None, None),
+            Err(e) => Err(e),
+        };
+    }
+
+    match fetch(None, Some(k.number)) {
+        Ok(Some(candidate)) if candidate.number != k.number => {
+            if settled {
+                if accept_branch_candidate(cur_branch, k.number, k.state, Some(k_head), &candidate) {
+                    Ok(Some(candidate))
+                } else {
+                    fetch(Some(k.number), None)
+                }
+            } else if candidate.number < k.number {
+                // Verify `k.number` hasn't settled before adopting an older open PR on the branch.
+                match fetch(Some(k.number), None) {
+                    Ok(Some(old_pr)) if old_pr.state == "merged" || old_pr.state == "closed" => {
+                        if accept_branch_candidate(cur_branch, old_pr.number, Some(&old_pr.state), Some(&old_pr.head), &candidate) {
+                            Ok(Some(candidate))
+                        } else {
+                            Ok(Some(old_pr))
+                        }
+                    }
+                    Ok(Some(_)) => Ok(Some(candidate)),
+                    Ok(None) | Err(_) => Ok(Some(candidate)),
+                }
+            } else {
+                Ok(Some(candidate))
+            }
+        }
+        Ok(Some(same)) => Ok(Some(same)),
+        Ok(None) => fetch(Some(k.number), None),
+        Err(e) => fetch(Some(k.number), None).or(Err(e)),
+    }
+}
+
+fn resolve_pr_for_task(
+    provider: &str,
+    cwd: &Path,
+    known: Option<KnownPr<'_>>,
+) -> Result<Option<forge::PrStatus>, forge::ForgeError> {
+    let cur_branch = head_branch(cwd);
+    resolve_pr_with(cur_branch.as_deref(), known, |num, hint| {
+        if let Some(n) = num {
+            forge::pr_status(provider, cwd, Some(n))
+        } else {
+            forge::pr_status_for_branch(provider, cwd, hint)
+        }
+    })
+}
+
 /// The shared lookup body: resolve the repo's forge off its default remote,
-/// find the branch's PR (falling back to `known_number`), and map every
-/// failure onto the status vocabulary the card renders. `known_*` are the
+/// find the branch's PR (falling back to `known`), and map every
+/// failure onto the status vocabulary the card renders. `known` is the
 /// stored identity a TASK record carries - member lookups pass None, because
 /// a member resolves by branch only (its checkout's HEAD IS the member
 /// branch) and nothing persists a member identity anywhere.
-fn pr_lookup_at(
-    cwd: &Path,
-    known_number: Option<u64>,
-    known_provider: Option<&str>,
-) -> PrLookup {
+fn pr_lookup_at(cwd: &Path, known: Option<KnownPr<'_>>) -> PrLookup {
     // No network, no forge CLI: provider resolution is a cached lookup, and
     // detecting the default remote is one `git remote` subprocess - the
     // cheap floor a poll on a non-forge repo should cost.
@@ -16331,27 +16507,18 @@ fn pr_lookup_at(
     // Resolve by BRANCH first, and only fall back to the stored number.
     //
     // Preferring the stored number pinned this task to whichever PR it saw
-    // first, for good: close that PR, open a replacement on the same branch,
-    // and every later poll kept reporting the dead one - its checks, its
-    // review state, and a merge that would never come, so auto-archive could
-    // not fire either. Nothing ever cleared the number.
+    // first, for good: close or merge that PR, open a replacement on the
+    // same branch, and every later poll kept reporting the old one.
     //
-    // The number still matters for the case it was added for: once a PR is
-    // merged and its source branch deleted, a by-branch lookup stops
-    // resolving on GitLab. That is exactly when the branch lookup returns
-    // None, so it is the fallback rather than the default. Normal polls stay
-    // at one CLI call; only the deleted-branch case pays for a second.
+    // The number still matters when the branch lookup returns None (e.g. a
+    // merged PR whose source branch was deleted on GitLab, or a detached HEAD),
+    // and when the task moved to a different branch after the PR settled.
     //
     // `pr_provider` unset is a legacy task that predates the field - trust
     // its stored number under the CURRENT provider (a stale cross-forge
     // number just comes back "not found" and degrades to None).
-    let known_number =
-        known_number.filter(|_| known_provider.map_or(true, |p| p == provider));
-    let resolved = branch_then_number(
-        forge::pr_status(provider, cwd, None),
-        known_number.is_some(),
-        || forge::pr_status(provider, cwd, known_number),
-    );
+    let known = known.filter(|k| k.provider.map_or(true, |p| p == provider));
+    let resolved = resolve_pr_for_task(provider, cwd, known);
     match resolved {
         Ok(pr) => PrLookup {
             provider: Some(provider.to_string()),
@@ -16393,6 +16560,7 @@ fn pr_cache_differs(w: &Task, p: &forge::PrStatus, provider: &str) -> bool {
         || w.pr_url.as_deref() != Some(p.url.as_str())
         || w.pr_title.as_deref() != Some(p.title.as_str())
         || w.pr_state.as_deref() != Some(p.state.as_str())
+        || (!p.head.is_empty() && w.pr_head.as_deref() != Some(p.head.as_str()))
 }
 
 fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
@@ -16402,28 +16570,178 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
 
 /// A task's own lookup, its identity persisted.
 fn pr_lookup_task(w: &Task) -> PrLookup {
-    let lookup = pr_lookup_at(Path::new(&w.path), w.pr_number, w.pr_provider.as_deref());
+    let known_head = w.pr_head.as_deref().filter(|h| !h.is_empty());
+    let known = w.pr_number.map(|number| KnownPr {
+        number,
+        provider: w.pr_provider.as_deref(),
+        state: w.pr_state.as_deref(),
+        head: known_head,
+    });
+    let mut lookup = pr_lookup_at(Path::new(&w.path), known);
+    // An orphaned worktree (directory empty or `.git` removed on disk) still
+    // keeps its cached GitHub `pr_url` and `w.branch`: resolve and roll over by
+    // URL + branch via GraphQL so focus/turn-end/manual refresh stay current.
+    if lookup.status == "no-remote"
+        && !w.is_main_checkout
+        && !w.branch.is_empty()
+        && w.pr_provider.as_deref().map_or(true, |p| p == forge::GITHUB)
+    {
+        if let Some((host, owner, repo, number)) = w.pr_url.as_deref().and_then(forge::parse_github_pr_url) {
+            if let Some(fb) = pr_lookup_github_url_fallback(w, &host, &owner, &repo, number) {
+                lookup = fb;
+            }
+        }
+    }
     persist_pr_identity(w, &lookup);
     lookup
+}
+
+fn pr_lookup_github_url_fallback(
+    w: &Task,
+    host: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Option<PrLookup> {
+    let r = forge::PrRef { owner: owner.to_string(), repo: repo.to_string(), number };
+    let answers = match forge::github_pr_status_batch_meta(host, "pr_status", std::slice::from_ref(&r)) {
+        Ok(a) => a,
+        Err(e) => return Some(pr_lookup_failed(forge::GITHUB, format!("https://{host}/{owner}/{repo}"), e)),
+    };
+    let item = answers.into_iter().next().flatten().filter(|it| answer_is_for(&it.status.url, host, &r))?;
+    let mut pr = item.status;
+    if batch_route(Some(&pr), Some(&w.branch)) == BatchRoute::SettledSameBranch {
+        let query_branch = if !pr.head.is_empty() { pr.head.clone() } else { w.branch.clone() };
+        let rep_ref = forge::BranchReplacementRef {
+            owner: r.owner,
+            repo: r.repo,
+            branch: query_branch,
+            old_number: pr.number,
+            old_cross_repository: item.cross_repository,
+            old_head_owner: item.head_owner,
+        };
+        match forge::github_branch_pr_replacements_batch(host, "pr_status", std::slice::from_ref(&rep_ref)) {
+            Ok(mut outcomes) => {
+                if let Some(forge::ReplacementOutcome::Replace(new_pr)) = outcomes.pop() {
+                    pr = new_pr;
+                }
+            }
+            Err(e) => return Some(pr_lookup_failed(forge::GITHUB, format!("https://{host}/{owner}/{repo}"), e)),
+        }
+    }
+    Some(PrLookup {
+        provider: Some(forge::GITHUB.to_string()),
+        remote_url: format!("https://{host}/{owner}/{repo}"),
+        status: "ok".into(),
+        message: String::new(),
+        pr: Some(pr),
+        retry_at: None,
+    })
+}
+
+fn pr_persist_lock() -> &'static Mutex<()> {
+    static L: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+}
+
+fn apply_pr_identity(
+    wm: &mut Task,
+    expected_number: Option<u64>,
+    expected_provider: Option<&str>,
+    expected_url: Option<&str>,
+    p: &forge::PrStatus,
+    provider: &str,
+    now_rfc3339: &str,
+) -> bool {
+    let snapshot_stale = (wm.pr_number != expected_number
+        || wm.pr_provider.as_deref() != expected_provider
+        || wm.pr_url.as_deref() != expected_url)
+        && (wm.pr_number != Some(p.number) || wm.pr_provider.as_deref() != Some(provider));
+    if snapshot_stale || !pr_cache_differs(wm, p, provider) {
+        return false;
+    }
+    let state_changed = wm.pr_number != Some(p.number)
+        || wm.pr_provider.as_deref() != Some(provider)
+        || wm.pr_state.as_deref() != Some(p.state.as_str());
+    wm.pr_url = Some(p.url.clone());
+    wm.pr_number = Some(p.number);
+    wm.pr_provider = Some(provider.to_string());
+    wm.pr_title = Some(p.title.clone());
+    wm.pr_state = Some(p.state.clone());
+    if !p.head.is_empty() {
+        wm.pr_head = Some(p.head.clone());
+    }
+    if state_changed || wm.pr_state_at.is_none() {
+        wm.pr_state_at = Some(now_rfc3339.to_string());
+    }
+    true
 }
 
 /// Cache the identity on the task record so future polls (and the next app
 /// launch) can resolve by number. The title and state ride along (History
 /// searches and shows them), but a poll that saw nothing new writes nothing:
-/// this runs every minute per task with a PR.
+/// this runs every minute per task with a PR. Serialized against concurrent
+/// PR writers (`task_pr_create`, batch poll) so a slower lookup cannot overwrite
+/// a newly created PR on disk.
 fn persist_pr_identity(w: &Task, lookup: &PrLookup) {
     let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) else { return };
     if !pr_cache_differs(w, p, provider) {
         return;
     }
+    let _guard = pr_persist_lock().lock();
     let mut list = load_tasks_all();
     if let Some(wm) = list.iter_mut().find(|x| x.id == w.id) {
-        wm.pr_url = Some(p.url.clone());
-        wm.pr_number = Some(p.number);
-        wm.pr_provider = Some(provider.to_string());
-        wm.pr_title = Some(p.title.clone());
-        wm.pr_state = Some(p.state.clone());
-        wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
+        let now = chrono::Utc::now().to_rfc3339();
+        if apply_pr_identity(
+            wm,
+            w.pr_number,
+            w.pr_provider.as_deref(),
+            w.pr_url.as_deref(),
+            p,
+            provider,
+            &now,
+        ) {
+            let _ = save_task(wm);
+        }
+    }
+}
+
+fn member_cache_differs(m: &TaskMember, p: &forge::PrStatus, provider: &str) -> bool {
+    m.pr_number != Some(p.number)
+        || m.pr_provider.as_deref() != Some(provider)
+        || m.pr_state.as_deref() != Some(p.state.as_str())
+        || (!p.head.is_empty() && m.pr_head.as_deref() != Some(p.head.as_str()))
+}
+
+fn persist_member_pr_updates(task_id: &str, updates: &[(&TaskMember, &PrLookup)]) {
+    let diffs: Vec<_> = updates.iter().filter_map(|(m, l)| {
+        let p = l.pr.as_ref()?;
+        let prov = l.provider.as_deref()?;
+        member_cache_differs(m, p, prov).then_some((m.dir_name.as_str(), m.pr_number, m.pr_provider.as_deref(), p, prov))
+    }).collect();
+    if diffs.is_empty() {
+        return;
+    }
+    let _guard = pr_persist_lock().lock();
+    let mut list = load_tasks_all();
+    let Some(wm) = list.iter_mut().find(|x| x.id == task_id) else { return };
+    let mut changed = false;
+    for (dir_name, exp_num, exp_prov, p, prov) in diffs {
+        if let Some(m) = wm.composition.iter_mut().find(|c| c.dir_name == dir_name) {
+            let stale = (m.pr_number != exp_num || m.pr_provider.as_deref() != exp_prov)
+                && (m.pr_number != Some(p.number) || m.pr_provider.as_deref() != Some(prov));
+            if !stale && member_cache_differs(m, p, prov) {
+                m.pr_number = Some(p.number);
+                m.pr_provider = Some(prov.to_string());
+                m.pr_state = Some(p.state.clone());
+                if !p.head.is_empty() {
+                    m.pr_head = Some(p.head.clone());
+                }
+                changed = true;
+            }
+        }
+    }
+    if changed {
         let _ = save_task(wm);
     }
 }
@@ -16440,16 +16758,20 @@ struct TaskPrLookup {
 /// anything else takes the per-task `pr_lookup_at` path, and so does a batch
 /// answer that cannot be trusted on its own (see `batch_route`).
 ///
+/// Settled (`merged` / `closed`) PRs still on the same branch check for a
+/// newer replacement PR on that branch via one batched GraphQL query per host
+/// (`github_branch_pr_replacements_batch`), so they pay zero `gh` subprocesses.
+///
 /// Background work, always: `gh_api` refuses a chunk while the host's gate
 /// is closed, and the rest of that host is left out of the answer, so the
 /// caller keeps what it had. How any other failure is answered: see
 /// `batch_failure_plan`.
 ///
 /// Every way out of the batch into a per-task `gh pr view` (a task the query
-/// cannot hold, a chunk that keeps failing, an answer that needs a second
-/// look, a moved branch) spends from one `BATCH_FALLBACK_MAX` budget per
-/// pass. A task past it is left out, or answered with what the batch saw, and
-/// comes first next pass, since the caller asks stalest first.
+/// cannot hold, a chunk that keeps failing, a moved branch) spends from one
+/// `BATCH_FALLBACK_MAX` budget per pass. A task past it is left out, or
+/// answered with what the batch saw, and comes first next pass, since the
+/// caller asks stalest first.
 fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
     let all = load_tasks_all();
     // Rechecks of tasks that are gone or archived are never asked again.
@@ -16497,9 +16819,10 @@ fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
 
     let mut out = Vec::new();
     'hosts: for (host, items) in by_host {
+        let mut settled_checks: Vec<(&Task, forge::PrStatus, forge::BranchReplacementRef)> = Vec::new();
         for chunk in items.chunks(forge::PR_BATCH_MAX) {
             let refs: Vec<forge::PrRef> = chunk.iter().map(|(_, r)| r.clone()).collect();
-            let answers = match forge::github_pr_status_batch(&host, "pr_status", &refs) {
+            let answers = match forge::github_pr_status_batch_meta(&host, "pr_status", &refs) {
                 Ok(a) => {
                     batch_failures().lock().remove(&host);
                     a
@@ -16533,28 +16856,94 @@ fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
                     continue;
                 }
             };
-            for ((t, r), answer) in chunk.iter().zip(answers) {
+            for ((t, r), item) in chunk.iter().zip(answers) {
                 // An answer about some other PR (a host that re-homed it, or
                 // a renamed repo) is not trusted, nor persisted onto the
                 // task: the per-task lookup finds what the branch is on.
-                let answer = answer.filter(|p| answer_is_for(&p.url, &host, r));
+                let item = item.filter(|it| answer_is_for(&it.status.url, &host, r));
                 let path = Path::new(&t.path);
-                let branch = head_branch(path);
-                match batch_route(answer.as_ref(), branch.as_deref()) {
-                    BatchRoute::Trusted => out.push(ok(t, answer.expect("trusted means answered"))),
+                let branch = batch_checkout_branch(path, t);
+                match batch_route(item.as_ref().map(|i| &i.status), branch.as_deref()) {
+                    BatchRoute::Trusted => out.push(ok(t, item.expect("trusted means answered").status)),
+                    BatchRoute::SettledSameBranch => {
+                        let it = item.expect("settled means answered");
+                        let b = branch.expect("same-branch means local branch exists");
+                        let query_branch = if !it.status.head.is_empty() { it.status.head.clone() } else { b };
+                        if take_recheck(&t.id, "", now) {
+                            let rep_ref = forge::BranchReplacementRef {
+                                owner: r.owner.clone(),
+                                repo: r.repo.clone(),
+                                branch: query_branch,
+                                old_number: it.status.number,
+                                old_cross_repository: it.cross_repository,
+                                old_head_owner: it.head_owner,
+                            };
+                            settled_checks.push((t, it.status, rep_ref));
+                        } else {
+                            out.push(ok(t, it.status));
+                        }
+                    }
                     BatchRoute::Single => {
                         if take_recheck(&t.id, "", now) {
-                            single.push((t, answer));
-                        } else if let Some(pr) = answer {
-                            // Closed, as of this pass. A replacement on the
-                            // same branch is looked for at the recheck pace.
-                            out.push(ok(t, pr));
+                            single.push((t, item.map(|i| i.status)));
+                        } else if let Some(it) = item {
+                            out.push(ok(t, it.status));
                         }
                     }
                     BatchRoute::Moved => {
-                        let pr = answer.expect("moved means answered");
+                        let pr = item.expect("moved means answered").status;
                         let branch = branch.as_deref().unwrap_or_default();
                         out.push(ok(t, moved_branch_pr(t, branch, pr, now, &mut budget)));
+                    }
+                }
+            }
+        }
+        let mut paused = false;
+        let release_rechecks = |chunk: &[(&Task, forge::PrStatus, forge::BranchReplacementRef)]| {
+            let mut m = rechecks().lock();
+            for (t, _, _) in chunk {
+                m.remove(&t.id);
+            }
+        };
+        for chunk in settled_checks.chunks(forge::PR_REPLACEMENT_BATCH_MAX) {
+            if paused {
+                release_rechecks(chunk);
+                continue;
+            }
+            let refs: Vec<forge::BranchReplacementRef> = chunk.iter().map(|(_, _, r)| r.clone()).collect();
+            match forge::github_branch_pr_replacements_batch(&host, "pr_status", &refs) {
+                Ok(outcomes) => {
+                    replacement_failures().lock().remove(&host);
+                    for ((t, old_pr, _), outcome) in chunk.iter().zip(outcomes) {
+                        match outcome {
+                            forge::ReplacementOutcome::Replace(new_pr) => out.push(ok(t, new_pr)),
+                            forge::ReplacementOutcome::KeepOld => out.push(ok(t, old_pr.clone())),
+                            forge::ReplacementOutcome::Retry => {
+                                single.push((t, Some(old_pr.clone())));
+                            }
+                        }
+                    }
+                }
+                Err(forge::ForgeError::RateLimited { .. }) => {
+                    paused = true;
+                    release_rechecks(chunk);
+                }
+                Err(e) => {
+                    let streak = {
+                        let mut f = replacement_failures().lock();
+                        let n = f.entry(host.clone()).or_insert(0);
+                        *n = n.saturating_add(1);
+                        *n
+                    };
+                    match batch_failure_plan(&e, streak) {
+                        FailurePlan::FallBack => {
+                            eprintln!("[pr] batch replacement check on {host} keeps failing, falling back per task: {e:?}");
+                            single.extend(chunk.iter().map(|(t, old_pr, _)| (*t, Some(old_pr.clone()))));
+                        }
+                        FailurePlan::Answer | FailurePlan::LeaveOut => {
+                            eprintln!("[pr] batch replacement check on {host} failed, retrying next pass: {e:?}");
+                            release_rechecks(chunk);
+                        }
                     }
                 }
             }
@@ -16567,7 +16956,7 @@ fn pr_lookup_batch(ids: &[String]) -> Vec<TaskPrLookup> {
             continue;
         }
         if budget == 0 {
-            if let Some(pr) = batch_pr {
+            if let Some(pr) = batch_pr.filter(|p| !matches!(p.state.as_str(), "merged" | "closed")) {
                 out.push(ok(t, pr));
             }
             continue;
@@ -16589,26 +16978,61 @@ fn answer_is_for(url: &str, host: &str, asked: &forge::PrRef) -> bool {
     })
 }
 
-/// The checkout's branch from its HEAD file, without a `git` subprocess
-/// (the batch asks this for every task, every pass). A worktree's `.git` is
-/// a `gitdir:` pointer file. Anything unexpected asks git.
-fn head_branch(repo: &Path) -> Option<String> {
+#[derive(Debug, PartialEq, Eq)]
+enum CheckoutBranch {
+    OnBranch(String),
+    Detached,
+    NoGit,
+}
+
+fn checkout_branch(repo: &Path) -> CheckoutBranch {
     let dot_git = repo.join(".git");
     let git_dir = match std::fs::read_to_string(&dot_git) {
-        Ok(pointer) => {
-            let dir = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
-            if dir.is_absolute() { dir } else { repo.join(dir) }
-        }
+        Ok(pointer) => match pointer.trim().strip_prefix("gitdir:") {
+            Some(rest) => {
+                let dir = PathBuf::from(rest.trim());
+                if dir.is_absolute() { dir } else { repo.join(dir) }
+            }
+            None => dot_git,
+        },
         Err(_) => dot_git,
     };
     match std::fs::read_to_string(git_dir.join("HEAD")) {
         Ok(head) => match head.trim().strip_prefix("ref: refs/heads/") {
-            Some(b) if !b.is_empty() => Some(b.to_string()),
-            Some(_) => current_branch(repo),
-            // Detached.
-            None => None,
+            Some(b) if !b.is_empty() => CheckoutBranch::OnBranch(b.to_string()),
+            Some(_) => match current_branch(repo) {
+                Some(b) => CheckoutBranch::OnBranch(b),
+                None => CheckoutBranch::Detached,
+            },
+            // Detached HEAD inside an actual git checkout.
+            None => CheckoutBranch::Detached,
         },
-        Err(_) => current_branch(repo),
+        Err(_) => match current_branch(repo) {
+            Some(b) => CheckoutBranch::OnBranch(b),
+            None if repo.join(".git").exists() => CheckoutBranch::Detached,
+            None => CheckoutBranch::NoGit,
+        },
+    }
+}
+
+/// The checkout's branch from its HEAD file, without a `git` subprocess
+/// (the batch asks this for every task, every pass). A worktree's `.git` is
+/// a `gitdir:` pointer file. Anything unexpected asks git.
+fn head_branch(repo: &Path) -> Option<String> {
+    match checkout_branch(repo) {
+        CheckoutBranch::OnBranch(b) => Some(b),
+        CheckoutBranch::Detached | CheckoutBranch::NoGit => None,
+    }
+}
+
+/// Branch used for batch rollover routing: uses live HEAD when on disk, keeps
+/// detached HEAD as `None` (review checkouts stay pinned), and falls back to
+/// the task's stored branch only when no local git checkout exists on disk.
+fn batch_checkout_branch(repo: &Path, t: &Task) -> Option<String> {
+    match checkout_branch(repo) {
+        CheckoutBranch::OnBranch(b) => Some(b),
+        CheckoutBranch::Detached => None,
+        CheckoutBranch::NoGit => (!t.branch.is_empty() && !t.is_main_checkout).then(|| t.branch.clone()),
     }
 }
 
@@ -16620,16 +17044,22 @@ enum BatchRoute {
     /// Open, but the task's branch is no longer its head: the task moved to
     /// another branch, which may have a PR of its own (`moved_branch_pr`).
     Moved,
-    /// Missing (deleted repo, wrong number, lost access) or closed (not
-    /// merged): the full per-task lookup, whose by-branch half is what finds
-    /// a replacement PR opened on the same branch. At the recheck pace.
+    /// Merged or closed while the checkout is still on that PR's branch:
+    /// check for a replacement PR created on the same branch.
+    SettledSameBranch,
+    /// Missing (deleted repo, wrong number, lost access): the full per-task lookup.
     Single,
 }
 
 fn batch_route(answer: Option<&forge::PrStatus>, branch: Option<&str>) -> BatchRoute {
     match answer {
         None => BatchRoute::Single,
-        Some(p) if p.state == "closed" => BatchRoute::Single,
+        // Fork review checkouts (`pr-<n>-<head>`) stay pinned to that PR once settled;
+        // same-branch replacements only apply when continuing work on `branch == p.head`.
+        Some(p) if p.state == "closed" || p.state == "merged" => match branch {
+            Some(b) if b == p.head => BatchRoute::SettledSameBranch,
+            _ => BatchRoute::Trusted,
+        },
         // Detached HEAD (a PR review checkout) has no branch to disagree.
         Some(p) => match branch {
             Some(b) if !forge::branch_matches_pr(b, &p.head, p.number) => BatchRoute::Moved,
@@ -16697,6 +17127,11 @@ fn batch_failures() -> &'static Mutex<HashMap<String, u32>> {
     F.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn replacement_failures() -> &'static Mutex<HashMap<String, u32>> {
+    static F: std::sync::OnceLock<Mutex<HashMap<String, u32>>> = std::sync::OnceLock::new();
+    F.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum FailurePlan {
     /// Answer every task with the failure's status: missing CLI or signed
@@ -16749,7 +17184,8 @@ fn member_pr_lookups(id: &str, background: bool) -> Result<Option<Vec<MemberPrLo
     }) {
         return Ok(None);
     }
-    Ok(Some(on_disk_members(&w)
+    let members: Vec<&TaskMember> = on_disk_members(&w).collect();
+    let rows: Vec<(&TaskMember, String, PrLookup)> = members.iter()
         .map(|m| {
             let cwd = Path::new(&m.path);
             // Frozen `m.branch` is the create-time value; read HEAD like
@@ -16761,11 +17197,22 @@ fn member_pr_lookups(id: &str, background: bool) -> Result<Option<Vec<MemberPrLo
                 .map(|s| s.trim().to_string())
                 .filter(|b| !b.is_empty())
                 .unwrap_or_else(|| m.branch.clone());
-            MemberPrLookup {
-                dir_name: m.dir_name.clone(),
-                branch,
-                lookup: pr_lookup_at(cwd, None, None),
-            }
+            let known = m.pr_number.map(|number| KnownPr {
+                number,
+                provider: m.pr_provider.as_deref(),
+                state: m.pr_state.as_deref(),
+                head: m.pr_head.as_deref().filter(|h| !h.is_empty()),
+            });
+            (*m, branch, pr_lookup_at(cwd, known))
+        })
+        .collect();
+    let updates: Vec<(&TaskMember, &PrLookup)> = rows.iter().map(|(m, _, l)| (*m, l)).collect();
+    persist_member_pr_updates(&w.id, &updates);
+    Ok(Some(rows.into_iter()
+        .map(|(m, branch, lookup)| MemberPrLookup {
+            dir_name: m.dir_name.clone(),
+            branch,
+            lookup,
         })
         .collect()))
 }
@@ -17239,28 +17686,6 @@ async fn project_forge_issues(project_id: String, limit: Option<u32>, scope: Opt
         .map_err(|e| e.to_string())?
 }
 
-/// Live PR/MR status for the task's branch (host repo). Hits the
-/// network via the forge CLI — callers poll at a slow cadence (60s), not
-/// the 4s git-status tick.
-/// The by-branch answer, else the stored number's. The number is asked when
-/// the branch finds no PR (its source branch was deleted after a merge) and
-/// also when the branch lookup FAILS: a detached HEAD, which is what a PR
-/// review checkout is, has no branch to look up and `gh` reports that as an
-/// error, so the badge froze on its last state for good (GH #435). If the
-/// number fails too, the branch's error is the one reported.
-fn branch_then_number<T, E>(
-    by_branch: Result<Option<T>, E>,
-    knows_number: bool,
-    by_number: impl FnOnce() -> Result<Option<T>, E>,
-) -> Result<Option<T>, E> {
-    match by_branch {
-        Ok(Some(pr)) => Ok(Some(pr)),
-        Ok(None) if knows_number => by_number(),
-        Err(e) if knows_number => by_number().or(Err(e)),
-        other => other,
-    }
-}
-
 /// PR status for many tasks in one call: the background poller's path, so
 /// always rate-gated. See `pr_lookup_batch`; tasks a closed gate skipped are
 /// absent.
@@ -17363,19 +17788,69 @@ async fn task_pr_create(
             }
             Err(e) => return Err(e.into_message()),
         };
-        // Persist identity immediately — the follow-up lookup also does
-        // this, but creation should never lose the URL even if the status
-        // fetch right after hiccups.
-        {
+        // Persist identity immediately under `pr_persist_lock` — then hydrate
+        // by the returned PR number rather than by branch, so a second active
+        // PR on another base branch or a transient status hiccup never hijacks
+        // or fails a just-created PR/MR.
+        let (created_snapshot, next_num) = {
+            let _guard = pr_persist_lock().lock();
+            let cur_branch = head_branch(&cwd);
             let mut list = load_tasks_all();
+            let mut snap = None;
             if let Some(wm) = list.iter_mut().find(|x| x.id == id) {
+                let n = forge::pr_number_from_url(&url);
+                let pr_changed = wm.pr_number != n || wm.pr_provider.as_deref() != Some(provider);
                 wm.pr_url = Some(url.clone());
-                wm.pr_number = forge::pr_number_from_url(&url);
+                wm.pr_number = n;
                 wm.pr_provider = Some(provider.to_string());
+                wm.pr_title = Some(title.to_string());
+                wm.pr_state = Some(if draft { "draft" } else { "open" }.to_string());
+                wm.pr_head = cur_branch.or_else(|| (!wm.branch.is_empty()).then(|| wm.branch.clone()));
+                wm.pr_state_at = Some(chrono::Utc::now().to_rfc3339());
+                if pr_changed && wm.pr_comments_seen_at.is_some() {
+                    wm.pr_comments_seen_at = Some(chrono::Utc::now().to_rfc3339());
+                }
                 let _ = save_task(wm);
+                snap = Some((wm.clone(), n));
             }
+            snap.unwrap_or_else(|| (w.clone(), forge::pr_number_from_url(&url)))
+        };
+        let synthesized = |number: u64| PrLookup {
+            provider: Some(provider.to_string()),
+            remote_url: remote_url.clone(),
+            status: "ok".into(),
+            message: String::new(),
+            pr: Some(forge::PrStatus {
+                provider: provider.to_string(),
+                number,
+                url: url.clone(),
+                title: title.to_string(),
+                state: if draft { "draft" } else { "open" }.into(),
+                checks: "none".into(),
+                review: "none".into(),
+                base: base.to_string(),
+                head: created_snapshot.pr_head.clone().unwrap_or_default(),
+            }),
+            retry_at: None,
+        };
+        if let Some(n) = next_num {
+            if let Ok(Some(pr)) = forge::pr_status(provider, &cwd, Some(n))
+                .map(|o| o.filter(|p| p.number == n))
+            {
+                let lookup = PrLookup {
+                    provider: Some(provider.to_string()),
+                    remote_url: remote_url.clone(),
+                    status: "ok".into(),
+                    message: String::new(),
+                    pr: Some(pr),
+                    retry_at: None,
+                };
+                persist_pr_identity(&created_snapshot, &lookup);
+                return Ok(lookup);
+            }
+            return Ok(synthesized(n));
         }
-        pr_lookup_blocking(&id)
+        Ok(pr_lookup_blocking(&id).unwrap_or_else(|_| synthesized(0)))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -35731,19 +36206,135 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_lookup_falls_back_to_the_stored_number_when_the_branch_cannot_answer() {
-        type R = Result<Option<u32>, &'static str>;
-        let never = || -> R { panic!("the number must not be asked") };
-        assert_eq!(branch_then_number(Ok(Some(1)), true, never), Ok(Some(1)));
-        // Source branch deleted after a merge.
-        assert_eq!(branch_then_number(Ok(None), true, || -> R { Ok(Some(7)) }), Ok(Some(7)));
-        // Detached HEAD: gh errors with "not on any branch" (GH #435).
-        assert_eq!(branch_then_number(Err("not on any branch"), true, || -> R { Ok(Some(7)) }), Ok(Some(7)));
-        // Both fail: the branch's error is the one shown.
-        assert_eq!(branch_then_number(Err("offline"), true, || -> R { Err("also offline") }), Err("offline"));
-        // No stored number: nothing to fall back to, one CLI call.
-        assert_eq!(branch_then_number(Err("offline"), false, never), Err("offline"));
-        assert_eq!(branch_then_number(Ok(None), false, never), Ok(None));
+    fn resolve_pr_with_handles_fallback_legacy_head_and_same_branch_rollover() {
+        let mk = |n: u64, state: &str, head: &str| forge::PrStatus {
+            provider: "github".into(),
+            number: n,
+            url: format!("https://github.com/acme/app/pull/{n}"),
+            title: format!("PR {n}"),
+            state: state.into(),
+            checks: "none".into(),
+            review: "none".into(),
+            base: "main".into(),
+            head: head.into(),
+        };
+        fn known<'a>(number: u64, state: Option<&'a str>, head: Option<&'a str>) -> Option<KnownPr<'a>> {
+            Some(KnownPr { number, provider: Some("github"), state, head })
+        }
+
+        // Falls back to stored number when branch returns None or detached HEAD error.
+        let r1 = resolve_pr_with(Some("feat"), known(7, Some("merged"), Some("feat")), |num, _| match num {
+            None => Ok(None),
+            Some(7) => Ok(Some(mk(7, "merged", "feat"))),
+            _ => unreachable!(),
+        });
+        assert_eq!(r1.unwrap().unwrap().number, 7);
+
+        let r_err = resolve_pr_with(Some("feat"), known(7, Some("open"), Some("feat")), |num, _| match num {
+            None => Err(forge::ForgeError::Other("not on any branch".into())),
+            Some(7) => Ok(Some(mk(7, "open", "feat"))),
+            _ => unreachable!(),
+        });
+        assert_eq!(r_err.unwrap().unwrap().number, 7);
+
+        // Both fail -> branch error surfaces.
+        let r_both = resolve_pr_with(Some("feat"), known(7, Some("open"), Some("feat")), |num, _| match num {
+            None => Err(forge::ForgeError::Other("offline".into())),
+            Some(_) => Err(forge::ForgeError::Other("also offline".into())),
+        });
+        assert!(matches!(r_both, Err(forge::ForgeError::Other(m)) if m == "offline"));
+
+        // Legacy record missing `pr_head`: resolves #7 by number first, learns real head `feat-b`,
+        // and refuses to adopt an unrelated PR on current branch `feat-a`.
+        let r_legacy = resolve_pr_with(Some("feat-a"), known(7, Some("merged"), None), |num, _| match num {
+            Some(7) => Ok(Some(mk(7, "merged", "feat-b"))),
+            None => panic!("must not look up feat-a before knowing PR #7's real head"),
+            _ => unreachable!(),
+        });
+        assert_eq!(r_legacy.unwrap().unwrap().head, "feat-b");
+
+        // Full sequence: settled #7 on same branch -> poll sees no replacement (keeps #7) -> sees open #8 (adopts #8).
+        let step1 = resolve_pr_with(Some("feat"), known(7, Some("merged"), Some("feat")), |num, hint| match num {
+            None => {
+                assert_eq!(hint, Some(7));
+                Ok(Some(mk(7, "merged", "feat")))
+            }
+            Some(_) => unreachable!(),
+        });
+        assert_eq!(step1.unwrap().unwrap().number, 7);
+        let step2 = resolve_pr_with(Some("feat"), known(7, Some("merged"), Some("feat")), |num, hint| match num {
+            None => {
+                assert_eq!(hint, Some(7));
+                Ok(Some(mk(8, "open", "feat")))
+            }
+            Some(_) => unreachable!(),
+        });
+        assert_eq!(step2.unwrap().unwrap().number, 8);
+
+        // Cached state was open #7, offline #7 merged while an older #5 against `release` is open -> keeps #7.
+        let r_older = resolve_pr_with(Some("feat"), known(7, Some("open"), Some("feat")), |num, _| match num {
+            None => Ok(Some(mk(5, "open", "feat"))),
+            Some(7) => Ok(Some(mk(7, "merged", "feat"))),
+            _ => unreachable!(),
+        });
+        assert_eq!(r_older.unwrap().unwrap().number, 7);
+    }
+
+    #[test]
+    fn resolve_pr_with_keeps_settled_pr_pinned_off_branch_or_detached() {
+        let mk = |n: u64, state: &str, head: &str| forge::PrStatus {
+            provider: "github".into(),
+            number: n,
+            url: format!("https://github.com/acme/app/pull/{n}"),
+            title: format!("PR {n}"),
+            state: state.into(),
+            checks: "none".into(),
+            review: "none".into(),
+            base: "main".into(),
+            head: head.into(),
+        };
+        let known_settled = |st: &'static str| Some(KnownPr {
+            number: 7, provider: Some("github"), state: Some(st), head: Some("feat"),
+        });
+
+        for (cur_branch, cached_state) in [
+            (Some("other"), "merged"),
+            (Some("other"), "closed"),
+            (None, "merged"),
+            (None, "closed"),
+            (Some("pr-7-feat"), "merged"),
+        ] {
+            let mut calls = Vec::new();
+            let res = resolve_pr_with(cur_branch, known_settled(cached_state), |num, hint| {
+                calls.push((num, hint));
+                match num {
+                    Some(7) => Ok(Some(mk(7, cached_state, "feat"))),
+                    None => panic!("settled PR off its branch or detached must never call by-branch lookup"),
+                    _ => unreachable!(),
+                }
+            });
+            assert_eq!(res.unwrap().unwrap().number, 7);
+            assert_eq!(calls, vec![(Some(7), None)], "cur_branch={cur_branch:?}, state={cached_state}");
+        }
+
+        // Cached state was still open before switching branches / detaching, and live check shows it settled:
+        // stays pinned on #7 without falling through to by-branch lookup.
+        for cur_branch in [Some("other"), None] {
+            let mut calls = Vec::new();
+            let known_open = Some(KnownPr {
+                number: 7, provider: Some("github"), state: Some("open"), head: Some("feat"),
+            });
+            let res = resolve_pr_with(cur_branch, known_open, |num, hint| {
+                calls.push((num, hint));
+                match num {
+                    Some(7) => Ok(Some(mk(7, "merged", "feat"))),
+                    None => panic!("must stay pinned when stored PR is already settled"),
+                    _ => unreachable!(),
+                }
+            });
+            assert_eq!(res.unwrap().unwrap().number, 7);
+            assert_eq!(calls, vec![(Some(7), None)], "cur_branch={cur_branch:?}");
+        }
     }
 
     #[test]
@@ -36755,13 +37346,34 @@ mod tests {
     #[test]
     fn batch_route_trusts_only_an_open_pr_on_the_tasks_branch() {
         assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("feat")), BatchRoute::Trusted);
-        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), Some("feat")), BatchRoute::Trusted);
-        // Fork checkouts and a detached review checkout are still the PR.
+        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), Some("feat")), BatchRoute::SettledSameBranch);
+        // Fork checkouts and a detached review checkout stay pinned on the tracked PR.
         assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("pr-5-feat")), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), Some("pr-5-feat")), BatchRoute::Trusted);
         assert_eq!(batch_route(Some(&pr("open", "feat", 5)), None), BatchRoute::Trusted);
         assert_eq!(batch_route(Some(&pr("open", "feat", 5)), Some("follow-up")), BatchRoute::Moved);
-        assert_eq!(batch_route(Some(&pr("closed", "feat", 5)), Some("feat")), BatchRoute::Single);
+        assert_eq!(batch_route(Some(&pr("closed", "feat", 5)), Some("feat")), BatchRoute::SettledSameBranch);
+        // Once settled, switching to another branch or detaching stays on the old PR.
+        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), Some("follow-up")), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("closed", "feat", 5)), Some("follow-up")), BatchRoute::Trusted);
+        assert_eq!(batch_route(Some(&pr("merged", "feat", 5)), None), BatchRoute::Trusted);
         assert_eq!(batch_route(None, Some("feat")), BatchRoute::Single);
+    }
+
+    #[test]
+    fn accept_branch_candidate_requires_same_branch_and_newer_number_for_settled_prs() {
+        // Same branch, old PR merged -> accepts newer open/draft/merged PR.
+        assert!(accept_branch_candidate(Some("feat"), 5, Some("merged"), Some("feat"), &pr("open", "feat", 6)));
+        assert!(accept_branch_candidate(Some("feat"), 5, Some("closed"), Some("feat"), &pr("draft", "feat", 6)));
+        assert!(accept_branch_candidate(Some("feat"), 5, Some("merged"), Some("feat"), &pr("merged", "feat", 6)));
+        // Never regress to an older settled or older still-open PR on the branch.
+        assert!(!accept_branch_candidate(Some("feat"), 5, Some("merged"), Some("feat"), &pr("closed", "feat", 4)));
+        assert!(!accept_branch_candidate(Some("feat"), 5, Some("merged"), Some("feat"), &pr("open", "feat", 4)));
+        // Fork alias checkout, moved branch, or detached HEAD -> stay on old settled PR.
+        assert!(!accept_branch_candidate(Some("pr-5-feat"), 5, Some("merged"), Some("feat"), &pr("open", "feat", 6)));
+        assert!(!accept_branch_candidate(Some("other"), 5, Some("merged"), Some("feat"), &pr("open", "other", 9)));
+        assert!(!accept_branch_candidate(Some("feat"), 5, Some("merged"), Some("feat"), &pr("open", "other", 9)));
+        assert!(!accept_branch_candidate(None, 5, Some("merged"), Some("feat"), &pr("open", "feat", 6)));
     }
 
     #[test]
@@ -36820,6 +37432,15 @@ mod tests {
         assert_eq!(head_branch(&wt).as_deref(), Some("feat/x"));
         git(&["checkout", "--detach"], &wt).unwrap();
         assert_eq!(head_branch(&wt), None);
+        assert_eq!(checkout_branch(&wt), CheckoutBranch::Detached);
+
+        let missing_dir = tempdir().unwrap();
+        let missing = missing_dir.path();
+        assert_eq!(checkout_branch(missing), CheckoutBranch::NoGit);
+        let orphan = Task { branch: "feat/x".into(), ..Default::default() };
+        // Detached HEAD stays pinned (`None`); missing `.git` uses the task's stored branch.
+        assert_eq!(batch_checkout_branch(&wt, &orphan), None);
+        assert_eq!(batch_checkout_branch(missing, &orphan).as_deref(), Some("feat/x"));
     }
 
     #[test]
@@ -41240,6 +41861,7 @@ mod schedule_record_tests {
         w.pr_url = Some("https://github.com/acme/web/pull/77".into());
         w.pr_title = Some("Fix login".into());
         w.pr_state = Some("open".into());
+        w.pr_head = Some("fix-login".into());
         w.pr_state_at = Some("2026-10-01T00:00:00Z".into());
         // The same poll again: no write, whatever the timestamp says.
         assert!(!pr_cache_differs(&w, &pr("open", "Fix login"), "github"));
@@ -41248,7 +41870,26 @@ mod schedule_record_tests {
         assert!(pr_cache_differs(&w, &pr("open", "Fix login and logout"), "github"));
         // A record written before these fields existed reads them as absent.
         let old: Task = serde_json::from_str(r#"{"id":"t","pr_number":77}"#).unwrap();
-        assert_eq!((old.pr_title, old.pr_state, old.pr_state_at), (None, None, None));
+        assert_eq!((old.pr_title, old.pr_state, old.pr_state_at, old.pr_head), (None, None, None, None));
+
+        // Stale poll snapshot must not overwrite a newer PR already written on disk (e.g. by task_pr_create).
+        let mut disk = Task::default();
+        disk.pr_number = Some(78);
+        disk.pr_provider = Some("github".into());
+        disk.pr_url = Some("https://github.com/acme/web/pull/78".into());
+        disk.pr_state = Some("open".into());
+        let stale_poll = pr("merged", "Old 77");
+        assert!(!apply_pr_identity(
+            &mut disk,
+            Some(77),
+            Some("github"),
+            Some("https://github.com/acme/web/pull/77"),
+            &stale_poll,
+            "github",
+            "2026-10-02T00:00:00Z",
+        ));
+        assert_eq!(disk.pr_number, Some(78));
+        assert_eq!(disk.pr_state.as_deref(), Some("open"));
     }
 
     use super::*;

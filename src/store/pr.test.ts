@@ -500,6 +500,19 @@ describe("new-PR-opened lifecycle", () => {
     await usePr.getState().refresh("ws-once-open", { force: true });
     expect(useUI.getState().toasts).toHaveLength(1);
   });
+
+  it("focused task: merged PR replaced by a new PR on the same branch toasts opened", async () => {
+    seedApp("off", { id: "ws-replace-open", pr_number: 7, pr_provider: "github", pr_state: "merged" });
+    useApp.setState({ activeTaskId: "ws-replace-open" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7));
+    await usePr.getState().refresh("ws-replace-open", { force: true });
+    expect(useUI.getState().toasts).toHaveLength(0);
+
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 8));
+    await usePr.getState().refresh("ws-replace-open", { force: true });
+    expect(useUI.getState().toasts).toHaveLength(1);
+    expect(useUI.getState().toasts[0].title).toContain("#8 opened");
+  });
 });
 
 
@@ -859,6 +872,16 @@ describe("learning a PR identity mid-session", () => {
 
     expect(useApp.getState().tasks[0]).toBe(before);
   });
+
+  it("setLookup syncs a newly created replacement PR onto the task record", () => {
+    seedApp("off", { pr_number: 7, pr_provider: "github", pr_url: "https://github.com/foo/bar/pull/7", pr_state: "merged" });
+    usePr.getState().setLookup("ws1", lookupWith("open", 8));
+    const task = useApp.getState().tasks.find(t => t.id === "ws1")!;
+    expect(task.pr_number).toBe(8);
+    expect(task.pr_url).toBe("https://github.com/foo/bar/pull/8");
+    expect(task.pr_state).toBe("open");
+    expect(task.pr_head).toBe("feat");
+  });
 });
 
 
@@ -946,17 +969,32 @@ describe("background status poller (#281)", () => {
     expect(ipc.taskPrStatus).toHaveBeenCalledTimes(8);
   });
 
-  it("re-checks a merged or closed PR hourly, not every few minutes", async () => {
-    seedTasks({ ...KNOWN }, { ...KNOWN }, { ...KNOWN });
+  it("re-checks non-batch settled PRs hourly and batchable settled PRs on the 3-minute replacement cadence", async () => {
+    seedTasks(
+      { ...KNOWN },
+      { ...KNOWN },
+      { ...KNOWN },
+      { pr_number: 8, pr_provider: "github", pr_url: "https://github.com/foo/bar/pull/8" },
+    );
     const at = (state: "merged" | "closed" | "open", ago: number) =>
       ({ lookup: lookupWith(state), loading: false, fetchedAt: Date.now() - ago });
     usePr.setState({
-      byTask: { ws1: at("merged", 10 * 60_000), ws2: at("closed", 10 * 60_000), ws3: at("open", 10 * 60_000) },
+      byTask: {
+        ws1: at("merged", 10 * 60_000),
+        ws2: at("closed", 10 * 60_000),
+        ws3: at("open", 10 * 60_000),
+        ws4: at("merged", 4 * 60_000),
+      },
     });
-    // Settled PRs no longer take slots from the open one.
-    expect(pollableTasks().map(w => w.id)).toEqual(["ws3"]);
+    // Per-task settled PRs skip 10-minute polls; open and 4m-stale batchable settled PRs run.
+    expect(pollableTasks().map(w => w.id)).toEqual(["ws3", "ws4"]);
     usePr.setState({
-      byTask: { ws1: at("merged", 61 * 60_000), ws2: at("closed", 10 * 60_000), ws3: at("open", 0) },
+      byTask: {
+        ws1: at("merged", 61 * 60_000),
+        ws2: at("closed", 10 * 60_000),
+        ws3: at("open", 0),
+        ws4: at("merged", 60_000),
+      },
     });
     expect(pollableTasks().map(w => w.id)).toEqual(["ws1"]);
   });
@@ -1263,6 +1301,17 @@ describe("refresh on focus", () => {
     stopPrRefreshOnFocus();
   });
 
+  it("a turn end looks again when the task's PR is merged (live or cached), for a replacement", async () => {
+    seedApp("off", { pr_number: 5, pr_provider: "github", pr_state: "merged" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 6));
+    useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });
+    initPrRefreshOnFocus();
+    useApp.setState({ tabs: agentTab("idle") });
+    await vi.waitFor(() => expect(usePr.getState().byTask.ws1.lookup?.pr?.number).toBe(6));
+    expect(useApp.getState().tasks[0].pr_number).toBe(6);
+    stopPrRefreshOnFocus();
+  });
+
   it("a busy agent with no PR costs one lookup a minute, not one per turn", async () => {
     vi.mocked(ipc.taskPrStatus).mockResolvedValue({ status: "ok", pr: null } as any);
     seedApp();
@@ -1339,6 +1388,17 @@ describe("new PR highlight", () => {
     useApp.setState({ activeTaskId: "other" });
     await usePr.getState().refresh("ws1");
     expect(usePr.getState().unseen).toEqual({});
+  });
+
+  it("marks a new PR replacing a merged PR while another task is in front", async () => {
+    seedApp("off", { pr_number: 7, pr_provider: "github", pr_url: "https://github.com/foo/bar/pull/7", pr_state: "merged" });
+    useApp.setState({ activeTaskId: "other" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValueOnce(lookupWith("merged", 7));
+    await usePr.getState().refresh("ws1");
+    usePr.setState(s => ({ byTask: { ...s.byTask, ws1: { ...s.byTask.ws1, fetchedAt: 0 } } }));
+    vi.mocked(ipc.taskPrStatus).mockResolvedValueOnce(lookupWith("open", 8));
+    await usePr.getState().refresh("ws1");
+    expect(usePr.getState().unseen).toEqual({ ws1: 8 });
   });
 
   it("reads a malformed store as empty", () => {
@@ -1482,5 +1542,63 @@ describe("last-known PR status, kept across launches", () => {
     useUI.setState({ toasts: [] });
     await usePr.getState().refresh("ws1", { force: true });
     expect(toastsWithCache).toBe(useUI.getState().toasts.length);
+  });
+});
+
+describe("same-branch PR rollover edge cases", () => {
+  it("runs merged lifecycle when a replacement PR is created and merges before the next poll", async () => {
+    seedApp("ask", { pr_number: 7, pr_provider: "github", pr_url: "https://github.com/foo/bar/pull/7", pr_state: "open" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValueOnce(lookupWith("merged", 7));
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(mergeAlreadyHandled("ws1", "github", 7)).toBe(true);
+    useUI.setState({ toasts: [] });
+
+    vi.mocked(ipc.taskPrStatus).mockResolvedValueOnce(lookupWith("merged", 8));
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(mergeAlreadyHandled("ws1", "github", 8)).toBe(true);
+    expect(useUI.getState().toasts).toHaveLength(1);
+    expect(useApp.getState().tasks[0].pr_number).toBe(8);
+  });
+
+  it("triggers turn-end refresh when a member PR is settled even if the host PR is still open", async () => {
+    seedApp("off", {
+      pr_number: 1,
+      pr_provider: "github",
+      pr_state: "open",
+      composition: [{ dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" }],
+    });
+    const memberSettled: MemberPrLookup = { ...lookupWith("merged", 5), dir_name: "api", branch: "feat" };
+    const memberReplacement: MemberPrLookup = { ...lookupWith("open", 6), dir_name: "api", branch: "feat" };
+    usePr.setState({
+      byTask: { ws1: { lookup: lookupWith("open", 1), members: [memberSettled], loading: false, fetchedAt: 0 } },
+    });
+    vi.mocked(ipc.taskPrStatusBackground).mockResolvedValueOnce(lookupWith("open", 1));
+    vi.mocked(ipc.taskMemberPrStatusBackground).mockResolvedValueOnce([memberReplacement]);
+    useApp.setState({
+      activeTaskId: "ws1",
+      tabs: { ws1: [{ id: "a", type: "terminal", cli: "claude", ptyId: "p", title: "claude", workState: "working" } as never] },
+    });
+    initPrRefreshOnFocus();
+    useApp.setState({
+      tabs: { ws1: [{ id: "a", type: "terminal", cli: "claude", ptyId: "p", title: "claude", workState: "idle" } as never] },
+    });
+    await vi.waitFor(() => expect(usePr.getState().byTask.ws1.members?.[0].pr?.number).toBe(6));
+    stopPrRefreshOnFocus();
+  });
+
+  it("walks settled -> no replacement -> replacement adoption across consecutive refreshes", async () => {
+    seedApp("off", { pr_number: 5, pr_provider: "github", pr_url: "https://github.com/foo/bar/pull/5", pr_state: "merged" });
+    vi.mocked(ipc.taskPrStatus)
+      .mockResolvedValueOnce(lookupWith("merged", 5))
+      .mockResolvedValueOnce(lookupWith("open", 6));
+
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(usePr.getState().byTask.ws1.lookup?.pr?.number).toBe(5);
+    expect(useApp.getState().tasks[0].pr_number).toBe(5);
+
+    await usePr.getState().refresh("ws1", { force: true });
+    expect(usePr.getState().byTask.ws1.lookup?.pr?.number).toBe(6);
+    expect(useApp.getState().tasks[0].pr_number).toBe(6);
+    expect(useApp.getState().tasks[0].pr_state).toBe("open");
   });
 });

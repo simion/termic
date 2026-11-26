@@ -408,6 +408,7 @@ export default {
     signInBodyAzure: "Run <code>{{command}}</code> (or <code>{{alt}}</code> for a PAT) in a terminal, then refresh.",
     unreachable: "Couldn't reach {{provider}}",
     noPrYet: "No {{noun}} yet",
+    createNew: "Create new {{noun}}",
     stateTip: "{{state}} · {{provider}}",
     openOn: "Open on {{provider}}",
     watchAlways: "Watching comments (always on for this project - see its Repository settings). New comments are queued into the main agent.",
