@@ -817,13 +817,18 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await waitGone(row());
     expect(await browser.execute((sid) => window.__termic!.invoke("remote_machines").then((l: any) => l.find((m: any) => m.id === sid)?.state), serverId)).toBe("disconnected");
     await snap("remote-server-disconnected.png");
-    // The row's own switch turns it back on, when REMOTE's display menu
-    // puts it there (off by default; Connect is always in the ⋯ menu).
+    // The row's own switch turns it back on. It is on the row by default and
+    // REMOTE's display menu can hide it (Connect is always in the ⋯ menu).
     // Reset first: the options live in localStorage, which outlives a reseed.
-    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", connectSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
-    expect(await browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId)).toBe(false);
-    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ connectSwitch: true }));
-    await browser.waitUntil(() => browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId), { timeout: 5_000, timeoutMsg: "the display menu's switch setting did not put it on the row" });
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
+    expect(await browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId)).toBe(true);
+    // A switched-off server is available, not offline: its own row, not the
+    // gathered offline line.
+    expect(await browser.execute((sid) => !!document.querySelector(`[data-testid="remote-offline-group"] [data-machine-id="${sid}"]`), serverId)).toBe(false);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ hideSwitch: true }));
+    await browser.waitUntil(() => browser.execute((sid) => !document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId), { timeout: 5_000, timeoutMsg: "hiding the switch in the display menu left it on the row" });
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ hideSwitch: false }));
+    await browser.waitUntil(() => browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId), { timeout: 5_000, timeoutMsg: "showing the switch again did not put it back" });
     expect(await browser.execute((sid) => document.querySelector(`[data-testid="machine-switch-${sid}"]`)?.getAttribute("aria-checked"), serverId)).toBe("false");
     await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
     await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "online", 30_000);

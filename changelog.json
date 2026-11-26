@@ -1,8 +1,8 @@
 {
   "versions": [
     {
-      "version": "2.0.11",
-      "date": "2026-11-25",
+      "version": "2.0.12",
+      "date": "2026-11-26",
       "summary": "Fixes for remote control, paired computers and the phone app."
     },
     {

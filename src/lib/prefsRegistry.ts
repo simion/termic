@@ -217,7 +217,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "reviewPrLast", scoped: false, class: "local", reason: "the last-used choices of a control (Review a PR)" },
 
   // ── App install state ──
-  { key: "updateDismissedVersion", scoped: false, class: "local", reason: "about the build installed here" },
+  { key: "updateDismissedVersion", scoped: false, class: "local", reason: "only removed at startup: an older build stored update dismissals here" },
   { key: "updateLastSeenVersion", scoped: false, class: "local", reason: "about the build installed here" },
   { key: "desktopEntryPrompted", scoped: false, class: "local", reason: "whether this machine was asked to install a desktop entry" },
 

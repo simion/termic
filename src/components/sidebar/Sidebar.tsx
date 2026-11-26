@@ -120,6 +120,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const projectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [moreBelow, setMoreBelow] = useState(false);
   const [remoteDrawer, setRemoteDrawer] = useState<HTMLDivElement | null>(null);
+  // The floating update card's height, padded under the project list.
+  const [updateSlot, setUpdateSlot] = useState<HTMLDivElement | null>(null);
+  const [updateH, setUpdateH] = useState(0);
+  useEffect(() => {
+    if (!updateSlot) return;
+    const ro = new ResizeObserver(() => setUpdateH(updateSlot.offsetHeight));
+    ro.observe(updateSlot);
+    return () => ro.disconnect();
+  }, [updateSlot]);
   useEffect(() => {
     const el = projectsScrollRef.current;
     if (!el || !compact) { setMoreBelow(false); return; }
@@ -198,6 +207,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const showTodos = usePrefs(s => s.showTodos);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   const newTaskButtonMode = usePrefs(s => s.newTaskButton);
+  // A server project sits in REMOTE, whose own display menu says whether its
+  // New task row shows (RemoteMachines.tsx RemoteDisplayMenu).
+  const remoteNewTask = usePrefs(s => s.remoteDisplay.newTask);
   // A boolean out of the selector, so a task write that leaves the answer
   // alone re-renders nothing here.
   const hasSchedule = useApp(s => s.tasks.some(x => !!x.schedule && !x.archived));
@@ -1313,7 +1325,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           compact mode or when there's no pending update / unseen release. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div className="pointer-events-auto">
+        <div ref={setUpdateSlot} className="pointer-events-auto">
           <UpdateCard />
         </div>
       </div>
@@ -1321,6 +1333,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         ref={projectsScrollRef}
         // Scrolls (wheel, trackpad, keyboard) with no visible bar, compact or not.
         className={cn("no-scrollbar relative flex-1 overflow-y-auto min-h-0", compact ? "px-1.5 py-1.5" : "px-2 py-2")}
+        // Room under the last row for the floating update card, so the end of
+        // the list scrolls out from under it instead of hiding behind it.
+        style={updateH ? { paddingBottom: updateH + 8 } : undefined}
       >
         {/* Lines to the hovered task's parent and the tasks it spawned. The
             icon rail has no room for them. */}
@@ -1571,8 +1586,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // buttons for one menu one row apart was noise. Ignores the armed
             // inline row on purpose, so the header `+` does not change while
             // a name is being typed.
-            const bottomNewTask = !collapsed && !compact
-              && newTaskButtonShown(newTaskButtonMode, taskList.length, projects.length);
+            const bottomNewTask = !collapsed && !compact && (p.server
+              ? remoteNewTask !== "never"
+              : newTaskButtonShown(newTaskButtonMode, taskList.length, projects.length));
+            // REMOTE's "on hover": the row shows while the pointer is over
+            // the project (an empty project's dashed box always shows).
+            const bottomHoverOnly = !!p.server && remoteNewTask === "hover" && taskList.length > 0;
             // Only beside the quiet `+` under tasks. An empty project's dashed
             // "New task" box is its own thing, and its header `+` stays as it
             // always was (a hover-only one there also left e2e, which drives
@@ -1586,7 +1605,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 // A small gap between consecutive projects; each header's
                 // band marks the start. Small because the `+` row above it,
                 // a full task row tall, already leaves the air.
-                className={cn("rounded-md", !compact && "[[data-project-wrap]+&]:mt-0.5")}
+                className={cn("group/project rounded-md", !compact && "[[data-project-wrap]+&]:mt-0.5")}
               >
                 <ContextMenuRoot>
                 <ContextMenuTrigger className="contents">
@@ -2201,7 +2220,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     long list puts the header's `+` far from its result). */}
                 {bottomNewTask && pendingRepoRoot?.projectId !== p.id && pendingForProject.length === 0 && (
                   <div
-                    className="ml-3 mr-1 mb-px"
+                    className={cn("ml-3 mr-1 mb-px", bottomHoverOnly && "opacity-0 focus-within:opacity-100 group-hover/project:opacity-100 has-[[data-state=open]]:opacity-100")}
                     onClick={e => e.stopPropagation()}
                   >
                     <ProjectNewTaskRoot projectId={p.id}>

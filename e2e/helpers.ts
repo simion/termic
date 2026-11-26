@@ -1699,10 +1699,19 @@ export function rmTree(dir: string, opts: { bestEffort?: boolean } = {}): void {
  *  on Linux. */
 export function readClipboard(): string {
   if (process.platform === "linux") {
-    return execFileSync("xclip", ["-o", "-selection", "clipboard"], { encoding: "utf8" });
+    // xclip exits non-zero on an empty clipboard ("target STRING not
+    // available") where pbpaste prints nothing; read it as empty too, or a
+    // wait whose message reads the clipboard throws before anything copied.
+    try {
+      return execFileSync("xclip", ["-o", "-selection", "clipboard"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return "";
+    }
   }
   if (process.platform === "win32") {
-    return execFileSync("powershell.exe", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" })
+    // Written out as is: PowerShell's own output adds a newline the clipboard
+    // does not hold, so an exact compare with what was copied failed.
+    return execFileSync("powershell.exe", ["-NoProfile", "-Command", "[Console]::Out.Write((Get-Clipboard -Raw))"], { encoding: "utf8" })
       .replace(/\r\n/g, "\n");
   }
   return execFileSync("pbpaste", { encoding: "utf8" });

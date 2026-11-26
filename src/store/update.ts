@@ -43,7 +43,10 @@ const MANUAL_CHECK_TIMEOUT_MS = 10_000;
 
 // localStorage keys. Kept here (not in prefs.ts) because this is app
 // state, not a user-facing Settings preference.
-const LS_DISMISSED = "updateDismissedVersion"; // update-card dismissal
+// A dismissed update is not stored: closing the card means "not now", and a
+// restart suggests that version again (a stored dismissal hid it for good).
+// Dropped here so an older build's leftover does not linger.
+try { localStorage.removeItem("updateDismissedVersion"); } catch { /* storage unavailable */ }
 const LS_LAST_SEEN = "updateLastSeenVersion";  // what's-new watermark
 
 /** One category block inside a changelog entry. */
@@ -148,7 +151,7 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   changelogStatus: "idle",
   changelogMarkdown: null,
   installing: null,
-  dismissedVersion: lsGet(LS_DISMISSED),
+  dismissedVersion: "",
   lastSeenVersion: lsGet(LS_LAST_SEEN),
 
   init: () => {
@@ -261,7 +264,6 @@ export const useUpdate = create<UpdateState>((set, get) => ({
       // was briefly unreachable, and the next background check would then
       // re-show the card the user had dismissed.
       if (u) {
-        lsSet(LS_DISMISSED, "");
         set({ update: u, dismissedVersion: "" });
       } else {
         set({ update: u });
@@ -308,7 +310,6 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   dismissUpdate: () => {
     const u = get().update;
     if (!u) return;
-    lsSet(LS_DISMISSED, u.version);
     set({ dismissedVersion: u.version });
   },
 

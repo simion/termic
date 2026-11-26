@@ -282,13 +282,15 @@ list, anchored just above the drawer, so it moves neither and covers
 neither. Each computer's projects nest one step in
 under it, the idle ones folded into its own Inactive projects (a server
 project by the local activity rule, a paired computer's when every task's
-agent is stopped). Offline and switched-off computers gather in one
-"N offline" line at the bottom, never hidden; a single one is itself.
-REMOTE has its own display menu (`remoteDisplay` in prefs: the New task
-"+" always / on hover / never, the connect switch on the row, counts on a
-folded computer, Inactive projects, offline gathered or each), so remote
-rows can be quieter than local ones; Connect and Disconnect are always in
-the computer's ⋯ menu. Every fold, local and remote, opens and closes
+agent is stopped). Unreachable computers gather in one "N offline" line
+at the bottom, never hidden; a single one is itself. A computer you
+switched off is not offline: it keeps its own row and switch. REMOTE has
+its own display menu (`remoteDisplay` in prefs: each project's New task
+row under its tasks always / on hover / never, for server and paired
+projects alike; the connect switch on the row, shown unless hidden
+(`hideSwitch`); counts on a folded computer, Inactive projects, offline
+gathered or each); Connect and Disconnect are also in the computer's ⋯
+menu. Every fold, local and remote, opens and closes
 through the same animated `Expand` (ui/Expand.tsx).
 
 **Folded like the host folds them.** A row says what the host's sidebar has

@@ -68,7 +68,7 @@ export function UpdateCard() {
 
   if (kind === "patch") {
     return (
-      <div data-testid="update-patch" className="mx-2 mb-2 flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-soft)] pl-2 pr-1 text-[12px] text-[var(--color-fg-dim)]">
+      <div data-testid="update-patch" className="mx-2 mb-2 flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2 pr-1 text-[12px] text-[var(--color-fg-dim)]">
         {mode === "update"
           ? <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
           : <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}

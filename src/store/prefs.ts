@@ -1204,7 +1204,9 @@ export interface RemoteDisplay {
   /** A computer's and a project's New task "+": always, on hover, or never. */
   newTask: "always" | "hover" | "never";
   /** The connect switch on a computer's row (it is always in the ⋯ menu). */
-  connectSwitch: boolean;
+  /** The connect switch is on each computer's row unless hidden. Inverted
+   *  from the earlier off-by-default option, so a saved "off" does not stick. */
+  hideSwitch: boolean;
   /** Working / done counts on a computer row that is folded. */
   counts: boolean;
   /** Offline and switched-off computers: one "N offline" line, or a line each. */
@@ -1212,14 +1214,14 @@ export interface RemoteDisplay {
   /** A computer's projects with nothing running fold into "Inactive projects". */
   inactiveAtBottom: boolean;
 }
-export const REMOTE_DISPLAY_DEFAULT: RemoteDisplay = { newTask: "hover", connectSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true };
+export const REMOTE_DISPLAY_DEFAULT: RemoteDisplay = { newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true };
 export function parseRemoteDisplay(raw: string): RemoteDisplay {
   try {
     const v = JSON.parse(raw) as Partial<RemoteDisplay>;
     const d = REMOTE_DISPLAY_DEFAULT;
     return {
       newTask: v.newTask === "always" || v.newTask === "never" || v.newTask === "hover" ? v.newTask : d.newTask,
-      connectSwitch: typeof v.connectSwitch === "boolean" ? v.connectSwitch : d.connectSwitch,
+      hideSwitch: typeof v.hideSwitch === "boolean" ? v.hideSwitch : d.hideSwitch,
       counts: typeof v.counts === "boolean" ? v.counts : d.counts,
       offline: v.offline === "each" || v.offline === "gather" ? v.offline : d.offline,
       inactiveAtBottom: typeof v.inactiveAtBottom === "boolean" ? v.inactiveAtBottom : d.inactiveAtBottom,

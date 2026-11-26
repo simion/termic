@@ -77,10 +77,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "real number of waits",
   },
   "peers.e2e.ts": {
-    count: 1,
-    why: "negative: a click on a paired terminal another screen sized must NOT "
-      + "claim the size back (only Continue here does); nothing fires for a "
-      + "term_size that is never sent",
+    count: 2,
+    why: "two negatives: a click on a paired terminal another screen sized must "
+      + "NOT claim the size back (only Continue here does), nothing fires for a "
+      + "term_size that is never sent; and the host re-sending a fold it did not "
+      + "change must NOT undo one opened here",
   },
   "remote.e2e.ts": {
     count: 5,

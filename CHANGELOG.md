@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [2.0.11] - 2026-11-25
+## [2.0.12] - 2026-11-26
 
 Fixes for remote control, paired computers and the phone app.
 
@@ -24,6 +24,8 @@ Fixes for remote control, paired computers and the phone app.
 - An agent asking a question mid-turn shows as waiting, on the phone and in `termic list` and `termic wait`, instead of working.
 - The phone app shows which tool call is still running, keeps the working timer across reconnects, and no longer shows a subagent's report or a long pasted message as your own.
 - The Docker sandbox image builds even when an optional agent's download is slow.
+- REMOTE's New task option controls each project's New task row, the connect switch is back on each computer's row, and only unreachable computers gather under offline.
+- Closing the update card hides that version until the next launch, instead of for good, and the card no longer covers the end of the project list.
 
 ## [2.0.5] - 2026-11-24
 

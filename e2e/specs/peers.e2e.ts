@@ -386,6 +386,13 @@ const pick = (selector: string, value: string) =>
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }, selector, value);
 
+/** No fold mid-animation (ui/Expand.tsx marks one with these classes), so a
+ *  screenshot shows where rows end up, not a frame of them moving. */
+const foldsSettled = () => browser.waitUntil(
+  () => browser.execute(() => !document.querySelector(".termic-expand-in, .termic-expand-out")),
+  { timeout: 3_000, timeoutMsg: "a fold was still animating" },
+);
+
 describe("LAN pairing", () => {
   let appPort = 0;
   const incoming = newFake("Fake laptop");
@@ -897,7 +904,7 @@ describe("LAN pairing", () => {
         return !!sec?.closest('[data-testid="remote-drawer"]') && !sec.closest(".overflow-y-auto:not([data-testid=remote-drawer])");
       })).toBe(true);
       // Let a fold animation the previous case started finish first.
-      await browser.pause(400);
+      await foldsSettled();
       await snap("remote-drawer.png");
       // A minor release's update card floats over the end of the project
       // list, anchored to the drawer's top: the drawer does not move, and
@@ -912,14 +919,18 @@ describe("LAN pairing", () => {
       await snap("remote-drawer-update.png");
       await browser.execute(() => window.__termic!.useUpdate.setState({ update: null }));
       await waitGone('[data-testid="update-card"]');
-      // The connect switch is off the row by default; New task shows on hover.
+      // The connect switch is on the row by default; New task shows on hover.
       // Reset first: the options live in localStorage, which outlives a
       // reseed, so an earlier run's choices would otherwise carry in.
-      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", connectSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
-      expect(await q(`[data-testid="machine-switch-${remote.id}"]`)).toBe(false);
+      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
+      expect(await q(`[data-testid="machine-switch-${remote.id}"]`)).toBe(true);
       expect(await q(`[data-testid="remote-new-task-${remote.id}"]`)).toBe(true);
+      // Each project has its New task row under its tasks, as locally; Never
+      // takes it away with the computer's +.
+      expect(await q('[data-testid="remote-project-new-task-row-webapp"]')).toBe(true);
       await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "never" }));
       await browser.waitUntil(async () => !(await q(`[data-testid="remote-new-task-${remote.id}"]`)), { timeout: 3_000, timeoutMsg: "New task: Never left the +" });
+      expect(await q('[data-testid="remote-project-new-task-row-webapp"]')).toBe(false);
       await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover" }));
       // The display menu itself.
       await browser.execute(() => {
@@ -934,7 +945,7 @@ describe("LAN pairing", () => {
       // Folded, a computer says what it is doing: working and finished counts.
       await clickPresent(`[data-testid="remote-machine-${remote.id}"] [data-machine-head] button`);
       await browser.waitUntil(async () => q(`[data-testid="remote-machine-${remote.id}"] [data-testid="machine-counts"]`), { timeout: 3_000, timeoutMsg: "a folded computer showed no counts" });
-      await browser.pause(300);
+      await foldsSettled();
       await snap("remote-drawer-folded.png");
       await clickPresent(`[data-testid="remote-machine-${remote.id}"] [data-machine-head] button`);
       // A project whose agents are all stopped folds into the computer's own
@@ -944,7 +955,7 @@ describe("LAN pairing", () => {
       expect(await q('[data-testid="remote-project-webapp"]')).toBe(false);
       await clickPresent(`[data-testid="remote-inactive-${remote.id}"] button`);
       await waitVisible('[data-testid="remote-project-webapp"]');
-      await browser.pause(300);
+      await foldsSettled();
       await snap("remote-drawer-inactive.png");
       pushTasks!(baseTasks());
       await browser.waitUntil(async () => !(await q(`[data-testid="remote-inactive-${remote.id}"]`)), { timeout: 3_000, timeoutMsg: "the inactive fold outlived its projects" });
@@ -968,6 +979,9 @@ describe("LAN pairing", () => {
       expect(await expanded('[data-testid="remote-folder-fold-Backend"]')).toBe("true");
       await browser.waitUntil(async () => (await expanded(groupFold)) === "false", { timeout: 3_000, timeoutMsg: "the group under the opened folder lost the host's fold" });
       pushTasks!(withFolds(false, true, true));
+      // Negative: the host re-sending a fold it did not change must NOT undo
+      // the one opened here, and nothing fires for a fold that stays; 300 ms
+      // outlasts the task-list push and its render.
       await browser.pause(300);
       expect(await expanded('[data-testid="remote-folder-fold-Backend"]')).toBe("true");
       // ...and once the host changes that fold, the host's state wins again.

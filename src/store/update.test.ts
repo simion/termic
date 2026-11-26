@@ -146,13 +146,11 @@ describe("checkNow", () => {
     expect(useUpdate.getState().dismissedVersion).toBe("1.11.0");
   });
 
-  it("persists the cleared dismissal, so a relaunch does not re-hide it", async () => {
-    localStorage.setItem("updateDismissedVersion", "1.11.0");
-    useUpdate.setState({ dismissedVersion: "1.11.0" });
-    vi.mocked(check).mockResolvedValue({ version: "1.11.0" } as never);
-
-    await useUpdate.getState().checkNow();
-    expect(localStorage.getItem("updateDismissedVersion")).toBe("");
+  it("does not store a dismissal, so a restart suggests the version again", () => {
+    useUpdate.setState({ update: { version: "1.11.0" } as never, dismissedVersion: "" });
+    useUpdate.getState().dismissUpdate();
+    expect(useUpdate.getState().dismissedVersion).toBe("1.11.0");
+    expect(localStorage.getItem("updateDismissedVersion")).toBeNull();
   });
 
   it("a NEWER version was never hidden by an older dismissal", async () => {

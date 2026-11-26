@@ -158,7 +158,9 @@ function useMachineDrag(ids: string[]) {
 }
 
 /** A computer that cannot be used right now: switched off, or not reachable. */
-const isOffline = (m: MachineView) => m.state !== "online" && m.state !== "connecting";
+// Unreachable, not switched off: a computer you turned off is available,
+// one tap from connecting, so it keeps its own row and switch.
+const isOffline = (m: MachineView) => m.state === "offline";
 
 /** The New task "+" on a remote row, per REMOTE's display menu. */
 const plusClass = (mode: RemoteDisplay["newTask"]) => mode === "hover" ? "opacity-0 focus-visible:opacity-100 group-hover:opacity-100" : "";
@@ -200,7 +202,7 @@ function RemoteDisplayMenu() {
             ))}
           </DropdownSubContent>
         </DropdownSub>
-        <DropdownItem data-testid="remote-display-switch" onSelect={e => { e.preventDefault(); set({ connectSwitch: !d.connectSwitch }); }}>{check(d.connectSwitch)}{t("display.connectSwitch")}</DropdownItem>
+        <DropdownItem data-testid="remote-display-switch" onSelect={e => { e.preventDefault(); set({ hideSwitch: !d.hideSwitch }); }}>{check(!d.hideSwitch)}{t("display.connectSwitch")}</DropdownItem>
         <DropdownItem data-testid="remote-display-counts" onSelect={e => { e.preventDefault(); set({ counts: !d.counts }); }}>{check(d.counts)}{t("display.counts")}</DropdownItem>
         <DropdownItem data-testid="remote-display-inactive" onSelect={e => { e.preventDefault(); set({ inactiveAtBottom: !d.inactiveAtBottom }); }}>{check(d.inactiveAtBottom)}{t("display.inactive")}</DropdownItem>
         <DropdownSeparator />
@@ -252,8 +254,9 @@ export function RemoteSidebarSection({ projects, renderProject, isActive }: { pr
         <MachineSection m={m} />
       </div>
     );
-  // Offline and switched-off computers gather in one line at the bottom
-  // (never hidden: each is one tap away there). A single one is itself.
+  // Unreachable computers gather in one line at the bottom (never hidden:
+  // each is one tap away there). A single one is itself. Switched-off ones
+  // stay in the list with their switch.
   const live = [...servers, ...computers].filter(m => !isOffline(m));
   const off = [...servers, ...computers].filter(isOffline);
   const gather = display.offline === "gather" && off.length > 1;
@@ -463,7 +466,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject, isAc
         {/* No New task here: a server holds several projects, and New task
             belongs to the project row it starts in. The switch is on the row
             only when REMOTE's display menu asks (it is always in ⋯). */}
-        {display.connectSwitch && <MachineSwitch m={m} />}
+        {!display.hideSwitch && <MachineSwitch m={m} />}
         <MachineMenuButton m={m} />
       </div>
     </div>
@@ -599,7 +602,7 @@ const MachineSection = memo(function MachineSection({ m: all }: { m: MachineView
               </button>
             </Tip>
           )}
-          {display.connectSwitch && <MachineSwitch m={m} />}
+          {!display.hideSwitch && <MachineSwitch m={m} />}
           <MachineMenuButton m={m} />
         </div>
       </div>
@@ -667,8 +670,10 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
   // As the host's own sidebar has it (any of its tasks says so).
   const hostFolded = project.segments.some(seg => (seg.kind === "task" ? seg.task : seg.tasks[0])?.project_collapsed);
   const [folded, toggleIt] = useHostFold(`project:${m.id}:${project.name}`, !!hostFolded);
+  const canNew = m.state === "online" && m.grant !== "reply" && newTask !== "never";
+  const startNew = () => void openNewTaskOnServer(m.id, project.name);
   return (
-    <div data-testid={`remote-project-${project.name}`} data-folded={folded} className="[[data-testid^=remote-project-]+&]:mt-0.5">
+    <div data-testid={`remote-project-${project.name}`} data-folded={folded} className="group/project [[data-testid^=remote-project-]+&]:mt-0.5">
       {/* The local project header: its band, type, chevron and padding, and
           it folds the same way (the fold is this computer's, per machine). */}
       {/* Quieter than a local project's band: it already sits one step in
@@ -681,13 +686,14 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
             : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
           <span className="truncate">{project.name}</span>
         </button>
-        {/* New task in this project there, as a local project's + does. */}
-        {m.state === "online" && m.grant !== "reply" && newTask !== "never" && (
+        {/* New task in this project there, as a local project's + does; on
+            hover only, beside the row under the tasks (as locally). */}
+        {canNew && (
           <Tip content={t("newTask.title", { name: m.name })}>
             <button type="button" data-testid={`remote-project-new-task-${project.name}`}
               aria-label={t("newTask.title", { name: m.name })}
-              onClick={() => void openNewTaskOnServer(m.id, project.name)}
-              className={cn("mr-0.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", plusClass(newTask))}>
+              onClick={startNew}
+              className={cn("mr-0.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", plusClass("hover"))}>
               <Plus className="h-3.5 w-3.5" />
             </button>
           </Tip>
@@ -699,6 +705,18 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
           : (
             <RemoteGroupBlock key={`g:${seg.group.id}`} m={m} group={seg.group} tasks={seg.tasks} />
           ))}
+        {/* The New task row under the tasks, as a local project's: REMOTE's
+            display menu says always, on hover (over the project), or never. */}
+        {canNew && (
+          <div className={cn("ml-3 mr-1 mb-px", newTask === "hover" && "opacity-0 focus-within:opacity-100 group-hover/project:opacity-100")}>
+            <button type="button" data-testid={`remote-project-new-task-row-${project.name}`}
+              aria-label={t("newTask.title", { name: m.name })} title={t("newTask.title", { name: m.name })}
+              onClick={startNew}
+              className="flex h-[var(--task-row-h)] w-full items-center justify-center rounded-md bg-transparent px-2 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]">
+              <Plus className="h-4 w-4 shrink-0" />
+            </button>
+          </div>
+        )}
       </Expand>
     </div>
   );

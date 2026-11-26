@@ -69,7 +69,7 @@ pub fn parse_claude_jsonl(jsonl: &str) -> Vec<Turn> {
             let text = v.pointer("/message/content").and_then(|c| c.as_str()).unwrap_or("");
             if let Some(report) = agent_report(text) {
                 let ts = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
-                out.push(Turn { role: "agent".into(), text: report, tool: Some("Subagent".into()), ts, detail: None, pending: false });
+                out.push(Turn { role: "assistant".into(), text: report, tool: Some("Subagent".into()), ts, detail: None, pending: false });
                 continue;
             }
         }
@@ -940,7 +940,7 @@ mod tests {
         .join("\n");
         let t = parse_claude_jsonl(&jsonl);
         assert_eq!(t.len(), 1, "queued once, shown once it is taken: {t:?}");
-        assert_eq!(t[0].role, "agent");
+        assert_eq!(t[0].role, "assistant", "drawn as the agent's, like any reply");
         assert_eq!(t[0].text, "Linux reports itself.\n\n**Still to do:** run CI.");
         assert_eq!(agent_report("plain text"), None);
     }
