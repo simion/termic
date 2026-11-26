@@ -4498,7 +4498,9 @@ describe("copy agent briefing", () => {
     const pasted = readClipboard();
     expect(pasted.startsWith(`<termic-task id="${taskId}" `)).toBe(true);
     expect(pasted.trimEnd().endsWith("</termic-task>")).toBe(true);
-    expect(pasted).toContain(` send ${taskId} -p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID]`);
+    // The signature names the sending tab when there is one (#470), so the
+    // reply comes back to it rather than the task's default tab.
+    expect(pasted).toContain(` send ${taskId} -p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}]`);
     await dismissOverlays();
     await clearToasts();
   });
