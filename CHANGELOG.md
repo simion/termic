@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [2.1.1] - 2026-11-26
+## [2.1.2] - 2026-11-26
 
 Open files on your forge, answer waiting agents from a floating panel.
 
@@ -21,6 +21,8 @@ Open files on your forge, answer waiting agents from a floating panel.
 - On Linux, a lost Super key release no longer turns every letter into a shortcut and every terminal deaf until you switch windows.
 - On macOS, installing an update no longer leaves Termic listed as "Running in Background" after you quit it.
 - The update notice after an update is easier to spot, and drops the release's age.
+- A server task started from the phone opens its terminal on the phone, instead of saying no agent is running there.
+- A server task no longer reads as Working after its agent has finished.
 
 ## [2.0.12] - 2026-11-26
 

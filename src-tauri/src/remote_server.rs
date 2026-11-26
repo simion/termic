@@ -460,12 +460,17 @@ fn open_term_or_wake(s: &Arc<Session>, task: &str, tab: Option<&str>, wake: bool
             let (projects, tasks) = s.host.projects_tasks();
             let found = crate::cli_server::resolve_by_name(&projects, &tasks, task, None).ok().map(|t| t.id.clone());
             match found {
-                Some(id) if wake && tab.is_none() => {
-                    let (s2, task, id) = (s.clone(), task.to_string(), id);
+                // A tab named too: a phone that started the task asks for its
+                // agent tab by id before the desktop has spawned it (the
+                // view mounts first), and answering "not running" left the
+                // phone on that message for good. Start it, then open that
+                // same tab once; a tab that is still not there says so.
+                Some(id) if wake => {
+                    let (s2, task, id, tab) = (s.clone(), task.to_string(), id, tab.map(str::to_string));
                     std::thread::spawn(move || {
                         let woke = s2.host.rpc("wake_agent", serde_json::json!({ "taskId": id }), std::time::Duration::from_secs(30));
                         match woke {
-                            Ok(_) => open_term_or_wake(&s2, &task, None, false),
+                            Ok(_) => open_term_or_wake(&s2, &task, tab.as_deref(), false),
                             Err(err) => send(&s2, ServerMsg::TermClosed { reason: err }),
                         }
                     });

@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "2.1.1",
+      "version": "2.1.2",
       "date": "2026-11-26",
       "summary": "Open files on your forge, answer waiting agents from a floating panel."
     },

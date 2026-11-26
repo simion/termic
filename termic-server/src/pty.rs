@@ -135,8 +135,12 @@ impl Pty {
                 let now = Instant::now();
                 let prev = [g.last_output, g.last_prompt].into_iter().flatten().max();
                 // A full-screen program repaints on SIGWINCH: that is the
-                // terminal changing size, not the agent doing anything.
-                if !g.resized.is_some_and(|r| now.duration_since(r) < REDRAW) {
+                // terminal changing size, not the agent doing anything. Nor
+                // is a chunk of nothing but terminal queries: with no screen
+                // attached here nothing answers Claude's cursor-position
+                // request, so it asks again and again, and that stream kept
+                // a finished task "working" for as long as it ran.
+                if !g.resized.is_some_and(|r| now.duration_since(r) < REDRAW) && !only_queries(chunk) {
                     g.last_output = Some(now);
                 }
                 if let Some(on) = bracketed_toggle(chunk) {
@@ -334,8 +338,40 @@ fn find_last(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).rposition(|w| w == needle)
 }
 
+/// Whether `chunk` holds nothing but terminal queries an agent sends to
+/// learn about its terminal (cursor position `ESC[6n` / `ESC[?6n`, device
+/// attributes `ESC[c` / `ESC[>c` / `ESC[>0c`, kitty keyboard `ESC[?u`, XTVERSION
+/// `ESC[>0q`), which are asking, not doing work.
+fn only_queries(chunk: &[u8]) -> bool {
+    const QUERIES: &[&[u8]] = &[b"\x1b[?6n", b"\x1b[6n", b"\x1b[>0c", b"\x1b[>c", b"\x1b[c", b"\x1b[?u", b"\x1b[>0q"];
+    let mut rest = chunk;
+    if rest.is_empty() {
+        return false;
+    }
+    'outer: while !rest.is_empty() {
+        for q in QUERIES {
+            if rest.starts_with(q) {
+                rest = &rest[q.len()..];
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn terminal_queries_alone_are_not_work() {
+        assert!(super::only_queries(b"\x1b[?6n\x1b[?6n\x1b[?6n"));
+        assert!(super::only_queries(b"\x1b[?6n\x1b[c"));
+        assert!(!super::only_queries(b"\x1b[?6nHi"));
+        assert!(!super::only_queries(b"Hi"));
+        assert!(!super::only_queries(b""));
+    }
+
     use super::*;
 
     #[test]
