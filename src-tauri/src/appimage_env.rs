@@ -33,6 +33,7 @@
 //! on the machine they are written on. Off an AppImage `$APPDIR` is unset and
 //! the override list is empty.
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::OnceLock;
 

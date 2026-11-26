@@ -1,5 +1,6 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
+import { absUnder } from "@/lib/osPath";
 import { ShellRoleBadge } from "@/components/secretsUi/ShellRoleBadge";
 import { shellRoleTarget } from "@/lib/shellSecrets";
 import { useEffect, useRef, useState } from "react";
@@ -118,6 +119,7 @@ export function TabBar({ task }: { task: Task }) {
       canSplitOut={tabs.length > 1}
       onMoveToSplit={paneCount > 1 && tabs.length > 1 ? () => startMenuMove(t.id) : undefined}
       shell={shellRoleTarget(task.id, t as TerminalTab)}
+      filePath={t.type === "edit" && t.path ? absUnder(task.path, t.path) : undefined}
     >
       <TabPill
         task={task} tab={t} active={t.id === activeId} paneFocused={mainFocused}

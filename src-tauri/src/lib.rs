@@ -12538,6 +12538,128 @@ fn hide_window_from_user_in_e2e(win: &tauri::WebviewWindow) {
     }
 }
 
+// ─────────────── The "needs you" panel (GH #468) ───────────────
+
+/// A small window that floats over other apps while a task waits on you:
+/// each one's question, answered from there without switching to Termic.
+/// The main window decides when it shows (only while something waits) and
+/// which tasks it lists; this side reads and answers the questions, the same
+/// screen reader and stale check a phone's answer goes through.
+const ATTENTION_WINDOW: &str = "attention";
+
+/// Show or hide the panel. Shown WITHOUT taking focus: the point is to
+/// answer without leaving the app in front, so it must not pull Termic up
+/// when it appears.
+#[tauri::command(async)]
+fn attention_window(app: AppHandle, show: bool) -> Result<(), String> {
+    on_main_thread(&app, move |app| attention_window_main(app, show))
+}
+
+fn attention_window_main(app: &AppHandle, show: bool) -> Result<(), String> {
+    use tauri::Manager;
+    let existing = app.get_webview_window(ATTENTION_WINDOW);
+    if !show {
+        if let Some(w) = existing { let _ = w.hide(); }
+        return Ok(());
+    }
+    let win = match existing {
+        Some(w) => w,
+        None => {
+            let b = tauri::WebviewWindowBuilder::new(app, ATTENTION_WINDOW, tauri::WebviewUrl::App("attention.html".into()))
+                .title("Needs you")
+                .inner_size(360.0, 300.0)
+                .min_inner_size(280.0, 160.0)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .focused(false)
+                .visible(false);
+            let w = without_browser_accelerators(with_grayscale_text(without_writing_tools(b)))
+                .build()
+                .map_err(|e| e.to_string())?;
+            #[cfg(all(target_os = "macos", feature = "e2e"))]
+            hide_window_from_user_in_e2e(&w);
+            w
+        }
+    };
+    show_without_focus(&win);
+    Ok(())
+}
+
+/// Bring a window to the front without activating the app (macOS's
+/// orderFrontRegardless); elsewhere a plain show, which the window manager
+/// may or may not focus.
+fn show_without_focus(win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        if let Ok(ns) = win.ns_window() {
+            let ns = ns as *mut AnyObject;
+            if !ns.is_null() {
+                // SAFETY: called on the main thread (on_main_thread), the
+                // pointer is tao's live NSWindow, and this is a public setter.
+                unsafe { let _: () = msg_send![ns, orderFrontRegardless]; }
+                return;
+            }
+        }
+    }
+    let _ = win.show();
+}
+
+/// The question on a task's agent screen, read as a phone reads it. None
+/// when the agent is waiting without a menu a tap could answer.
+#[tauri::command]
+async fn attention_question(app: AppHandle, task_id: String) -> Result<Option<termic_remote::wire::Question>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let manager = app.state::<PtyManager>();
+        let pty = find_role_pty(&manager, &task_id, "agent")?;
+        Ok(agent_screen_question(&manager, &pty))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn agent_screen_question(manager: &PtyManager, pty: &str) -> Option<termic_remote::wire::Question> {
+    let (rows, cols) = pty_size_inner(manager, pty)?;
+    let (bytes, _) = pty_logs_tail(manager, pty, 128 * 1024).ok()?;
+    termic_remote::screen::question(&termic_remote::screen::render(&bytes, rows, cols))
+}
+
+/// Answer the question `question_id` with an option's keys (base64). Refused
+/// as "stale" when the screen no longer shows that question (answered at the
+/// desk, or a new one), so a late tap never answers something else.
+#[tauri::command]
+async fn attention_answer(app: AppHandle, task_id: String, question_id: String, keys: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let manager = app.state::<PtyManager>();
+        let pty = find_role_pty(&manager, &task_id, "agent")?;
+        if agent_screen_question(&manager, &pty).map(|q| q.id).as_deref() != Some(question_id.as_str()) {
+            return Err("stale".into());
+        }
+        let bytes = termic_remote::unb64(&keys).ok_or("bad keys")?;
+        pty_write_inner(&manager, &pty, &bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// "Open" on a card: the main window selects the task, and comes forward.
+#[tauri::command(async)]
+fn attention_open_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit_to("main", "attention://open", serde_json::json!({ "taskId": task_id }));
+    if let Some(main) = app.get_webview_window("main") {
+        leave_windowless(&app);
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    Ok(())
+}
+
 /// `(async)` for the same reason as `profile_open`: building a window from a
 /// synchronous command deadlocks on Windows.
 #[tauri::command(async)]
@@ -28597,6 +28719,119 @@ pub(crate) fn enter_windowless(app: &AppHandle) {
     }
 }
 
+/// A file's addresses on its forge (GH #467): the current branch, the
+/// default branch, and a permalink pinned to HEAD (with `lines`, 1-based and
+/// inclusive). Read from git's own view of the remote, no network: a branch
+/// or commit the remote does not have yet is reported as not pushed, and the
+/// caller falls back to the default branch, saying so.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileWebLinks {
+    /// "GitHub", "GitLab" or "Azure DevOps", for the menu's labels.
+    forge: String,
+    branch: Option<String>,
+    branch_pushed: bool,
+    default_branch: Option<String>,
+    commit_pushed: bool,
+    branch_url: Option<String>,
+    default_url: Option<String>,
+    permalink_url: Option<String>,
+}
+
+#[tauri::command]
+async fn file_web_links(path: String, lines: Option<(u32, u32)>) -> Result<FileWebLinks, String> {
+    tauri::async_runtime::spawn_blocking(move || file_web_links_blocking(&path, lines))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn file_web_links_blocking(path: &str, lines: Option<(u32, u32)>) -> Result<FileWebLinks, String> {
+    let target = std::path::Path::new(path);
+    let dir = if target.is_dir() { target } else { target.parent().ok_or("no folder")? };
+    let git = |args: &[&str]| -> Option<String> {
+        let out = git_command().args(args).current_dir(dir).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let top = git(&["rev-parse", "--show-toplevel"]).ok_or("not in a git repository")?;
+    let (top_c, file_c) = (dunce::canonicalize(&top).map_err(|e| e.to_string())?, dunce::canonicalize(target).map_err(|e| e.to_string())?);
+    let rel = file_c.strip_prefix(&top_c).map_err(|_| "outside its repository".to_string())?
+        .to_string_lossy().replace('\\', "/");
+    // The branch's own remote when it tracks one, else origin.
+    let remote = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
+        .unwrap_or_else(|| "origin".into());
+    let url = git(&["remote", "get-url", &remote]).ok_or_else(|| format!("no remote named {remote}"))?;
+    let provider = forge::provider_for_remote(&url).ok_or("not a GitHub, GitLab or Azure DevOps remote")?;
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]);
+    let branch_pushed = branch.as_deref().is_some_and(|b| git(&["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{b}")]).is_some());
+    let default_branch = git(&["symbolic-ref", "--short", "-q", &format!("refs/remotes/{remote}/HEAD")])
+        .map(|r| r.trim_start_matches(&format!("{remote}/")).to_string())
+        .or_else(|| ["main", "master"].into_iter()
+            .find(|b| git(&["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{b}")]).is_some())
+            .map(str::to_string));
+    let sha = git(&["rev-parse", "HEAD"]);
+    let commit_pushed = sha.as_deref().is_some_and(|c| git(&["branch", "-r", "--contains", c]).is_some());
+    let link = |r: &str, commit: bool, l: Option<(u32, u32)>| forge::file_web_url(provider, &url, r, commit, &rel, l);
+    Ok(FileWebLinks {
+        forge: forge::forge_label(provider).to_string(),
+        branch_url: branch.as_deref().filter(|_| branch_pushed).and_then(|b| link(b, false, None)),
+        default_url: default_branch.as_deref().and_then(|b| link(b, false, None)),
+        permalink_url: match (lines, sha.as_deref()) {
+            (Some(l), Some(c)) if commit_pushed => link(c, true, Some(l)),
+            (Some(l), _) => default_branch.as_deref().and_then(|b| link(b, false, Some(l))),
+            _ => None,
+        },
+        branch,
+        branch_pushed,
+        default_branch,
+        commit_pushed,
+    })
+}
+
+/// Relaunch into a freshly installed update.
+///
+/// On macOS this does NOT use Tauri's restart, which spawns the new binary
+/// straight from this process: LaunchServices never launched it, so the Dock
+/// kept the app apart from it and labelled the icon "Running in Background".
+/// Here a detached helper waits for this process to exit and then `open`s the
+/// bundle, so LaunchServices starts the new version as a normal app; the
+/// helper ends with that. Elsewhere, Tauri's restart.
+#[tauri::command]
+fn relaunch_after_update(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // <Name>.app/Contents/MacOS/<binary>
+        let bundle = exe
+            .ancestors()
+            .nth(3)
+            .filter(|p| p.extension().is_some_and(|e| e == "app"))
+            .ok_or_else(|| format!("not inside an .app bundle: {}", exe.display()))?
+            .to_path_buf();
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open "$2""#)
+            .arg("termic-relaunch")
+            .arg(std::process::id().to_string())
+            .arg(&bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // Its own process group, so nothing that tears down ours takes it.
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("could not start the relaunch helper: {e}"))?;
+        // The ordinary exit path: RunEvent::Exit still cleans up children.
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.restart();
+    }
+}
+
 /// Bring the UI back. Drives the menu-bar item, dock-icon clicks
 /// (RunEvent::Reopen), and the CLI's `raise` verb. Idempotent.
 pub(crate) fn leave_windowless(app: &AppHandle) {
@@ -29490,6 +29725,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            relaunch_after_update,
+            file_web_links,
+            attention_window,
+            attention_question,
+            attention_answer,
+            attention_open_task,
             sudo_touchid::sudo_touchid_set_offer,
             sudo_touchid::sudo_touchid_script,
             agent_hooks::agent_hooks_status,
@@ -35168,8 +35409,10 @@ mod tests {
             ".", "out", "$WORKSPACE/..", "$HOME/.local/../.local"]
             .iter().map(|s| s.to_string()).collect();
         let got = expand_grants(&raw, h, t);
-        let local = fs::canonicalize(home.path().join(".local")).unwrap();
-        assert_eq!(got, vec![local.clone(), local, fs::canonicalize(task.path().join("out")).unwrap()]);
+        // dunce, as expand_grants: std's canonicalize is `\\?\C:\...` on
+        // Windows, the same folder spelled another way.
+        let local = dunce::canonicalize(home.path().join(".local")).unwrap();
+        assert_eq!(got, vec![local.clone(), local, dunce::canonicalize(task.path().join("out")).unwrap()]);
     }
 
     #[test]

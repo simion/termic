@@ -259,7 +259,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
                   >{seg}</button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
-                  <CopyPathItems rel={rel} root={task.path} isDir={!isLast} />
+                  <CopyPathItems rel={rel} root={task.path} isDir={!isLast} selectionTab={isLast ? tab?.id : undefined} />
                 </ContextMenuContent>
               </ContextMenuRoot>
             </div>

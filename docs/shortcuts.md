@@ -83,9 +83,13 @@ and `e2e/specs/shortcuts-linux.e2e.ts` presses every binding that way:
   `Meta` and `Hyper` alike. What does arrive is the Super key's own keydown
   and keyup (`key: "Super"`, `code: "OSLeft"`), so `shortcuts.ts` tracks the
   held state from those and clears it when the window loses focus (GNOME
-  takes the focus, and the keyup, when Super is released alone). A terminal
-  asks `superIsHeld()` in its key handler and returns false, or the bare
-  letter is written to the PTY.
+  takes the focus, and the keyup, when Super is released alone). A press
+  also lapses 1.5 s after its keydown, renewed by each key pressed while it
+  is held: a keyup can vanish while the window keeps focus, and a stuck flag
+  made every letter a shortcut (D split the pane) and every focused terminal
+  drop its keys until the user switched windows. A terminal asks
+  `superIsHeld()` in its key handler and returns false, or the bare letter
+  is written to the PTY.
 - **Shift+Tab is `key: "Unidentified"`** (X's `ISO_Left_Tab` keysym). Anything
   that means Tab reads `isTabKey`, which falls back to `code`. ⌃⇧⇥ never
   walked backwards before it did.

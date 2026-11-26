@@ -22,6 +22,12 @@ const state = {
 };
 vi.mock("@/store/app", () => ({ useApp: { getState: () => state } }));
 vi.mock("@/store/ui", () => ({ useUI: { getState: () => ({ pushToast: vi.fn() }) } }));
+// The project's named run commands (the Run button's dropdown).
+let customCmds: Array<{ label: string; command: string; source: "personal" | "yaml" }> = [];
+vi.mock("@/lib/runCommands", async (orig) => ({
+  ...(await orig<typeof import("@/lib/runCommands")>()),
+  resolveCustomCommands: async () => customCmds,
+}));
 
 import { runScriptRpc } from "@/lib/runTabs";
 
@@ -36,6 +42,7 @@ beforeEach(() => {
   state.projects = [{ id: "p1", name: "web", run_script: "npm run dev", setup_script: "" }];
   state.tabs = { t1: [{ id: "agent", type: "terminal", cli: "claude" }] };
   state.mountedTasks = new Set(["t1"]);
+  customCmds = [];
 });
 
 describe("runScriptRpc", () => {
@@ -112,5 +119,51 @@ describe("runScriptRpc", () => {
   it("refuses an archived task", async () => {
     state.tasks[0].archived = true;
     await expect(runScriptRpc({ taskId: "t1", which: "run", action: "status" })).rejects.toThrow("archived");
+  });
+
+  describe("a named run command (--script)", () => {
+    beforeEach(() => {
+      customCmds = [
+        { label: "Storybook", command: "npm run storybook", source: "yaml" },
+        { label: "", command: "npm run worker", source: "personal" },
+      ];
+    });
+
+    it("starts it by label, case-insensitively, in its own Run tab", async () => {
+      const r = await runScriptRpc({ taskId: "t1", which: "run", action: "start", script: "storybook" });
+      const [, tab] = state.addTabToActivePane.mock.calls[0] as unknown as [string, Record<string, unknown>];
+      expect(tab.command).toBe("npm run storybook");
+      expect(tab.runTab).toMatchObject({ member: "label:Storybook" });
+      expect(r).toMatchObject({ which: "script", targets: [{ label: "Storybook", script: "npm run storybook", outcome: "started" }] });
+    });
+
+    it("finds one with no label by its command, and leaves a running one alone", async () => {
+      state.tabs.t1.push(runTab({ id: "w-1", command: "npm run worker", runTab: { member: "cmd:npm run worker", previewUrl: null }, ptyId: "pty-w" }));
+      const r = await runScriptRpc({ taskId: "t1", which: "run", action: "start", script: "npm run worker" });
+      expect(state.addTabToActivePane).not.toHaveBeenCalled();
+      expect(r.targets[0]).toMatchObject({ tab_id: "w-1", running: true, outcome: "already_running" });
+      const stopped = await runScriptRpc({ taskId: "t1", which: "run", action: "stop", script: "npm run worker" });
+      expect(ptyKill).toHaveBeenCalledWith("pty-w");
+      expect(stopped.targets[0].outcome).toBe("stopped");
+    });
+
+    it("names what is configured when the label matches none", async () => {
+      await expect(runScriptRpc({ taskId: "t1", which: "run", action: "start", script: "nope" }))
+        .rejects.toThrow('no run command named "nope" (configured: Storybook, npm run worker)');
+    });
+
+    it("status lists the named commands beside the run script", async () => {
+      const r = await runScriptRpc({ taskId: "t1", which: "run", action: "status" });
+      expect(r.scripts).toEqual([
+        { label: "Storybook", command: "npm run storybook", running: false, tab_id: null },
+        { label: "npm run worker", command: "npm run worker", running: false, tab_id: null },
+      ]);
+    });
+
+    it("with no run script, start points at the named commands", async () => {
+      state.projects[0].run_script = "";
+      await expect(runScriptRpc({ taskId: "t1", which: "run", action: "start" }))
+        .rejects.toThrow("has named run commands: Storybook, npm run worker (pass one as --script)");
+    });
   });
 });

@@ -13,7 +13,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { i18n } from "@/lib/i18n";
 import { ptyKill, repoConfigLoad, repoConfigLoadAt } from "@/lib/ipc";
-import { runCommandLabel } from "@/lib/runCommands";
+import { resolveCustomCommands, runCommandLabel } from "@/lib/runCommands";
 import type { Project, RunCommand, Task, TerminalTab } from "@/lib/types";
 
 export interface RunTarget {
@@ -283,16 +283,22 @@ function restartRunTab(tabId: string): void {
 }
 
 type ScriptTarget = { member: string; script: string };
+/** A named run command's label: what `--script` matches (its full label,
+ *  or the command when it has none, untruncated). */
+const fullLabel = (cmd: RunCommand) => cmd.label.trim() || cmd.command.trim();
 
 /** `termic run` / MCP `task_run`: start, stop or report the task's run (or
  *  setup) script in its Run tab, through the launch path the Run button
  *  uses. A script already running is left alone, so an agent asking for the
  *  dev server never kills the one the user is looking at. */
 export async function runScriptRpc(raw: unknown): Promise<{
-  task: string; which: "run" | "setup";
-  targets: Array<ScriptTarget & { tab_id: string | null; running: boolean; outcome?: string }>;
+  task: string; which: "run" | "setup" | "script";
+  targets: Array<ScriptTarget & { label?: string; tab_id: string | null; running: boolean; outcome?: string }>;
+  scripts?: Array<{ label: string; command: string; running: boolean; tab_id: string | null }>;
 }> {
-  const p = raw as { taskId?: unknown; which?: unknown; action?: unknown; member?: unknown };
+  const p = raw as { taskId?: unknown; which?: unknown; action?: unknown; member?: unknown; script?: unknown };
+  const script = typeof p?.script === "string" && p.script.trim() ? p.script.trim() : undefined;
+  if (script !== undefined) return runNamedCommand(p, script);
   if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("run_script requires a taskId");
   const which: "run" | "setup" = p.which === "setup" ? "setup" : "run";
   const action = p.action === "stop" || p.action === "status" ? p.action : "start";
@@ -329,8 +335,15 @@ export async function runScriptRpc(raw: unknown): Promise<{
       return { ...t, tab_id: tab?.id ?? null, running, ...(o ? { outcome: o } : {}) };
     }),
   });
-  if (action === "status") return report();
+  if (action === "status") return { ...report(), scripts: await namedCommands(taskId) };
   if (targets.length === 0) {
+    const scripts = which === "run" ? await namedCommands(taskId) : [];
+    if (scripts.length) {
+      throw new Error(
+        `${task.name} has no run script configured; it has named run commands: `
+        + `${scripts.map(c => c.label).join(", ")} (pass one as --script)`,
+      );
+    }
     throw new Error(
       `${task.name} has no ${which} script configured. Set one in Settings, Repositories, `
       + `or scripts.${which} in .termic.yaml`,
@@ -362,4 +375,64 @@ export async function runScriptRpc(raw: unknown): Promise<{
     outcomes[t.member] = "started";
   }
   return report();
+}
+
+const runTabFor = (taskId: string, member: string) => (useApp.getState().tabs[taskId] ?? []).find(
+  (t): t is TerminalTab => t.type === "terminal" && (t as TerminalTab).runTab?.member === member,
+);
+
+/** The project's named run commands (the Run button's dropdown), with
+ *  whether each is running and in which tab: what `--status` lists. */
+async function namedCommands(taskId: string) {
+  const task = useApp.getState().tasks.find(t => t.id === taskId);
+  if (!task) return [];
+  const cmds = await resolveCustomCommands(task.project_id).catch(() => []);
+  return cmds.map(cmd => {
+    const tab = runTabFor(taskId, customRunMember(cmd));
+    return { label: fullLabel(cmd), command: cmd.command, running: !!tab?.ptyId, tab_id: tab?.id ?? null };
+  });
+}
+
+/** `--script <label>`: one named run command, started, stopped or
+ *  reported in its own Run tab, as its dropdown entry does. */
+async function runNamedCommand(p: { taskId?: unknown; action?: unknown }, label: string) {
+  if (typeof p.taskId !== "string" || !p.taskId) throw new Error("run_script requires a taskId");
+  const action = p.action === "stop" || p.action === "status" ? p.action : "start";
+  if (!useApp.getState().tasks.some(t => t.id === p.taskId)) await useApp.getState().loadAll();
+  const task = useApp.getState().tasks.find(t => t.id === p.taskId);
+  if (!task) throw new Error(`unknown task ${p.taskId}`);
+  if (task.archived) throw new Error(`task ${task.name} is archived`);
+  const taskId = task.id;
+  const cmds = await resolveCustomCommands(task.project_id);
+  const want = label.toLowerCase();
+  const cmd = cmds.find(c => fullLabel(c).toLowerCase() === want);
+  if (!cmd) {
+    const names = cmds.map(fullLabel).join(", ") || "none";
+    throw new Error(`no run command named "${label}" (configured: ${names})`);
+  }
+  const member = customRunMember(cmd);
+  let outcome: string | undefined;
+  if (action === "stop") {
+    const pty = runTabFor(taskId, member)?.ptyId;
+    outcome = pty ? "stopped" : "not_running";
+    if (pty) await ptyKill(pty).catch(() => {});
+  } else if (action === "start") {
+    // Brought up as `termic run` does for the run script: a stopped task is
+    // refused rather than having its agents respawned as a side effect.
+    const s = useApp.getState();
+    if (!s.mountedTasks.has(taskId) && (s.tabs[taskId]?.length ?? 0) > 0) {
+      throw new Error(`task ${task.name} is stopped; open it in Termic (or \`termic open\`) first`);
+    }
+    s.ensureDefaultTab(taskId, task.cli);
+    s.mountTasks([taskId]);
+    if (runTabFor(taskId, member)?.ptyId) outcome = "already_running";
+    else { launchCustomRun(taskId, cmd); outcome = "started"; }
+  }
+  const tab = runTabFor(taskId, member);
+  const running = outcome === "started" || outcome === "already_running" || (outcome === undefined && !!tab?.ptyId);
+  return {
+    task: "",
+    which: "script" as const,
+    targets: [{ member: "", label: fullLabel(cmd), script: cmd.command, tab_id: tab?.id ?? null, running, ...(outcome ? { outcome } : {}) }],
+  };
 }

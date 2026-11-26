@@ -381,6 +381,12 @@ export default {
     prChecksPending: "checks running",
     memberMore: "+{{count}} more",
   },
+  // The needs-you panel (GH #468), AttentionWindow.tsx.
+  attention: {
+    empty: "Nothing is waiting for you.",
+    open: "Open",
+    waiting: "Waiting for you in the terminal.",
+  },
   activity: {
     windowTitle: "Activity",
     pause: "Pause",

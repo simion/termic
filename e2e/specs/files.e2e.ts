@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, rmTree } from "../helpers";
+import { archiveTask, createWorktreeTask, dismissOverlays, ensureActiveTask, openTask, readClipboard, requireTermicApi, snap, waitForAppShell, rmTree } from "../helpers";
 
 // The seeded fixture repo every spec in this file works against.
 const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
@@ -1567,5 +1567,116 @@ describe("pin folders for quick access", () => {
       timeout: 8_000, timeoutMsg: "the second task never showed the project's pins",
     });
     expect(await pinOrder()).toEqual(["e2e-pin-alpha", "e2e-pin-beta"]);
+  });
+});
+
+// GH #467: a file on its forge, from the tree's and the editor tab's menus.
+// The fixture's origin is a local bare repo, which no forge serves, so for
+// these cases it points at a GitHub-style URL (a placeholder, never fetched:
+// the links are built from git's own view of the remote) and goes back after.
+describe("a file on its forge", () => {
+  let taskId!: string;
+  let branch = "";
+  let originUrl = "";
+  const git = (args: string, cwd = fixture) => execSync(`git ${args}`, { cwd, encoding: "utf8" }).trim();
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    originUrl = git("remote get-url origin");
+    git("remote set-url origin git@github.com:acme/web.git");
+    // A worktree on a branch of its own, which the remote does not have yet.
+    branch = "e2e-forge-links";
+    taskId = await createWorktreeTask("e2e-forge", branch);
+    await ensureActiveTask(taskId);
+  });
+  after(async () => {
+    if (originUrl) git(`remote set-url origin ${originUrl}`);
+    if (branch) execSync(`git update-ref -d refs/remotes/origin/${branch}`, { cwd: fixture, stdio: "ignore" });
+    if (taskId) await archiveTask(taskId);
+  });
+
+  /** The labels of whichever open menu holds `marker`. */
+  const menuWith = (marker: string) => browser.execute((m) => {
+    const menu = [...document.querySelectorAll('[role="menu"]')].find((x) => (x as HTMLElement).innerText.includes(m)) as HTMLElement | undefined;
+    return menu ? menu.innerText.split("\n").map((t) => t.trim()).filter(Boolean) : [];
+  }, marker);
+  const rightClick = (sel: string) => browser.execute((q) => {
+    const el = document.querySelector(q) as HTMLElement;
+    if (!el) throw new Error(`nothing at ${q}`);
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 10, clientY: r.top + 10 }));
+  }, sel);
+  /** Open the forge submenu (its trigger shows once the links are read). */
+  const openForge = async () => {
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="forge-links"]')), {
+      timeout: 8_000, timeoutMsg: "the menu offered no GitHub submenu",
+    });
+    await browser.execute(() => (document.querySelector('[data-testid="forge-links"]') as HTMLElement).click());
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-testid="forge-copy-branch"]')), {
+      timeout: 5_000, timeoutMsg: "the GitHub submenu never opened",
+    });
+  };
+  const pick = async (testid: string) => {
+    await browser.execute((t) => (document.querySelector(`[data-testid="${t}"]`) as HTMLElement).click(), testid);
+    await dismissOverlays();
+  };
+
+  it("an unpushed branch falls back to the default branch, and says so", async () => {
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector('[data-path="README.md"]')), {
+      timeout: 15_000, timeoutMsg: "README row never appeared",
+    });
+    await rightClick('[data-path="README.md"]');
+    await openForge();
+    const labels = await menuWith("Copy main link");
+    expect(labels).toEqual(["Open on main (branch not pushed)", "Copy main link (branch not pushed)"]);
+    await snap("forge-links-unpushed.png");
+    await pick("forge-copy-branch");
+    expect(readClipboard()).toBe("https://github.com/acme/web/blob/main/README.md");
+  });
+
+  it("a pushed branch links to itself, with the default branch beside it", async () => {
+    git(`update-ref refs/remotes/origin/${branch} HEAD`);
+    await rightClick('[data-path="README.md"]');
+    await openForge();
+    expect(await menuWith("Copy GitHub link")).toEqual(["Open on GitHub", "Copy GitHub link", "Open on main", "Copy main link"]);
+    await pick("forge-copy-branch");
+    expect(readClipboard()).toBe(`https://github.com/acme/web/blob/${branch}/README.md`);
+  });
+
+  it("the editor tab offers a permalink to the selected lines, pinned to the commit", async () => {
+    await browser.execute((id) => window.__termic!.useApp.getState().openPreviewTab(id, {
+      type: "edit", path: "README.md", title: "README.md", permanent: true,
+    }), taskId);
+    await browser.waitUntil(() => browser.execute(() => !!document.querySelector(".cm-content")), {
+      timeout: 10_000, timeoutMsg: "the editor never opened README.md",
+    });
+    // Select the README's one line through the editor's own API (e2e builds
+    // expose it). The URL's range shapes are pinned in forge.rs's tests.
+    await browser.execute(() => {
+      const el = [...document.querySelectorAll<HTMLElement>(".cm-editor")].find((e) => e.getBoundingClientRect().width > 0)!;
+      const view = (el as unknown as { __cmView: any }).__cmView;
+      view.dispatch({ selection: { anchor: 0, head: view.state.doc.line(1).to } });
+    });
+    const tabId = await browser.execute((id) => (window.__termic!.useApp.getState().tabs[id] ?? [])
+      .find((t: any) => t.type === "edit" && t.path === "README.md")!.id as string, taskId);
+    await rightClick(`[data-tab-id="${tabId}"]`);
+    await openForge();
+    expect(await menuWith("Copy permalink")).toEqual(expect.arrayContaining(["Open permalink", "Copy permalink"]));
+    await pick("forge-copy-permalink");
+    const sha = git("rev-parse HEAD", await browser.execute((id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)!.path as string, taskId));
+    expect(readClipboard()).toBe(`https://github.com/acme/web/blob/${sha}/README.md#L1`);
+  });
+
+  it("offers nothing for a remote no forge serves", async () => {
+    git(`remote set-url origin ${originUrl}`);
+    await rightClick('[data-path="README.md"]');
+    await browser.waitUntil(async () => (await menuWith("Copy path")).length > 0, { timeout: 8_000, timeoutMsg: "the tree menu never opened" });
+    // Negative: a remote no forge serves must NOT get a submenu, and nothing
+    // fires for one that never renders; 500 ms outlasts the local git reads
+    // the menu makes when it opens.
+    await browser.pause(500);
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="forge-links"]'))).toBe(false);
+    await dismissOverlays();
   });
 });

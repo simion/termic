@@ -25,7 +25,7 @@
 import { create } from "zustand";
 import { isBetaBuild } from "@/lib/build";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 
 // Two changelog artifacts served from termic.dev/updates/:
@@ -299,8 +299,9 @@ export const useUpdate = create<UpdateState>((set, get) => ({
       // Progress callback ignored for v1 — banner just says "Downloading".
       await u.downloadAndInstall();
       set({ installing: "installing" });
-      // relaunch() spawns the freshly-installed .app and exits this one.
-      await relaunch();
+      // Exits this one and starts the freshly installed app (through
+      // LaunchServices on macOS: relaunch_after_update in lib.rs).
+      await invoke("relaunch_after_update");
     } catch (e) {
       console.error("[updater] install failed:", e);
       set({ installing: null });

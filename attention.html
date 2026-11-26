@@ -1,0 +1,19 @@
+<!doctype html>
+<!--
+  Entry point for the needs-you panel (GH #468), a SEPARATE always-on-top
+  window: see attention_window in src-tauri/src/lib.rs and
+  src/components/attention/AttentionWindow.tsx. Its own entry so it never
+  loads the app bundle (xterm, WebGL, CodeMirror), like activity.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Needs you</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/attention.tsx"></script>
+  </body>
+</html>

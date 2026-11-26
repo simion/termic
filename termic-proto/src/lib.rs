@@ -136,7 +136,12 @@ use std::io::{self, BufRead, Read, Write};
 /// tab initiated a child task, and `send` carries `caller_task` so an
 /// unqualified reply from a child defaults back to that initiating tab instead
 /// of the parent's default tab.
-pub const PROTOCOL_VERSION: u32 = 27;
+///
+/// v28: `run` takes `script`, one of the project's named run commands (the
+/// Run button's dropdown: `scripts.run_scripts` in `.termic.yaml` plus the
+/// personal ones), and `status` lists them. A v27 server would drop the
+/// field and start the main run script instead, which reads as success.
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -790,7 +795,9 @@ pub enum Command {
     /// its Run tab, exactly as the app's Run button starts it. Starts what
     /// is not already running; `stop` stops it; `status` only reports what
     /// is configured and running. `member` narrows a multi-repo task's run
-    /// to one member repo. cwd-aware when `task` absent.
+    /// to one member repo. `script` (v28) is one of the project's named run
+    /// commands, by label, instead of the run script. cwd-aware when `task`
+    /// absent.
     Run {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task: Option<String>,
@@ -804,6 +811,8 @@ pub enum Command {
         status: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
@@ -1635,12 +1644,31 @@ pub struct RunData {
     /// One per configured script: the host's, then each multi-repo member
     /// with one. Empty when nothing is configured.
     pub targets: Vec<RunTarget>,
+    /// v28: the project's named run commands, whether running and in which
+    /// tab, for `status` (and when there is no run script to report), so a
+    /// caller can find a label to pass as `script`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<RunScript>,
+}
+
+/// One of a project's named run commands (the Run button's dropdown).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunScript {
+    /// What `script` takes. The command itself when it has no label.
+    pub label: String,
+    pub command: String,
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunTarget {
     /// "" for the host project, else the member repo's directory name.
     pub member: String,
+    /// v28: the named run command's label, when this is one (`script`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// The configured command.
     pub script: String,
     /// Its Run tab, once one exists: `logs --tab` reads its output.
@@ -2880,8 +2908,8 @@ mod tests {
             },
             Command::ScheduleRun { task: Some("parent-1".into()), project: None, cwd: None },
             // v25: run / setup scripts.
-            Command::Run { task: Some("fix-auth".into()), project: None, setup: false, stop: false, status: false, member: None, cwd: None },
-            Command::Run { task: None, project: None, setup: true, stop: true, status: false, member: Some("api".into()), cwd: Some("/t".into()) },
+            Command::Run { task: Some("fix-auth".into()), project: None, setup: false, stop: false, status: false, member: None, script: None, cwd: None },
+            Command::Run { task: None, project: None, setup: false, stop: true, status: false, member: None, script: Some("Storybook".into()), cwd: Some("/t".into()) },
             Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: true, archive_tasks: false, cwd: None },
             Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: false, archive_tasks: true, cwd: None },
         ] {
@@ -3289,11 +3317,13 @@ mod tests {
                 which: "run".into(),
                 targets: vec![RunTarget {
                     member: String::new(),
+                    label: None,
                     script: "npm run dev".into(),
                     tab_id: Some("t1".into()),
                     running: true,
                     outcome: Some("started".into()),
                 }],
+                scripts: vec![RunScript { label: "Storybook".into(), command: "npm run storybook".into(), running: false, tab_id: None }],
             }),
             ReplyData::Schedule(ScheduleData {
                 schedules: vec![ScheduleSummary {

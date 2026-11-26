@@ -1368,18 +1368,27 @@ alone; stop it first to restart it. --setup does the same for the setup \
 script. A multi-repo task runs every member with a run script, or only \
 --member's.
 
---status starts nothing: it shows each configured script and whether it is \
-running. --stop stops it. Read its output with `logs --tab <tab id>`.
+A project can also have named run commands besides its run script (a \
+Storybook, a worker, a test watcher: the Run button's dropdown, from \
+`scripts.run_scripts` in `.termic.yaml` or added in the app). --script \
+<LABEL> starts, stops or shows one of those, each in its own Run tab.
+
+--status starts nothing: it shows each configured script, the project's \
+named run commands, and whether each is running. --stop stops it. Read its \
+output with `logs --tab <tab id>`.
 
 Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current \
 directory.
 
 With --output-format json, one object: {\"task\", \"which\", \"targets\": \
-[{\"member\", \"script\", \"tab_id\", \"running\", \"outcome\"}]}, outcome one \
-of started, already_running, stopped, not_running (absent for --status).
+[{\"member\", \"label\", \"script\", \"tab_id\", \"running\", \"outcome\"}], \
+\"scripts\": [{\"label\", \"command\", \"running\", \"tab_id\"}]}, which is run, \
+setup or script; outcome one of started, already_running, stopped, \
+not_running (absent for --status); scripts lists the named run commands \
+(with --status, or when there is no run script).
 
 Exit codes: 0 ok, 1 error (unknown or archived task, no script configured, \
-unknown member), 4 app not running, 5 CLI disabled, 6 refused, 8 connection \
+unknown member or run command), 4 app not running, 5 CLI disabled, 6 refused, 8 connection \
 lost."
     )]
     Run {
@@ -1401,6 +1410,10 @@ lost."
         /// A multi-repo task's member repo (its directory name).
         #[arg(long)]
         member: Option<String>,
+        /// One of the project's named run commands, by label (--status
+        /// lists them), instead of the run script.
+        #[arg(long, value_name = "LABEL", conflicts_with_all = ["setup", "member"])]
+        script: Option<String>,
     },
 
     /// Archive a task: SIGKILL its live agents, remove its worktree.
@@ -2593,7 +2606,7 @@ outside.",
             )?;
             render(&cli.cmd, format, data).map(Output::ok)
         }
-        Cmd::Run { task, project, setup, stop, status, member } => {
+        Cmd::Run { task, project, setup, stop, status, member, script } => {
             let data = client::request(
                 &mut conn,
                 proto::Command::Run {
@@ -2603,6 +2616,7 @@ outside.",
                     stop: *stop,
                     status: *status,
                     member: member.clone(),
+                    script: script.clone(),
                     cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 },
                 &token,
@@ -4783,13 +4797,39 @@ mod tests {
         // --stop and --status are two different calls.
         assert!(Cli::try_parse_from(["termic", "run", "--stop", "--status"]).is_err());
 
-        let d = |targets| proto::RunData { task: "web/x".into(), which: "run".into(), targets };
+        let d = |targets| proto::RunData { task: "web/x".into(), which: "run".into(), targets, scripts: vec![] };
         assert_eq!(output::run_text(&d(vec![])), "web/x has no run script configured");
         let t = proto::RunTarget {
-            member: "api".into(), script: "npm run dev".into(), tab_id: Some("t1".into()),
+            member: "api".into(), label: None, script: "npm run dev".into(), tab_id: Some("t1".into()),
             running: true, outcome: Some("already_running".into()),
         };
         assert_eq!(output::run_text(&d(vec![t])), "web/x (api): run already running, tab t1: npm run dev");
+
+        // A named run command: by label, and only with neither --setup nor --member.
+        let named = Cli::try_parse_from(["termic", "run", "--script", "Storybook"]).unwrap();
+        assert!(matches!(&named.cmd, Cmd::Run { script: Some(s), .. } if s == "Storybook"));
+        assert!(Cli::try_parse_from(["termic", "run", "--script", "S", "--setup"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "run", "--script", "S", "--member", "api"]).is_err());
+        let started = proto::RunData {
+            task: "web/x".into(), which: "script".into(), scripts: vec![],
+            targets: vec![proto::RunTarget {
+                member: String::new(), label: Some("Storybook".into()), script: "npm run storybook".into(),
+                tab_id: Some("t2".into()), running: true, outcome: Some("started".into()),
+            }],
+        };
+        assert_eq!(output::run_text(&started), "web/x (Storybook): run command started, tab t2: npm run storybook");
+        // --status lists the named commands after the run script.
+        let status = proto::RunData {
+            scripts: vec![
+                proto::RunScript { label: "Storybook".into(), command: "npm run storybook".into(), running: true, tab_id: Some("t2".into()) },
+                proto::RunScript { label: "Worker".into(), command: "npm run worker".into(), running: false, tab_id: None },
+            ],
+            ..d(vec![])
+        };
+        assert_eq!(
+            output::run_text(&status),
+            "web/x has no run script configured\nrun commands (--script <label>):\n  Storybook: running, tab t2: npm run storybook\n  Worker: not running: npm run worker",
+        );
     }
 
     #[test]

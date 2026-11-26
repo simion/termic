@@ -47,8 +47,9 @@ export function ContextMenuContent({ children, className, onCloseAutoFocus }: {
   );
 }
 
-export function ContextMenuItem({ children, className, onSelect, disabled, destructive, "aria-label": ariaLabel, checked }: {
+export function ContextMenuItem({ children, className, onSelect, disabled, destructive, "aria-label": ariaLabel, checked, "data-testid": testId }: {
   children: ReactNode; className?: string; onSelect?: () => void; disabled?: boolean; destructive?: boolean;
+  "data-testid"?: string;
   /** For icon-only items (e.g. color swatches) whose meaning isn't text. */
   "aria-label"?: string;
   /** Pass a boolean to make the item announce as a radio choice
@@ -60,6 +61,7 @@ export function ContextMenuItem({ children, className, onSelect, disabled, destr
   return (
     <CM.Item
       aria-label={ariaLabel}
+      data-testid={testId}
       // SPREAD, never `role={... : undefined}`. Radix sets `role="menuitem"`
       // itself, and an explicit `undefined` passed after it wins the prop
       // merge, so React omitted the attribute entirely: every plain item in
@@ -91,11 +93,12 @@ export const ContextMenuSeparator = () => (
 // item plus a trailing chevron; content reuses ContextMenuContent's chrome.
 export const ContextMenuSub = CM.Sub;
 
-export function ContextMenuSubTrigger({ children, className, disabled }: {
-  children: ReactNode; className?: string; disabled?: boolean;
+export function ContextMenuSubTrigger({ children, className, disabled, "data-testid": testId }: {
+  children: ReactNode; className?: string; disabled?: boolean; "data-testid"?: string;
 }) {
   return (
     <CM.SubTrigger
+      data-testid={testId}
       disabled={disabled}
       className={cn(
         "flex cursor-pointer items-center gap-2", MENU_ROW,

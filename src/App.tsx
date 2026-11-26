@@ -41,6 +41,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useWindowTitle } from "@/hooks/useWindowTitle";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
+import { useAttentionPanel } from "@/hooks/useAttentionPanel";
 import { useSeenWhenWatched } from "@/hooks/useSeenWhenWatched";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 import { useUpdate } from "@/store/update";
@@ -78,6 +79,7 @@ export function App() {
 
   useShortcuts();
   useAttentionNotifier();
+  useAttentionPanel();
   useSeenWhenWatched();
   useWindowTitle();
 

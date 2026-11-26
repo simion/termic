@@ -82,6 +82,67 @@ pub fn path_of_remote(url: &str) -> Option<String> {
     (p.contains('/')).then(|| p.to_string())
 }
 
+/// The forge's name as a menu says it ("Open on GitHub").
+pub fn forge_label(provider: &str) -> &'static str {
+    match provider {
+        p if p == GITLAB => "GitLab",
+        p if p == AZURE => "Azure DevOps",
+        _ => "GitHub",
+    }
+}
+
+/// A path for a URL: each segment percent-encoded where a URL would read it
+/// otherwise (space, #, ?, %), the separators kept.
+fn url_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            let mut out = String::with_capacity(seg.len());
+            for b in seg.bytes() {
+                match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' | b'+' | b'(' | b')' | b',' | b'=' | b'!' | b'$' | b'&' | b'\'' | b'*' | b':' | b';' => out.push(b as char),
+                    _ => out.push_str(&format!("%{b:02X}")),
+                }
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Where a file is on a forge's web UI (GH #467): `git_ref` a branch, or a
+/// commit when `commit` is set; `lines` 1-based and inclusive. None for a
+/// remote whose web address cannot be told from its URL.
+pub fn file_web_url(provider: &str, remote: &str, git_ref: &str, commit: bool, path: &str, lines: Option<(u32, u32)>) -> Option<String> {
+    let host = host_of_remote(remote)?;
+    let repo = path_of_remote(remote)?;
+    let file = url_path(path.trim_start_matches('/'));
+    if provider == AZURE {
+        // https://dev.azure.com/org/project/_git/repo, from either the https
+        // remote (which already says `_git`) or ssh's `v3/org/project/repo`.
+        let base = if host == "ssh.dev.azure.com" {
+            let parts: Vec<&str> = repo.trim_start_matches("v3/").split('/').collect();
+            let [org, project, name] = parts[..] else { return None };
+            format!("https://dev.azure.com/{org}/{project}/_git/{name}")
+        } else {
+            // https remotes can carry the user (`org@dev.azure.com`); host_of_remote dropped it.
+            format!("https://{host}/{repo}")
+        };
+        let version = if commit { format!("GC{git_ref}") } else { format!("GB{}", url_path(git_ref)) };
+        let mut url = format!("{base}?path=/{file}&version={version}");
+        if let Some((a, b)) = lines {
+            url.push_str(&format!("&line={a}&lineEnd={}&lineStartColumn=1&lineEndColumn=1", b + 1));
+        }
+        return Some(url);
+    }
+    let r = url_path(git_ref);
+    let (blob, range) = if provider == GITLAB {
+        ("-/blob", lines.map(|(a, b)| if a == b { format!("#L{a}") } else { format!("#L{a}-{b}") }))
+    } else {
+        ("blob", lines.map(|(a, b)| if a == b { format!("#L{a}") } else { format!("#L{a}-L{b}") }))
+    };
+    Some(format!("https://{host}/{repo}/{blob}/{r}/{file}{}", range.unwrap_or_default()))
+}
+
 /// For a folder on a server: (its current branch, its repo as an https URL),
 /// both read on the box through the routed git. None for a local folder.
 fn server_branch(cwd: &Path) -> Option<(String, String)> {
@@ -3247,6 +3308,28 @@ pub fn pr_number_from_url(url: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn file_links_take_each_forges_shape() {
+        let gh = "git@github.com:acme/web.git";
+        assert_eq!(file_web_url(GITHUB, gh, "main", false, "src/a b.ts", None).as_deref(),
+            Some("https://github.com/acme/web/blob/main/src/a%20b.ts"));
+        assert_eq!(file_web_url(GITHUB, "https://ghe.acme.com/acme/web.git", "abc123", true, "README.md", Some((10, 24))).as_deref(),
+            Some("https://ghe.acme.com/acme/web/blob/abc123/README.md#L10-L24"));
+        assert_eq!(file_web_url(GITHUB, gh, "main", false, "x.rs", Some((7, 7))).as_deref(),
+            Some("https://github.com/acme/web/blob/main/x.rs#L7"));
+        // A branch with a slash keeps it; a # in a name does not end the URL.
+        assert_eq!(file_web_url(GITHUB, gh, "feat/x", false, "a#b.md", None).as_deref(),
+            Some("https://github.com/acme/web/blob/feat/x/a%23b.md"));
+        assert_eq!(file_web_url(GITLAB, "ssh://git@gitlab.example.io:22/group/sub/web.git", "main", false, "a.rb", Some((3, 5))).as_deref(),
+            Some("https://gitlab.example.io/group/sub/web/-/blob/main/a.rb#L3-5"));
+        assert_eq!(file_web_url(AZURE, "git@ssh.dev.azure.com:v3/acme/proj/web", "main", false, "src/a.cs", None).as_deref(),
+            Some("https://dev.azure.com/acme/proj/_git/web?path=/src/a.cs&version=GBmain"));
+        assert_eq!(file_web_url(AZURE, "https://acme@dev.azure.com/acme/proj/_git/web", "abc", true, "a.cs", Some((2, 4))).as_deref(),
+            Some("https://dev.azure.com/acme/proj/_git/web?path=/a.cs&version=GCabc&line=2&lineEnd=5&lineStartColumn=1&lineEndColumn=1"));
+        assert_eq!(file_web_url(GITHUB, "/local/path/repo", "main", false, "a", None), None);
+    }
+
 
     #[test]
     fn create_args_name_the_branch_for_a_server_folder() {

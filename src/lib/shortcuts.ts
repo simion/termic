@@ -688,9 +688,18 @@ export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
 //
 // The cost of tracking is a missed keyup: GNOME takes the focus for its
 // overview when Super is released alone, and the release can go with it. A
-// stuck flag would turn every typed j into a shortcut, so losing focus clears
-// it.
-let superHeld = false;
+// stuck flag turns every typed letter into a shortcut (D split the pane) and
+// makes a focused terminal drop every key (terminalKeys.ts), so losing focus
+// clears it. That is not enough on its own: the keyup can also vanish while
+// the window KEEPS focus (a compositor shortcut, a quick tap), and then only
+// switching windows brought the keyboard back. So a press also EXPIRES:
+// Super counts as held for SUPER_HOLD_MS after its keydown, renewed by every
+// key pressed while it is held, so a run of Super chords works and a lost
+// keyup is forgotten in a moment rather than until the next focus change.
+const SUPER_HOLD_MS = 1500;
+/** When Super last showed it was down (its keydown, or a key pressed while
+ *  it was held); null when it is up. */
+let superSeen: number | null = null;
 
 function isSuperKey(e: KeyboardEvent): boolean {
   return e.key === "Super" || e.key === "OS" || e.code === "OSLeft" || e.code === "OSRight"
@@ -699,21 +708,26 @@ function isSuperKey(e: KeyboardEvent): boolean {
 
 if (IS_LINUX && typeof window !== "undefined") {
   // Capture phase: xterm and CodeMirror stop some keys before they bubble.
-  window.addEventListener("keydown", e => { if (isSuperKey(e)) superHeld = true; }, true);
-  window.addEventListener("keyup", e => { if (isSuperKey(e)) superHeld = false; }, true);
-  window.addEventListener("blur", () => { superHeld = false; });
-  document.addEventListener("visibilitychange", () => { superHeld = false; });
+  window.addEventListener("keydown", e => {
+    if (isSuperKey(e) || superIsHeld()) superSeen = Date.now();
+  }, true);
+  window.addEventListener("keyup", e => { if (isSuperKey(e)) superSeen = null; }, true);
+  window.addEventListener("blur", () => { superSeen = null; });
+  document.addEventListener("visibilitychange", () => { superSeen = null; });
 }
 
 /** Linux only: Super is down, so the key being pressed is an app shortcut
  *  and not text. A terminal asks this to keep the letter out of the PTY. */
-export function superIsHeld(): boolean {
-  return IS_LINUX && superHeld;
+export function superIsHeld(now: number = Date.now()): boolean {
+  if (!IS_LINUX || superSeen === null) return false;
+  if (now - superSeen < SUPER_HOLD_MS) return true;
+  superSeen = null; // its keyup went missing
+  return false;
 }
 
 /** Test seam: there is no way to hold a key between two synthetic events. */
 export function setSuperHeldForTests(v: boolean): void {
-  superHeld = v;
+  superSeen = v ? Date.now() : null;
 }
 
 /** The app's "Cmd" for a live event: Cmd on macOS, Ctrl or the Win key on

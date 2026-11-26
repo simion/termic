@@ -116,10 +116,7 @@ export default {
   },
   display: {
     title: "Remote display",
-    newTask: "New task button",
-    newTask_hover: "On hover",
-    newTask_always: "Always",
-    newTask_never: "Never",
+    newTask: "New task row under tasks",
     connectSwitch: "Connect switch on the row",
     counts: "Counts on folded computers",
     inactive: "Inactive projects at bottom",
@@ -127,6 +124,7 @@ export default {
     offlineEach: "Each offline computer on its own line",
   },
   sidebar: {
+    badgeExperimental: "Experimental",
     offlineCount_one: "{{count}} offline",
     offlineCount_other: "{{count}} offline",
     connect: "Connect",

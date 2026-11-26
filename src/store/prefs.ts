@@ -83,6 +83,8 @@ const LS_FOOTER_HIDDEN = "agentFooterHidden";
 const LS_CONFIRM_CODE_NAV = "confirmBeforeCodeIntel";
 const LS_THEME         = "themeMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
+// The needs-you panel (GH #468): a floating window while a task waits.
+const LS_ATTENTION_PANEL = "attentionPanel";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_CONFIRM_CLOSE_AGENT_TAB = "confirmBeforeCloseAgentTab";
 const LS_CONFIRM_ARCHIVE_TASK = "confirmBeforeArchiveTask";
@@ -568,6 +570,7 @@ interface PrefsState {
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
+  attentionPanel: boolean;
   /** In-app notices turned off (lib/notices.ts keys). */
   mutedNotices: string[];
   /** Play a selectable notification sound when an inactive agent finishes
@@ -1104,6 +1107,7 @@ interface PrefsState {
    *  when the save fails, leaving the theme mode untouched. */
   pickImportedTheme:  (id: `custom:${string}`) => Promise<void>;
   setDesktopNotifications: (v: boolean) => void;
+  setAttentionPanel: (v: boolean) => void;
   setNoticeMuted: (key: string, muted: boolean) => void;
   setCompletionSound: (v: boolean) => void;
   setCompletionSoundId: (id: CompletionSoundId) => void;
@@ -1202,7 +1206,8 @@ export function parseNewTaskButton(raw: string): NewTaskButtonMode {
  *  display menu so remote rows can be quieter than local ones. */
 export interface RemoteDisplay {
   /** A computer's and a project's New task "+": always, on hover, or never. */
-  newTask: "always" | "hover" | "never";
+  /** Each project's New task row under its tasks. */
+  newTask: "always" | "never";
   /** The connect switch on a computer's row (it is always in the ⋯ menu). */
   /** The connect switch is on each computer's row unless hidden. Inverted
    *  from the earlier off-by-default option, so a saved "off" does not stick. */
@@ -1214,13 +1219,15 @@ export interface RemoteDisplay {
   /** A computer's projects with nothing running fold into "Inactive projects". */
   inactiveAtBottom: boolean;
 }
-export const REMOTE_DISPLAY_DEFAULT: RemoteDisplay = { newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true };
+export const REMOTE_DISPLAY_DEFAULT: RemoteDisplay = { newTask: "never", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: false };
 export function parseRemoteDisplay(raw: string): RemoteDisplay {
   try {
     const v = JSON.parse(raw) as Partial<RemoteDisplay>;
     const d = REMOTE_DISPLAY_DEFAULT;
     return {
-      newTask: v.newTask === "always" || v.newTask === "never" || v.newTask === "hover" ? v.newTask : d.newTask,
+      // Off by default; only an explicit "always" turns it on ("hover", the
+      // earlier default, reads as the default).
+      newTask: v.newTask === "always" ? "always" : d.newTask,
       hideSwitch: typeof v.hideSwitch === "boolean" ? v.hideSwitch : d.hideSwitch,
       counts: typeof v.counts === "boolean" ? v.counts : d.counts,
       offline: v.offline === "each" || v.offline === "gather" ? v.offline : d.offline,
@@ -1537,6 +1544,7 @@ function readStoredPrefs() {
     language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
     themeMode: initialTheme,
     desktopNotifications: initialDesktopNotif,
+    attentionPanel: lsGetBool(LS_ATTENTION_PANEL, false),
     mutedNotices: initialMutedNotices,
     completionSound: initialCompletionSound,
     completionSoundId: initialCompletionSoundId,
@@ -1907,6 +1915,11 @@ export const usePrefs = create<PrefsState>(set => ({
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
+  },
+  setAttentionPanel: (v) => {
+    if (v === usePrefs.getState().attentionPanel) return;
+    try { localStorage.setItem(LS_ATTENTION_PANEL, v ? "1" : "0"); } catch {}
+    set({ attentionPanel: v });
   },
   setNoticeMuted: (key, muted) => {
     const cur = usePrefs.getState().mutedNotices;

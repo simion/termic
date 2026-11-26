@@ -819,6 +819,19 @@ export const taskFileFp = (id: string, path: string) =>
  *  found" instead of opening a dead tab. */
 export const taskPathStat = (id: string, path: string) =>
   invoke<{ exists: boolean; is_dir: boolean }>("task_path_stat", { id, path });
+/** A file's addresses on its forge (GH #467): see file_web_links in lib.rs. */
+export interface FileWebLinks {
+  forge: string;
+  branch: string | null;
+  branchPushed: boolean;
+  defaultBranch: string | null;
+  commitPushed: boolean;
+  branchUrl: string | null;
+  defaultUrl: string | null;
+  permalinkUrl: string | null;
+}
+export const fileWebLinks = (path: string, lines?: [number, number] | null) =>
+  invoke<FileWebLinks>("file_web_links", { path, lines: lines ?? null });
 export const taskFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("task_file_write", { id, path, content });
 /** Would `taskFileWrite` accept this path? False for a file reached through

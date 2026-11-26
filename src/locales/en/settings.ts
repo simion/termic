@@ -202,6 +202,10 @@ export default {
   },
 
   notifications: {
+    attentionPanel: {
+      label: "Needs-you panel",
+      hint: "A small window that stays over your other apps while an agent waits for you, with its question and a button per answer. It shows only while something waits, and does not take focus from the app you are in.",
+    },
     notices: {
       title: "In-app notices",
       hint: "Notices that pop up in the corner. Turn one off here, or from the … on the notice itself.",

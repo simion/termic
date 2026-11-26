@@ -56,6 +56,9 @@ export default defineConfig({
       input: {
         index: path.resolve(__dirname, "index.html"),
         activity: path.resolve(__dirname, "activity.html"),
+        // The needs-you panel (GH #468), as small as Activity and for the
+        // same reason: an always-on-top window should not carry xterm.
+        attention: path.resolve(__dirname, "attention.html"),
       },
     },
   },

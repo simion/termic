@@ -7,6 +7,7 @@
 // back to `tab.syntaxAuto` for the breadcrumb and the picker to read. Loading
 // a grammar is a chunk fetch, hence lib/langSwitch guarding every apply.
 
+import { registerEditorSelection } from "@/lib/editorSelection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditTab, ScratchTab, ExternalTab, Task } from "@/lib/types";
@@ -327,6 +328,7 @@ export function EditorPane({ task, tab, active, onContent }: {
   useEffect(() => {
     let alive = true;
     let detachScrollRestore: (() => void) | null = null;
+    let detachSelection: (() => void) | null = null;
     // Reset per-load state up front. This effect re-runs when the path
     // changes (preview tabs reuse one instance + swap tab.path), so a
     // stale error from a prior file — e.g. a binary like .DS_Store that
@@ -746,6 +748,15 @@ export function EditorPane({ task, tab, active, onContent }: {
         // Scroll position dies with the box when a hidden task/tab goes
         // display:none in WKWebView — record and re-apply it.
         detachScrollRestore = attachHiddenScrollRestore(view.scrollDOM);
+        // The selected lines, for a permalink from the tab or breadcrumb menu.
+        detachSelection = registerEditorSelection(tab.id, () => {
+          const sel = view.state.selection.main;
+          if (sel.empty) return null;
+          const doc = view.state.doc;
+          // A selection ending at the start of a line does not take that line.
+          const end = sel.to > sel.from && doc.lineAt(sel.to).from === sel.to ? sel.to - 1 : sel.to;
+          return [doc.lineAt(sel.from).number, doc.lineAt(end).number];
+        });
         setLoading(false);
         // A tab opened ACTIVE (⌘P on a file that was not open) mounts with the
         // view still loading, so the focus-on-active effect below finds no view
@@ -816,6 +827,7 @@ export function EditorPane({ task, tab, active, onContent }: {
       unregisterPadRef.current?.();
       unregisterPadRef.current = null;
       detachScrollRestore?.();
+      detachSelection?.();
       viewRef.current?.destroy();
       viewRef.current = null;
     };

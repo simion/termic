@@ -373,6 +373,11 @@ export default {
     prChecksPending: "检查进行中",
     memberMore: "+{{count}} 个",
   },
+  attention: {
+    empty: "没有等待你的任务。",
+    open: "打开",
+    waiting: "正在终端中等你。",
+  },
   activity: {
     windowTitle: "活动",
     pause: "暂停",

@@ -4,7 +4,6 @@
 import { ThemePicker } from "@/components/ThemePicker";
 import { CaffeinateControl } from "./CaffeinateControl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
@@ -119,7 +118,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // it FLIPS, so scrolling costs no re-render of the sidebar per frame.
   const projectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [moreBelow, setMoreBelow] = useState(false);
-  const [remoteDrawer, setRemoteDrawer] = useState<HTMLDivElement | null>(null);
   // The floating update card's height, padded under the project list.
   const [updateSlot, setUpdateSlot] = useState<HTMLDivElement | null>(null);
   const [updateH, setUpdateH] = useState(0);
@@ -207,6 +205,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const showTodos = usePrefs(s => s.showTodos);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   const newTaskButtonMode = usePrefs(s => s.newTaskButton);
+  const setNewTaskButton = usePrefs(s => s.setNewTaskButton);
+  // The New task row's labels are the Settings page's (same pref).
+  const { t: tSettings } = useTranslation("settings");
   // A server project sits in REMOTE, whose own display menu says whether its
   // New task row shows (RemoteMachines.tsx RemoteDisplayMenu).
   const remoteNewTask = usePrefs(s => s.remoteDisplay.newTask);
@@ -1455,6 +1456,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     ))}
                   </DropdownSubContent>
                 </DropdownSub>
+                {/* The New task row under a project's tasks, as REMOTE's display
+                    menu has it for remote projects. Mirrored in Settings >
+                    Appearance > Sidebar, which writes the same pref. */}
+                <DropdownSub>
+                  <DropdownSubTrigger data-testid="sidebar-new-task-button" className="justify-between">
+                    <span>{tSettings("newTaskButton.label")}</span>
+                    <span className="flex items-center gap-2 text-[var(--color-fg-faint)]">
+                      {tSettings(`newTaskButton.${newTaskButtonMode}`)}
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                    </span>
+                  </DropdownSubTrigger>
+                  <DropdownSubContent>
+                    {(["empty", "auto", "always"] as const).map(m => (
+                      <DropdownItem key={m} data-testid={`sidebar-new-task-button-${m}`} onSelect={e => { e.preventDefault(); setNewTaskButton(m); }}>
+                        <span className="flex w-4 justify-center">{newTaskButtonMode === m && <Check className="h-3.5 w-3.5" />}</span>
+                        <span className="flex-1">{tSettings(`newTaskButton.${m}`)}</span>
+                      </DropdownItem>
+                    ))}
+                  </DropdownSubContent>
+                </DropdownSub>
                 {/* The branch text, a separate choice from the glyph above.
                     Mirrored in Settings > Appearance > Sidebar. */}
                 <DropdownSub>
@@ -1589,9 +1610,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             const bottomNewTask = !collapsed && !compact && (p.server
               ? remoteNewTask !== "never"
               : newTaskButtonShown(newTaskButtonMode, taskList.length, projects.length));
-            // REMOTE's "on hover": the row shows while the pointer is over
-            // the project (an empty project's dashed box always shows).
-            const bottomHoverOnly = !!p.server && remoteNewTask === "hover" && taskList.length > 0;
             // Only beside the quiet `+` under tasks. An empty project's dashed
             // "New task" box is its own thing, and its header `+` stays as it
             // always was (a hover-only one there also left e2e, which drives
@@ -1605,7 +1623,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 // A small gap between consecutive projects; each header's
                 // band marks the start. Small because the `+` row above it,
                 // a full task row tall, already leaves the air.
-                className={cn("group/project rounded-md", !compact && "[[data-project-wrap]+&]:mt-0.5")}
+                className={cn("rounded-md", !compact && "[[data-project-wrap]+&]:mt-0.5")}
               >
                 <ContextMenuRoot>
                 <ContextMenuTrigger className="contents">
@@ -2220,7 +2238,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     long list puts the header's `+` far from its result). */}
                 {bottomNewTask && pendingRepoRoot?.projectId !== p.id && pendingForProject.length === 0 && (
                   <div
-                    className={cn("ml-3 mr-1 mb-px", bottomHoverOnly && "opacity-0 focus-within:opacity-100 group-hover/project:opacity-100 has-[[data-state=open]]:opacity-100")}
+                    className="ml-3 mr-1 mb-px"
                     onClick={e => e.stopPropagation()}
                   >
                     <ProjectNewTaskRoot projectId={p.id}>
@@ -2569,11 +2587,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </div>
               )}
-              {/* Other computers live in the drawer pinned above the footer
-                  (the slot below the scroll), so local work keeps the top. */}
-              {!compact && remoteDrawer && createPortal(
-                <RemoteSidebarSection projects={projects.filter(p => !!p.server)} renderProject={renderProject} isActive={projectIsActive} />,
-                remoteDrawer,
+              {/* Other computers, inline at the end of the list: local work
+                  keeps the top, and they scroll with it. */}
+              {!compact && (
+                <div data-testid="remote-inline" className="mt-4 empty:hidden">
+                  <RemoteSidebarSection projects={projects.filter(p => !!p.server)} renderProject={renderProject} isActive={projectIsActive} />
+                </div>
               )}
             </>
           );
@@ -2581,16 +2600,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         </div>
       </div>
       </div>
-        {/* The REMOTE drawer: other computers, pinned above the footer and
-            scrolling on their own once they would take more than about half
-            the sidebar. Filled by a portal from the project list above. */}
-        {!compact && (
-          <div
-            ref={setRemoteDrawer}
-            data-testid="remote-drawer"
-            className="no-scrollbar max-h-[55%] shrink-0 overflow-y-auto border-t border-[var(--color-border-soft)] px-2 pb-1.5 empty:hidden"
-          />
-        )}
         {/* The compact rail scrolls with no visible bar (a 10px bar is a sixth
             of a 56px rail), so the fade is what says there is more below. */}
         {compact && moreBelow && (

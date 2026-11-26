@@ -820,7 +820,7 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     // The row's own switch turns it back on. It is on the row by default and
     // REMOTE's display menu can hide it (Connect is always in the ⋯ menu).
     // Reset first: the options live in localStorage, which outlives a reseed.
-    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
+    await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "always", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
     expect(await browser.execute((sid) => !!document.querySelector(`[data-testid="machine-switch-${sid}"]`), serverId)).toBe(true);
     // A switched-off server is available, not offline: its own row, not the
     // gathered offline line.
@@ -845,6 +845,13 @@ describeLocal("A server's tasks in the sidebar (local termic-server)", function 
     await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
     await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "disconnected", 10_000);
     await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
+    await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "online", 30_000);
+    await waitVisible(row(), 20_000);
+    // Switched off, a click on the row itself connects it and opens it: it
+    // has nothing to fold open.
+    await clickPresent(`[data-testid="machine-switch-${serverId}"]`);
+    await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "disconnected", 10_000);
+    await clickPresent(`[data-testid="server-block-${serverId}"] button[aria-expanded]`);
     await waitForAttr(`[data-testid="server-block-${serverId}"]`, "data-state", "online", 30_000);
     await waitVisible(row(), 20_000);
   });

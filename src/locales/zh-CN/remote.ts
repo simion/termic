@@ -115,10 +115,7 @@ export default {
   },
   display: {
     title: "远程显示",
-    newTask: "新建任务按钮",
-    newTask_hover: "悬停时",
-    newTask_always: "始终",
-    newTask_never: "从不",
+    newTask: "任务下方的新建任务行",
     connectSwitch: "在行上显示连接开关",
     counts: "折叠的电脑显示计数",
     inactive: "不活跃项目放在底部",
@@ -126,6 +123,7 @@ export default {
     offlineEach: "每台离线电脑单独一行",
   },
   sidebar: {
+    badgeExperimental: "实验性",
     offlineCount_one: "{{count}} 台离线",
     offlineCount_other: "{{count}} 台离线",
     connect: "连接",

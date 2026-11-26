@@ -278,10 +278,13 @@ app's Run button drives, so the user sees its output and can stop it,
 and it gets the task's own port. A script already running is left alone:
 stop it first to restart it. `--setup` does the same for the setup
 script, and `--member <dir>` narrows a multi-repo task to one member.
-The reply names each script's tab: `logs --tab <tab id>` reads its
-output. With nothing configured, `run` fails and `run --status` lists no
-scripts; then start it yourself. Over MCP: `task_run` (`setup`, `stop`,
-`status`, `member`).
+A project can also have named run commands besides its run script (a
+Storybook, a worker, a test watcher: the Run button's dropdown).
+`run --status` lists them, and `run --script <label>` starts, stops or
+shows one, each in its own Run tab. The reply names each script's tab:
+`logs --tab <tab id>` reads its output. With nothing configured, `run`
+fails and `run --status` lists no scripts; then start it yourself. Over
+MCP: `task_run` (`setup`, `stop`, `status`, `member`, `script`).
 
 ### Driving an existing task
 

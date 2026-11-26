@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "attention",
+  "description": "Capability for the needs-you panel (GH #468), a separate always-on-top window. It is not in default.json's \"windows\", so without this it gets NO permissions at all; its own commands (attention_question/answer/open_task) are app commands and work regardless, but core:event (listen/emit) is capability-gated, and the panel listens for the main window's list of waiting tasks and asks it to resend that list when it opens.",
+  "windows": ["attention"],
+  "permissions": [
+    "core:event:default"
+  ]
+}

@@ -42,6 +42,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "unknown-cost reports must NOT flip the label. Nothing fires for what "
       + "does not render",
   },
+  "files.e2e.ts": {
+    count: 1,
+    why: "a negative: a file whose remote no forge serves must NOT get the "
+      + "forge submenu. Nothing fires for a submenu that never renders",
+  },
   "editor.e2e.ts": {
     count: 3,
     why: "a settle window against IPC still in flight from the case before, plus "

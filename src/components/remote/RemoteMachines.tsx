@@ -45,7 +45,7 @@ import { hostFold, joinableGroups, layoutRemote, orderMachines, profilesOf, visi
 
 /** A top-level sidebar section header, styled as PROJECTS': a filled bar
  *  with the label, a fold, and its actions on the right. */
-export function SidebarSectionHeader({ testId, icon, label, badge, folded, onToggle, children }: { testId: string; icon: ReactNode; label: string; badge?: string; folded: boolean; onToggle: () => void; children?: ReactNode }) {
+export function SidebarSectionHeader({ testId, icon, label, badge, badgeTitle, folded, onToggle, children }: { testId: string; icon: ReactNode; label: string; badge?: string; badgeTitle?: string; folded: boolean; onToggle: () => void; children?: ReactNode }) {
   return (
     <div data-testid={testId} className="group mb-1.5 flex h-8 select-none items-center justify-between rounded-md bg-[var(--color-bg-2)] pl-1 pr-0.5 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg-dim)]">
       <button type="button" onClick={onToggle} aria-expanded={!folded} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
@@ -54,7 +54,7 @@ export function SidebarSectionHeader({ testId, icon, label, badge, folded, onTog
         {/* A button resets text-transform: the case goes on the label. */}
         <span className="truncate uppercase">{label}</span>
         {/* The settings rail's experimental pill, the same look. */}
-        {badge && <span data-testid={`${testId}-badge`} className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-normal uppercase tracking-wider text-[var(--color-fg-faint)]">{badge}</span>}
+        {badge && <span data-testid={`${testId}-badge`} title={badgeTitle} className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-normal uppercase tracking-wider text-[var(--color-fg-faint)]">{badge}</span>}
       </button>
       <div className="flex shrink-0 items-center gap-0.5">{children}</div>
     </div>
@@ -163,7 +163,9 @@ function useMachineDrag(ids: string[]) {
 const isOffline = (m: MachineView) => m.state === "offline";
 
 /** The New task "+" on a remote row, per REMOTE's display menu. */
-const plusClass = (mode: RemoteDisplay["newTask"]) => mode === "hover" ? "opacity-0 focus-visible:opacity-100 group-hover:opacity-100" : "";
+// A header's + shows on hover, as a local project's does beside its New
+// task row.
+const HOVER_PLUS = "opacity-0 focus-visible:opacity-100 group-hover:opacity-100";
 
 /** What a folded computer is doing: working and finished tasks, so it can
  *  stay folded until one of them is worth opening it for. */
@@ -194,14 +196,7 @@ function RemoteDisplayMenu() {
         </DropdownTrigger>
       </Tip>
       <DropdownMenu align="end" className="w-64">
-        <DropdownSub>
-          <DropdownSubTrigger data-testid="remote-display-new-task">{check(false)}{t("display.newTask")}<span className="ml-auto pl-3 text-[var(--color-fg-faint)]">{t(`display.newTask_${d.newTask}`)}</span></DropdownSubTrigger>
-          <DropdownSubContent>
-            {(["hover", "always", "never"] as const).map(v => (
-              <DropdownItem key={v} data-testid={`remote-display-new-task-${v}`} onSelect={() => set({ newTask: v })}>{check(d.newTask === v)}{t(`display.newTask_${v}`)}</DropdownItem>
-            ))}
-          </DropdownSubContent>
-        </DropdownSub>
+        <DropdownItem data-testid="remote-display-new-task" onSelect={e => { e.preventDefault(); set({ newTask: d.newTask === "never" ? "always" : "never" }); }}>{check(d.newTask !== "never")}{t("display.newTask")}</DropdownItem>
         <DropdownItem data-testid="remote-display-switch" onSelect={e => { e.preventDefault(); set({ hideSwitch: !d.hideSwitch }); }}>{check(!d.hideSwitch)}{t("display.connectSwitch")}</DropdownItem>
         <DropdownItem data-testid="remote-display-counts" onSelect={e => { e.preventDefault(); set({ counts: !d.counts }); }}>{check(d.counts)}{t("display.counts")}</DropdownItem>
         <DropdownItem data-testid="remote-display-inactive" onSelect={e => { e.preventDefault(); set({ inactiveAtBottom: !d.inactiveAtBottom }); }}>{check(d.inactiveAtBottom)}{t("display.inactive")}</DropdownItem>
@@ -262,7 +257,7 @@ export function RemoteSidebarSection({ projects, renderProject, isActive }: { pr
   const gather = display.offline === "gather" && off.length > 1;
   return (
     <div data-testid="remote-sidebar-section" className="pt-1.5">
-      <SidebarSectionHeader testId="remote-section-header" icon={<MonitorSmartphone className="h-4 w-4 shrink-0" />} label={t("sidebar.remoteHeader")} badge={ts("rail.badgeExp")}
+      <SidebarSectionHeader testId="remote-section-header" icon={<MonitorSmartphone className="h-4 w-4 shrink-0" />} label={t("sidebar.remoteHeader")} badge={ts("rail.badgeExp")} badgeTitle={t("sidebar.badgeExperimental")}
         folded={folded} onToggle={() => toggle("section:remote")}>
         <RemoteDisplayMenu />
         <RemoteAddMenu>
@@ -354,6 +349,14 @@ function MachineMenuItems({ m, Item, Sep }: { m: MachineView; Item: MenuItem; Se
 
 /** On / off for a machine's connection, right on its row: the settings
  *  switch (Controls.tsx Toggle), sized for a sidebar row. */
+/** Turn a computer on and show what it brings back, unfolded. The switch
+ *  does this, and so does a click on a switched-off computer's row: it has
+ *  nothing to fold open, so connecting is what the click means. */
+function connectAndOpen(m: MachineView) {
+  if (useRemote.getState().folded[m.id]) useRemote.getState().toggleFold(m.id);
+  void remoteSetConnected(m.id, true).catch(err => useUI.getState().pushToast(String(err), "error"));
+}
+
 function MachineSwitch({ m }: { m: MachineView }) {
   const { t } = useTranslation("remote");
   const on = m.state !== "disconnected";
@@ -365,9 +368,8 @@ function MachineSwitch({ m }: { m: MachineView }) {
         data-testid={`machine-switch-${m.id}`}
         onClick={(e) => {
           e.stopPropagation();
-          // Switched on: show what it brings back, unfolded.
-          if (!on && useRemote.getState().folded[m.id]) useRemote.getState().toggleFold(m.id);
-          void remoteSetConnected(m.id, !on).catch(err => useUI.getState().pushToast(String(err), "error"));
+          if (!on) return connectAndOpen(m);
+          void remoteSetConnected(m.id, false).catch(err => useUI.getState().pushToast(String(err), "error"));
         }}
         className="relative mx-1 inline-block h-4 w-7 shrink-0 rounded-full p-0"
         // Off is a grey track, not bg-3: on a hovered row bg-3 vanished and
@@ -449,7 +451,7 @@ const ServerBlock = memo(function ServerBlock({ m, projects, renderProject, isAc
   const header = (
     <div data-testid={`server-block-${m.id}`} data-state={m.state}
       className={cn("group flex h-8 select-none items-center justify-between rounded-md pl-1 pr-0.5 text-[13px] font-medium text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]", !online && "opacity-70")}>
-      <button type="button" onClick={() => toggle(m.id)} aria-expanded={!folded && !off} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
+      <button type="button" onClick={() => (off ? connectAndOpen(m) : toggle(m.id))} aria-expanded={!folded && !off} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left">
         {folded || off ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
         <Server data-testid={`server-icon-${m.id}`} className={cn("h-4 w-4 shrink-0", statusIcon(m.state))} />
         <span className="truncate text-[var(--color-fg)]">{m.name}</span>
@@ -555,7 +557,8 @@ const MachineSection = memo(function MachineSection({ m: all }: { m: MachineView
       >
         <button
           type="button"
-          onClick={() => toggle(m.id)}
+          // Switched off, the row's click connects it (connectAndOpen).
+          onClick={() => (m.state === "disconnected" ? connectAndOpen(m) : toggle(m.id))}
           className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left"
           aria-expanded={showRows}
         >
@@ -589,14 +592,15 @@ const MachineSection = memo(function MachineSection({ m: all }: { m: MachineView
               </button>
             </Tip>
           )}
-          {online && drives && display.newTask !== "never" && (
+          {/* On hover always: REMOTE's option is only the row under tasks. */}
+          {online && drives && (
             <Tip content={t("sidebar.newTask", { name: m.name })}>
               <button
                 type="button"
                 data-testid={`remote-new-task-${m.id}`}
                 aria-label={t("sidebar.newTask", { name: m.name })}
                 onClick={() => void openNewTaskOnServer(m.id)}
-                className={cn("rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", plusClass(display.newTask))}
+                className={cn("rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", HOVER_PLUS)}
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
@@ -670,10 +674,12 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
   // As the host's own sidebar has it (any of its tasks says so).
   const hostFolded = project.segments.some(seg => (seg.kind === "task" ? seg.task : seg.tasks[0])?.project_collapsed);
   const [folded, toggleIt] = useHostFold(`project:${m.id}:${project.name}`, !!hostFolded);
-  const canNew = m.state === "online" && m.grant !== "reply" && newTask !== "never";
+  // The header's + shows on hover whenever New task is possible; REMOTE's
+  // display option only adds or removes the row under the tasks.
+  const canNew = m.state === "online" && m.grant !== "reply";
   const startNew = () => void openNewTaskOnServer(m.id, project.name);
   return (
-    <div data-testid={`remote-project-${project.name}`} data-folded={folded} className="group/project [[data-testid^=remote-project-]+&]:mt-0.5">
+    <div data-testid={`remote-project-${project.name}`} data-folded={folded} className="[[data-testid^=remote-project-]+&]:mt-0.5">
       {/* The local project header: its band, type, chevron and padding, and
           it folds the same way (the fold is this computer's, per machine). */}
       {/* Quieter than a local project's band: it already sits one step in
@@ -693,7 +699,7 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
             <button type="button" data-testid={`remote-project-new-task-${project.name}`}
               aria-label={t("newTask.title", { name: m.name })}
               onClick={startNew}
-              className={cn("mr-0.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", plusClass("hover"))}>
+              className={cn("mr-0.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]", HOVER_PLUS)}>
               <Plus className="h-3.5 w-3.5" />
             </button>
           </Tip>
@@ -706,9 +712,9 @@ function RemoteProjectRows({ m, project }: { m: MachineView; project: RemoteProj
             <RemoteGroupBlock key={`g:${seg.group.id}`} m={m} group={seg.group} tasks={seg.tasks} />
           ))}
         {/* The New task row under the tasks, as a local project's: REMOTE's
-            display menu says always, on hover (over the project), or never. */}
-        {canNew && (
-          <div className={cn("ml-3 mr-1 mb-px", newTask === "hover" && "opacity-0 focus-within:opacity-100 group-hover/project:opacity-100")}>
+            display menu shows or hides it. */}
+        {canNew && newTask !== "never" && (
+          <div className="ml-3 mr-1 mb-px">
             <button type="button" data-testid={`remote-project-new-task-row-${project.name}`}
               aria-label={t("newTask.title", { name: m.name })} title={t("newTask.title", { name: m.name })}
               onClick={startNew}

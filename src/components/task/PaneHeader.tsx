@@ -6,6 +6,7 @@
 // or onto the main tab strip (move tab back to the main pane). Whole-pane
 // drag-to-rearrange was removed: it hijacked pointer events from the pills.
 
+import { absUnder } from "@/lib/osPath";
 import { shellRoleTarget } from "@/lib/shellSecrets";
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
@@ -250,6 +251,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
       canSplitOut={paneTabs.length > 1}
       onMoveToSplit={() => startMenuMove(tab.id)}
       shell={shellRoleTarget(task.id, tab as TerminalTab)}
+      filePath={tab.type === "edit" && tab.path ? absUnder(task.path, tab.path) : undefined}
     >
       <TabPill
         task={task}

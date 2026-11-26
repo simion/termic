@@ -109,6 +109,21 @@ export default {
     copyAbsolute: "Copy path (absolute)",
   },
 
+  // ForgeLinkItems (CopyPathItems.tsx): the file on GitHub, GitLab or Azure
+  // DevOps (GH #467). {{forge}} is the forge's name.
+  forgeLinks: {
+    openOn: "Open on {{forge}}",
+    copyLink: "Copy {{forge}} link",
+    openOnBranch: "Open on {{branch}}",
+    copyBranchLink: "Copy {{branch}} link",
+    openOnBranchFallback: "Open on {{branch}} ({{why}})",
+    copyBranchFallback: "Copy {{branch}} link ({{why}})",
+    openPermalink: "Open permalink",
+    copyPermalink: "Copy permalink",
+    notPushed: "branch not pushed",
+    commitNotPushed: "commit not pushed",
+  },
+
   find: {
     placeholder: "Find in terminal",
     prevTip: "Previous match (Shift+Enter)",

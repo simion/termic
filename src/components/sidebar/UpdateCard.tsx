@@ -62,23 +62,25 @@ export function UpdateCard() {
   // has already read: the version and its age are the news. A patch is a
   // single quiet row; a minor or major release keeps the card.
   const kind = releaseKind(mode === "update" ? currentVersion : lastSeenVersion, version!);
-  const ago = releasedAgo(mode === "update" ? update!.date : entry?.date, Date.now(), i18n.language);
+  // The release's age only says something while an update is OFFERED (how
+  // long it has waited); on "Updated to" it is just noise ("today").
+  const ago = mode === "update" ? releasedAgo(update!.date, Date.now(), i18n.language) : "";
   const stamp = ago ? `v${version} · ${ago}` : `v${version}`;
   const dismiss = () => (mode === "update" ? dismissUpdate() : dismissWhatsNew());
 
   if (kind === "patch") {
     return (
-      <div data-testid="update-patch" className="mx-2 mb-2 flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2 pr-1 text-[12px] text-[var(--color-fg-dim)]">
+      <div data-testid="update-patch" className="mx-2 mb-2 flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-accent-soft)] bg-[color-mix(in_srgb,var(--color-accent)_10%,var(--color-bg-1))] pl-2 pr-1 text-[12px] text-[var(--color-fg)]">
         {mode === "update"
-          ? <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
-          : <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+          ? <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+          : <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />}
         <button
           type="button"
           title={summary}
           onClick={() => { openChangelog(); if (mode === "whatsnew") dismissWhatsNew(); }}
           className="min-w-0 flex-1 truncate text-left hover:text-[var(--color-fg)]"
         >
-          {mode === "update" ? t("updateCard.patch") : t("updateCard.updated")} <span className="tabular-nums text-[var(--color-fg-faint)]">{stamp}</span>
+          {mode === "update" ? t("updateCard.patch") : t("updateCard.updated")} <span className="tabular-nums text-[var(--color-fg-dim)]">{stamp}</span>
         </button>
         {mode === "update" && (
           <button

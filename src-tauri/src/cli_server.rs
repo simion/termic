@@ -1029,9 +1029,9 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             name.as_deref(), color.as_deref(), caller_task.as_deref(), join.as_deref(), *leave,
         ),
-        Command::Run { task, project, setup, stop, status, member, cwd } => handle_run(
+        Command::Run { task, project, setup, stop, status, member, script, cwd } => handle_run(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
-            *setup, *stop, *status, member.as_deref(),
+            *setup, *stop, *status, member.as_deref(), script.as_deref(),
         ),
         Command::PadList { task, project, scope, cwd } => handle_pad(
             &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
@@ -3966,9 +3966,13 @@ fn handle_run(
     stop: bool,
     status: bool,
     member: Option<&str>,
+    script: Option<&str>,
 ) -> Reply {
     if stop && status {
         return Reply::err(id, ErrorCode::BadRequest, "--stop and --status are separate calls");
+    }
+    if script.is_some() && (setup || member.is_some()) {
+        return Reply::err(id, ErrorCode::BadRequest, "--script names one run command: not with --setup or --member");
     }
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
@@ -3983,6 +3987,7 @@ fn handle_run(
         "which": if setup { "setup" } else { "run" },
         "action": if stop { "stop" } else if status { "status" } else { "start" },
         "member": member,
+        "script": script,
     });
     let value = match host.rpc("run_script", params, PROJECT_RPC_TIMEOUT) {
         Ok(v) => v,
@@ -8502,7 +8507,7 @@ mod tests {
         let host = StubHost::default();
         let run = |setup, stop, status, member: Option<&str>| Command::Run {
             task: Some("w3".into()), project: None, setup, stop, status,
-            member: member.map(str::to_string), cwd: None,
+            member: member.map(str::to_string), script: None, cwd: None,
         };
         host.script_rpc("run_script", Ok(serde_json::json!({
             "task": "", "which": "run",
@@ -8513,12 +8518,12 @@ mod tests {
         assert!(d.task.contains('/'), "qualified as project/name: {}", d.task);
         assert_eq!(d.targets[0].outcome.as_deref(), Some("started"));
         let sent = host.rpc_calls.lock().unwrap().last().unwrap().1.clone();
-        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "run", "action": "start", "member": null }));
+        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "run", "action": "start", "member": null, "script": null }));
 
         host.script_rpc("run_script", Ok(serde_json::json!({ "task": "", "which": "setup", "targets": [] })));
         handle(&req(run(true, true, false, Some("api")), Some("tok")), &host);
         let sent = host.rpc_calls.lock().unwrap().last().unwrap().1.clone();
-        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "setup", "action": "stop", "member": "api" }));
+        assert_eq!(sent, serde_json::json!({ "taskId": "w3", "which": "setup", "action": "stop", "member": "api", "script": null }));
 
         // The webview's refusal (no script configured) is the caller's error.
         host.script_rpc("run_script", Err("no run script configured".into()));
@@ -8527,6 +8532,21 @@ mod tests {
 
         let before = host.rpc_calls.lock().unwrap().len();
         assert!(!handle(&req(run(false, true, true, None), Some("tok")), &host).ok);
+        assert_eq!(host.rpc_calls.lock().unwrap().len(), before, "refused before the webview");
+
+        // A named run command goes to the webview by label; it is one
+        // command, so it does not combine with --setup or --member.
+        let named = |setup, member: Option<&str>| Command::Run {
+            task: Some("w3".into()), project: None, setup, stop: false, status: false,
+            member: member.map(str::to_string), script: Some("Storybook".into()), cwd: None,
+        };
+        host.script_rpc("run_script", Ok(serde_json::json!({ "task": "", "which": "script", "targets": [] })));
+        handle(&req(named(false, None), Some("tok")), &host);
+        let sent = host.rpc_calls.lock().unwrap().last().unwrap().1.clone();
+        assert_eq!(sent["script"], "Storybook");
+        let before = host.rpc_calls.lock().unwrap().len();
+        assert!(!handle(&req(named(true, None), Some("tok")), &host).ok, "--script with --setup");
+        assert!(!handle(&req(named(false, Some("api")), Some("tok")), &host).ok, "--script with --member");
         assert_eq!(host.rpc_calls.lock().unwrap().len(), before, "refused before the webview");
     }
 

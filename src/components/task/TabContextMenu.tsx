@@ -11,15 +11,19 @@ import {
   ContextMenuItem, ContextMenuSeparator,
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent,
 } from "@/components/ui/ContextMenu";
+import { ForgeLinkItems } from "./CopyPathItems";
 import { restartShellWithRole, useShellRoles } from "@/lib/shellSecrets";
 import { roleColour } from "@/lib/secretsUi";
 import { closableSiblings, type StripTab } from "@/lib/tabActions";
 
 export function TabContextMenu({
   tabs, tabId, pinned, onPin, onUnpin, onClose, onCloseMany,
-  onSplitRight, onSplitDown, canSplitOut = true, onMoveToSplit, shell,
+  onSplitRight, onSplitDown, canSplitOut = true, onMoveToSplit, shell, filePath,
   children,
 }: {
+  /** An editor tab's file, absolute: offers it on its forge (GH #467), a
+   *  permalink to the selected lines included. */
+  filePath?: string;
   /** A shell tab (main, pane or bottom): offers "Restart with secrets".
    *  `role` is the role it runs now, if any. */
   shell?: { taskId: string; role?: string };
@@ -115,6 +119,7 @@ export function TabContextMenu({
             <Move /> {t("tabMenu.moveToSplit")}
           </ContextMenuItem>
         )}
+        {filePath && <ForgeLinkItems abs={filePath} selectionTab={tabId} />}
       </ContextMenuContent>
     </ContextMenuRoot>
   );

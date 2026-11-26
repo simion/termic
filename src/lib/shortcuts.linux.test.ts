@@ -43,6 +43,25 @@ describe("Super on Linux", () => {
     expect(superIsHeld()).toBe(false);
   });
 
+  // A keyup that went missing while the window kept focus left Super "held"
+  // until the next focus change: every letter a shortcut, every terminal
+  // deaf. A press now lapses on its own.
+  it("forgets a press whose keyup never came, without a focus change", () => {
+    const t0 = Date.now();
+    press("keydown", { key: "Super", code: "OSLeft" });
+    expect(superIsHeld(t0 + 1000)).toBe(true);
+    expect(superIsHeld(t0 + 2000)).toBe(false);
+    expect(superIsHeld()).toBe(false);
+  });
+
+  it("stays held through a run of chords, each renewing it", () => {
+    press("keydown", { key: "Super", code: "OSLeft" });
+    press("keydown", { key: "1", code: "Digit1" });
+    expect(superIsHeld()).toBe(true);
+    press("keyup", { key: "Super", code: "OSLeft" });
+    expect(superIsHeld()).toBe(false);
+  });
+
   it("does not turn a bare-key binding into a Super one", () => {
     setSuperHeldForTests(true);
     try {

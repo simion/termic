@@ -895,43 +895,46 @@ describe("LAN pairing", () => {
       await browser.waitUntil(async () => (await badge()) === null, { timeout: 3_000, timeoutMsg: "the ring outlived its delegated work" });
     });
 
-    it("keeps other computers in a drawer above the footer, drawn by REMOTE's own display menu", async () => {
+    it("lists other computers inline at the end of the project list, drawn by REMOTE's own display menu", async () => {
       const q = (sel: string) => browser.execute((x) => !!document.querySelector(x), sel);
-      // The drawer is pinned outside the project list's scroll, so local
-      // work keeps the top of the sidebar.
+      // Inline, in the same scroll as the projects and after them: local
+      // work keeps the top, and remote rows scroll with it.
       expect(await browser.execute(() => {
         const sec = document.querySelector('[data-testid="remote-sidebar-section"]');
-        return !!sec?.closest('[data-testid="remote-drawer"]') && !sec.closest(".overflow-y-auto:not([data-testid=remote-drawer])");
+        const list = sec?.closest(".overflow-y-auto");
+        const projects = list?.querySelectorAll("[data-project-wrap]") ?? [];
+        const last = projects[projects.length - 1];
+        return !!list && !!last && !!(last.compareDocumentPosition(sec!) & Node.DOCUMENT_POSITION_FOLLOWING);
       })).toBe(true);
       // Let a fold animation the previous case started finish first.
       await foldsSettled();
-      await snap("remote-drawer.png");
-      // A minor release's update card floats over the end of the project
-      // list, anchored to the drawer's top: the drawer does not move, and
-      // the card covers neither it nor the footer.
-      const drawerTop = () => browser.execute(() => document.querySelector('[data-testid="remote-drawer"]')!.getBoundingClientRect().top);
-      const before = await drawerTop();
+      await snap("remote-inline.png");
+      // A minor release's update card floats over the end of the list, and
+      // the list makes room under its last row for it, so nothing is stuck
+      // behind the card.
       await browser.execute(() => window.__termic!.useUpdate.setState({ update: { version: "99.0.0", date: new Date().toISOString(), body: "" }, currentVersion: "2.0.0", dismissedVersion: null }));
       await waitVisible('[data-testid="update-card"]');
-      expect(await drawerTop()).toBe(before);
-      const cardBottom = await browser.execute(() => document.querySelector('[data-testid="update-card"]')!.getBoundingClientRect().bottom);
-      expect(cardBottom).toBeLessThanOrEqual(before);
-      await snap("remote-drawer-update.png");
+      await browser.waitUntil(() => browser.execute(() => {
+        const card = document.querySelector('[data-testid="update-card"]')!.getBoundingClientRect().height;
+        const list = document.querySelector('[data-testid="remote-sidebar-section"]')!.closest(".overflow-y-auto") as HTMLElement;
+        return parseFloat(getComputedStyle(list).paddingBottom) >= card;
+      }), { timeout: 3_000, timeoutMsg: "the list left no room under its end for the update card" });
+      await snap("remote-inline-update.png");
       await browser.execute(() => window.__termic!.useUpdate.setState({ update: null }));
       await waitGone('[data-testid="update-card"]');
-      // The connect switch is on the row by default; New task shows on hover.
+      // The connect switch is on the row by default.
       // Reset first: the options live in localStorage, which outlives a
       // reseed, so an earlier run's choices would otherwise carry in.
-      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
+      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "always", hideSwitch: false, counts: true, offline: "gather", inactiveAtBottom: true }));
       expect(await q(`[data-testid="machine-switch-${remote.id}"]`)).toBe(true);
-      expect(await q(`[data-testid="remote-new-task-${remote.id}"]`)).toBe(true);
-      // Each project has its New task row under its tasks, as locally; Never
-      // takes it away with the computer's +.
+      // Each project has its New task row under its tasks, as locally. The
+      // option takes the row away; the headers' + (shown on hover) stay.
       expect(await q('[data-testid="remote-project-new-task-row-webapp"]')).toBe(true);
       await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "never" }));
-      await browser.waitUntil(async () => !(await q(`[data-testid="remote-new-task-${remote.id}"]`)), { timeout: 3_000, timeoutMsg: "New task: Never left the +" });
-      expect(await q('[data-testid="remote-project-new-task-row-webapp"]')).toBe(false);
-      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "hover" }));
+      await browser.waitUntil(async () => !(await q('[data-testid="remote-project-new-task-row-webapp"]')), { timeout: 3_000, timeoutMsg: "turning the New task row off left it" });
+      expect(await q(`[data-testid="remote-new-task-${remote.id}"]`)).toBe(true);
+      expect(await q('[data-testid="remote-project-new-task-webapp"]')).toBe(true);
+      await browser.execute(() => window.__termic!.usePrefs.getState().setRemoteDisplay({ newTask: "always" }));
       // The display menu itself.
       await browser.execute(() => {
         const el = document.querySelector('[data-testid="remote-display-menu"]') as HTMLElement;
@@ -946,7 +949,7 @@ describe("LAN pairing", () => {
       await clickPresent(`[data-testid="remote-machine-${remote.id}"] [data-machine-head] button`);
       await browser.waitUntil(async () => q(`[data-testid="remote-machine-${remote.id}"] [data-testid="machine-counts"]`), { timeout: 3_000, timeoutMsg: "a folded computer showed no counts" });
       await foldsSettled();
-      await snap("remote-drawer-folded.png");
+      await snap("remote-inline-folded.png");
       await clickPresent(`[data-testid="remote-machine-${remote.id}"] [data-machine-head] button`);
       // A project whose agents are all stopped folds into the computer's own
       // Inactive projects.
@@ -956,7 +959,7 @@ describe("LAN pairing", () => {
       await clickPresent(`[data-testid="remote-inactive-${remote.id}"] button`);
       await waitVisible('[data-testid="remote-project-webapp"]');
       await foldsSettled();
-      await snap("remote-drawer-inactive.png");
+      await snap("remote-inline-inactive.png");
       pushTasks!(baseTasks());
       await browser.waitUntil(async () => !(await q(`[data-testid="remote-inactive-${remote.id}"]`)), { timeout: 3_000, timeoutMsg: "the inactive fold outlived its projects" });
     });

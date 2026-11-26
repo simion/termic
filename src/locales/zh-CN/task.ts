@@ -97,6 +97,18 @@ export default {
   },
 
   // CopyPathItems：文件树、Git 面板、差异头部与面包屑共用的路径右键菜单项。
+  forgeLinks: {
+    openOn: "在 {{forge}} 上打开",
+    copyLink: "复制 {{forge}} 链接",
+    openOnBranch: "在 {{branch}} 上打开",
+    copyBranchLink: "复制 {{branch}} 链接",
+    openOnBranchFallback: "在 {{branch}} 上打开（{{why}}）",
+    copyBranchFallback: "复制 {{branch}} 链接（{{why}}）",
+    openPermalink: "打开永久链接",
+    copyPermalink: "复制永久链接",
+    notPushed: "分支未推送",
+    commitNotPushed: "提交未推送",
+  },
   copyPath: {
     openInDefaultApp: "用默认应用打开",
     openInManager: "在{{manager}}中打开",

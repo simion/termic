@@ -250,25 +250,44 @@ pub fn group_text(d: &GroupData) -> String {
 
 /// `run`: one line per configured script.
 pub fn run_text(d: &termic_proto::RunData) -> String {
-    if d.targets.is_empty() {
-        return format!("{} has no {} script configured", d.task, d.which);
+    let mut lines: Vec<String> = if d.targets.is_empty() {
+        vec![if d.which == "script" {
+            format!("{} has no such run command", d.task)
+        } else {
+            format!("{} has no {} script configured", d.task, d.which)
+        }]
+    } else {
+        d.targets
+            .iter()
+            .map(|t| {
+                let who = match (&t.label, t.member.is_empty()) {
+                    (Some(label), _) => format!("{} ({label})", d.task),
+                    (None, true) => d.task.clone(),
+                    (None, false) => format!("{} ({})", d.task, t.member),
+                };
+                let which = if d.which == "script" { "run command" } else { d.which.as_str() };
+                let state = match t.outcome.as_deref() {
+                    Some("already_running") => "already running",
+                    Some("not_running") => "was not running",
+                    Some(o) => o,
+                    None if t.running => "running",
+                    None => "not running",
+                };
+                let tab = t.tab_id.as_deref().map(|id| format!(", tab {id}")).unwrap_or_default();
+                format!("{who}: {which} {state}{tab}: {}", t.script)
+            })
+            .collect()
+    };
+    // The project's named run commands (--status), what --script takes.
+    if !d.scripts.is_empty() {
+        lines.push("run commands (--script <label>):".into());
+        for s in &d.scripts {
+            let state = if s.running { "running" } else { "not running" };
+            let tab = s.tab_id.as_deref().map(|id| format!(", tab {id}")).unwrap_or_default();
+            lines.push(format!("  {}: {state}{tab}: {}", s.label, s.command));
+        }
     }
-    d.targets
-        .iter()
-        .map(|t| {
-            let who = if t.member.is_empty() { d.task.clone() } else { format!("{} ({})", d.task, t.member) };
-            let state = match t.outcome.as_deref() {
-                Some("already_running") => "already running",
-                Some("not_running") => "was not running",
-                Some(o) => o,
-                None if t.running => "running",
-                None => "not running",
-            };
-            let tab = t.tab_id.as_deref().map(|id| format!(", tab {id}")).unwrap_or_default();
-            format!("{who}: {} {state}{tab}: {}", d.which, t.script)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    lines.join("\n")
 }
 
 /// One line saying how a watched run ended.

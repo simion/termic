@@ -274,23 +274,22 @@ src/lib/remote.ts: folders at their first project, a group gathered at
 its first member), keep the host's order rather than re-sorting, and map
 the accent key to their own palette.
 
-**The REMOTE drawer.** Other computers live in a drawer pinned above the
-sidebar's footer (`remote-drawer` in Sidebar.tsx, filled by a portal from
-the project list), so local work keeps the top; it scrolls on its own past
-about half the sidebar. The update card floats over the end of the project
-list, anchored just above the drawer, so it moves neither and covers
-neither. Each computer's projects nest one step in
-under it, the idle ones folded into its own Inactive projects (a server
-project by the local activity rule, a paired computer's when every task's
-agent is stopped). Unreachable computers gather in one "N offline" line
-at the bottom, never hidden; a single one is itself. A computer you
-switched off is not offline: it keeps its own row and switch. REMOTE has
-its own display menu (`remoteDisplay` in prefs: each project's New task
-row under its tasks always / on hover / never, for server and paired
-projects alike; the connect switch on the row, shown unless hidden
-(`hideSwitch`); counts on a folded computer, Inactive projects, offline
-gathered or each); Connect and Disconnect are also in the computer's ⋯
-menu. Every fold, local and remote, opens and closes
+**REMOTE, inline.** Other computers are listed at the end of the project
+list, in the same scroll (`remote-inline` in Sidebar.tsx), so local work
+keeps the top. The update card floats over the end of the list, which
+pads its bottom by the card's height so nothing is stuck behind it. Each
+computer's projects nest one step in under it, the idle ones folded into
+its own Inactive projects (a server project by the local activity rule, a
+paired computer's when every task's agent is stopped). Unreachable
+computers gather in one "N offline" line at the bottom, never hidden; a
+single one is itself. A computer you switched off is not offline: it
+keeps its own row and switch, and a click on its row connects it. REMOTE
+has its own display menu (`remoteDisplay` in prefs: each project's New
+task row under its tasks on or off, for server and paired projects alike,
+while the headers' + always show on hover; the connect switch on the row,
+shown unless hidden (`hideSwitch`); counts on a folded computer, Inactive
+projects, offline gathered or each); Connect and Disconnect are also in
+the computer's ⋯ menu. Every fold, local and remote, opens and closes
 through the same animated `Expand` (ui/Expand.tsx).
 
 **Folded like the host folds them.** A row says what the host's sidebar has

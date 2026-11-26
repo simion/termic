@@ -26,6 +26,8 @@ export function NotificationsSection() {
   const { t } = useTranslation("settings");
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
+  const attentionPanel = usePrefs(s => s.attentionPanel);
+  const setAttentionPanel = usePrefs(s => s.setAttentionPanel);
   const completionSound = usePrefs(s => s.completionSound);
   const setCompletionSound = usePrefs(s => s.setCompletionSound);
   const completionSoundId = usePrefs(s => s.completionSoundId);
@@ -44,6 +46,16 @@ export function NotificationsSection() {
       <SectionTitle title={t("rail.notifications")} />
 
       <NoticesBlock />
+
+      <Block>
+        {/* GH #468: answer a waiting agent without switching to Termic. */}
+        <Toggle
+          label={t("notifications.attentionPanel.label")}
+          hint={t("notifications.attentionPanel.hint")}
+          value={attentionPanel}
+          onChange={setAttentionPanel}
+        />
+      </Block>
 
       <Block>
         <Toggle
