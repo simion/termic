@@ -657,6 +657,23 @@ describe("openPreviewTab", () => {
     expect(tab.remoteImagesUnblocked).toBeUndefined();
   });
 
+  it("clears readOnly when the preview tab is recycled onto another file (GH #250)", () => {
+    // the editor re-asks `task_file_writable` for the new file, but until it
+    // answers the old file's badge and locked preview must not carry over.
+    const wsId = "ws1";
+    const previewTab: Tab = {
+      id: "prev-1", type: "edit", title: "settings.json", path: ".claude/settings.json",
+      preview: true, readOnly: true,
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "edit", path: "README.md", title: "README.md" });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.path).toBe("README.md");
+    expect(tab.readOnly).toBeUndefined();
+  });
+
   // ── directory tabs (issue #151) ─────────────────────────────────────
   // A folder link recycles the SAME preview slot a file link uses, so it
   // must never leave a second tab behind or inherit the previous

@@ -1,8 +1,9 @@
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { archiveTask, cliRpc, dismissOverlays, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible, rmTree } from "../helpers";
+import { dataDir } from "../../wdio.conf.js";
+import { archiveTask, cliRpc, createWorktreeTask, dismissOverlays, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitForText, waitVisible, rmTree } from "../helpers";
 
 declare global {
   interface Window {
@@ -4579,5 +4580,198 @@ describe("audio preview", () => {
     expect(duration).toBeGreaterThan(0.4);
     expect(duration).toBeLessThan(0.6);
     await snap("audio-preview.png");
+  });
+});
+
+// A file reached through a link out of the task opens, and opens read-only:
+// `task_file_write` never writes outside the task. Cases: a link at the task
+// root into the main checkout (the shape `link_config_dir` makes for
+// `.claude/`) opens with the breadcrumb badge and a locked buffer, ⌘S leaves
+// the disk alone and says why, and the backend refuses the write too; a
+// preview slot that moves on to an ordinary file drops the badge; a nested
+// link to a dir anywhere expands in the file tree and its file opens
+// read-only the same way, while a sibling link into termic's own data dir
+// refuses to list.
+describe("editor read-only through a link", () => {
+  let taskId!: string;
+  // untracked, inside the main checkout, like a gitignored `.claude/`
+  const cfgDir = path.join(fixture, ".e2e-linked-cfg");
+  let notesDir = "";
+  const link = process.platform === "win32" ? "junction" : "dir";
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    rmSync(cfgDir, { recursive: true, force: true });
+    if (notesDir) rmSync(notesDir, { recursive: true, force: true });
+  });
+
+  const open = (rel: string, permanent: boolean) =>
+    browser.execute(
+      (id, p, perm) =>
+        window.__termic!.useApp.getState().openPreviewTab(id, {
+          type: "edit", path: p, title: p.split("/").pop()!, permanent: perm,
+        }),
+      taskId, rel, permanent,
+    );
+
+  /** The on-screen editor showing `marker`: every opened editor stays
+   *  mounted, so match by content and a non-zero box. */
+  const editorWith = (marker: string) =>
+    browser.execute((m) => {
+      const el = [...document.querySelectorAll<HTMLElement>(".cm-content")].find(
+        (c) => (c.textContent ?? "").includes(m) && c.getBoundingClientRect().width > 0,
+      );
+      const view = (el?.closest(".cm-editor") as unknown as { __cmView?: any } | null)?.__cmView;
+      return el ? { readOnly: !!view?.state.readOnly, text: el.textContent ?? "" } : null;
+    }, marker);
+
+  const waitEditor = async (marker: string) => {
+    await browser.waitUntil(async () => !!(await editorWith(marker)), {
+      timeout: 10_000, timeoutMsg: `the editor never showed ${marker}`,
+    });
+    return (await editorWith(marker))!;
+  };
+
+  const badgeShown = () =>
+    browser.execute((id) => {
+      const b = document.querySelector<HTMLElement>(`[data-task-id="${id}"] [data-testid="breadcrumb-read-only"]`);
+      return !!b && b.getBoundingClientRect().width > 0;
+    }, taskId);
+
+  /** Focus the visible editor, then press ⌘S on whatever took focus: the
+   *  element a real chord lands on. Dispatching at `.cm-content` directly
+   *  would reach the keymap even when the buffer cannot take focus, and
+   *  nothing is typed, because a dispatch would dirty the tab and un-preview
+   *  it. Toasts are cleared first so the "says why" wait cannot match an
+   *  earlier case's. Returns whether the buffer really holds focus. */
+  const focusAndSave = (marker: string) =>
+    browser.execute((m) => {
+      window.__termic!.useUI.setState({ toasts: [] });
+      const content = [...document.querySelectorAll<HTMLElement>(".cm-content")].find(
+        (c) => (c.textContent ?? "").includes(m) && c.getBoundingClientRect().width > 0,
+      )!;
+      content.focus();
+      const focused = document.activeElement === content;
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "s", [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true, bubbles: true,
+      }));
+      return focused;
+    }, marker);
+
+  /** ⌘S on a read-only buffer: it says why and the file is not rewritten.
+   *  The buffer is never edited, so a write would put back the same bytes:
+   *  compare the mtime, not the contents. */
+  const saveIsRefused = async (marker: string, file: string) => {
+    const before = statSync(file).mtimeMs;
+    expect(await focusAndSave(marker)).toBe(true);
+    await waitForText("Outside the task, opened read-only");
+    expect(statSync(file).mtimeMs).toBe(before);
+  };
+
+  /** The tab showing `rel`, from the store. */
+  const tabFor = (rel: string) =>
+    browser.execute(
+      (id, p) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.path === p) as
+        { id: string; preview?: boolean; readOnly?: boolean; dirty?: boolean } | undefined,
+      taskId, rel,
+    );
+  let slotId = "";
+
+  it("opens a file behind a link into the main checkout read-only", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await createWorktreeTask("e2e-ro-link", "e2e-ro-link");
+    const wt = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)!.path as string,
+      taskId,
+    );
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(path.join(cfgDir, "notes.txt"), "ro-link-marker\n");
+    symlinkSync(cfgDir, path.join(wt, "linked-cfg"), link);
+
+    await open("linked-cfg/notes.txt", false);
+    const ed = await waitEditor("ro-link-marker");
+    expect(ed.readOnly).toBe(true);
+    await browser.waitUntil(badgeShown, { timeout: 5_000, timeoutMsg: "no read-only badge on the breadcrumb" });
+    await snap("editor-read-only-link.png");
+
+    // a locked buffer still takes focus, or ⌘S (and ⌘F) never reach it
+    await saveIsRefused("ro-link-marker", path.join(cfgDir, "notes.txt"));
+    const tab = (await tabFor("linked-cfg/notes.txt"))!;
+    expect(tab.preview).toBe(true);
+    expect(tab.dirty).toBeFalsy();
+    slotId = tab.id;
+
+    // the write path refuses on its own, not only because the UI never asks
+    const err = await browser.execute(
+      (id) => window.__termic!.ipc.taskFileWrite(id, "linked-cfg/notes.txt", "x").then(() => "", (e: unknown) => String(e)),
+      taskId,
+    );
+    expect(err).toContain("path escapes task");
+  });
+
+  it("drops the badge when the preview slot moves on to an ordinary file", async () => {
+    await open("README.md", false);
+    const ed = await waitEditor("e2e fixture");
+    expect(ed.readOnly).toBe(false);
+    // the SAME slot, recycled, so this is the reset and not a fresh tab
+    const tab = (await tabFor("README.md"))!;
+    expect(tab.id).toBe(slotId);
+    expect(tab.readOnly).toBeUndefined();
+    await browser.waitUntil(async () => !(await badgeShown()), {
+      timeout: 5_000, timeoutMsg: "the read-only badge outlived the file it was for",
+    });
+  });
+
+  const treeRow = (rel: string) => `[data-task-id="${taskId}"] [data-path="${rel}"]`;
+  const rowShown = (rel: string) =>
+    browser.execute((sel) => {
+      const r = document.querySelector<HTMLElement>(sel);
+      return !!r && r.getBoundingClientRect().width > 0;
+    }, treeRow(rel));
+
+  it("expands a nested link out of the task, but never one into termic's data", async () => {
+    const wt = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)!.path as string,
+      taskId,
+    );
+    notesDir = mkdtempSync(path.join(tmpdir(), "termic-e2e-notes-"));
+    writeFileSync(path.join(notesDir, "a.txt"), "notes-marker\n");
+    mkdirSync(path.join(wt, "deep", "er"), { recursive: true });
+    symlinkSync(notesDir, path.join(wt, "deep", "er", "notes"), link);
+    symlinkSync(dataDir, path.join(wt, "deep", "er", "data"), link);
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
+
+    // click down through the real tree: the last folder is the link.
+    for (const dir of ["deep", "deep/er", "deep/er/notes"]) {
+      await browser.waitUntil(() => rowShown(dir), { timeout: 10_000, timeoutMsg: `tree row ${dir} never appeared` });
+      await browser.execute((sel) => document.querySelector<HTMLElement>(sel)!.click(), treeRow(dir));
+    }
+    await browser.waitUntil(() => rowShown("deep/er/notes/a.txt"), {
+      timeout: 10_000, timeoutMsg: "the linked folder never listed its contents",
+    });
+
+    // its sibling into the data dir (CLI token, logins) is refused, and says
+    // why: not a missing junction or some other read error
+    await browser.execute((sel) => document.querySelector<HTMLElement>(sel)!.click(), treeRow("deep/er/data"));
+    const reason = () => browser.execute(
+      (id) => document.querySelector(`[data-task-id="${id}"] [data-testid="dir-read-failed"][data-dir="deep/er/data"]`)
+        ?.getAttribute("data-reason") ?? null,
+      taskId,
+    );
+    await browser.waitUntil(async () => (await reason()) !== null, {
+      timeout: 10_000, timeoutMsg: "the link into termic's data dir listed anyway",
+    });
+    expect(await reason()).toBe("This folder links into Termic's own data");
+    expect(await rowShown("deep/er/data/cli-token")).toBe(false);
+    await snap("file-tree-linked-folder.png");
+  });
+
+  it("opens a file behind the nested link read-only", async () => {
+    await open("deep/er/notes/a.txt", true);
+    const ed = await waitEditor("notes-marker");
+    expect(ed.readOnly).toBe(true);
+    await browser.waitUntil(badgeShown, { timeout: 5_000, timeoutMsg: "no read-only badge on the breadcrumb" });
+    await saveIsRefused("notes-marker", path.join(notesDir, "a.txt"));
   });
 });

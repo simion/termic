@@ -249,7 +249,24 @@ control):
 
 Every other renderer → filesystem read is bounded by a task root
 (`safe_task_path` / `safe_task_read_path`, which reject absolute paths and
-`..` outright). `file_read_external` is the single exception, added for
+`..` outright). `safe_task_read_path` also follows a symlink out of the
+task, at any depth, wherever it lands (GH #250: the `.claude` link termic
+makes into the main checkout, notes a user links in from elsewhere). That
+is a decision about what the user is SHOWN, not a boundary: the webview
+can already read any path through `file_read_external` below, and no agent
+ever sees what the tree reads. So it is not kept in step with the sandbox
+grant. One stop is: a link into termic's data dir (the CLI token, logins,
+`projects.json`), the keychain dirs or the broker's per-spawn dirs is
+refused, so a link a repo ships cannot put them on screen. The
+customizations termic links into `.agents` and `.mcp.json` live in the
+data dir and are exempt, but only the paths the profile re-allows (skills,
+agents, `mcp.json`, never `mcp.env.local`).
+
+All of it applies to the binary previews as well, and all of it is
+**read-only** unless the link lands inside a sandbox path the user
+granted (see "Editor writes through links" below).
+
+`file_read_external` is the single unbounded exception, added for
 GH #240: a cmd+clicked absolute path in terminal output that resolves
 OUTSIDE the task has no task-relative form, so it cannot go through the
 contained read, and the tab it opens is read-only.
@@ -258,9 +275,10 @@ What this adds is an arbitrary file **read** reachable from the webview. It
 is accepted, bounded three ways:
 
 - **Read only.** There is deliberately no absolute-path write counterpart.
-  `task_file_write` keeps its containment check, and the tab the read feeds
-  is `EditorState.readOnly` with its ⌘S path stubbed out. Nothing can be
-  mutated outside a task through this.
+  `task_file_write` stays task-bounded (`safe_task_write_path`: the task,
+  or a link into a user-granted sandbox path, see above), and the
+  tab the read feeds is `EditorState.readOnly` with its ⌘S path stubbed
+  out. Nothing can be mutated outside a task through this.
 - **Text only, capped.** The same 2 MB ceiling as the task read, plus a
   UTF-8 requirement, so it is a text channel rather than a way to pull bytes
   out of arbitrary binaries.
@@ -278,6 +296,40 @@ disclosure. That is strictly worse than before this command existed, and is
 the reason `connect-src` must not be widened (see the CSP rule in
 CLAUDE.md). The bounds above are pinned by `external_read_*` tests in
 `src-tauri/src/lib.rs`.
+
+## Editor writes through links
+
+`task_file_write` goes through `safe_task_write_path`: the task itself, or
+a link out of it whose target is inside what the agent's cage was given by
+the user. The agent can already write there, so the editor may too. A
+link out of the task qualifies only when:
+
+- the target is inside a grant from a layer the user owns: the personal
+  half of `live_sandbox_lists` (global defaults, the task's list, and the
+  project's list for a single-repo project), plus the task agent's own
+  `sandbox_allowed_paths`. The agent list counts **only outside Docker**:
+  `docker.rs` never mounts it, so a Docker task's container cannot reach
+  those paths and the editor must not either. `.termic.yaml` never counts,
+  because a repo authors it and could grant `$HOME` next to a link it
+  ships. The built-in runtime paths never count either (`~/.local/bin` is
+  code execution). `regex:` entries bound no directory and are skipped, as
+  are relative entries and any holding `..`, which Seatbelt would not
+  match the way a canonicalize does.
+- the target is NOT under the data dir, the keychain dirs, the broker's
+  per-spawn dirs (no customization exemption here), the main checkout or
+  any member's repo. These win over any grant, so allowlisting `~` cannot
+  make the `.claude` link write into the repo behind the worktree. The
+  `.claude` link is read-only in the editor by design, whatever is granted.
+
+Everything else opens locked (`task_file_writable` tells the editor which).
+Rename, delete and every git path keep the strict check regardless. A
+**server task** is the exception: it writes on the box through
+`BOX_WRITE_SH`, which follows links (its `.claude` link included).
+
+This is a policy, not a race-proof boundary: the check runs on the
+canonical path and `write_atomic` walks the path again, so a link swapped
+in between is followed. `write_atomic` does refuse a link planted at its
+temp name: the name is random and created `O_EXCL`.
 
 ## Keychain: open by default, blockable per task
 

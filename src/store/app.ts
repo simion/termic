@@ -2922,8 +2922,9 @@ export const useApp = create<AppState>((set, get) => ({
         // The recycled slot is now a DIFFERENT file: a syntax the user set
         // on the previous occupant (or one sniffed from its content) must
         // not carry over, or a preview tab silently mislabels every file
-        // that lands in it afterwards.
-        syntax: undefined, syntaxAuto: undefined,
+        // that lands in it afterwards. Same for `readOnly`, which the
+        // editor re-asks for the new file on load.
+        syntax: undefined, syntaxAuto: undefined, readOnly: undefined,
           ...revealPatch,
         } as unknown as Tab : t);
         const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, previewTab.id);
@@ -2964,8 +2965,9 @@ export const useApp = create<AppState>((set, get) => ({
         // The recycled slot is now a DIFFERENT file: a syntax the user set
         // on the previous occupant (or one sniffed from its content) must
         // not carry over, or a preview tab silently mislabels every file
-        // that lands in it afterwards.
-        syntax: undefined, syntaxAuto: undefined,
+        // that lands in it afterwards. Same for `readOnly`, which the
+        // editor re-asks for the new file on load.
+        syntax: undefined, syntaxAuto: undefined, readOnly: undefined,
         ...revealPatch,
       } as unknown as Tab : t);
       return { tabs: { ...s.tabs, [taskId]: next }, ...setActive(previewTab.id) };

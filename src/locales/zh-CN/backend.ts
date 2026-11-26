@@ -220,7 +220,7 @@ export default {
   },
 
   dirError: {
-    escapesTask: "此文件夹链接到了任务之外",
+    escapesTask: "此文件夹链接到 Termic 自身的数据",
     pathNotAllowed: "路径不被允许",
     gone: "此文件夹已不存在",
     permissionDenied: "没有权限",

@@ -1951,7 +1951,6 @@ pub(crate) fn write_atomic_private(dest: &Path, bytes: &[u8]) -> std::io::Result
 }
 
 fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // Resolve symlinks: rename would replace the link itself with a regular
     // file; we must write through to its target. canonicalize fails on a
     // DANGLING link (dotfiles target not created yet), so follow links by
@@ -1970,24 +1969,24 @@ fn write_atomic_mode(dest: &Path, bytes: &[u8], private: bool) -> std::io::Resul
     let dest = resolved.as_path();
     let dir = dest.parent().unwrap_or_else(|| Path::new("."));
     let stem = dest.file_name().and_then(|n| n.to_str()).unwrap_or("out");
-    let tmp = dir.join(format!(
-        ".{stem}.tmp.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed),
-    ));
+    // unguessable, and created with `create_new` (O_EXCL, which also refuses
+    // a symlink at the name). The dir is often one an agent can write: a
+    // `{pid}.{seq}` name opened with `File::create` let it plant a link there
+    // ahead of a save and have termic, outside the cage, write the buffer
+    // through it, and the rename then swapped the link in over the file.
+    let tmp = dir.join(format!(".{stem}.tmp.{}", Uuid::new_v4().simple()));
     let write = || -> std::io::Result<()> {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
         // A secret's temp file is BORN owner-only. Creating it with the umask
         // default and tightening after left a moment where another user could
         // open it, and an fd opened then keeps reading after the chmod.
         #[cfg(unix)]
-        let mut f = if private {
+        if private {
             use std::os::unix::fs::OpenOptionsExt;
-            fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?
-        } else {
-            fs::File::create(&tmp)?
-        };
-        #[cfg(not(unix))]
-        let mut f = fs::File::create(&tmp)?;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         // and set explicitly too: `mode` is filtered through the umask.
         #[cfg(unix)]
         if private {
@@ -4431,8 +4430,14 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
     // The TASK'S profile, not the root's: settings are profile-scoped in full
     // (docs/profiles.md), so a second profile's sandbox defaults have to be
     // the ones a spawn under it actually gets.
-    let globals = load_settings_in(&task.profile);
-    let projects = load_projects_all();
+    live_sandbox_lists_in(task, &load_settings_in(&task.profile), &load_projects_all(), true)
+}
+
+/// `live_sandbox_lists` with its inputs passed in. `committed: false` drops
+/// layer 4 (every `.termic.yaml`), leaving only what the user authored: the
+/// editor's write check (`task_write_bounds`) takes that half, since a repo
+/// can commit a grant but must never widen where the editor writes.
+fn live_sandbox_lists_in(task: &Task, globals: &Settings, projects: &[Project], committed: bool) -> (Vec<String>, Vec<String>) {
     let mut rw = globals.sandbox_default_rw_paths.clone();
     let mut hosts = globals.sandbox_default_allowed_hosts.clone();
     // The task's own pinned arrays — the Sandbox dialog's
@@ -4449,9 +4454,11 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
         // Single-repo: the project's committed `.termic.yaml` sandbox block
         // (re-read live) + its personal projects.json overrides.
         if let Some(p) = projects.iter().find(|p| p.id == task.project_id) {
-            let cfg = repo_config_for(p);
-            rw.extend(cfg.sandbox.allowed_paths);
-            hosts.extend(cfg.sandbox.allowed_hosts);
+            if committed {
+                let cfg = repo_config_for(p);
+                rw.extend(cfg.sandbox.allowed_paths);
+                hosts.extend(cfg.sandbox.allowed_hosts);
+            }
             rw.extend(p.sandbox_rw_paths.iter().cloned());
             hosts.extend(p.sandbox_allowed_hosts.iter().cloned());
         }
@@ -4460,7 +4467,7 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
         // re-read live from its source repo. (Member sandbox lists from the
         // multi-repo project were frozen into the task's pinned arrays
         // at create, so they're already covered above.)
-        for m in &task.composition {
+        for m in task.composition.iter().filter(|_| committed) {
             let rp = member_repo_path(m);
             if rp.is_empty() { continue; }
             let cfg = repo_config::load_or_default(Path::new(&rp));
@@ -17409,9 +17416,11 @@ fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
 /// result is contained within it. Canonicalizes both ends so a symlink
 /// pointing outside the worktree also fails the contains check.
 ///
-/// **MUST** be used for every renderer → filesystem read inside a task
-/// (file_read, file_diff, future watchers). Without it, untrusted paths
-/// from the webview could read arbitrary text files on disk.
+/// **MUST** bound every renderer → filesystem access inside a task, either
+/// directly (diff, rename, delete, git paths) or as the first check of
+/// `safe_task_read_path` (file reads, the tree) and `safe_task_write_path`
+/// (editor saves). Without it, untrusted paths from the webview could read
+/// arbitrary text files on disk.
 fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     let pb = reject_escaping_segments(rel)?;
     let target = ws_path.join(&pb);
@@ -17430,87 +17439,176 @@ fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(canon_target)
 }
 
-/// Read-only path resolution that also accepts the top-level config-dir
-/// symlinks termic itself creates into the repo root (GH #250).
+/// Path resolution for reads: `safe_task_path`, and when that fails because
+/// a symlink leads out of the task, wherever the link lands (GH #250).
 ///
 /// `link_config_dir` symlinks `.claude/` and friends from the repo into every
 /// new worktree, precisely because they are commonly gitignored and so
 /// `git worktree add` leaves them out. `safe_task_path` then refused to read
 /// back through the very link we made: canonicalizing lands outside the
 /// worktree, so the folder LISTED (the parent's `read_dir` sees a dir entry)
-/// and could never be opened, with no retry or refresh able to help.
+/// and could never be opened, with no retry or refresh able to help. Links
+/// the user makes themselves (notes kept outside the repo) hit the same wall.
 ///
-/// The bound is the PROJECT root rather than the worktree. A link resolving
-/// inside the repo the user deliberately added is theirs to read; a repo that
-/// ships `.claude -> ~/.ssh` still resolves outside it and is still refused,
-/// which is the case the containment check exists for.
+/// This decides what the user is SHOWN, not what anything can reach: the
+/// webview can already read any path (`file_read_external`) and no agent
+/// sees the result. So it follows any link, except into `ReadBounds::denied`,
+/// which keeps termic's own secrets off the screen.
 ///
-/// READ paths only. `task_path_rename`, `task_path_delete` and every git path
-/// keep the strict check, so nothing can MUTATE the main checkout by writing
-/// through a link from a worktree task.
+/// READ paths only. Everything this admits beyond `safe_task_path` is outside
+/// the task. `task_path_rename`, `task_path_delete` and every git path keep
+/// the strict check; `task_file_write` writes through a link only into a
+/// sandbox path the user granted (`safe_task_write_path`). Every other file
+/// this admits opens read-only in the editor (`task_file_writable`).
 fn safe_task_read_path(w: &Task, base: &Path, rel: &str) -> Result<PathBuf, String> {
-    let proj = load_projects_all()
-        .into_iter()
-        .find(|p| p.id == w.project_id);
-    let root = proj.as_ref().map(|p| PathBuf::from(&p.root_path));
-    let cust_dir = proj
-        .and_then(|p| profile_dir(&p.profile).ok())
-        .map(|pdir| customizations::customizations_dir(&pdir));
-    safe_task_read_path_in(root.as_deref(), cust_dir.as_deref(), base, rel)
+    resolve_task_path_in(base, rel, || task_read_bounds(w))
 }
 
-/// The decision itself, with the project root passed in rather than looked up,
-/// so it is testable without a profile on disk.
-fn safe_task_read_path_in(
-    project_root: Option<&Path>,
-    customizations_root: Option<&Path>,
-    base: &Path,
-    rel: &str,
-) -> Result<PathBuf, String> {
+/// What a followed link may not open. Built lazily by `resolve_task_path_in`,
+/// only once a target is known to exist outside the task. Every path in it
+/// is canonical, so the resolver compares with `starts_with` alone.
+#[derive(Default)]
+struct ReadBounds {
+    /// termic's data dir (the CLI token, logins, projects.json), the keychain
+    /// dirs and the broker's per-spawn dirs.
+    denied: Vec<PathBuf>,
+    /// the customizations the profile re-allows inside the data dir (skills,
+    /// agents, `mcp.json`, never `mcp.env.local`), which termic links into
+    /// `.agents` and `.mcp.json`.
+    exempt: Vec<PathBuf>,
+}
+
+fn task_read_bounds(w: &Task) -> ReadBounds {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut denied: Vec<String> = sandbox::control_plane_paths().data_dir.into_iter().collect();
+    denied.extend(sandbox::keychain_dirs(&home));
+    denied.extend(broker::spawn_base_dir().map(|b| b.to_string_lossy().into_owned()));
+    let exempt = profile_dir(&w.profile)
+        .map(|d| vec![customizations::skills_dir(&d), customizations::agents_dir(&d), customizations::mcp_json_file(&d)])
+        .unwrap_or_default();
+    let canon = |v: Vec<PathBuf>| v.into_iter().filter_map(|p| dunce::canonicalize(p).ok()).collect();
+    ReadBounds { denied: canon(denied.into_iter().map(PathBuf::from).collect()), exempt: canon(exempt) }
+}
+
+/// The decision itself, with the bounds injected, so it is testable without
+/// a profile on disk.
+fn resolve_task_path_in(base: &Path, rel: &str, bounds: impl FnOnce() -> ReadBounds) -> Result<PathBuf, String> {
     let strict = match safe_task_path(base, rel) {
         Ok(p) => return Ok(p),
         Err(e) => e,
     };
-    let pb = match reject_escaping_segments(rel) {
-        Ok(p) => p,
-        Err(_) => return Err(strict),
-    };
-    let Some(first) = pb.components().next() else { return Err(strict) };
-    let first_str = first.as_os_str().to_string_lossy();
-
-    // Only a symlink sitting directly in the task root qualifies, or a
-    // Termic-managed customization path under .agents or .mcp.json.
-    let is_link = base
-        .join(first.as_os_str())
-        .symlink_metadata()
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-    let is_customization_path = first_str == ".agents" || first_str == ".mcp.json";
-
-    if !is_link && !is_customization_path {
+    // `..`, an absolute path and a missing target all stay the strict error,
+    // and a miss (the common one) never pays for `bounds`.
+    let Ok(pb) = reject_escaping_segments(rel) else { return Err(strict) };
+    let Ok(target) = dunce::canonicalize(base.join(&pb)) else { return Err(strict) };
+    let b = bounds();
+    // ponytail: a display stop checked on the canonical path, which the read
+    // then walks again. A link swapped in between gets through; open with
+    // O_NOFOLLOW + F_GETPATH if this ever has to be a boundary.
+    let exempt = b.exempt.iter().any(|r| target.starts_with(r));
+    if !exempt && b.denied.iter().any(|d| target.starts_with(d)) {
         return Err(strict);
     }
+    Ok(target)
+}
 
-    let Ok(target) = dunce::canonicalize(base.join(&pb)) else {
-        return Err(strict);
+/// Path resolution for writes (editor save, `task_file_writable`):
+/// `safe_task_path`, and when that fails because a link leads out of the
+/// task, the link's target if it lies inside a sandbox path the USER granted.
+///
+/// The agent can already write there, so refusing the editor the same file
+/// only got in the way. Unlike the read side this IS a boundary (the webview
+/// has no other write), so only the layers a repo cannot author count:
+/// global defaults, the task's and the project's personal lists, and the
+/// task agent's own list. `.termic.yaml` is committed, so a hostile repo
+/// could grant `$HOME` there and ship a link; it never counts here. Nor do
+/// the sandbox's built-in runtime paths (`~/.local/bin` is code execution).
+fn safe_task_write_path(w: &Task, base: &Path, rel: &str) -> Result<PathBuf, String> {
+    resolve_task_write_path_in(base, rel, || task_write_bounds(w))
+}
+
+/// What a write through a link may reach. Canonical, like `ReadBounds`.
+#[derive(Default)]
+struct WriteBounds {
+    /// the user's own sandbox grants.
+    granted: Vec<PathBuf>,
+    /// always refused, grant or not: `ReadBounds::denied` (with no
+    /// customization exemption) plus the main checkout and every member's
+    /// repo, so a broad grant like `~` cannot make the `.claude` link termic
+    /// creates write into the repo behind the worktree.
+    denied: Vec<PathBuf>,
+}
+
+fn task_write_bounds(w: &Task) -> WriteBounds {
+    let Some(home) = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()) else {
+        return WriteBounds::default();
     };
+    let projects = load_projects_all();
+    let proj = projects.iter().find(|p| p.id == w.project_id);
+    let raw = write_grant_paths(w, &load_settings_in(&w.profile), &projects, sandbox::agent_allowed_paths(&w.cli));
+    let granted = expand_grants(&raw, &home, &w.path);
+    let mut denied = task_read_bounds(w).denied;
+    let repos = proj.map(|p| p.root_path.clone()).into_iter()
+        .chain(w.composition.iter().map(member_repo_path));
+    denied.extend(repos.filter(|r| !r.is_empty()).filter_map(|r| dunce::canonicalize(r).ok()));
+    WriteBounds { granted, denied }
+}
 
-    if let Some(root) = project_root {
-        if let Ok(canon_root) = dunce::canonicalize(root) {
-            if target.starts_with(&canon_root) {
-                return Ok(target);
-            }
-        }
+/// The raw grant entries the editor may write through a link into: what the
+/// agent's cage was actually given by the user, so the editor never reaches
+/// past it. A layer missing here fails safe: the file just opens read-only.
+///
+/// - the personal half of `live_sandbox_lists` (no `.termic.yaml`), the same
+///   list Seatbelt renders and Docker mounts
+/// - the agent's own `sandbox_allowed_paths`, Seatbelt only: Docker never
+///   mounts them (docker.rs), so in a Docker task the container cannot reach
+///   them and the editor must not either
+fn write_grant_paths(w: &Task, globals: &Settings, projects: &[Project], agent_paths: Vec<String>) -> Vec<String> {
+    let mut raw = live_sandbox_lists_in(w, globals, projects, false).0;
+    // ponytail: the task's primary agent, not the tab's. A tab running
+    // another agent (`agent_override`) gets a cage without these; tracking
+    // which agent planted a link is not worth it while the primary's cage
+    // can write there anyway.
+    if !w.docker_sandbox_enabled {
+        raw.extend(agent_paths);
     }
+    raw
+}
 
-    if let Some(cust) = customizations_root {
-        if let Ok(canon_cust) = dunce::canonicalize(cust) {
-            if target.starts_with(&canon_cust) {
-                return Ok(target);
-            }
-        }
+/// Sandbox allowed-path entries as canonical dirs, expanded the way the
+/// profile expands them (`subst_path`). `regex:` entries bound no directory
+/// and are dropped, as is anything missing on disk (nothing to write into),
+/// relative or holding `..`: Seatbelt matches those literally or not at
+/// all, while canonicalizing would resolve `.` against termic's own cwd and
+/// `$WORKSPACE/..` to every sibling task.
+fn expand_grants(raw: &[String], home: &str, task_path: &str) -> Vec<PathBuf> {
+    raw.iter()
+        .filter(|p| !p.trim().is_empty() && !p.trim_start().starts_with("regex:"))
+        .map(|p| PathBuf::from(sandbox::subst_path(p, home, task_path)))
+        .filter(|p| p.is_absolute() && !p.components().any(|c| c == std::path::Component::ParentDir))
+        .filter_map(|p| dunce::canonicalize(p).ok())
+        .collect()
+}
+
+/// The write decision with the bounds injected, so it is testable without a
+/// profile on disk.
+fn resolve_task_write_path_in(base: &Path, rel: &str, bounds: impl FnOnce() -> WriteBounds) -> Result<PathBuf, String> {
+    let strict = match safe_task_path(base, rel) {
+        Ok(p) => return Ok(p),
+        Err(e) => e,
+    };
+    let Ok(pb) = reject_escaping_segments(rel) else { return Err(strict) };
+    let Ok(target) = dunce::canonicalize(base.join(&pb)) else { return Err(strict) };
+    let b = bounds();
+    // ponytail: checked on the canonical path, which `write_atomic` then
+    // walks again, so a link swapped in between is followed. Open with
+    // O_NOFOLLOW + F_GETPATH if that window ever matters.
+    if b.denied.iter().any(|d| target.starts_with(d)) {
+        return Err(strict);
     }
-
+    if b.granted.iter().any(|g| target.starts_with(g)) {
+        return Ok(target);
+    }
     Err(strict)
 }
 
@@ -17567,15 +17665,36 @@ fn check_task_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, Stri
     Ok(PathStat { exists: false, is_dir: false })
 }
 
+/// Async + spawn_blocking: the link fallback reads settings and projects
+/// and canonicalizes every allowlist entry, which can block on a stale
+/// network mount.
 #[tauri::command]
-fn task_path_stat(id: String, path: String) -> Result<PathStat, String> {
+async fn task_path_stat(id: String, path: String) -> Result<PathStat, String> {
+    tauri::async_runtime::spawn_blocking(move || task_path_stat_sync(&id, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn task_path_stat_sync(id: &str, path: &str) -> Result<PathStat, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // Unlike a diff/read, "is this a directory" is a sensible question for a
     // path that's exactly a composition member's own root (e.g. a markdown
     // link's `..`/`/` resolves there per resolveTaskHref's member-floor
     // scoping) — allow it rather than erroring.
-    let (cwd, rel) = resolve_task_git_path_ex(&w, &path, true)?;
-    check_task_path_existence(&cwd, &rel)
+    let (cwd, rel) = resolve_task_git_path_ex(&w, path, true)?;
+    // A link the file tree can open (`safe_task_read_path`) is not an escape
+    // for a markdown link either, and a missing file under one is a dead link.
+    // Only consulted once the strict check fails.
+    check_task_path_existence(&cwd, &rel).or_else(|e| {
+        if let Ok(abs) = safe_task_read_path(&w, &cwd, &rel) {
+            return Ok(PathStat { exists: true, is_dir: abs.is_dir() });
+        }
+        let parent = Path::new(&rel).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        if !parent.is_empty() && safe_task_read_path(&w, &cwd, &parent).is_ok() {
+            return Ok(PathStat { exists: false, is_dir: false });
+        }
+        Err(e)
+    })
 }
 
 /// Ceiling on bytes shipped to the webview for a preview or an image diff.
@@ -18082,7 +18201,8 @@ struct Base64Read {
     fp: String,
 }
 
-/// Same member-aware resolution + worktree containment as `task_file_read`,
+/// Same member-aware resolution and read resolver (`safe_task_read_path`)
+/// as `task_file_read`,
 /// plus an image/PDF extension whitelist and a 20 MB cap. Split from the
 /// `#[tauri::command]` wrapper (mirroring `task_file_diff_sides_for_task`)
 /// so tests can exercise it with an in-memory `Task` instead of
@@ -18152,17 +18272,22 @@ fn task_file_fp_for_task(w: &Task, path: &str) -> Result<String, String> {
     Ok(file_fp(&abs))
 }
 
-/// Stat a previewable file and return its `mtime:len` fingerprint. Sync: one
-/// `metadata()` call, nowhere near the multi-MB reads the async IPC
-/// discipline targets.
+/// Stat a previewable file and return its `mtime:len` fingerprint. Async +
+/// spawn_blocking: polled on every agent-settle tick, and a file reached
+/// through a link resolves via `safe_task_read_path`, which canonicalizes
+/// wherever the link points (a stale network mount blocks).
 #[tauri::command]
-fn task_file_fp(id: String, path: String) -> Result<String, String> {
-    let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
-    task_file_fp_for_task(&w, &path)
+async fn task_file_fp(id: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        task_file_fp_for_task(&w, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Read an allowlisted preview file (image/PDF) as raw bytes + mime, reusing
-/// the SAME member-aware resolution, worktree containment, extension
+/// the SAME member-aware resolution, read resolver, extension
 /// allowlist, and 20 MB cap as `task_file_read_base64_for_task` — just
 /// without the base64 encode. Split from the `load_tasks_all()` lookup (mirroring
 /// `task_file_read_base64_for_task`) so tests can exercise it with an
@@ -18213,17 +18338,16 @@ fn taskpdf_response(uri_path: &str) -> tauri::http::Response<Vec<u8>> {
     }
 }
 
-/// Overwrite a task file with new contents (editor save). The
-/// path is constrained to the worktree by `safe_task_path`, same
-/// as the read side. Synchronous to mirror `task_file_read` — a
-/// single text file (capped at 2 MB on read) is not the heavy-IO case
-/// the spawn_blocking discipline targets.
 /// Write stdin to the file $1 on a box, atomically, as `write_atomic` does
 /// here: through a symlink to its target (a dotfiles link stays a link),
 /// keeping the file's mode (an executable script stays executable), via a
 /// temp file renamed over it. `stat -c` is GNU and busybox, `-f` the BSDs.
 pub(crate) const BOX_WRITE_SH: &str = r#"f=$1; [ -L "$f" ] && f=$(readlink -f -- "$f" 2>/dev/null || printf %s "$f"); t="$f.termic-tmp.$$"; cat > "$t" || exit 1; if [ -e "$f" ]; then m=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null) && chmod "$m" "$t"; fi; mv -f "$t" "$f""#;
 
+/// Overwrite a task file with new contents (editor save). A local path is
+/// constrained to the worktree, or to a link's target inside a sandbox path
+/// the user granted (`safe_task_write_path`). Any other link out of the task
+/// that `safe_task_read_path` lets the editor open is never written through.
 #[tauri::command]
 async fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
     // Off the main thread: on a server project this is an ssh round trip.
@@ -18243,11 +18367,32 @@ async fn task_file_write(id: String, path: String, content: String) -> Result<()
         return if code == 0 { Ok(()) } else { Err(format!("write failed: {}", err.trim())) };
     }
     let (cwd, rel) = resolve_task_git_path(&w, &path)?;
-    let abs = safe_task_path(&cwd, &rel)?;
+    let abs = safe_task_write_path(&w, &cwd, &rel)?;
     // Atomic: uncommitted source is unrecoverable if a truncate-write tears.
     // Tradeoff accepted: the swap installs a new inode (breaks hardlinks).
     write_atomic(&abs, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
 }).await.map_err(|e| e.to_string())?
+}
+
+/// Whether `task_file_write` would accept `path`, so the editor can open a
+/// file reached through a link out of the task (and outside the user's
+/// sandbox grants) read-only instead of failing on ⌘S. Asked alongside the read, which decides whether the file opens at
+/// all. It is about links, not file mode: a `chmod 444` file still answers
+/// true. A server task is fenced by `server_rel` and writes on the box
+/// through `BOX_WRITE_SH`, which follows links, so it answers true.
+#[tauri::command]
+async fn task_file_writable(id: String, path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        if server_projects::server_for_path(Path::new(&w.path)).is_some() {
+            server_rel(Path::new(&w.path), &path)?;
+            return Ok(true);
+        }
+        let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+        Ok(safe_task_write_path(&w, &cwd, &rel).is_ok())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ──────────────────────────── scratchpads (GH #244) ────────────────────────
@@ -18990,14 +19135,24 @@ fn task_path_delete(id: String, path: String) -> Result<(), String> {
 /// Resolves the absolute path server-side (member-aware) so the frontend
 /// doesn't have to reconstruct paths for members that live outside the
 /// wrapper. macOS selects the item; Windows selects it; Linux opens the
-/// containing folder (no portable "select" verb).
+/// containing folder (no portable "select" verb). A path the file tree
+/// reached through a link out of the task reveals where the link lands, not
+/// the link: that is the file the editor has open.
+///
+/// Async + spawn_blocking for the same reason as `task_path_stat`.
 #[tauri::command]
-fn task_reveal_path(id: String, path: String) -> Result<(), String> {
+async fn task_reveal_path(id: String, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || task_reveal_path_sync(&id, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn task_reveal_path_sync(id: &str, path: &str) -> Result<(), String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // Revealing a directory (including a composition member's own root) is
     // meaningful here, unlike for a diff/read — allow the bare-member-root case.
     let (cwd, rel) = resolve_task_git_path_ex(&w, &path, true)?;
-    let abs = safe_task_path(&cwd, &rel)?;
+    let abs = safe_task_read_path(&w, &cwd, &rel)?;
     let target = abs.to_string_lossy().into_owned();
     let (program, args) = reveal_command(std::env::consts::OS, &target);
     crate::proc_ctl::command(program).args(&args).status().map_err(|e| e.to_string())?;
@@ -19383,11 +19538,14 @@ fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEnt
         if remainder.is_empty() {
             dunce::canonicalize(&mp).map_err(|e| format!("{}: {e}", mp.display()))?
         } else {
-            safe_task_path(&mp, remainder)?
+            // Same read resolver `task_file_read` uses for a member path, or
+            // a file opens that its folder can't be expanded to reach.
+            safe_task_read_path(&w, &mp, remainder)?
         }
     } else {
-        // GH #250: also resolves through the config-dir symlinks termic itself
-        // creates into the repo root, which the strict check refused.
+        // GH #250: also follows a link out of the task at any depth (the
+        // `.claude` link termic creates, notes linked in from elsewhere),
+        // which the strict check refused.
         safe_task_read_path(&w, &base, &rel)?
     };
     // The repo that owns this directory + the path relative to its root.
@@ -29380,7 +29538,7 @@ pub fn run() {
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, forge_rate_status, task_pr_status, task_pr_status_batch, project_forge_lists, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
-            task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, server_paste_image, clipboard_image_png_b64, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
+            task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, server_paste_image, clipboard_image_png_b64, task_file_read_base64, task_file_fp, task_file_write, task_file_writable, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             scratch_list, scratch_read, scratch_write, scratch_set_meta, scratch_delete,
             scratch_promote, scratch_promote_target_exists,
@@ -34829,6 +34987,11 @@ mod tests {
         (repo, wt)
     }
 
+    /// `resolve_task_path_in` with nothing denied.
+    fn read_in(base: &Path, rel: &str) -> Result<PathBuf, String> {
+        resolve_task_path_in(base, rel, ReadBounds::default)
+    }
+
     #[test]
     fn reads_through_the_config_symlink_termic_created() {
         let (repo, wt) = repo_with_linked_config();
@@ -34837,90 +35000,227 @@ mod tests {
         // and never opens.
         assert!(safe_task_path(wt.path(), ".claude").is_err());
 
-        let dir = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude").unwrap();
+        let dir = read_in(wt.path(), ".claude").unwrap();
         assert_eq!(dir, dunce::canonicalize(repo.path().join(".claude")).unwrap());
         // …and files under it, which is what the editor opens.
-        let file = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude/settings.json").unwrap();
+        let file = read_in(wt.path(), ".claude/settings.json").unwrap();
         assert!(file.ends_with(".claude/settings.json"));
-        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude/agents").is_ok());
+        assert!(read_in(wt.path(), ".claude/agents").is_ok());
     }
 
     #[cfg(unix)]
     #[test]
-    fn still_refuses_a_link_that_leaves_the_project() {
-        // The case the containment check exists for: a repo shipping a link to
-        // something private. It resolves outside the PROJECT root, so widening
-        // the bound to the project must not admit it.
-        let (repo, wt) = repo_with_linked_config();
-        let outside = tempdir().unwrap();
-        fs::create_dir_all(outside.path().join("ssh")).unwrap();
-        fs::write(outside.path().join("ssh/id_rsa"), b"secret").unwrap();
-        std::os::unix::fs::symlink(
-            fs::canonicalize(outside.path().join("ssh")).unwrap(),
-            wt.path().join(".secrets"),
-        )
-        .unwrap();
+    fn follows_a_link_at_any_depth_wherever_it_lands() {
+        // notes kept outside the repo, linked in several levels down, and a
+        // relative link climbing out: both open (read-only, see below).
+        let (_repo, wt) = repo_with_linked_config();
+        let notes = tempdir().unwrap();
+        fs::write(notes.path().join("a.md"), b"x").unwrap();
+        fs::create_dir_all(wt.path().join("docs/review")).unwrap();
+        std::os::unix::fs::symlink(notes.path(), wt.path().join("docs/review/link")).unwrap();
+        assert_eq!(read_in(wt.path(), "docs/review/link").unwrap(), fs::canonicalize(notes.path()).unwrap());
+        assert!(read_in(wt.path(), "docs/review/link/a.md").unwrap().ends_with("a.md"));
 
-        let err = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".secrets/id_rsa").unwrap_err();
-        assert!(err.contains("path escapes task"), "{err}");
-        // And with no project known, nothing is relaxed at all.
-        assert!(safe_task_read_path_in(None, None, wt.path(), ".claude").is_err());
+        // both tempdirs share the temp root: climb from docs/review back to it.
+        let up = Path::new("../../..").join(notes.path().file_name().unwrap());
+        std::os::unix::fs::symlink(&up, wt.path().join("docs/review/rel")).unwrap();
+        assert!(read_in(wt.path(), "docs/review/rel/a.md").is_ok());
     }
 
     #[cfg(unix)]
     #[test]
-    fn reads_profile_customizations_skills() {
-        let (repo, wt) = repo_with_linked_config();
-        let cust = tempdir().unwrap();
-        let skill_dir = cust.path().join("skills/termic");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), b"# Termic Skill").unwrap();
-
-        let wt_skill_dir = wt.path().join(".agents/skills");
-        fs::create_dir_all(&wt_skill_dir).unwrap();
-        std::os::unix::fs::symlink(
-            fs::canonicalize(&skill_dir).unwrap(),
-            wt_skill_dir.join("termic"),
-        )
-        .unwrap();
-
-        let read = safe_task_read_path_in(Some(repo.path()), Some(cust.path()), wt.path(), ".agents/skills/termic/SKILL.md").unwrap();
-        assert!(read.ends_with("SKILL.md"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn only_a_link_at_the_task_root_is_relaxed() {
-        // A symlink buried deep in the repo must not widen the check, even
-        // when its target is inside the project: only the top-level dirs
-        // link_config_dir creates qualify.
-        let repo = tempdir().unwrap();
-        fs::create_dir_all(repo.path().join("vendor")).unwrap();
-        fs::write(repo.path().join("vendor/lib.rs"), b"x").unwrap();
+    fn a_followed_link_never_opens_termics_own_dirs() {
+        // a link into the data dir (CLI token, logins) stays refused, with the
+        // strict error naming where it pointed. The customizations termic
+        // links into `.agents` live inside it and still open, but only the
+        // ones the profile re-allows: `mcp.env.local` beside them does not.
         let wt = tempdir().unwrap();
-        fs::create_dir_all(wt.path().join("src/nested")).unwrap();
-        std::os::unix::fs::symlink(
-            fs::canonicalize(repo.path().join("vendor")).unwrap(),
-            wt.path().join("src/nested/vendor"),
-        )
-        .unwrap();
+        let data = tempdir().unwrap();
+        let data_c = fs::canonicalize(data.path()).unwrap();
+        fs::create_dir_all(data_c.join("token")).unwrap();
+        fs::create_dir_all(data_c.join("cust/skills")).unwrap();
+        fs::create_dir_all(data_c.join("cust/mcp")).unwrap();
+        fs::write(data_c.join("cust/mcp/mcp.env.local"), b"k=v").unwrap();
+        fs::create_dir_all(wt.path().join("deep")).unwrap();
+        std::os::unix::fs::symlink(data_c.join("token"), wt.path().join("deep/t")).unwrap();
+        fs::create_dir_all(wt.path().join(".agents")).unwrap();
+        std::os::unix::fs::symlink(data_c.join("cust/skills"), wt.path().join(".agents/skills")).unwrap();
+        std::os::unix::fs::symlink(data_c.join("cust/mcp"), wt.path().join(".agents/mcp")).unwrap();
 
-        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "src/nested/vendor/lib.rs").is_err());
+        let bounds = || ReadBounds { denied: vec![data_c.clone()], exempt: vec![data_c.join("cust/skills")] };
+        let err = resolve_task_path_in(wt.path(), "deep/t", bounds).unwrap_err();
+        assert!(err.contains("path escapes task"), "{err}");
+        assert!(resolve_task_path_in(wt.path(), ".agents/skills", bounds).is_ok());
+        assert!(resolve_task_path_in(wt.path(), ".agents/mcp/mcp.env.local", bounds).is_err());
+    }
+
+    #[test]
+    fn bounds_are_only_built_for_an_existing_target_outside_the_task() {
+        // a plain miss (a deleted file, a tree reload racing a build) and an
+        // ordinary read must not pay for canonicalizing the denied dirs.
+        let wt = tempdir().unwrap();
+        fs::write(wt.path().join("a.md"), b"x").unwrap();
+        let never = || -> ReadBounds { panic!("bounds built") };
+        assert!(resolve_task_path_in(wt.path(), "a.md", never).is_ok());
+        assert!(resolve_task_path_in(wt.path(), "missing.md", never).is_err());
+        assert!(resolve_task_path_in(wt.path(), "../x", never).is_err());
+    }
+
+    /// `resolve_task_write_path_in` with these grants and denies.
+    fn write_in(base: &Path, rel: &str, granted: &[&Path], denied: &[&Path]) -> Result<PathBuf, String> {
+        let canon = |v: &[&Path]| v.iter().map(|p| fs::canonicalize(p).unwrap()).collect();
+        resolve_task_write_path_in(base, rel, || WriteBounds { granted: canon(granted), denied: canon(denied) })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_task_is_readable_but_not_writable_without_a_grant() {
+        // every file the read resolver admits beyond `safe_task_path` opens
+        // read-only unless the user granted where it lands. A dir granted only
+        // by `.termic.yaml` or the sandbox's built-in runtime paths is this
+        // case too: `task_write_bounds` never reads either source.
+        let (repo, wt) = repo_with_linked_config();
+        fs::create_dir_all(wt.path().join("deep")).unwrap();
+        std::os::unix::fs::symlink(fs::canonicalize(repo.path()).unwrap(), wt.path().join("deep/main")).unwrap();
+        fs::write(wt.path().join("own.md"), b"x").unwrap();
+        for rel in [".claude/settings.json", "deep/main/.claude/settings.json"] {
+            assert!(read_in(wt.path(), rel).is_ok(), "{rel} should read");
+            let err = write_in(wt.path(), rel, &[], &[]).unwrap_err();
+            assert!(err.contains("path escapes task"), "{rel}: {err}");
+        }
+        assert!(write_in(wt.path(), "own.md", &[], &[]).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_a_user_granted_dir_is_writable_at_any_depth() {
+        // the reported case: a review dir under a granted `~/.local`, linked
+        // in several levels down. The agent can write there, so can the editor.
+        let wt = tempdir().unwrap();
+        let local = tempdir().unwrap();
+        let review = local.path().join("share/reviews/grype/1");
+        fs::create_dir_all(&review).unwrap();
+        fs::write(review.join("notes.md"), b"x").unwrap();
+        fs::create_dir_all(wt.path().join("changes/open/c1/code-review")).unwrap();
+        std::os::unix::fs::symlink(&review, wt.path().join("changes/open/c1/code-review/grype")).unwrap();
+        let rel = "changes/open/c1/code-review/grype/notes.md";
+
+        let abs = write_in(wt.path(), rel, &[local.path()], &[]).unwrap();
+        assert_eq!(abs, fs::canonicalize(review.join("notes.md")).unwrap());
+        // a grant is a subtree, not a string prefix: a sibling stays shut.
+        let sibling = tempdir().unwrap();
+        fs::write(sibling.path().join("x.md"), b"x").unwrap();
+        std::os::unix::fs::symlink(sibling.path(), wt.path().join("changes/sib")).unwrap();
+        assert!(write_in(wt.path(), "changes/sib/x.md", &[local.path()], &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broad_grant_never_writes_into_the_main_checkout_or_termics_dirs() {
+        // the cut that was backed out before: granting `~` made the `.claude`
+        // link termic creates write into the repo behind the worktree. The
+        // denies win over any grant.
+        let home = tempdir().unwrap();
+        let repo = home.path().join("code/repo");
+        fs::create_dir_all(repo.join(".claude")).unwrap();
+        fs::write(repo.join(".claude/settings.json"), b"{}").unwrap();
+        let data = home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("token"), b"t").unwrap();
+        let wt = tempdir().unwrap();
+        std::os::unix::fs::symlink(repo.join(".claude"), wt.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&data, wt.path().join("d")).unwrap();
+        fs::create_dir_all(home.path().join("notes")).unwrap();
+        fs::write(home.path().join("notes/a.md"), b"x").unwrap();
+        std::os::unix::fs::symlink(home.path().join("notes"), wt.path().join("n")).unwrap();
+
+        let (g, d) = ([home.path()], [repo.as_path(), data.as_path()]);
+        // control: the grant alone does admit it, so the deny is what stops it.
+        assert!(write_in(wt.path(), ".claude/settings.json", &g, &[]).is_ok());
+        assert!(write_in(wt.path(), ".claude/settings.json", &g, &d).is_err());
+        assert!(write_in(wt.path(), "d/token", &g, &d).is_err());
+        // …while the rest of the grant still writes.
+        assert!(write_in(wt.path(), "n/a.md", &g, &d).is_ok());
+    }
+
+    #[test]
+    fn write_bounds_are_only_built_for_a_target_outside_the_task() {
+        let wt = tempdir().unwrap();
+        fs::write(wt.path().join("a.md"), b"x").unwrap();
+        let never = || -> WriteBounds { panic!("bounds built") };
+        assert!(resolve_task_write_path_in(wt.path(), "a.md", never).is_ok());
+        assert!(resolve_task_write_path_in(wt.path(), "missing.md", never).is_err());
+        assert!(resolve_task_write_path_in(wt.path(), "../x", never).is_err());
+        assert!(resolve_task_write_path_in(wt.path(), "/etc/passwd", never).is_err());
+    }
+
+    #[test]
+    fn grants_expand_like_the_profile_and_drop_regexes() {
+        let home = tempdir().unwrap();
+        let task = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".local")).unwrap();
+        fs::create_dir_all(task.path().join("out")).unwrap();
+        let (h, t) = (home.path().to_str().unwrap(), task.path().to_str().unwrap());
+        // `.`, a bare relative entry and `$WORKSPACE/..` all exist on disk and
+        // would canonicalize to something (termic's cwd, every sibling task),
+        // which Seatbelt would never match. They must drop, not widen.
+        let raw: Vec<String> = ["~/.local", "$HOME/.local/", "$WORKSPACE/out", "regex:^$HOME/.*", "", "~/missing",
+            ".", "out", "$WORKSPACE/..", "$HOME/.local/../.local"]
+            .iter().map(|s| s.to_string()).collect();
+        let got = expand_grants(&raw, h, t);
+        let local = fs::canonicalize(home.path().join(".local")).unwrap();
+        assert_eq!(got, vec![local.clone(), local, fs::canonicalize(task.path().join("out")).unwrap()]);
+    }
+
+    #[test]
+    fn write_grants_are_the_users_layers_and_the_agent_list_only_outside_docker() {
+        // the editor may write through a link only where the agent's cage
+        // reaches by the user's say-so. A repo's `.termic.yaml` never counts,
+        // and Docker never mounts the agent's own list, so a Docker task
+        // must not get it either (else the editor reaches host paths the
+        // container cannot).
+        let repo = tempdir().unwrap();
+        repo_config::add_allowed(repo.path(), repo_config::AllowKind::Path, "/from/termic-yaml").unwrap();
+        let proj = Project {
+            id: "p1".into(),
+            root_path: repo.path().to_string_lossy().into_owned(),
+            sandbox_rw_paths: vec!["/from/project".into()],
+            ..Default::default()
+        };
+        let globals = Settings { sandbox_default_rw_paths: vec!["/from/globals".into()], ..Default::default() };
+        let mut task = Task { project_id: "p1".into(), sandbox_rw_paths: vec!["/from/task".into()], ..Default::default() };
+        let agent = || vec!["/from/agent".to_string()];
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // control: the spawn's own list does carry `.termic.yaml`, so its
+        // absence below is the `committed: false` cut, not a fixture miss.
+        assert!(live_sandbox_lists_in(&task, &globals, std::slice::from_ref(&proj), true).0.contains(&"/from/termic-yaml".to_string()));
+
+        let projects = std::slice::from_ref(&proj);
+        assert_eq!(write_grant_paths(&task, &globals, projects, agent()),
+            s(&["/from/globals", "/from/task", "/from/project", "/from/agent"]));
+        task.docker_sandbox_enabled = true;
+        assert_eq!(write_grant_paths(&task, &globals, projects, agent()),
+            s(&["/from/globals", "/from/task", "/from/project"]));
+
+        // multi-repo: the project's list was frozen into the task at create,
+        // and the cage reads only the task's copy, so the editor does too.
+        task.docker_sandbox_enabled = false;
+        let multi = Project { project_type: ProjectType::Multi, ..proj.clone() };
+        assert_eq!(write_grant_paths(&task, &globals, std::slice::from_ref(&multi), vec![]),
+            s(&["/from/globals", "/from/task"]));
     }
 
     #[test]
     fn ordinary_paths_are_untouched() {
         // The relaxation is a FALLBACK: everything that resolved before still
         // resolves the same way, and the classic escapes stay rejected.
-        let (repo, wt) = repo_with_linked_config();
+        let (_repo, wt) = repo_with_linked_config();
         fs::create_dir_all(wt.path().join("docs")).unwrap();
         fs::write(wt.path().join("docs/a.md"), b"x").unwrap();
-        assert_eq!(
-            safe_task_read_path_in(Some(repo.path()), None, wt.path(), "docs/a.md").unwrap(),
-            safe_task_path(wt.path(), "docs/a.md").unwrap(),
-        );
-        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "../outside.txt").is_err());
-        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "/etc/passwd").is_err());
+        assert_eq!(read_in(wt.path(), "docs/a.md").unwrap(), safe_task_path(wt.path(), "docs/a.md").unwrap());
+        assert!(read_in(wt.path(), "../outside.txt").is_err());
+        assert!(read_in(wt.path(), "/etc/passwd").is_err());
     }
 
     // ─────────────────── scratchpads (GH #244) ───────────────────
@@ -35322,22 +35622,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn task_file_fp_for_task_rejects_a_symlink_escaping_the_worktree() {
-        // A `.pdf` NAME is not a `.pdf` LOCATION: containment is decided by
-        // `safe_task_path`, which canonicalizes through the symlink before
-        // the extension is ever looked at, so an in-worktree link pointing
-        // out cannot turn this into a stat oracle for the whole disk.
+    fn task_file_fp_for_task_judges_a_link_by_where_it_lands() {
+        // A `.pdf` NAME is not a `.pdf` LOCATION: the read resolver follows a
+        // link out of the task (GH #250) and the extension is checked on the
+        // canonical target, so a link named like a PDF onto anything else is
+        // refused, while one onto a real PDF elsewhere previews like any
+        // other followed link.
         let outside = tempdir().unwrap();
         fs::write(outside.path().join("elsewhere.pdf"), b"%PDF-1.4\n").unwrap();
+        fs::write(outside.path().join("notes.txt"), b"x").unwrap();
         let ws = tempdir().unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("elsewhere.pdf"),
-            ws.path().join("looks-local.pdf"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(outside.path().join("notes.txt"), ws.path().join("looks-local.pdf")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("elsewhere.pdf"), ws.path().join("linked.pdf")).unwrap();
         let task = Task { path: ws.path().to_string_lossy().into_owned(), ..Default::default() };
 
         assert!(task_file_fp_for_task(&task, "looks-local.pdf").is_err());
+        assert!(task_file_fp_for_task(&task, "linked.pdf").is_ok());
     }
 
     #[test]
@@ -40029,6 +40329,28 @@ filename f.rs
         fs::set_permissions(&loose, fs::Permissions::from_mode(0o644)).unwrap();
         write_atomic(&loose, b"plain").unwrap();
         assert_eq!(mode(&loose), 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_never_writes_through_a_link_planted_at_a_temp_name() {
+        // an agent that can write the dir plants links where the temp file
+        // used to be named (`.{name}.tmp.{pid}.{seq}`, both guessable) and
+        // waits for a save. The save must land in the file, never through a
+        // planted link, and the file must stay a regular file.
+        let dir = tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"untouched").unwrap();
+        let f = dir.path().join("notes.md");
+        fs::write(&f, b"old").unwrap();
+        for seq in 0..64 {
+            let name = format!(".notes.md.tmp.{}.{seq}", std::process::id());
+            std::os::unix::fs::symlink(&victim, dir.path().join(name)).unwrap();
+        }
+        write_atomic(&f, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "untouched");
+        assert_eq!(fs::read_to_string(&f).unwrap(), "new");
+        assert!(!fs::symlink_metadata(&f).unwrap().file_type().is_symlink());
     }
 
     #[test]

@@ -821,6 +821,13 @@ export const taskPathStat = (id: string, path: string) =>
   invoke<{ exists: boolean; is_dir: boolean }>("task_path_stat", { id, path });
 export const taskFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("task_file_write", { id, path, content });
+/** Would `taskFileWrite` accept this path? False for a file reached through
+ *  a link out of the task unless the link lands in a sandbox path the user
+ *  granted, always false into the main checkout (its `.claude`) or a member
+ *  repo, and false for a missing file. The editor opens a `false` read-only.
+ *  Advisory: `taskFileWrite` re-checks. */
+export const taskFileWritable = (id: string, path: string) =>
+  invoke<boolean>("task_file_writable", { id, path });
 export const taskFiles    = (id: string) => invoke<string[]>("task_files", { id });
 
 // ─────────────────────────── scratchpads (GH #244) ───────────────────────────

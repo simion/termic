@@ -224,7 +224,7 @@ export default {
   },
 
   dirError: {
-    escapesTask: "This folder links outside the task",
+    escapesTask: "This folder links into Termic's own data",
     pathNotAllowed: "Path not allowed",
     gone: "This folder no longer exists",
     permissionDenied: "Permission denied",

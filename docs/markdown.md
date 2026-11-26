@@ -286,7 +286,8 @@ Every edit made on the preview is a `DocEdit`, sent to the
   so ⌘Z from the preview after an agent's write is refused, rather than
   reverting it in a buffer the reader cannot see and leaving the old text
   for the next `⌘S` to write over the agent's file.
-- `canEdit` false (an external file) or no target at all (diff view, folder
+- `canEdit` false (an external file, or an edit tab behind a link out of
+  the task, `EditTab.readOnly`) or no target at all (diff view, folder
   listing, Changelog) makes the preview read-only: checkboxes disabled, no
   block editor.
 

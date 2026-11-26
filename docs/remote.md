@@ -580,9 +580,9 @@ funnels consult it:
 
 - `git_bytes` / `git_raw` (lib.rs): the git panel, diff, stage, commit,
   push, the finder's listing.
-- `task_dir_list`, `task_file_read`, `task_file_write`: the file tree and
-  the editor (a write goes to a temp file and is renamed over). A
-  relative path that could climb out of the task is refused before it
+- `task_dir_list`, `task_file_read`, `task_file_write`,
+  `task_file_writable`: the file tree and the editor (a write goes to a
+  temp file and is renamed over). A relative path that could climb out of the task is refused before it
   is sent.
 - `repo_config::load` / `save`: a server repo's `.termic.yaml`.
 - forge.rs `cli_command`: gh, glab and az run on this Mac from home, with

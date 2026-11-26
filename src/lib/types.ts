@@ -1996,6 +1996,11 @@ export interface EditTab extends BaseTab {
    *  the pref (see docs/sandbox.md, "Known gap: the webview is outside
    *  the cage", and MarkdownPreview.tsx). Session-only, like mdView. */
   remoteImagesUnblocked?: boolean;
+  /** The file resolves outside the task through a link `task_file_write`
+   *  refuses (`task_file_writable`), so the buffer is read-only. Set by the
+   *  editor pane on load when it changes; drives the breadcrumb badge and the
+   *  preview's edit affordances. Session-only. */
+  readOnly?: boolean;
 }
 
 /** GitHub-style folder view (issue #151): the file/folder listing a
