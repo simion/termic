@@ -403,6 +403,7 @@ export default {
     signInBodyAzure: "在终端中运行 <code>{{command}}</code>（PAT 则运行 <code>{{alt}}</code>），然后刷新。",
     unreachable: "无法连接 {{provider}}",
     noPrYet: "还没有{{noun}}",
+    createNew: "创建新的{{noun}}",
     stateTip: "{{state}} · {{provider}}",
     openOn: "在 {{provider}} 上打开",
     watchAlways: "正在关注评论（此项目始终开启，见其仓库设置）。新评论会排入主智能体处理。",

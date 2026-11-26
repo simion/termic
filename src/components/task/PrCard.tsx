@@ -278,6 +278,18 @@ export function PrCard({ task }: { task: Task }) {
         <ReviewChip review={pr.review} />
         <span className="min-w-0 flex-1" />
         {(pr.state === "open" || pr.state === "draft") && <WatchBell task={task} />}
+        {(pr.state === "merged" || pr.state === "closed") && (
+          <Tip content={t("pr.createNew", { noun })} side="bottom">
+            <button
+              onClick={() => openCreatePr(task.id)}
+              aria-label={t("pr.createNew", { noun })}
+              data-testid="pr-create-new"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </Tip>
+        )}
         <RefreshBtn spinning={spinning} onClick={doRefresh} />
         <Tip content={t("pr.openOn", { provider: providerLabel })} side="bottom">
           <button

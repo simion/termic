@@ -2390,6 +2390,7 @@ describe("pr card (#21)", () => {
     });
     await waitForText("Merged");
     await waitForTextGone("Changes requested");
+    await waitVisible("[data-testid='pr-create-new']");
     await browser.waitUntil(
       () =>
         browser.execute(
