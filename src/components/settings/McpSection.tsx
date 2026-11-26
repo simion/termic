@@ -38,7 +38,7 @@ import { cn } from "@/lib/utils";
  *  Never `null`: that is the "still reading" sentinel, and a rejection left
  *  there parks the panel on it forever, with no retry and no path to the
  *  could-not-bind copy. */
-const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null, bind_error: null, claude_registered: false, claude_missing: [], codex_registered: false };
+const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null, bind_error: null, claude_registered: false, claude_missing: [], codex_registered: false, claude_needs_update: false, codex_needs_update: false };
 
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */
@@ -179,6 +179,7 @@ export function McpSection() {
     setInstalled(null);
     try {
       setInstalled({ client, message: await mcpInstallClient(client) });
+      setStatus(await mcpStatus().catch(() => UNBOUND));
     } catch (e) {
       setInstalled({ client, message: String(e) });
     } finally {
@@ -282,6 +283,11 @@ export function McpSection() {
                         {installing === client ? t("mcp.adding") : client === "claude" ? t("mcp.addToClaude") : t("mcp.addToCodex")}
                       </Button>
                     </div>
+                    {(client === "claude" ? status.claude_needs_update : status.codex_needs_update) && (
+                      <p data-testid={`mcp-needs-update-${client}`} className="mt-2 text-[12px] text-[var(--color-warn,inherit)]">
+                        {t("mcp.needsTabUpdate")}
+                      </p>
+                    )}
                     {installed?.client === client && (
                       <p className="mt-2 text-[12px] text-[var(--color-fg-dim)]">{installed.message}</p>
                     )}

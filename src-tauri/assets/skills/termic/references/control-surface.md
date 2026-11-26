@@ -141,8 +141,17 @@ MCP `task_tab` opens an agent with `kind: "agent"` and `agentId`; use
 `"terminal"` (with a terminal registry `agentId`), and `"default"`.
 For renaming, pass `task`, `tab`, and `title` without opening parameters.
 Keep the returned tab ID for stable targeting. `send`, `wait`, `logs`,
-and their MCP equivalents accept a tab selector: ID, title, or 1-based
-strip index. IDs survive reorder; indices do not.
+and their MCP equivalents accept a tab selector: an exact ID (which reaches
+both top-bar strip tabs AND agent tabs inside split panes), a strip title,
+or a 1-based strip index. IDs survive reorder; indices do not. `tab close`
+and `tab` rename apply only to top-bar strip tabs. When Termic runs the MCP headers helper inside an agent tab,
+`X-Termic-Tab` (`$TERMIC_TAB_ID`) defaults `parentTab` on `task_new` /
+`task_review` (when grouping under your own task, and explicit `parentTask` /
+`parentTab` are also accepted on both) and `tab` on `task_prop` writes to
+your own task, and unqualified replies from a spawned child route back to
+that initiating tab while it is live. On macOS/Linux upgrades from earlier
+Termic builds, re-register Claude Code / Codex in Settings > MCP (and
+restart running agent sessions) so the helper sends `X-Termic-Tab`.
 
 An explicit `--model` / `model` is appended after extra arguments; it is
 launch configuration, not proof of the provider's active model. A fresh

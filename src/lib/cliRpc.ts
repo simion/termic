@@ -22,7 +22,7 @@ import { fetchPrForReview, checkoutPrInMain, prReviewPrompt } from "@/lib/prRevi
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useApp } from "@/store/app";
+import { useApp, tabFromPersisted } from "@/store/app";
 import { agentSendDisposition } from "@/lib/agentSendDisposition";
 import { usePrefs } from "@/store/prefs";
 import { usePromptLibrary } from "@/store/prompts";
@@ -52,7 +52,7 @@ import {
 import { groupMemberByName, nextGroupColor } from "@/lib/taskGroups";
 import { startArchive } from "@/lib/archiveTask";
 import { withCreateLock } from "@/lib/createLock";
-import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
+import { markUnattendedSpawn, takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { agentTabFor, defaultAgentTab, deliverPromptWhenReady, waitForAgentPty } from "@/lib/agentDelivery";
 import { deliverMessage } from "@/lib/agentSend";
@@ -151,6 +151,9 @@ interface NewTaskParams {
   /** The task whose agent ran `termic new` / MCP `task_new`, already checked
    *  live by the server. The new task joins its sidebar group. */
   parentTaskId?: string;
+  /** The tab id inside `parentTaskId` that initiated the spawn. Recorded so
+   *  unqualified child replies route back to that tab. */
+  parentTabId?: string;
   /** `termic review` / MCP `task_review` (v21): review this PR. Its head is
    *  fetched and becomes the checkout; the prompt (the server already
    *  resolved the review library prompt into it) gets the PR's details in
@@ -468,7 +471,12 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   // archived in between, another profile) never fails the create. A parent
   // in another project is linked, not grouped.
   if (typeof p.parentTaskId === "string" && p.parentTaskId) {
-    await taskLinkSpawn(task.id, p.parentTaskId, nextGroupColor(useApp.getState().tasks)).catch(() => {});
+    await taskLinkSpawn(
+      task.id,
+      p.parentTaskId,
+      nextGroupColor(useApp.getState().tasks),
+      typeof p.parentTabId === "string" && p.parentTabId ? p.parentTabId : null,
+    ).catch(() => {});
   }
 
   await useApp.getState().loadAll();
@@ -510,6 +518,10 @@ interface SendPromptParams {
    *  re-checked here because it is ground truth and the server's cache
    *  can trail a just-closed tab. */
   tabId?: string;
+  /** Soft tab preference from `spawned_by_tab`: used only when `tabId` is
+   *  absent and that tab currently holds a live PTY; falls back to the
+   *  default/sole-live rules otherwise. */
+  preferredTabId?: string;
   /** With tabId: the tab was created moments ago (`tab -p`) and its
    *  PTY may still be spawning, so a missing PTY means WAIT for it, not
    *  refuse. Never set for plain `send --tab`, where a dead target must
@@ -524,6 +536,10 @@ function sendErr(code: string, msg: string): Error {
   return new Error(`cli_send:${code}: ${msg}`);
 }
 
+function isAgentCliId(cli: string): boolean {
+  return cli !== "shell" && cli !== "custom" && !isTerminalCli(cli);
+}
+
 /** The task's agent tabs: terminal tabs that actually host an agent CLI
  *  (not the shell, custom-command, registry-terminal, or run/setup
  *  variants the CLI cannot prompt). */
@@ -532,9 +548,7 @@ function sendableAgentTabs(taskId: string): TerminalTab[] {
     (t): t is TerminalTab =>
       t.type === "terminal"
       && !t.runTab
-      && t.cli !== "shell"
-      && t.cli !== "custom"
-      && !isTerminalCli(t.cli),
+      && isAgentCliId(t.cli),
   );
 }
 
@@ -549,7 +563,7 @@ async function deliverOrQueue(
   p: SendPromptParams,
   tab: TerminalTab,
   capable: boolean,
-): Promise<{ mode: string; capable: boolean }> {
+): Promise<{ mode: string; capable: boolean; tabId: string }> {
   const ptyId = tab.ptyId;
   if (!ptyId) throw new Error("the agent tab lost its PTY before the prompt could be typed");
   // An agent stalled on delegated work (its own loop stopped, subagents or
@@ -575,7 +589,7 @@ async function deliverOrQueue(
     // than delivering ahead of what was already waiting, which would reorder
     // the conversation to fix a liveness bug.
     if (how === "queue-flush") useApp.getState().flushAgentQueue(p.taskId, tab.id);
-    return { mode: how === "queue-flush" ? "queued-flushed" : "queued", capable };
+    return { mode: how === "queue-flush" ? "queued-flushed" : "queued", capable, tabId: tab.id };
   }
   // A message typed INTO a running turn (`--now`) leaves the turn's state
   // alone: the agent is still working, and calling it idle here would drop
@@ -595,7 +609,7 @@ async function deliverOrQueue(
   }
   useApp.getState().patchTab(p.taskId, tab.id, { lastInputAt: Date.now() });
   await reportCliPromptDelivery(p.promptId, true);
-  return { mode: "delivered", capable };
+  return { mode: "delivered", capable, tabId: tab.id };
 }
 
 /** The CLI's `termic send`: prompt the RUNNING agent (queue when it is
@@ -607,7 +621,7 @@ async function deliverOrQueue(
  *  Exported for the targeted-send integration test (the newTabHandler
  *  rule): the `--tab` rules interact with the real store's tab set, so
  *  the test must drive the REAL handler, not a re-implementation. */
-export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable: boolean }> {
+export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable: boolean; tabId: string }> {
   const p = raw as SendPromptParams;
   if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("send_prompt requires a taskId");
   if (typeof p?.prompt !== "string" || !p.prompt) throw new Error("send_prompt requires a prompt");
@@ -656,7 +670,7 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
       // than whichever side of the race this dispatch landed on.
       const spawned = await waitForAgentPty(p.taskId, targeted.id);
       void injectPromptTracked(p.taskId, p.prompt, p.promptId, spawned, targeted.id);
-      return { mode: "spawned", capable };
+      return { mode: "spawned", capable, tabId: targeted.id };
     }
     if (!targeted.ptyId) {
       throw sendErr(
@@ -668,7 +682,10 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
   }
 
   const live = agentTabs.filter(t => !!t.ptyId);
-  const target = live.find(t => t.is_default) ?? (live.length === 1 ? live[0] : undefined);
+  const preferred = typeof p.preferredTabId === "string" && p.preferredTabId
+    ? live.find(t => t.id === p.preferredTabId)
+    : undefined;
+  const target = preferred ?? live.find(t => t.is_default) ?? (live.length === 1 ? live[0] : undefined);
   if (live.length > 1 && !target) {
     throw sendErr(
       "ambiguous",
@@ -711,8 +728,20 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
   const exited = p.resume || freshInPlace
     ? (agentTabs.find(t => t.is_default && !t.ptyId) ?? agentTabs.find(t => !t.ptyId))
     : undefined;
+  const mainPersistedAgents = (task.persisted_tabs ?? []).filter(
+    pt => !pt.pane_leaf_id && isAgentCliId(pt.cli),
+  );
+  const durableAgent =
+    (typeof p.preferredTabId === "string" && p.preferredTabId
+      ? mainPersistedAgents.find(pt => pt.id === p.preferredTabId)
+      : undefined)
+    ?? mainPersistedAgents.find(pt => pt.is_default)
+    ?? mainPersistedAgents[0];
   const spawnCli =
-    exited?.cli ?? (task.persisted_tabs ?? []).find(pt => pt.is_default)?.cli ?? task.cli;
+    exited?.cli
+    ?? (p.fresh && !freshInPlace
+      ? ((task.persisted_tabs ?? []).find(pt => !pt.pane_leaf_id && pt.is_default)?.cli ?? task.cli)
+      : (durableAgent?.cli ?? task.cli));
   if (p.wait && !workDoneCapable(spawnCli)) {
     throw sendErr(
       "not_capable",
@@ -778,16 +807,71 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
       // (the Sidebar wake path calls it explicitly for the same
       // reason).
       markUnattendedSpawn(p.taskId);
-      useApp.getState().mountTasks([p.taskId]);
-      useApp.getState().ensureDefaultTab(p.taskId, task.cli);
+      const s = useApp.getState();
+      s.mountTasks([p.taskId]);
+      s.ensureDefaultTab(p.taskId, task.cli);
+      // Clear any remaining mark when ensureDefaultTab bails (for example on a
+      // non-agent strip) so a later manual wake never inherits unattended flags.
+      takeUnattendedSpawn(p.taskId);
+      let ensured = sendableAgentTabs(p.taskId);
+      if (ensured.length === 0) {
+        // ensureDefaultTab bails when any main strip tab (e.g. an editor, diff,
+        // or shell) is already open; restore the closed durable agent with its
+        // original ID/CLI/session/settings if present, and only mint a new
+        // UUID when no durable main agent is being restored.
+        const hasDefault = (useApp.getState().tabs[p.taskId] ?? []).some(
+          t => t.type === "terminal" && (t as TerminalTab).is_default,
+        );
+        if (durableAgent) {
+          const restored = tabFromPersisted(durableAgent, s.agents, true);
+          if (p.fresh) delete restored.sessionId;
+          if (hasDefault) restored.is_default = false;
+          s.addTab(p.taskId, restored, { focus: false });
+        } else {
+          if (!isAgentCliId(spawnCli)) {
+            throw sendErr(
+              "no_agent",
+              "no agent tab could be created for this task (the configured CLI is not an agent).",
+            );
+          }
+          const legacySession = !p.fresh ? task.agent_session_ids?.[spawnCli] : undefined;
+          s.addTab(
+            p.taskId,
+            {
+              id: crypto.randomUUID(),
+              type: "terminal",
+              title: agentDisplayName(spawnCli),
+              cli: spawnCli,
+              ...(!hasDefault ? { is_default: true } : {}),
+              ...(legacySession ? { sessionId: legacySession } : {}),
+              unattended: true,
+            },
+            { focus: false },
+          );
+        }
+        ensured = sendableAgentTabs(p.taskId);
+      }
+      const preferredTarget = typeof p.preferredTabId === "string" && p.preferredTabId
+        ? ensured.find(t => t.id === p.preferredTabId)
+        : undefined;
+      const chosen =
+        preferredTarget
+        ?? (durableAgent ? ensured.find(t => t.id === durableAgent.id) : undefined)
+        ?? ensured.find(t => t.is_default)
+        ?? ensured[0];
+      if (!chosen) {
+        throw sendErr("no_agent", "no agent tab could be created for this task.");
+      }
+      tabId = chosen.id;
     }
   }
 
-  const spawned = await waitForAgentPty(p.taskId, tabId);
+  const targetTabId = tabId;
+  const spawned = await waitForAgentPty(p.taskId, targetTabId);
   // Deliberately NOT awaited (the new_task rule): the RPC replies at
   // spawn; delivery confirms through cli_prompt_report.
-  void injectPromptTracked(p.taskId, p.prompt, p.promptId, spawned, tabId);
-  return { mode: "spawned", capable: workDoneCapable(spawnCli) };
+  void injectPromptTracked(p.taskId, p.prompt, p.promptId, spawned, targetTabId);
+  return { mode: "spawned", capable: workDoneCapable(spawnCli), tabId: targetTabId };
 }
 
 // ─────────────────────────── wake ────────────────────────────────────

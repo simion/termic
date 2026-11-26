@@ -37,6 +37,10 @@ export interface TaskAgentState {
    *  leaves are excluded (they are inside a strip tab, not on the
    *  strip), matching TabBar's own filter. */
   tab_states: TabAgentState[];
+  /** Terminal tabs opened inside split panes rather than on the top strip.
+   *  Kept separate from `tab_states` so 1-based strip numbering and close/
+   *  rename guards stay unchanged; resolved by exact tab id on Rust's side. */
+  pane_tab_states?: TabAgentState[];
   /** Whether the UI has this task's tabs in memory at all. False for a
    *  task nobody has opened this session: the counts above then describe
    *  nothing, and the server reports unknown rather than "no tabs". */
@@ -169,8 +173,11 @@ export function computeAgentStates(s: AppState = useApp.getState(), machines: Ma
     const queued = term.reduce((n, t) => n + (t.queue?.length ?? 0), 0);
     const capable = term.some(t => workDoneCapable(t.cli, s.agents));
     const tab_states = term.filter(t => !t.paneId).map(t => computeTabState(t, s.agents));
+    const pane_tab_states = term.filter(t => !!t.paneId).map(t => computeTabState(t, s.agents));
     states[task.id] = {
-      state, tabs: term.length, queued, capable, tab_states, hydrated: true,
+      state, tabs: term.length, queued, capable, tab_states,
+      ...(pane_tab_states.length ? { pane_tab_states } : {}),
+      hydrated: true,
       props: collectTaskProps(term),
     };
   }

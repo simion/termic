@@ -41,7 +41,7 @@ fn handle(d: &Arc<Daemon>, req: Request) -> Result<ReplyData, Fail> {
         // The desktop creates a server task (its worktree over `exec`, then
         // `task_put`) and starts its agent: this host has no agent table.
         Command::New { .. } => Err(fail(ErrorCode::Unsupported, "tasks on a server are started by Termic on the desktop")),
-        Command::Send { task, project, prompt, prompt_ref, resume, fresh, wait, timeout_ms, tab, now, cwd } => {
+        Command::Send { task, project, prompt, prompt_ref, resume, fresh, wait, timeout_ms, tab, now, cwd, caller_task: _ } => {
             if prompt_ref.is_some() {
                 return Err(fail(ErrorCode::Unsupported, "termic-server has no prompt library; pass the prompt text"));
             }

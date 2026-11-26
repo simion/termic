@@ -131,8 +131,18 @@ export const taskGroupJoin = (taskId: string, targetId: string, color?: string |
   invoke<void>("task_group_join", { taskId, targetId, color: color ?? null });
 /** `taskId` was created by `parentId`'s agent: records the link, and joins
  *  the parent's group when both are in one project (Rust `apply_spawn_link`). */
-export const taskLinkSpawn = (taskId: string, parentId: string, color?: string | null) =>
-  invoke<void>("task_link_spawn", { taskId, parentId, color: color ?? null });
+export const taskLinkSpawn = (
+  taskId: string,
+  parentId: string,
+  color?: string | null,
+  parentTabId?: string | null,
+) =>
+  invoke<void>("task_link_spawn", {
+    taskId,
+    parentId,
+    color: color ?? null,
+    parentTabId: parentTabId ?? null,
+  });
 /** A new group holding just this task (Move to group > New group). */
 export const taskGroupNew = (taskId: string, color?: string | null) =>
   invoke<void>("task_group_new", { taskId, color: color ?? null });

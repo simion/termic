@@ -81,14 +81,15 @@ export function buildAgentBriefing(opts: {
   // reader knows exactly which task this block is about.
   const them = `agent:${agent} task:${task.name} id:${task.id}`;
   // The sender's, filled in by the SENDER's shell (hence the double quotes).
-  const you = "agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID";
+  // `TERMIC_TAB_ID` expands only when set (omitted outside an agent tab).
+  const you = "agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}";
 
   // Wrapped in a tag carrying the task's identity, so a paste reads as one
   // self-contained block about ONE task, however much prompt surrounds it,
   // and two pasted briefings can never blur together.
   return `<termic-task id="${attr(task.id)}" name="${attr(task.name)}" project="${attr(project)}" agent="${attr(agent)}" path="${attr(task.path)}">
 Another coding agent working alongside you in Termic. Prompt it, and it prompts you back when done:
-  ${cli} send ${task.id} -p "[message from ${you}] <your prompt here: what you want it to do>. When done, reply: ${cli} send $TERMIC_TASK_ID -p '[message from ${them}] done: <what you did> -- ${them}' -- ${you}"
+  ${cli} send ${task.id} -p "[message from ${you}] <your prompt here: what you want it to do>. When done, reply: ${cli} send $TERMIC_TASK_ID \${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from ${them}] done: <what you did> -- ${them}' -- ${you}"
 Keep the outer double quotes and the $TERMIC_ variables as written (your shell fills in your own task name and address), and replace <you> with your agent name.${caged}
 </termic-task>`;
 }
@@ -121,10 +122,10 @@ export function buildRemoteAgentBriefing(opts: {
   const { task, machine, us, cli } = opts;
   const agent = task.agent || "claude";
   const them = `agent:${agent} task:${task.name} id:${task.id}`;
-  const you = "agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID";
+  const you = "agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}";
   return `<termic-task id="${attr(task.id)}" name="${attr(task.name)}" project="${attr(task.project)}" agent="${attr(agent)}" computer="${attr(machine.name)}">
 Another coding agent, working in Termic on the paired computer ${machine.name}. Prompt it, and it prompts you back when done:
-  ${cli} --peer ${machine.id} send ${task.id} -p "[message from ${you}] <your prompt here: what you want it to do>. When done, reply: ${cli} --peer ${us} send $TERMIC_TASK_ID -p '[message from ${them}] done: <what you did> -- ${them}' -- ${you}"
+  ${cli} --peer ${machine.id} send ${task.id} -p "[message from ${you}] <your prompt here: what you want it to do>. When done, reply: ${cli} --peer ${us} send $TERMIC_TASK_ID \${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '[message from ${them}] done: <what you did> -- ${them}' -- ${you}"
 Keep the outer double quotes and the $TERMIC_ variables as written (your shell fills in your own task name and address), and replace <you> with your agent name.
 </termic-task>`;
 }

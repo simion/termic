@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { buildAgentBriefing, cliFallbackCommand } from "./agentBriefing";
 import type { Task } from "./types";
 
@@ -84,10 +87,11 @@ describe("buildAgentBriefing", () => {
     expect(arg).toContain("-p '[message from ");
   });
 
-  it("signs both directions with agent, task name and id", () => {
+  it("signs both directions with agent, task name, id and optional tab", () => {
     // Outbound: the sender, filled in by its shell.
-    expect(cmd).toContain('-p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID]');
-    expect(cmd).toMatch(/-- agent:<you> task:\$TERMIC_TASK id:\$TERMIC_TASK_ID"$/);
+    expect(cmd).toContain('-p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID${TERMIC_TAB_ID:+ tab:$TERMIC_TAB_ID}]');
+    expect(cmd).toContain('${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p ');
+    expect(cmd).toMatch(/-- agent:<you> task:\$TERMIC_TASK id:\$TERMIC_TASK_ID\$\{TERMIC_TAB_ID:\+ tab:\$TERMIC_TAB_ID\}"$/);
     // The reply: the receiving task, literally, as itself.
     const them = "agent:codex task:review-auth id:task-abc123";
     expect(cmd).toContain(`-p '[message from ${them}] done: <what you did> -- ${them}'`);
@@ -152,8 +156,92 @@ describe("buildRemoteAgentBriefing", () => {
       cli: "termic",
     });
     expect(b).toContain('termic --peer peer-b send task-9 -p "');
-    expect(b).toContain("termic --peer peer-a send $TERMIC_TASK_ID");
+    expect(b).toContain("termic --peer peer-a send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }");
     expect(b).toContain('computer="Studio"');
     expect(b).not.toContain("path=");
   });
+
+  it("keeps embedded report-back commands on one physical line across docs and briefings", () => {
+    const localCmd = buildAgentBriefing({ task, projectName: "termic", cli: "termic" })
+      .split("\n")
+      .find(l => l.trim().startsWith("termic send "))!
+      .trim();
+    expect(localCmd).toContain("termic send $TERMIC_TASK_ID ${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }-p '");
+
+    for (const rel of ["docs/cli-agent-instructions.md", "src-tauri/assets/skills/termic/SKILL.md"]) {
+      const content = fs.readFileSync(path.resolve(process.cwd(), rel), "utf8");
+      const cmdBlocks = [...content.matchAll(/^(    "\$TERMIC_CLI"[^\n]*(?:\n    [^\n]+)*)/gm)]
+        .map(m => m[1])
+        .filter(b => b.includes("${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }"));
+      expect(cmdBlocks.length, `${rel} should have CLI examples with TERMIC_TAB_ID`).toBeGreaterThanOrEqual(3);
+      for (const block of cmdBlocks) {
+        expect(block).not.toMatch(/send \$TERMIC_TASK_ID[^\n]*\n[^\n]*(?:--tab|-p)/);
+      }
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "expands briefing and docs shell snippets cleanly in /bin/sh with TERMIC_TAB_ID set and unset",
+    () => {
+      const runSnippet = (cmdLine: string, tabId?: string): string[] => {
+        const env: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          TERMIC_CLI: "termic",
+          TERMIC_TASK: "parent-task",
+          TERMIC_TASK_ID: "task-parent",
+        };
+        if (tabId !== undefined) env.TERMIC_TAB_ID = tabId;
+        const script = `termic() { for a in "$@"; do printf '__ARG__%s\\n' "$a"; done; }\n${cmdLine}`;
+        const out = execFileSync("/bin/sh", ["-c", script], { env, encoding: "utf8" });
+        return out.split("__ARG__").slice(1).map(s => s.replace(/\n$/, ""));
+      };
+
+      const localCmd = buildAgentBriefing({ task, projectName: "termic", cli: "termic" })
+        .split("\n")
+        .find(l => l.trim().startsWith("termic send "))!
+        .trim();
+      const withTab = runSnippet(localCmd, "tab-7");
+      expect(withTab.slice(0, 3)).toEqual(["send", "task-abc123", "-p"]);
+      expect(withTab[3]).toContain("[message from agent:<you> task:parent-task id:task-parent tab:tab-7]");
+      expect(withTab[3]).toContain("reply: termic send task-parent --tab tab-7 -p '");
+      expect(withTab[3]).toContain("-- agent:<you> task:parent-task id:task-parent tab:tab-7");
+      expect(withTab[3]).not.toContain("\n");
+
+      const withoutTab = runSnippet(localCmd, undefined);
+      expect(withoutTab[3]).toContain("[message from agent:<you> task:parent-task id:task-parent]");
+      expect(withoutTab[3]).toContain("reply: termic send task-parent -p '");
+      expect(withoutTab[3]).not.toContain("--tab");
+      expect(withoutTab[3]).not.toContain("\n");
+
+      const replyMatch = withTab[3].match(/reply: (termic send .* -p '.*') -- agent:/);
+      expect(replyMatch).not.toBeNull();
+      expect(runSnippet(replyMatch![1])).toEqual([
+        "send",
+        "task-parent",
+        "--tab",
+        "tab-7",
+        "-p",
+        "[message from agent:codex task:review-auth id:task-abc123] done: <what you did> -- agent:codex task:review-auth id:task-abc123",
+      ]);
+
+      for (const rel of ["docs/cli-agent-instructions.md", "src-tauri/assets/skills/termic/SKILL.md"]) {
+        const content = fs.readFileSync(path.resolve(process.cwd(), rel), "utf8");
+        const cmdBlocks = [...content.matchAll(/^(    "\$TERMIC_CLI"[^\n]*(?:\n    [^\n]+)*)/gm)]
+          .map(m => m[1])
+          .filter(b => b.includes("${TERMIC_TAB_ID:+--tab $TERMIC_TAB_ID }"));
+        for (const rawBlock of cmdBlocks) {
+          const block = rawBlock.replace(/<model-id>/g, "gpt-5");
+          const expanded = runSnippet(block, "tab-9");
+          const promptArg = expanded[expanded.indexOf("-p") + 1];
+          expect(promptArg).toContain("tab:tab-9");
+          expect(promptArg).toContain("send task-parent --tab tab-9 -p");
+          expect(promptArg).not.toMatch(/send task-parent[^\n]*\n[^\n]*--tab/);
+          const noTabExpanded = runSnippet(block, undefined);
+          const noTabPrompt = noTabExpanded[noTabExpanded.indexOf("-p") + 1];
+          expect(noTabPrompt).toContain("send task-parent -p");
+          expect(noTabPrompt).not.toContain("--tab");
+        }
+      }
+    },
+  );
 });

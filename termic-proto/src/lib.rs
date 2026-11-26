@@ -130,7 +130,13 @@ use std::io::{self, BufRead, Read, Write};
 /// v26: the `pin` verb pins or unpins a task in the sidebar (a pinned task
 /// stays listed whatever the filters say), so a remote client or an agent
 /// can do what the row's Pin does. A v25 server does not know it.
-pub const PROTOCOL_VERSION: u32 = 26;
+///
+/// v27: tab-scoped parent-child routing. `new` carries `parent_tab`
+/// (`$TERMIC_TAB_ID` or MCP `X-Termic-Tab`) so `spawned_by_tab` records which
+/// tab initiated a child task, and `send` carries `caller_task` so an
+/// unqualified reply from a child defaults back to that initiating tab instead
+/// of the parent's default tab.
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -524,6 +530,11 @@ pub enum Command {
         /// caller-asserted: an unknown id is ignored, never an error.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_task: Option<String>,
+        /// v27: the tab inside `parent_task` whose agent created this task
+        /// (`$TERMIC_TAB_ID`, or MCP `X-Termic-Tab`), stamped as
+        /// `spawned_by_tab` so unqualified replies return to that tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tab: Option<String>,
         /// v21: review this pull request (`termic review`). The webview
         /// fetches its head and checks it out (a worktree unless `mode` is
         /// "main"), names the task `review-pr-<n>` when `name` is empty,
@@ -1071,6 +1082,11 @@ pub enum Command {
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// v27: the task the caller runs in (`$TERMIC_TASK_ID`, or MCP
+        /// `X-Termic-Task`). When `tab` is absent and the target spawned this
+        /// caller from `spawned_by_tab`, routes the reply to that tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_task: Option<String>,
     },
     /// The GUI's "send diff to main": bring the worktree's cumulative
     /// diff into the project's main checkout as uncommitted changes.
@@ -1941,6 +1957,10 @@ pub struct TaskSummary {
     /// ignores it or reads none), so no protocol bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<String>,
+    /// v27: the parent tab id that spawned this task (`spawned_by_tab`), when
+    /// recorded. Additive so callers can see which tab initiated the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by_tab: Option<String>,
     /// v18 (GH #358): the task's collected tab properties (see
     /// `CollectedProp`). Empty when no tab holds any, or when the UI has
     /// not reported the task's tabs.
@@ -2582,7 +2602,8 @@ mod tests {
                 wait: true,
                 timeout_ms: Some(60_000),
                 cwd: Some("/repo/web".into()),
-                parent_task: None,
+                parent_task: Some("orch-1".into()),
+                parent_tab: Some("tab-2".into()),
                 pr: None,
                 members: vec!["alpha".into(), "Beta".into()],
             },
@@ -2606,6 +2627,7 @@ mod tests {
                 timeout_ms: None,
                 cwd: None,
                 parent_task: None,
+                parent_tab: None,
                 pr: None,
                 members: Vec::new(),
             },
@@ -2630,6 +2652,7 @@ mod tests {
                 timeout_ms: None,
                 cwd: None,
                 parent_task: None,
+                parent_tab: None,
                 pr: None,
                 members: Vec::new(),
             },
@@ -2654,6 +2677,7 @@ mod tests {
                 timeout_ms: None,
                 cwd: None,
                 parent_task: None,
+                parent_tab: None,
                 pr: None,
                 members: Vec::new(),
             },
@@ -2799,6 +2823,7 @@ mod tests {
                 tab: Some("claude".into()),
                 now: true,
                 cwd: None,
+                caller_task: Some("child-1".into()),
             },
             Command::Send {
                 task: None,
@@ -2812,6 +2837,7 @@ mod tests {
                 tab: None,
                 now: false,
                 cwd: Some("/repo/web".into()),
+                caller_task: None,
             },
             Command::Apply { task: "fix-auth".into(), project: Some("web".into()) },
             Command::Diff { task: Some("fix-auth".into()), project: None, full: true, cwd: None },
@@ -3000,7 +3026,8 @@ mod tests {
             open_tabs: Some(2),
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
-            spawned_by: None,
+            spawned_by: Some("api/orchestrate".into()),
+            spawned_by_tab: Some("tab-2".into()),
             org: None,
         };
         for data in [

@@ -608,7 +608,11 @@ without being told. The CLI reads
 `$TERMIC_TASK_ID` itself, so an agent gets grouping without being told
 about it; `--no-group` opts out. MCP gets the same id from the
 `X-Termic-Task` header the installed headers helper sends from the
-agent's environment, so its `task_new` groups the same way (an explicit
+agent's environment (alongside `X-Termic-Tab` from `$TERMIC_TAB_ID` to record
+the initiating tab for child replies; on macOS/Linux, Settings > MCP detects
+older inline helpers without `X-Termic-Tab` via `claude_needs_update` /
+`codex_needs_update` so users know to re-add and restart running sessions), so
+its `task_new` groups the same way (an explicit
 `parentTask` overrides it). A worker that orchestrates in turn adds to
 the ROOT group: groups are flat on purpose, since a tree in a 260px
 sidebar is unreadable and "these belong to one job" is the question.

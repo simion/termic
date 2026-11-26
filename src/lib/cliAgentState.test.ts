@@ -225,6 +225,20 @@ describe("per-tab snapshot (tab_states, GH #138 part 2)", () => {
       id: "second", is_default: false, live: false, queued: 0, title: "codex",
     });
   });
+
+  it("reports split-pane tabs in pane_tab_states without shifting strip tab_states", () => {
+    const s = statesFor({
+      t: [
+        term({ id: "main", is_default: true, ptyId: "pty-1", workState: "idle" }),
+        term({ id: "pane-1", paneId: "leaf-1", is_default: false, ptyId: "pty-2", cli: "codex", workState: "working" }),
+      ],
+    });
+    expect(s.t.tab_states.map(t => t.id)).toEqual(["main"]);
+    expect(s.t.pane_tab_states).toHaveLength(1);
+    expect(s.t.pane_tab_states?.[0]).toMatchObject({
+      id: "pane-1", kind: "agent", cli: "codex", live: true, state: "working", is_default: false,
+    });
+  });
 });
 
 describe("computeTabState working_since", () => {
