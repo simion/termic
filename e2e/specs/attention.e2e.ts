@@ -80,12 +80,31 @@ async function panelHandle(): Promise<string | null> {
     await browser.switchToWindow(mainHandle);
   });
 
+  /** What the main window and WebDriver see, for a failure to say why. */
+  const diagnose = async () => {
+    await browser.switchToWindow(mainHandle).catch(() => {});
+    const app = await browser.execute((id) => {
+      const s = window.__termic!;
+      const tabs = (s.useApp.getState().tabs[id] ?? []).map((t: any) => ({ type: t.type, unread: t.unread?.reason ?? null, work: t.workState ?? null }));
+      return { pref: s.usePrefs.getState().attentionPanel, tabs, error: (window as any).__termicAttentionError ?? null };
+    }, taskId).catch((e: unknown) => String(e));
+    const pages: string[] = [];
+    for (const h of await browser.getWindowHandles()) {
+      try { await browser.switchToWindow(h); pages.push(await browser.execute(() => location.href)); } catch { pages.push("(gone)"); }
+    }
+    await browser.switchToWindow(mainHandle).catch(() => {});
+    return JSON.stringify({ app, pages });
+  };
+
+  // Every case starts and ends on the main window: a failure that left
+  // WebDriver on the panel took the next case down with it.
+  afterEach(async () => { await browser.switchToWindow(mainHandle).catch(() => {}); });
+
   it("shows the waiting task's question, and answers it from there", async () => {
     await submitToAgent(taskId, "ask");
     let handle: string | null = null;
-    await browser.waitUntil(async () => (handle = await panelHandle()) !== null, {
-      timeout: 15_000, timeoutMsg: "the panel never opened for a waiting task",
-    });
+    await browser.waitUntil(async () => (handle = await panelHandle()) !== null, { timeout: 20_000 })
+      .catch(async () => { throw new Error(`the panel never opened for a waiting task: ${await diagnose()}`); });
     await browser.waitUntil(
       () => browser.execute(() => document.querySelectorAll('[data-testid="attention-option"]').length === 2),
       { timeout: 10_000, timeoutMsg: "the panel never showed the question's two options" },

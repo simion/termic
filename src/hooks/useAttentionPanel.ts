@@ -18,7 +18,11 @@ export function useAttentionPanel() {
     if (!on || WINDOW_LABEL !== "main") return;
     const send = (list: WaitingTask[]) => {
       void emitTo("attention", "attention://list", list).catch(() => {});
-      void invoke("attention_window", { show: list.length > 0 }).catch(() => {});
+      void invoke("attention_window", { show: list.length > 0 }).catch((e: unknown) => {
+        // Kept where a spec can read why the panel did not show.
+        (window as unknown as { __termicAttentionError?: string }).__termicAttentionError = String(e);
+        console.warn("[attention] window:", e);
+      });
     };
     const compute = () => {
       const s = useApp.getState();
