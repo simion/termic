@@ -4,6 +4,23 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.1.0] - 2026-11-26
+
+Open files on your forge, answer waiting agents from a floating panel.
+
+### Features
+- Open or copy a file's link on GitHub, GitLab or Azure DevOps from any file menu or editor tab, including a permalink to the selected lines ([#467](https://github.com/simion/termic/issues/467)).
+- A needs-you panel: an optional window that floats over your other apps while an agent waits for you, with its question and a button per answer. Turn it on in Settings, Notifications ([#468](https://github.com/simion/termic/issues/468)).
+- An agent's reply to a task it started goes back to the tab that started it, in the CLI, MCP and split panes ([#470](https://github.com/simion/termic/pull/470)).
+- Links that lead out of a task open in the editor, read-only unless you granted that folder ([#469](https://github.com/simion/termic/pull/469)).
+- `termic run --script` and MCP `task_run` start a project's named run commands, not only its main run script.
+- Other computers are listed at the end of the project list, and clicking a switched-off computer connects it.
+
+### Bug fixes
+- On Linux, a lost Super key release no longer turns every letter into a shortcut and every terminal deaf until you switch windows.
+- On macOS, installing an update no longer leaves Termic listed as "Running in Background" after you quit it.
+- The update notice after an update is easier to spot, and drops the release's age.
+
 ## [2.0.12] - 2026-11-26
 
 Fixes for remote control, paired computers and the phone app.

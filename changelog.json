@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.1.0",
+      "date": "2026-11-26",
+      "summary": "Open files on your forge, answer waiting agents from a floating panel."
+    },
+    {
       "version": "2.0.12",
       "date": "2026-11-26",
       "summary": "Fixes for remote control, paired computers and the phone app."
