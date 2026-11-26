@@ -4717,13 +4717,18 @@ describe("editor read-only through a link", () => {
     // the SAME slot, recycled, so this is the reset and not a fresh tab
     const tab = (await tabFor("README.md"))!;
     expect(tab.id).toBe(slotId);
-    expect(tab.readOnly).toBeUndefined();
+    // Cleared to undefined in the store; WebKit's WebDriver returns an
+    // undefined property as null, and either means "not read-only".
+    expect(tab.readOnly ?? false).toBe(false);
     await browser.waitUntil(async () => !(await badgeShown()), {
       timeout: 5_000, timeoutMsg: "the read-only badge outlived the file it was for",
     });
   });
 
-  const treeRow = (rel: string) => `[data-task-id="${taskId}"] [data-path="${rel}"]`;
+  // The right panel's file tree is not inside the task view's
+  // [data-task-id], so rows are matched on their own; a mounted but hidden
+  // task's tree is ruled out by the non-zero box rowShown asks for.
+  const treeRow = (rel: string) => `[data-path="${rel}"]`;
   const rowShown = (rel: string) =>
     browser.execute((sel) => {
       const r = document.querySelector<HTMLElement>(sel);
@@ -4755,9 +4760,9 @@ describe("editor read-only through a link", () => {
     // why: not a missing junction or some other read error
     await browser.execute((sel) => document.querySelector<HTMLElement>(sel)!.click(), treeRow("deep/er/data"));
     const reason = () => browser.execute(
-      (id) => document.querySelector(`[data-task-id="${id}"] [data-testid="dir-read-failed"][data-dir="deep/er/data"]`)
+      // The tree is outside the task view's [data-task-id] (see treeRow).
+      () => document.querySelector('[data-testid="dir-read-failed"][data-dir="deep/er/data"]')
         ?.getAttribute("data-reason") ?? null,
-      taskId,
     );
     await browser.waitUntil(async () => (await reason()) !== null, {
       timeout: 10_000, timeoutMsg: "the link into termic's data dir listed anyway",
