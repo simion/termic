@@ -39,6 +39,7 @@ const DEF_KEY: Record<ShortcutId, string> = {
   "task-prev-arrow": "taskPrevArrow",
   "task-next-arrow": "taskNextArrow",
   "jump-next-waiting": "jumpNextWaiting",
+  "mark-task-unread": "markTaskUnread",
   "tab-prev": "tabPrev",
   "tab-next": "tabNext",
   "tab-prev-arrow": "tabPrevArrow",

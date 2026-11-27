@@ -395,6 +395,10 @@ export interface AppState {
   /** Mark a tab unread from the sidebar menu (`markedUnread`). Persisted;
    *  cleared the next time the tab is shown. */
   markTabUnread: (taskId: string, tabId: string) => void;
+  /** "Mark as unread" on a task row and its shortcut (GH #473): the same mark,
+   *  on the task's active terminal tab (else its first one). False when the
+   *  task has no terminal tab to carry it. */
+  markTaskUnread: (taskId: string) => boolean;
   /** Add a terminal tab to whichever pane is active: the focused split pane
    *  (wired into its tab strip) or the main pane. Used by the Run pop-out
    *  (GH #54) so the run terminal lands where the user is looking.
@@ -2630,6 +2634,16 @@ export const useApp = create<AppState>((set, get) => ({
     if (!tab || tab.type !== "terminal" || tab.markedUnread) return;
     get().patchTab(taskId, tabId, { markedUnread: true });
     get().syncDurableTabs(taskId);
+  },
+
+  markTaskUnread: (taskId) => {
+    const s = get();
+    const list = s.tabs[taskId] || [];
+    const active = list.find(t => t.id === s.activeTab[taskId] && t.type === "terminal");
+    const tab = active ?? list.find(t => t.type === "terminal");
+    if (!tab) return false;
+    s.markTabUnread(taskId, tab.id);
+    return true;
   },
 
   /**

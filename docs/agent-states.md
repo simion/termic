@@ -76,6 +76,14 @@ Only the first five touch the state machine. An agent with no hooks falls back
 to its title, OSC 9 and quiet heuristics, which is the same machine with worse
 inputs; see agent-hooks.md "Why not read the terminal".
 
+**By hand: `termic mark` / MCP `task_mark` (GH #473).** `done` and
+`attention` write exactly what a done or attention signal writes
+(`setWorkState("done")` plus `markAttention`), with `repeat` set so no OS
+banner fires; `unread` is the sidebar's Mark as unread; `clear` removes all
+three. It exists for a PERSON who asks an agent to flag a task, and every
+help text says so: an agent that badged its own turns would double what the
+hooks already draw and teach the user to ignore the badge.
+
 ## Delegated work: the three verdicts
 
 When a done hook finds work outstanding it reports it rather than going

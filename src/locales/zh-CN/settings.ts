@@ -788,6 +788,10 @@ export default {
         label: "跳到下一个等待中的智能体",
         hint: "依次跳到下一个智能体在等你的任务（刚结束一轮，或卡在输入上）。看过之后信号就清除，所以连续按可以走完整个队列。",
       },
+      markTaskUnread: {
+        label: "将任务标记为未读",
+        hint: "看过一眼后把当前任务的圆点放回去，让它仍显示为在等你。下次打开时清除。",
+      },
       tabPrev: { label: "上一个标签页" },
       tabNext: { label: "下一个标签页" },
       tabPrevArrow: {

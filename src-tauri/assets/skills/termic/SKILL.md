@@ -130,6 +130,7 @@ To move a task between groups:
 - Without a task, `tab` opens the new agent in YOUR task: `"$TERMIC_CLI" tab --agent codex -p "..."` starts a second agent beside you, sharing your worktree.
 - `"$TERMIC_CLI" tab close <task> --tab <id>` - close a tab you opened.
 - `"$TERMIC_CLI" prop <key> <value>` - label YOUR tab with what you are working on (`prop ticket ABC-1`, `prop status review`).
+- `"$TERMIC_CLI" mark done|attention|unread|clear` - set a tab's sidebar status by hand, ONLY when a human explicitly asks. Termic sets done and needs-attention itself from your hooks and output; never use it to report your own progress or end of turn.
 - `"$TERMIC_CLI" result <task>` - the agent's last message from its session transcript.
 - `"$TERMIC_CLI" logs <task> --json` - the last chunk of the agent's rendered terminal output.
 - `"$TERMIC_CLI" diff <task> --json` - diff counts + commits vs the base branch; `--full` prints the unified patch.

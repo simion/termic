@@ -1299,6 +1299,48 @@ disabled, 6 refused, 8 connection lost."
         project: Option<String>,
     },
 
+    /// Set a tab's sidebar status by hand, ONLY when a person asks you to.
+    #[command(
+        after_help = "Termic sets these by itself: a tab turns done when its \
+agent finishes a turn and needs-attention when it is blocked on the user, \
+read from the agent's hooks and its output. Do NOT run this to report your \
+own progress, the end of your turn, or a question you are asking: Termic \
+already shows those, and a hand-set badge on top of them is noise the user \
+has to clear. Use it only when a human explicitly asks for it (\"mark this \
+task as needing me\", \"put the done badge back\", \"mark it unread\").
+
+States: `done` (the done badge), `attention` (needs you), `unread` (the \
+plain reminder dot of the sidebar's Mark as unread), `clear` (removes all \
+three). Each badge clears again the next time the user opens the tab, \
+exactly like the automatic ones. No OS notification is sent.
+
+The tab is your own ($TERMIC_TAB_ID) unless --tab names another by id, \
+1-based strip index or title; outside an agent tab it is the task's \
+default tab. Without --task, the task is yours ($TERMIC_TASK_ID), then the \
+current directory.
+
+With --output-format json, the tab object `tab` prints.
+
+Exit codes: 0 ok, 1 error (unknown task or tab), 4 app not running, 5 CLI \
+disabled, 6 refused, 8 connection lost."
+    )]
+    Mark {
+        /// done, attention, unread or clear.
+        #[arg(value_parser = proto::MarkState::ALL)]
+        state: String,
+        /// The tab: id, 1-based strip index or title. Default: your own tab
+        /// ($TERMIC_TAB_ID), else the task's default tab.
+        #[arg(long, value_name = "TAB")]
+        tab: Option<String>,
+        /// Task name, task id, or qualified project/name. Default: your own
+        /// task ($TERMIC_TASK_ID), then the current directory.
+        #[arg(long, value_name = "TASK")]
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires --task.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
     /// Show, rename or recolour your task's sidebar group, or move a task
     /// into another group or out of one.
     #[command(
@@ -2242,6 +2284,8 @@ outside.",
         Cmd::Tab { close: Some(TabCmd::Close { .. }), .. } | Cmd::Tab { tab: Some(_), .. }
     // `prop` too: properties live on open tabs, and a fresh app has none.
             | Cmd::Prop { .. }
+    // `mark` too: a status lives on an open tab.
+            | Cmd::Mark { .. }
     );
     let mut conn = match client::connect_or_launch(&paths, cli.no_launch || quitting || closing_tab)
     {
@@ -2576,6 +2620,25 @@ outside.",
                     tab: target_tab,
                     key: key.clone(),
                     value: value.clone(),
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
+        }
+        Cmd::Mark { state, tab, task, project } => {
+            // Your own tab unless --tab says otherwise, but only when the
+            // task is your own too: $TERMIC_TAB_ID means nothing in another.
+            let own_task = task.is_none();
+            let target_tab = tab.clone().or_else(|| if own_task { own_env("TERMIC_TAB_ID") } else { None });
+            let data = client::request(
+                &mut conn,
+                proto::Command::Mark {
+                    task: task.clone().or_else(|| own_env("TERMIC_TASK_ID")),
+                    project: project.clone(),
+                    tab: target_tab,
+                    // clap's value_parser already limited it to these names.
+                    state: proto::MarkState::parse(state).unwrap_or(proto::MarkState::Clear),
                     cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 },
                 &token,
@@ -4065,6 +4128,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
             OutputFormat::Text => output::prop_text(&p, value.is_some()),
         }),
         (Cmd::Prop { .. }, _) => Err(unexpected("prop")),
+        (Cmd::Mark { state, .. }, proto::ReplyData::Tab(t)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&t),
+            OutputFormat::Text => output::mark_text(&t, state),
+        }),
+        (Cmd::Mark { .. }, _) => Err(unexpected("mark")),
         _ => Err(unexpected("command")),
     }
 }
@@ -4266,7 +4334,20 @@ mod tests {
     }
 
     #[test]
-    fn prop_parses_set_clear_and_list_and_guards_its_limits() {
+    fn mark_parses_each_state_and_refuses_anything_else() {
+        for st in proto::MarkState::ALL {
+            let cli = Cli::try_parse_from(["termic", "mark", st]).unwrap();
+            assert!(matches!(&cli.cmd, Cmd::Mark { state, tab: None, task: None, .. } if state == st));
+        }
+        let cli = Cli::try_parse_from(["termic", "mark", "attention", "--task", "fix-auth", "--tab", "2"]).unwrap();
+        assert!(matches!(&cli.cmd, Cmd::Mark { tab: Some(t), task: Some(k), .. } if t == "2" && k == "fix-auth"));
+        assert!(Cli::try_parse_from(["termic", "mark"]).is_err(), "a state is required");
+        assert!(Cli::try_parse_from(["termic", "mark", "finished"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "mark", "done", "--project", "web"]).is_err(), "--project needs --task");
+    }
+
+    #[test]
+        fn prop_parses_set_clear_and_list_and_guards_its_limits() {
         let cli = Cli::try_parse_from(["termic", "prop", "ticket", "ABC-1"]).unwrap();
         let Cmd::Prop { key, value, tab, task, .. } = &cli.cmd else { panic!("not prop") };
         assert_eq!((key.as_deref(), value.as_deref()), (Some("ticket"), Some("ABC-1")));

@@ -141,7 +141,50 @@ use std::io::{self, BufRead, Read, Write};
 /// Run button's dropdown: `scripts.run_scripts` in `.termic.yaml` plus the
 /// personal ones), and `status` lists them. A v27 server would drop the
 /// field and start the main run script instead, which reads as success.
-pub const PROTOCOL_VERSION: u32 = 28;
+///
+/// v29: the `mark` verb puts a tab's sidebar status by hand (done, needs
+/// attention, unread, or clear), for when a HUMAN asks for it (GH #473).
+/// A v28 server does not know it.
+pub const PROTOCOL_VERSION: u32 = 29;
+
+/// What `mark` puts on a tab (GH #473). Termic sets done and needs-attention
+/// by itself from agent hooks and output parsing; this is the by-hand
+/// override for when a person asks for it, never an agent's progress report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkState {
+    /// The agent finished: the done badge.
+    Done,
+    /// Needs you: the attention badge.
+    Attention,
+    /// The plain reminder dot the sidebar's "Mark as unread" draws.
+    Unread,
+    /// Remove any of the above.
+    Clear,
+}
+
+impl MarkState {
+    pub const ALL: [&'static str; 4] = ["done", "attention", "unread", "clear"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "done" => Some(Self::Done),
+            "attention" => Some(Self::Attention),
+            "unread" => Some(Self::Unread),
+            "clear" => Some(Self::Clear),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Attention => "attention",
+            Self::Unread => "unread",
+            Self::Clear => "clear",
+        }
+    }
+}
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -667,6 +710,23 @@ pub enum Command {
         key: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<String>,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// v29 (GH #473): put a tab's sidebar status by hand. Only for when a
+    /// human asks: Termic sets done and attention itself. Replies
+    /// `ReplyData::Tab`.
+    Mark {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// Tab selector (id, 1-based strip index, or title/cli). Omitted:
+        /// the task's default tab. The CLI fills it from `$TERMIC_TAB_ID`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+        state: MarkState,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -2553,6 +2613,17 @@ pub fn check_protocol(server_protocol: u32) -> Result<(), String> {
 mod tests {
 
     #[test]
+    fn mark_state_names_round_trip_through_parse_and_the_wire() {
+        for name in super::MarkState::ALL {
+            let st = super::MarkState::parse(name).unwrap();
+            assert_eq!(st.as_str(), name);
+            assert_eq!(serde_json::to_value(st).unwrap(), serde_json::json!(name));
+        }
+        assert!(super::MarkState::parse("Done").is_none());
+        assert!(super::MarkState::parse("needs-you").is_none());
+    }
+
+    #[test]
     fn a_schedule_date_is_a_real_day_and_only_goes_with_once() {
         for ok in ["2026-10-27", "2028-02-29", "2000-02-29", "1970-01-01"] {
             assert!(super::calendar_date_ok(ok), "{ok}");
@@ -2792,6 +2863,11 @@ mod tests {
                 key: Some("status".into()), value: Some(String::new()), cwd: None,
             },
             Command::Prop { task: None, project: None, tab: None, key: None, value: None, cwd: Some("/t".into()) },
+            // v29 (GH #473): every state, with and without a tab.
+            Command::Mark { task: Some("fix-auth".into()), project: Some("web".into()), tab: Some("2".into()), state: MarkState::Done, cwd: None },
+            Command::Mark { task: None, project: None, tab: None, state: MarkState::Attention, cwd: Some("/t".into()) },
+            Command::Mark { task: None, project: None, tab: Some("tab-1".into()), state: MarkState::Unread, cwd: None },
+            Command::Mark { task: None, project: None, tab: None, state: MarkState::Clear, cwd: None },
             Command::Agents,
             Command::Prompts { selector: None },
             Command::Prompts { selector: Some("builtin:review".into()) },

@@ -60,6 +60,7 @@ export type ShortcutId =
   | "broadcast"
   | "prompt-palette"
   | "review-pr"
+  | "mark-task-unread"
   | "zoom-in"
   | "zoom-out"
   | "zoom-reset"
@@ -148,6 +149,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
   { id: "jump-next-waiting", group: "Navigation",
     defaultBinding: B("a", { cmd: true, shift: true }) },
+  // GH #473: put the attention dot back after an accidental visit. Ships
+  // unbound: Mail's ⇧⌘U is Ctrl+Shift+U off macOS, which IBus takes for
+  // unicode entry. Bind it in Settings.
+  { id: "mark-task-unread", group: "Navigation", defaultBinding: null },
   // Contextual (markdown preview): handled in MarkdownPreview, and only while
   // that preview owns the keyboard, the same gate as its find. ⌘L, Xcode's
   // and IntelliJ's go to line, is focus-terminal here. A Binding folds Ctrl

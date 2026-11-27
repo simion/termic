@@ -1006,6 +1006,15 @@ pub(crate) fn dispatch_authenticated(
             value.as_deref(),
             cwd.as_deref(),
         ),
+        Command::Mark { task, project, tab, state, cwd } => handle_mark(
+            &req.id,
+            host,
+            task.as_deref(),
+            project.as_deref(),
+            tab.as_deref(),
+            *state,
+            cwd.as_deref(),
+        ),
         Command::TabClose { task, project, tab, yes, cwd } => handle_tab_close(
             &req.id,
             host,
@@ -3602,6 +3611,55 @@ fn handle_tab_rename(
     Reply::ok(
         id,
         ReplyData::Tab(proto::TabData { agent_args: t.persisted_tabs.iter().find(|p| p.id == rt.id).map(|p| p.agent_args.clone()).unwrap_or_default(), task_id: t.id, tab_id: rt.id, cli: rt.cli, title, prompt: None }),
+    )
+}
+
+/// `mark` (GH #473): put a tab's sidebar status by hand. The webview owns
+/// the badges, so this only resolves the tab and hands it over.
+fn handle_mark(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    tab: Option<&str>,
+    state: proto::MarkState,
+    cwd: Option<&str>,
+) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    // No tab named: the task's default tab, the one the row stands for.
+    let default_id = || {
+        let snap = host.agent_cache().snapshot();
+        snap.states.get(&t.id).and_then(|e| e.tab_states.iter().find(|s| s.is_default).map(|s| s.id.clone()))
+    };
+    let Some(sel) = tab.map(str::to_string).or_else(default_id) else {
+        return Reply::err(id, ErrorCode::BadRequest, "which tab? pass --tab; this task has no open default tab");
+    };
+    let rt = match resolve_tab_selector_with(host, &t, &sel, TabReach::AnyTab) {
+        Ok(rt) => rt,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    if let Err(e) = host.rpc(
+        "mark_tab",
+        serde_json::json!({ "taskId": t.id, "tabId": rt.id, "state": state.as_str() }),
+        OPEN_TIMEOUT,
+    ) {
+        let msg = e.strip_prefix("cli_mark:unknown_tab: ").unwrap_or(&e).to_string();
+        return Reply::err(id, ErrorCode::NotFound, &msg);
+    }
+    Reply::ok(
+        id,
+        ReplyData::Tab(proto::TabData {
+            agent_args: Vec::new(),
+            task_id: t.id,
+            tab_id: rt.id,
+            cli: rt.cli,
+            title: rt.title,
+            prompt: None,
+        }),
     )
 }
 
@@ -10061,6 +10119,47 @@ mod tests {
 
     fn w3(host: &StubHost) -> Task {
         host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
+    }
+
+    // ── mark (GH #473) ───────────────────────────────────────────────
+
+    fn mark_req(tab: Option<&str>, state: proto::MarkState) -> Request {
+        req(
+            Command::Mark { task: Some("w3".into()), project: None, tab: tab.map(str::to_string), state, cwd: None },
+            Some("tok"),
+        )
+    }
+
+    #[test]
+    fn mark_hands_the_resolved_tab_and_state_to_the_webview() {
+        for (sel, want) in [(Some("2"), "tab-b"), (Some("fixing tests"), "tab-b"), (None, "tab-a")] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("mark_tab", Ok(serde_json::json!({})));
+            let reply = handle(&mark_req(sel, proto::MarkState::Attention), &host);
+            assert!(reply.ok, "{sel:?}: {:?}", reply.error);
+            let p = rpc_params(&host, "mark_tab");
+            assert_eq!(p["taskId"], "w3");
+            assert_eq!(p["tabId"], want, "{sel:?}: no tab means the default tab");
+            assert_eq!(p["state"], "attention");
+            let Some(ReplyData::Tab(d)) = reply.data else { panic!("expected tab") };
+            assert_eq!(d.tab_id, want);
+        }
+    }
+
+    #[test]
+    fn mark_refuses_an_unknown_tab_and_says_what_the_webview_said() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let reply = handle(&mark_req(Some("9"), proto::MarkState::Done), &host);
+        assert!(!reply.ok);
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc("mark_tab", Err("cli_mark:unknown_tab: that tab is not an open terminal tab".into()));
+        let reply = handle(&mark_req(Some("tab-a"), proto::MarkState::Done), &host);
+        let e = reply.error.unwrap();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert_eq!(e.message, "that tab is not an open terminal tab");
     }
 
     // ── tab properties (GH #358) ─────────────────────────────────────

@@ -497,6 +497,10 @@ entries:
   array slot and can sit between two pinned ones). The sidebar, the tab strip and `persisted_tabs` all read that one list, so
   the slot holds in all three and across a relaunch.
 - **Mark as unread** sets `TerminalTab.markedUnread` (`markTabUnread`).
+  The task row's menu has it too (GH #473, `markTaskUnread`), which marks
+  the task's active terminal tab, else its first one; so does the
+  `mark-task-unread` shortcut, which ships unbound. `termic mark` / MCP
+  `task_mark` set the same mark, or done / attention, by hand.
   The row draws an orange dot (`TaskWorkBadge reason="marked"`,
   `--color-marked`), and so does the folded task row and every rollup
   that reads `taskWorkBadge`: it ranks under attention and done and over

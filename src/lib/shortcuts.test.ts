@@ -38,8 +38,9 @@ describe("the shortcut table", () => {
     // An unbound command nobody can reach is a dead feature. Search everywhere
     // has double-Shift; Review a PR is in the command palette and the project
     // + menu (its palette row is checked by CommandPalette.coverage.test.ts).
+    // Mark task as unread is on every task row's menu (GH #473).
     const unbound = SHORTCUT_DEFS.filter(d => d.defaultBinding === null);
-    expect(unbound.map(d => d.id)).toEqual(["search-everywhere", "review-pr"]);
+    expect(unbound.map(d => d.id)).toEqual(["search-everywhere", "mark-task-unread", "review-pr"]);
     expect(SHORTCUT_DEFS.find(d => d.id === "search-everywhere")?.gesture).toBe("double-shift");
   });
 

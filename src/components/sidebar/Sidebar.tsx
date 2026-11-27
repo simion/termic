@@ -3788,6 +3788,19 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 {w.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
                 <span>{w.pinned ? t("unpinTask") : t("pinTask")}</span>
               </DropdownItem>
+              {/* GH #473: undo an accidental visit. Read from the store at
+                  click time rather than subscribed, so no row grows a
+                  selector for a menu that is almost never open. */}
+              {!serverId && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid="task-menu-mark-unread"
+                  onSelect={() => { useApp.getState().markTaskUnread(w.id); }}
+                >
+                  <CircleDot className="h-4 w-4" />
+                  <span>{t("tabMenuMarkUnread")}</span>
+                </DropdownItem>
+              )}
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 onSelect={() => setTaskRenaming(w.name)}

@@ -555,6 +555,11 @@ export function useShortcuts() {
           return;
         }
 
+        case "mark-task-unread": {
+          if (taskId && useApp.getState().markTaskUnread(taskId)) e.preventDefault();
+          return;
+        }
+
         // ⌘J → toggle the bottom-split terminal, VS Code-style (issue #45).
         // The whole show/hide + focus dance lives in the store so the command
         // palette can share it. NO `isTyping` guard — must fire from inside any

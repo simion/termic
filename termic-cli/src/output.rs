@@ -746,6 +746,15 @@ pub fn tab_rename_text(t: &TabData, reset: bool) -> String {
     }
 }
 
+pub fn mark_text(t: &TabData, state: &str) -> String {
+    let label = if t.title.is_empty() { t.cli.clone() } else { t.title.clone() };
+    if state == "clear" {
+        format!("Cleared the status of tab {label} in {}.", t.task_id)
+    } else {
+        format!("Marked tab {label} in {} as {state}.", t.task_id)
+    }
+}
+
 pub fn tab_text(t: &TabData) -> String {
     // `title` is what the tab shows in the GUI, and it is the only useful
     // label when it differs from the cli id: a custom-command task's tab is

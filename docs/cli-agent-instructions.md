@@ -326,6 +326,11 @@ MCP: `task_run` (`setup`, `stop`, `status`, `member`, `script`).
   in one task never overwrite each other. `prop <key> ""` clears it,
   bare `prop` lists them. Keys are lowercase (`[a-z0-9_-]`, at most 32),
   values one line of at most 40 characters, 8 keys per tab.
+- `"$TERMIC_CLI" mark done|attention|unread|clear` - set a tab's sidebar
+  status by hand, ONLY when a human explicitly asks ("mark it as needing
+  me"). Termic already sets done and needs-attention itself from your
+  hooks and output; never run this to report your own progress, the end
+  of your turn, or a question you are asking.
 - `"$TERMIC_CLI" result <task>` - the agent's last message from its
   session transcript (claude only; other agents error and you fall back
   to the file convention).

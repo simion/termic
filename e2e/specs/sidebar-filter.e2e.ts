@@ -758,6 +758,51 @@ describe("sidebar filter bar", () => {
     }
   });
 
+  it("Mark as unread on a task row puts the dot back until the task is opened again (GH #473)", async () => {
+    const prev = await activeTaskId();
+    const ROW = (id: string) => `[data-sidebar-task-row="${id}"]`;
+    const marked = () => browser.execute(sel => !!document.querySelector(sel),
+      `${ROW(b)} [data-work-state="marked"]`);
+    const openMenu = async (id: string) => {
+      await browser.execute(sel => {
+        const el = document.querySelector(sel) as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+      }, `${ROW(id)} [data-testid="task-menu-trigger"]`);
+      await waitVisible('[data-testid="task-menu-mark-unread"]');
+    };
+    try {
+      // Visit `b` so it has a tab to carry the mark, then leave it: the
+      // accidental-click case the issue describes.
+      await ensureActiveTask(b);
+      await ensureActiveTask(c);
+      expect(await marked()).toBe(false);
+      await openMenu(b);
+      await snap("sidebar-task-menu-mark-unread.png");
+      await clickWhenVisible('[data-testid="task-menu-mark-unread"]');
+      await browser.waitUntil(marked, { timeout: 5_000, timeoutMsg: "Mark as unread drew no dot on the row" });
+      await dismissOverlays();
+      await snap("sidebar-task-marked-unread.png");
+      // Marking it again changes nothing and does not throw.
+      await openMenu(b);
+      await clickWhenVisible('[data-testid="task-menu-mark-unread"]');
+      await dismissOverlays();
+      expect(await marked()).toBe(true);
+      // Opening it is reading it.
+      await ensureActiveTask(b);
+      await browser.waitUntil(async () => !(await marked()), { timeout: 5_000, timeoutMsg: "opening the task left the dot on" });
+    } finally {
+      await dismissOverlays();
+      await browser.execute(i => {
+        const app = window.__termic!.useApp.getState();
+        for (const t of app.tabs[i] ?? []) if ((t as any).markedUnread) app.patchTab(i, t.id, { markedUnread: false } as any);
+      }, b);
+      await restoreActive(prev);
+    }
+  });
+
   it("a project with no matches hides, and the empty state clears the query", async () => {
     const pid = await fixtureId();
     const prev = await activeTaskId();

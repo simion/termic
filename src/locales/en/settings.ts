@@ -808,6 +808,10 @@ export default {
         label: "Jump to next waiting agent",
         hint: "Cycle to the next task whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
       },
+      markTaskUnread: {
+        label: "Mark task as unread",
+        hint: "Put the dot back on the current task after a glance, so it still reads as needing you. Clears the next time you open it.",
+      },
       tabPrev: { label: "Previous tab" },
       tabNext: { label: "Next tab" },
       tabPrevArrow: {

@@ -1602,6 +1602,41 @@ export async function closeTabHandler(
   return { taskId: p.taskId, tabId: p.tabId, killedPty };
 }
 
+/** `termic mark` / MCP `task_mark` (GH #473): a tab's sidebar status by
+ *  hand, for when a person asks. The same store writes the automatic paths
+ *  make, so the badge draws, aggregates and clears on the next visit exactly
+ *  like theirs. `repeat` keeps it badge-only: nobody needs a banner for a
+ *  status they just asked for. */
+export async function markTabHandler(params: unknown): Promise<{ taskId: string; tabId: string; state: string }> {
+  const p = params as { taskId?: unknown; tabId?: unknown; state?: unknown };
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("mark_tab requires a taskId");
+  if (typeof p?.tabId !== "string" || !p.tabId) throw new Error("mark_tab requires a tabId");
+  const state = p.state;
+  if (state !== "done" && state !== "attention" && state !== "unread" && state !== "clear") {
+    throw new Error("mark_tab state must be done, attention, unread or clear");
+  }
+  const s = useApp.getState();
+  const tab = (s.tabs[p.taskId] ?? []).find(t => t.id === p.tabId);
+  if (!tab || tab.type !== "terminal") {
+    throw new Error("cli_mark:unknown_tab: that tab is not an open terminal tab; see `termic status` for the open tabs");
+  }
+  const t = tab as TerminalTab;
+  if (state === "done" || state === "attention") {
+    s.setWorkState(p.taskId, p.tabId, "done", `termic mark ${state}`);
+    s.markAttention(p.taskId, p.tabId, state, undefined, true);
+  } else if (state === "unread") {
+    s.markTabUnread(p.taskId, p.tabId);
+  } else {
+    if (t.unread) s.clearAttention(p.taskId, p.tabId);
+    if (t.workState === "done") s.setWorkState(p.taskId, p.tabId, "idle", "termic mark clear");
+    if (t.markedUnread) {
+      s.patchTab(p.taskId, p.tabId, { markedUnread: false });
+      s.syncDurableTabs(p.taskId);
+    }
+  }
+  return { taskId: p.taskId, tabId: p.tabId, state };
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -1611,6 +1646,7 @@ const handlers: Record<string, Handler> = {
   close_tab: closeTabHandler,
   rename_tab: renameTabHandler,
   tab_props: tabPropsHandler,
+  mark_tab: markTabHandler,
   list_agents: listAgentsHandler,
   list_prompts: listPromptsHandler,
   send_prompt: sendPromptHandler,

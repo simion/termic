@@ -1734,6 +1734,31 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_mark",
+        cli_verb: "mark",
+        description: "Set a tab's sidebar status by hand: done, attention (needs you), unread, or clear. ONLY when a human explicitly asks for it. Termic sets done and needs-attention itself from agent hooks and output parsing; never call this to report your own progress, the end of your turn, or that you are waiting on the user.",
+        params: &[
+            ParamDef { name: "state", json_type: "string", required: true, description: "done, attention, unread or clear.", cli_flag: Some("state") },
+            ParamDef { name: "task", json_type: "string", required: false, description: "Omitted: your own task.", cli_flag: Some("--task") },
+            P_PROJECT,
+            ParamDef { name: "tab", json_type: "string", required: false, description: "Tab id, index or title; defaults to your own tab (X-Termic-Tab) in your own task, else the task's default tab.", cli_flag: Some("--tab") },
+        ],
+        destructive: false,
+        read_only: false,
+        build: |a| {
+            let raw = need_str(a, "state")?;
+            let state = termic_proto::MarkState::parse(&raw)
+                .ok_or_else(|| format!("state must be one of {}", termic_proto::MarkState::ALL.join(", ")))?;
+            Ok(Command::Mark {
+                task: Some(need_str(a, "task")?),
+                project: arg_str(a, "project")?,
+                tab: arg_str(a, "tab")?,
+                state,
+                cwd: None,
+            })
+        },
+    },
+    ToolDef {
         name: "task_agents",
         cli_verb: "agents",
         description: "List the agent CLIs this app can run: the ids task_new and task_tab accept, with whether each is installed and usable, and each agent's named accounts (what task_new's account takes) with the default. Without this a caller has to guess an agent id and read the refusal.",
@@ -2193,7 +2218,7 @@ fn peer_call_command(args: &Args) -> Result<(Command, String), String> {
 /// Tools whose `task` defaults to the caller's own, as the CLI's `rename`,
 /// `group` and `tab` default to `$TERMIC_TASK_ID`.
 const SELF_DEFAULT_TOOLS: &[&str] = &[
-    "task_rename", "task_group", "task_tab", "task_prop", "task_run",
+    "task_rename", "task_group", "task_tab", "task_prop", "task_mark", "task_run",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
     "scratchpad_remove", "scratchpad_clear",
     "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
@@ -2227,7 +2252,7 @@ fn with_caller_defaults(
                     .or_insert_with(|| serde_json::Value::String(tab.to_string()));
             }
         }
-    } else if tool == "task_prop" && args.get("value").is_some_and(|v| !v.is_null()) {
+    } else if tool == "task_mark" || (tool == "task_prop" && args.get("value").is_some_and(|v| !v.is_null())) {
         if let Some(tab) = caller_tab {
             if out.get("task").and_then(|v| v.as_str()) == Some(caller) {
                 out.entry("tab".to_string())
@@ -4215,7 +4240,10 @@ mod tests {
         // +288: task_run's `script`, parity with `termic run --script`: a
         // project's named run commands (Storybook, a worker), listed by
         // status=true and started by label. One param, one sentence.
-        const RECORDED: usize = 31648;
+        // 32516: task_mark (GH #473), parity with `termic mark`. Most of
+        // its description is the warning that keeps agents from badging
+        // their own turns, which is the point of the tool's wording.
+        const RECORDED: usize = 32516;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -4365,7 +4393,28 @@ mod tests {
     }
 
     #[test]
-    fn task_prop_sets_clears_and_lists() {
+    fn task_mark_builds_each_state_and_says_it_is_for_humans_only() {
+        let tool = TOOLS.iter().find(|t| t.name == "task_mark").unwrap();
+        let build = |v: serde_json::Value| (tool.build)(v.as_object().unwrap());
+        for st in termic_proto::MarkState::ALL {
+            let c = build(serde_json::json!({ "task": "t", "state": st })).unwrap();
+            assert!(matches!(&c, Command::Mark { state, tab: None, .. } if state.as_str() == st));
+        }
+        assert!(build(serde_json::json!({ "task": "t", "state": "finished" })).is_err());
+        assert!(build(serde_json::json!({ "task": "t" })).is_err(), "state is required");
+        // The guard against an agent badging its own turns lives in the text.
+        assert!(tool.description.contains("ONLY when a human explicitly asks"));
+        // Your own tab in your own task; never your tab id on another task.
+        let me = serde_json::json!({ "state": "done" });
+        let me = me.as_object().unwrap();
+        assert_eq!(with_caller_defaults("task_mark", me, Some("me"), Some("tab-me"))["tab"], "tab-me");
+        let other = serde_json::json!({ "state": "done", "task": "other" });
+        let other = other.as_object().unwrap();
+        assert!(with_caller_defaults("task_mark", other, Some("me"), Some("tab-me")).get("tab").is_none());
+    }
+
+    #[test]
+        fn task_prop_sets_clears_and_lists() {
         let tool = TOOLS.iter().find(|t| t.name == "task_prop").unwrap();
         let build = |v: serde_json::Value| (tool.build)(v.as_object().unwrap());
         let c = build(serde_json::json!({ "task": "t", "tab": "2", "key": "ticket", "value": "ABC-1" })).unwrap();
