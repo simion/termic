@@ -199,7 +199,8 @@ describe("Phones and servers", () => {
     await waitVisible('[data-testid="phone-qr"]');
     await waitVisible('[data-testid="phone-qr-countdown"]');
     link = await browser.execute(() => document.querySelector('[data-testid="phone-qr"]')!.getAttribute("data-link") ?? "");
-    expect(link).toMatch(/^termic-remote:\/\/pair\?v=1&h=127%2E0%2E0%2E1%3A\d+&id=[0-9a-f]{32}&m=.+&k=[A-Za-z0-9_-]{43}$/);
+    // A web link (a phone camera opens it); on loopback no .local name rides.
+    expect(link).toMatch(/^https:\/\/termic\.dev\/remote\/pair\?v=1&h=127%2E0%2E0%2E1%3A\d+&id=[0-9a-f]{32}&m=.+&k=[A-Za-z0-9_-]{43}$/);
     const s = await status();
     expect(s.enabled).toBe(true);
     expect(s.phone_pairing).not.toBeNull();

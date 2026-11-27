@@ -1800,15 +1800,20 @@ impl Node {
     pub(crate) fn phone_addresses(&self) -> Option<Vec<String>> {
         let port = self.port()?;
         let bound = self.runtime.lock().unwrap().as_ref().map(|r| r.addr);
-        let mut addresses: Vec<String> = match bound {
+        let addresses: Vec<String> = match bound {
+            // Listening on one address only (loopback in tests): the name
+            // would resolve to interface addresses where nothing listens.
             Some(a) if !a.is_unspecified() => vec![SocketAddr::new(a, port).to_string()],
-            _ => mdns::reachable_addrs().into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port).to_string()).collect(),
+            _ => {
+                let mut v: Vec<String> = mdns::reachable_addrs().into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port).to_string()).collect();
+                // Only alongside a real address: a name with nothing behind
+                // it would let a computer with no network look pairable.
+                if !v.is_empty() {
+                    v.push(format!("{}:{port}", mdns::host_name(&self.self_id())));
+                }
+                v
+            }
         };
-        // Only alongside a real address: a name with nothing behind it would
-        // let a computer with no network look pairable.
-        if !addresses.is_empty() {
-            addresses.push(format!("{}:{port}", mdns::host_name(&self.self_id())));
-        }
         Some(addresses)
     }
 
@@ -3558,11 +3563,12 @@ mod tests {
         let view = b.node.start_phone_pairing().unwrap();
         assert!(view.link.starts_with("https://termic.dev/remote/pair?v=1&h="), "{}", view.link);
         assert!(view.svg.starts_with("<?xml") || view.svg.starts_with("<svg"), "an SVG");
-        // Its mDNS name rides with the IPs, last, so a phone still finds it
-        // after the router moves it (the responder answers that name).
+        // Listening on loopback only, so no mDNS name: it would resolve to
+        // interface addresses where nothing listens. (On all interfaces the
+        // name rides last, after the IPs: Node::phone_addresses.)
         let host = mdns::host_name(&b.node.self_id());
-        assert_eq!(view.addresses.last().map(|a| a.starts_with(&format!("{host}:"))), Some(true), "{:?}", view.addresses);
-        assert!(view.link.contains(&utf8_encode(&host)), "{}", view.link);
+        assert!(!view.addresses.iter().any(|a| a.starts_with(&format!("{host}:"))), "{:?}", view.addresses);
+        assert!(!view.link.contains(&utf8_encode(&host)), "{}", view.link);
         let k = view.link.split("&k=").nth(1).unwrap();
         let key: [u8; 32] = termic_remote::unb64url(k).unwrap().try_into().unwrap();
         let phone = "a1".repeat(16);

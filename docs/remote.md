@@ -239,7 +239,8 @@ https://termic.dev/remote/pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id
 - `h` lists every address a phone might reach: private LAN first, then
   Tailscale (100.64.0.0/10), then others, and last this machine's mDNS
   name, `termic-<id12>.local:<port>` (`mdns::host_name`, answered by this
-  app's own responder). The phone tries them all.
+  app's own responder; only when sharing listens on every interface, since
+  the name resolves to all of them). The phone tries them all.
 - **The router moving the computer does not strand the phone.** The IPs
   in the code go stale when DHCP hands out a new lease; the `.local` name
   does not, and every phone welcome carries the current list (`hosts`,
