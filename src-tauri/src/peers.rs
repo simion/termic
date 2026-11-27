@@ -529,7 +529,7 @@ pub(crate) struct PhoneView {
 /// once, gone after `PAIR_MODE_TTL`.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PhonePairingView {
-    /// `termic-remote://pair?...`: what the QR encodes. Carries the key;
+    /// `https://termic.dev/remote/pair?...`: what the QR encodes. Carries the key;
     /// shown only as the code, never as text.
     pub link: String,
     /// The QR code, as an SVG document.
@@ -2390,13 +2390,21 @@ fn unreachable_msg(name: &str, err: &str) -> String {
 /// additive like the stream: unknown
 /// parameters are ignored there.
 ///
+/// A web address, not the app's `termic-remote://` scheme: scanned with a
+/// phone camera, it opens Termic Remote when installed (universal links /
+/// app links, verified by termic.dev/.well-known) and termic.dev/remote/pair
+/// otherwise, which opens the app or its store. The app's scanner reads any
+/// link ending in `pair?` with this query, so older apps pair from it too.
+/// Nothing reaches termic.dev when the app opens it; a browser fallback
+/// loads a static page, and the key stays in the query.
+///
 /// `v` link version, `h` addresses to try in order (comma-separated
 /// host:port), `id` this machine's id, `m` its name, `k` the 256-bit key
 /// (base64url).
 fn phone_link(addresses: &[String], id: &str, name: &str, key: &[u8; 32]) -> String {
     use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     format!(
-        "termic-remote://pair?v=1&h={}&id={id}&m={}&k={}",
+        "https://termic.dev/remote/pair?v=1&h={}&id={id}&m={}&k={}",
         utf8_percent_encode(&addresses.join(","), NON_ALPHANUMERIC),
         utf8_percent_encode(name, NON_ALPHANUMERIC),
         termic_remote::b64url(key),
@@ -3548,7 +3556,7 @@ mod tests {
     fn a_phone_pairs_once_with_the_qr_key_and_unpairing_cuts_it() {
         let b = machine("Mac");
         let view = b.node.start_phone_pairing().unwrap();
-        assert!(view.link.starts_with("termic-remote://pair?v=1&h="), "{}", view.link);
+        assert!(view.link.starts_with("https://termic.dev/remote/pair?v=1&h="), "{}", view.link);
         assert!(view.svg.starts_with("<?xml") || view.svg.starts_with("<svg"), "an SVG");
         // Its mDNS name rides with the IPs, last, so a phone still finds it
         // after the router moves it (the responder answers that name).

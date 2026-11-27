@@ -220,9 +220,17 @@ public TestFlight link (open to anyone, no invite), Android through
 Google Play (`PhoneAppLinks` in `ConnectPhoneDialog.tsx`).
 
 ```
-termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>&k=<256-bit key, base64url>
+https://termic.dev/remote/pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>&k=<256-bit key, base64url>
 ```
 
+- **A web address, so a phone camera works too.** Scanned with the camera,
+  it opens Termic Remote when installed (universal links on iOS, app links
+  on Android, verified by termic.dev's `.well-known` files) and otherwise
+  termic.dev/remote/pair, a static page that opens the app or sends the
+  phone to its store. The app's own scanner reads any link ending in
+  `pair?` with this query, so phones that predate the change still pair.
+  The key stays in the query: nothing reaches termic.dev when the app opens
+  it, and the fallback page is static.
 - One key, valid for 5 minutes and for **one** phone: the first that
   connects with it is stored (`peers.json` `phones`, the key in hex, 0600
   like pair keys) and the key is spent. "New code" replaces it; closing
