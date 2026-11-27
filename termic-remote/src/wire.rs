@@ -175,10 +175,21 @@ pub enum ClientMsg {
     /// The agent's turns, once. The client asks again when the task's
     /// state changes; nothing is polled on the host.
     Transcript { id: String, task: String },
-    /// A phone's push token (APNs on iOS, FCM on Android), sent once the
-    /// person allowed notifications; an empty token unregisters. The host
-    /// pushes "needs you" and "finished" to it while the phone is away.
+    /// Superseded by `push_reg`: a raw device token is useless without the
+    /// push service's keys. Still parsed (older phones send it), never used.
     PushToken { platform: String, token: String },
+    /// Where to push to this phone while it is away (docs/remote.md, Push):
+    /// the opaque `handle` termic.dev issued for its device token, the
+    /// 32-byte key (base64url) a push to it is sealed with, and its
+    /// entitlement token (empty without one). Sent on every connect after
+    /// the welcome, and again when the token is refreshed; an empty handle
+    /// unregisters.
+    PushReg {
+        handle: String,
+        key: String,
+        #[serde(default)]
+        ent: String,
+    },
     Ping {},
     #[serde(other)]
     Unknown,
@@ -258,6 +269,11 @@ pub enum ServerMsg {
     },
     /// Something the client asked for failed outside any `call`.
     Error { message: String },
+    /// This host is reachable through the relay too (docs/remote.md,
+    /// Relay): its random relay address and the relay servers to dial with
+    /// it when the direct addresses fail. Sent to a phone after the welcome
+    /// while the relay is on.
+    Relay { addr: String, servers: Vec<String> },
     #[serde(other)]
     Unknown,
 }
@@ -525,6 +541,10 @@ mod tests {
             (ClientMsg::Resync {}, json!({"t":"resync"})),
             (ClientMsg::Transcript { id: "2".into(), task: "x".into() }, json!({"t":"transcript","id":"2","task":"x"})),
             (ClientMsg::Ping {}, json!({"t":"ping"})),
+            (
+                ClientMsg::PushReg { handle: "aGFuZGxl".into(), key: "a2V5".into(), ent: "e.s".into() },
+                json!({"t":"push_reg","handle":"aGFuZGxl","key":"a2V5","ent":"e.s"}),
+            ),
         ];
         for (msg, want) in cases {
             assert_eq!(serde_json::to_value(&msg).unwrap(), want);
@@ -557,6 +577,10 @@ mod tests {
             (ServerMsg::PtyData { pid: "p1".into(), data: "eA==".into(), at: None }, json!({"t":"pty_data","pid":"p1","data":"eA=="})),
             (ServerMsg::PtyExit { pid: "p1".into(), reason: "exited".into() }, json!({"t":"pty_exit","pid":"p1","reason":"exited"})),
             (ServerMsg::Ack { id: "k1".into(), ok: false, message: Some("stale".into()) }, json!({"t":"ack","id":"k1","ok":false,"message":"stale"})),
+            (
+                ServerMsg::Relay { addr: "AAECAwQFBgcICQoLDA0ODw".into(), servers: vec!["wss://relay-eu-central.termic.dev".into()] },
+                json!({"t":"relay","addr":"AAECAwQFBgcICQoLDA0ODw","servers":["wss://relay-eu-central.termic.dev"]}),
+            ),
         ];
         for (msg, want) in cases {
             assert_eq!(serde_json::to_value(&msg).unwrap(), want);
@@ -573,6 +597,20 @@ mod tests {
         let row: TaskRow = serde_json::from_value(json!({"id":"1","state":"working","priority":"high"})).unwrap();
         assert_eq!(row.state, "working");
         assert!(ClientMsg::parse(b"not json").is_none());
+    }
+
+    /// An older phone's `push_token` still parses (and is ignored by the
+    /// host); a `push_reg` without `ent` reads as no entitlement.
+    #[test]
+    fn push_token_still_parses_and_push_reg_ent_defaults_empty() {
+        assert_eq!(
+            ClientMsg::parse(br#"{"t":"push_token","platform":"ios","token":"ab"}"#),
+            Some(ClientMsg::PushToken { platform: "ios".into(), token: "ab".into() })
+        );
+        assert_eq!(
+            ClientMsg::parse(br#"{"t":"push_reg","handle":"h","key":"k"}"#),
+            Some(ClientMsg::PushReg { handle: "h".into(), key: "k".into(), ent: String::new() })
+        );
     }
 
     #[test]

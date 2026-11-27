@@ -43,7 +43,7 @@ pub fn write_upgrade_response(stream: &mut impl Write, key: &str) -> io::Result<
 
 /// Upgrade a fresh TCP connection to a WebSocket as the client. Leaves the
 /// stream positioned at the first frame.
-pub fn client_handshake(stream: &mut TcpStream, host: &str, path: &str) -> io::Result<()> {
+pub fn client_handshake(stream: &mut (impl Read + Write), host: &str, path: &str) -> io::Result<()> {
     let key = crate::b64(&crate::seal::random_bytes::<16>());
     let req = format!(
         "GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
@@ -137,6 +137,14 @@ impl<W: Write + Send> WsWriter<W> {
             g.w.write_all(payload)?;
         }
         g.w.flush()
+    }
+}
+
+impl<W: Write + Send> WsWriter<W> {
+    /// A WebSocket ping, for a long-lived socket behind a proxy that drops
+    /// idle connections (the relay's control socket).
+    pub fn ping(&self) -> io::Result<()> {
+        self.frame(OP_PING, b"")
     }
 }
 
