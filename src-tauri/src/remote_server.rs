@@ -396,7 +396,9 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
         }
         ClientMsg::PushReg { handle, key, ent } => {
             if s.client.kind == ClientKind::Phone {
-                let reg = (!handle.is_empty()).then_some(crate::peers::PushReg { handle, key, ent });
+                // An empty handle with a token is a Pro phone with notifications
+                // off: no push, but it still turns the relay on.
+                let reg = (!handle.is_empty() || !ent.is_empty()).then_some(crate::peers::PushReg { handle, key, ent });
                 let was_on = relay_msg(&s.node).is_some();
                 s.node.set_phone_push(&s.client.id, reg);
                 // This registration may be what turned the relay on: say so

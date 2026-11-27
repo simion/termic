@@ -3729,6 +3729,11 @@ mod tests {
         drop(c);
         let mut c = stream_as(&m, &phone, &key, ClientKind::Phone, &[]).unwrap();
         assert_eq!(next_non_tasks(&mut c), want, "sent after the welcome on the next connect");
+        // Notifications switched off on a Pro phone: no push, relay stays on.
+        c.writer.send(&ClientMsg::PushReg { handle: String::new(), key: String::new(), ent: r.ent.clone() }).unwrap();
+        c.writer.send(&ClientMsg::Ping {}).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Pong {});
+        assert!(m.node.relay_wanted() && m.node.away_push_targets().is_empty());
     }
 
     /// A client that goes away is let go: its session ends and it no longer
