@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.3.0",
+      "date": "2026-11-27",
+      "summary": "Your phone hears from your agents away from home, encrypted end to end."
+    },
+    {
       "version": "2.2.1",
       "date": "2026-11-27",
       "summary": "Pair a phone with its camera, and it keeps finding your computer."

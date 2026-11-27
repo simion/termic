@@ -4,6 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.3.0] - 2026-11-27
+
+Your phone hears from your agents away from home, encrypted end to end.
+
+### Features
+- Termic Remote Pro: your phone gets a notification when a task needs you or finishes, even with the app closed. Termic encrypts it for that phone alone, so Apple, Google and termic.dev pass it on without being able to read it.
+- Termic Remote Pro: reach your computer from anywhere, not just the same Wi-Fi, through an encrypted relay. Termic opens it only while a paired phone has Pro, and the relay never sees inside the stream.
+
 ## [2.2.1] - 2026-11-27
 
 Pair a phone with its camera, and it keeps finding your computer.
