@@ -314,6 +314,9 @@ struct Store {
     /// A phone is a remote control of THIS machine: it never runs anything
     /// itself and is never driven, so it has a key and nothing else.
     phones: Vec<PhoneRecord>,
+    /// This machine's relay address (relay.rs): 16 random bytes, base64url,
+    /// made on first use. Never the instance id.
+    relay_addr: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -328,17 +331,22 @@ struct PhoneRecord {
     paired_at_ms: i64,
     last_seen_ms: Option<i64>,
     addr: Option<String>,
-    /// Where to push to it while it is away (push.rs). Set by the phone.
-    push: Option<PushTarget>,
+    /// Its last `push_reg` (push.rs): where to push to it while it is
+    /// away, and its entitlement token. Re-sent on every connect. (An older
+    /// record's raw `push` token is dropped on read: useless now.)
+    push_reg: Option<PushReg>,
 }
 
-/// A phone's push token and the service it belongs to ("ios" = APNs,
-/// "android" = FCM).
+/// A phone's push registration, as its `push_reg` sent it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct PushTarget {
-    pub platform: String,
-    pub token: String,
+pub(crate) struct PushReg {
+    /// termic.dev's sealed form of the device token (opaque here).
+    pub handle: String,
+    /// The 32-byte key a push to this phone is sealed with, base64url.
+    pub key: String,
+    /// The entitlement token (entitlement.rs), empty without one.
+    pub ent: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1899,23 +1907,67 @@ impl Node {
         Ok(())
     }
 
-    /// Keep (or, with `None`, drop) the push token a paired phone sent.
-    pub(crate) fn set_phone_push(&self, id: &str, target: Option<PushTarget>) {
-        let mut s = self.store.lock().unwrap();
-        let Some(p) = s.phones.iter_mut().find(|p| p.id == id) else { return };
-        if p.push == target {
-            return;
+    /// Keep (or, with `None`, drop) the push registration a paired phone
+    /// sent. A changed entitlement may turn the relay on or off.
+    pub(crate) fn set_phone_push(&self, id: &str, reg: Option<PushReg>) {
+        {
+            let mut s = self.store.lock().unwrap();
+            let Some(p) = s.phones.iter_mut().find(|p| p.id == id) else { return };
+            if p.push_reg == reg {
+                return;
+            }
+            p.push_reg = reg;
+            self.save(&s);
         }
-        p.push = target;
-        self.save(&s);
+        if let Some(me) = self.arc() {
+            crate::relay::kick(&me);
+        }
     }
 
-    /// The push targets of paired phones that are not connected now: a
-    /// phone looking at the app already sees the change.
-    pub(crate) fn away_push_targets(&self) -> Vec<PushTarget> {
+    /// termic.dev said the device behind `handle` is gone (410): forget it,
+    /// unless the phone registered a new one meanwhile.
+    pub(crate) fn forget_push_handle(&self, id: &str, handle: &str) {
+        let mut s = self.store.lock().unwrap();
+        let Some(p) = s.phones.iter_mut().find(|p| p.id == id) else { return };
+        if p.push_reg.as_ref().is_some_and(|r| r.handle == handle) {
+            p.push_reg = None;
+            self.save(&s);
+        }
+    }
+
+    /// The push registrations of paired phones that are not connected now
+    /// (a phone looking at the app already sees the change), by phone id.
+    pub(crate) fn away_push_targets(&self) -> Vec<(String, PushReg)> {
         let live = self.connected_ids();
         let s = self.store.lock().unwrap();
-        s.phones.iter().filter(|p| !live.contains(&p.id)).filter_map(|p| p.push.clone()).collect()
+        s.phones
+            .iter()
+            .filter(|p| !live.contains(&p.id))
+            .filter_map(|p| p.push_reg.clone().filter(|r| !r.handle.is_empty()).map(|r| (p.id.clone(), r)))
+            .collect()
+    }
+
+    /// The relay's on/off rule (docs/remote.md, Relay): sharing is on and
+    /// at least one paired phone holds a valid entitlement with "relay".
+    pub(crate) fn relay_wanted(&self) -> bool {
+        self.sharing_on()
+            && self
+                .store
+                .lock()
+                .unwrap()
+                .phones
+                .iter()
+                .any(|p| p.push_reg.as_ref().is_some_and(|r| crate::entitlement::valid(&r.ent, crate::entitlement::RELAY)))
+    }
+
+    /// This machine's relay address, made and saved on first use.
+    pub(crate) fn relay_addr(&self) -> String {
+        let mut s = self.store.lock().unwrap();
+        if s.relay_addr.is_empty() {
+            s.relay_addr = termic_remote::b64url(&pc::random_bytes::<16>());
+            self.save(&s);
+        }
+        s.relay_addr.clone()
     }
 
     pub(crate) fn rename_phone(&self, id: &str, name: &str) -> Result<(), String> {
@@ -1973,7 +2025,8 @@ impl Node {
         client_id: &str,
         key_index: usize,
         hello: &termic_remote::wire::ClientMsg,
-        src: IpAddr,
+        // None over the relay: the relay's address says nothing about the phone.
+        src: Option<IpAddr>,
     ) -> Option<crate::remote_server::StreamClient> {
         use termic_remote::wire::{ClientKind, ClientMsg};
         let ClientMsg::Hello { name, kind, grant, port, caps, app_version, .. } = hello else { return None };
@@ -1983,14 +2036,16 @@ impl Node {
             if *kind != ClientKind::Computer {
                 return None;
             }
-            self.touch(&rec.id, Some(src), *port, grant.as_deref().and_then(Grant::parse));
+            self.touch(&rec.id, src, *port, grant.as_deref().and_then(Grant::parse));
             return Some(crate::remote_server::StreamClient { id: rec.id.clone(), name: rec.display_name(), kind: ClientKind::Computer, grant: rec.grant, wants_tasks, version: app_version.clone() });
         }
         let known_phone = {
             let mut s = self.store.lock().unwrap();
             let hit = s.phones.iter_mut().find(|p| p.id == client_id).map(|p| {
                 p.last_seen_ms = Some(now_ms());
-                p.addr = Some(src.to_string());
+                if let Some(src) = src {
+                    p.addr = Some(src.to_string());
+                }
                 p.name.clone()
             });
             if hit.is_some() {
@@ -2023,9 +2078,9 @@ impl Node {
                 key: pc::key_to_hex(&pending.key),
                 paired_at_ms: now_ms(),
                 last_seen_ms: Some(now_ms()),
-                addr: Some(src.to_string()),
-                // A fresh pairing: the phone sends its token again on connect.
-                push: None,
+                addr: src.map(|a| a.to_string()),
+                // A fresh pairing: the phone registers again on connect.
+                push_reg: None,
             });
             self.save(&s);
         }
@@ -2909,6 +2964,7 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
         (false, true) => node.stop(),
         _ => {}
     }
+    crate::relay::kick(&node);
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────
@@ -3597,6 +3653,82 @@ mod tests {
         assert!(matches!(end, Ok(None) | Err(_)), "{end:?}");
         assert!(stream_as(&b, &phone, &key, ClientKind::Phone, &[]).is_err());
         let _ = c.reader.recv::<ServerMsg>();
+    }
+
+    /// Pair a phone through the QR key and return its id and key.
+    fn paired_phone(m: &Machine, id_byte: &str) -> (String, [u8; 32]) {
+        let view = m.node.start_phone_pairing().unwrap();
+        let key: [u8; 32] = termic_remote::unb64url(view.link.split("&k=").nth(1).unwrap()).unwrap().try_into().unwrap();
+        let phone = id_byte.repeat(16);
+        drop(stream_as(m, &phone, &key, ClientKind::Phone, &[]).unwrap());
+        (phone, key)
+    }
+
+    fn reg(ent: &[&str]) -> PushReg {
+        PushReg { handle: "h".into(), key: termic_remote::b64url(&[3u8; 32]), ent: crate::entitlement::tests::issue(ent) }
+    }
+
+    /// The relay's on/off rule: sharing on AND a paired phone with a valid
+    /// "relay" entitlement. Nothing entitled means no supervisor, so no
+    /// socket is ever dialled.
+    #[test]
+    fn the_relay_is_wanted_only_with_sharing_and_an_entitled_phone() {
+        let m = machine("Mac");
+        assert!(!m.node.relay_wanted(), "no phones");
+        crate::relay::kick(&m.node);
+        assert!(!crate::relay::running(), "kick started a relay with nothing entitled");
+        let (phone, _) = paired_phone(&m, "c3");
+        m.node.set_phone_push(&phone, Some(reg(&["push"])));
+        assert!(!m.node.relay_wanted(), "push only");
+        m.node.set_phone_push(&phone, Some(PushReg { ent: "forged.token".into(), ..reg(&["relay"]) }));
+        assert!(!m.node.relay_wanted(), "an entitlement that does not verify");
+        m.node.set_phone_push(&phone, Some(reg(&["relay", "push"])));
+        assert!(m.node.relay_wanted());
+        m.node.stop();
+        assert!(!m.node.relay_wanted(), "sharing off");
+    }
+
+    /// A phone's registration is kept on its pairing, a 410 forgets only
+    /// the handle it was about, and the relay address is stable and random.
+    #[test]
+    fn a_push_reg_is_stored_per_phone_and_a_gone_handle_is_dropped() {
+        let m = machine("Mac");
+        let (phone, _) = paired_phone(&m, "d4");
+        m.node.set_phone_push(&phone, Some(reg(&["push"])));
+        let t = m.node.away_push_targets();
+        assert_eq!(t.len(), 1);
+        assert_eq!((t[0].0.as_str(), t[0].1.handle.as_str()), (phone.as_str(), "h"));
+        let on_disk = std::fs::read_to_string(m._dir.path().join(PEERS_FILE)).unwrap();
+        assert!(on_disk.contains("\"push_reg\""), "{on_disk}");
+        m.node.forget_push_handle(&phone, "another");
+        assert_eq!(m.node.away_push_targets().len(), 1, "a newer handle survives a stale 410");
+        m.node.forget_push_handle(&phone, "h");
+        assert!(m.node.away_push_targets().is_empty());
+        let a = m.node.relay_addr();
+        assert_eq!(termic_remote::unb64url(&a).unwrap().len(), 16);
+        assert_ne!(a, m.node.self_id());
+        assert_eq!(m.node.relay_addr(), a, "persisted, not per call");
+    }
+
+    /// A phone hears about the relay after its welcome once it is on, and
+    /// at once when its own push_reg is what turned it on. An older phone's
+    /// push_token is not a registration.
+    #[test]
+    fn a_phone_is_told_the_relay_address_when_the_relay_is_on() {
+        let m = machine("Mac");
+        let (phone, key) = paired_phone(&m, "e5");
+        let mut c = stream_as(&m, &phone, &key, ClientKind::Phone, &[]).unwrap();
+        c.writer.send(&ClientMsg::PushToken { platform: "ios".into(), token: "ab".into() }).unwrap();
+        c.writer.send(&ClientMsg::Ping {}).unwrap();
+        assert_eq!(next_non_tasks(&mut c), ServerMsg::Pong {}, "no relay message while it is off");
+        assert!(m.node.away_push_targets().is_empty() && !m.node.relay_wanted());
+        let r = reg(&["relay", "push"]);
+        c.writer.send(&ClientMsg::PushReg { handle: r.handle.clone(), key: r.key.clone(), ent: r.ent.clone() }).unwrap();
+        let want = ServerMsg::Relay { addr: m.node.relay_addr(), servers: vec![crate::relay::SERVER.into()] };
+        assert_eq!(next_non_tasks(&mut c), want);
+        drop(c);
+        let mut c = stream_as(&m, &phone, &key, ClientKind::Phone, &[]).unwrap();
+        assert_eq!(next_non_tasks(&mut c), want, "sent after the welcome on the next connect");
     }
 
     /// A client that goes away is let go: its session ends and it no longer

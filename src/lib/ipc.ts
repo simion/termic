@@ -1496,7 +1496,7 @@ export async function notify(
   title: string,
   body: string,
   route?: NotifyRoute,
-  opts?: { sound?: boolean | string },
+  opts?: { sound?: boolean | string; attention?: boolean },
 ): Promise<void> {
   try {
     if (!(await ensureNotifyPermission())) return;
@@ -1506,9 +1506,9 @@ export async function notify(
     // The banner stays silent; the sound is decoupled and reliable.
     if (opts?.sound) void playCompletionSound(opts.sound, true);
     notifSend({ title, body, extra: route ? { taskId: route.taskId, tabId: route.tabId } : undefined });
-    // The same line to paired phones that are away (src-tauri/src/push.rs;
-    // a no-op until the push relay exists).
-    invoke("phones_push", { title, body }).catch(() => {});
+    // The same line to paired phones that are away, sealed to each phone
+    // (src-tauri/src/push.rs). `attention`: a needs-you, not a finished turn.
+    invoke("phones_push", { title, body, task: route?.taskId ?? null, attention: !!opts?.attention }).catch(() => {});
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }

@@ -40,6 +40,7 @@ To run it on real machines and check it by hand: [remote-testing.md](remote-test
 | The desktop as host: the `/stream` route, sessions, snapshots, terminal, answers | `src-tauri/src/remote_server.rs`, routed in `peers.rs` |
 | Phones and the QR pairing, live-connection registry, `--peer` over the stream | `src-tauri/src/peers.rs` |
 | The desktop as client: links to paired computers and servers, server setup (probe, trust, install) | `src-tauri/src/remote_client.rs` |
+| Encrypted push to away phones, entitlement check, the relay client | `src-tauri/src/push.rs`, `entitlement.rs`, `relay.rs` |
 | Desktop UI | `src/components/remote/*`, `src/components/settings/RemoteSection.tsx`, `src/lib/remote.ts` |
 | Headless host | `termic-server/` |
 
@@ -647,35 +648,91 @@ Its session takes any connected reader and writer
 (`session::serve_conn`) and its id is 32 hex, so a phone can later pair
 with a server directly (docs/plans/remote-control.md, step 3).
 
-## Push (prepared, not live)
+## Push
 
 A phone in a pocket has no stream: iOS suspends the app seconds after it
-leaves the screen. Push is how "needs you" reaches it. Prepared end to end
-except the relay, so nothing is sent yet:
+leaves the screen. Push is how "needs you" reaches it. Apple's and
+Google's sender keys cannot ship inside the app, so termic.dev sends the
+push; what it says is sealed to the phone first, so termic.dev, Apple and
+Google carry ciphertext they cannot read.
 
 - **The phone** asks for nothing on its own. "Notify me when away" in its
-  Settings is the one place that shows the system prompt; once allowed it
-  reads the device token (APNs on iOS, FCM on Android, through
-  `expo-notifications`, not Expo's push service) and sends
-  `push_token { platform, token }` over the sealed stream on every
-  connect. An empty token unregisters.
-- **The desktop** keeps it on the phone's pairing (`peers.json`, `push`),
-  and every OS notification it shows (`notify` in src/lib/ipc.ts) is
-  offered to `phones_push` (src-tauri/src/push.rs), which targets paired
-  phones that are not connected right now.
-- **The relay** is missing: `PUSH_RELAY` is `None`, so `phones_push` logs
-  and returns. Apple's push key (`.p8`) and an FCM service account cannot
-  ship inside the app, so a small sender on termic.dev (a Worker) will hold
-  them and forward `{ platform, token, title, body }`. termic.dev is
-  already the one host the app talks to.
+  Settings is the one place that shows the system prompt. Once allowed it
+  registers its device token with `POST https://api.termic.dev/v1/push/register`
+  and gets back an opaque `handle` (the token sealed with a key only
+  termic.dev holds, so the desktop never sees the device token). Then, on
+  every connect after the welcome and whenever its entitlement token is
+  refreshed, it sends `push_reg { handle, key, ent }` over the sealed
+  stream: `key` is a random 32-byte push key (base64url) the phone keeps
+  for this computer, `ent` its entitlement token (empty without one). An
+  empty handle unregisters. An older phone's `push_token` still parses and
+  is ignored: a raw device token is useless without the sender keys.
+- **The desktop** keeps the last `push_reg` on the phone's pairing
+  (`peers.json` `phones[].push_reg`; an older record's `push` is dropped).
+  Every OS notification it shows (`notify` in src/lib/ipc.ts) is offered to
+  `phones_push` (src-tauri/src/push.rs) with its task id and whether it is
+  a needs-you. For each paired phone that is not connected right now AND
+  whose entitlement checks out with `push` (src-tauri/src/entitlement.rs:
+  ed25519 signature against the built-in `ENT_PUBLIC_KEY`, `exp` in the
+  future, `push` in `ent`), it POSTs `https://api.termic.dev/v1/push`:
 
-Left, in order: the Apple push key and the iOS `aps-environment`
-entitlement (the `expo-notifications` config plugin, plus the App ID's
-Push capability), a Firebase project and `google-services.json` for
-Android, the Worker, then `PUSH_RELAY`. What a push says is the desktop
-notification's own line ("project · task", "needs you"): Apple or
-Google, and the relay, see that much. Encrypting it to the phone's pair
-key (a Notification Service Extension decrypts it) would hide even that.
+  ```json
+  { "handle": "...", "ent": "...", "kind": "attention" | "done",
+    "collapse": "<22 chars>", "c": "<this computer's id>", "ct": "<b64url>" }
+  ```
+
+  - `ct` = `b64url(nonce(12) || ChaCha20-Poly1305(push key, json) || tag(16))`
+    over `{"title","body","task"}`: the desktop banner's own lines
+    (title "project · task", body the question or permission text the
+    notification carries) and the task id. A random nonce per push.
+  - `collapse` = the first 22 characters of base64url(SHA-256(push key ||
+    task id)): one per phone and task, so a newer push replaces the older
+    one, and opaque to termic.dev.
+  - `c` tells the phone which computer's push key opens it.
+  - `kind` is `attention` for a needs-you (an agent's attention or bell
+    mark, a paired computer's waiting task), `done` otherwise.
+  - A 410 means the device is gone: that phone's registration is dropped
+    (only if it still holds that handle). Anything else is logged under
+    `[push]` and never retried: the phone sees the change when it opens.
+  - A phone without a valid `push` entitlement gets nothing.
+
+## Relay
+
+When no direct address works (the phone is on cellular, another network,
+behind a carrier NAT), the phone reaches the computer through termic.dev's
+relay, which splices two WebSockets and copies bytes it cannot read: the
+sealed handshake runs end to end, exactly as on the LAN.
+
+- **When**: while sharing is on AND at least one paired phone's last
+  `push_reg` carries a valid entitlement with `relay`
+  (`Node::relay_wanted`). Re-checked when sharing is switched, when a
+  phone registers, and on every 25 s ping (so an expired entitlement or
+  the last entitled phone being unpaired closes it within a ping).
+- **What the desktop does** (src-tauri/src/relay.rs): keeps one control
+  socket open to `wss://relay-eu-central.termic.dev/v1/host?addr=A`,
+  where A is 16 random bytes (base64url) made once and saved in
+  `peers.json` `relay_addr`, never the instance id. It pings every 25 s
+  (Cloudflare drops a socket idle for 100 s) and reconnects with
+  exponential backoff (1 s to 60 s, 50-150% jitter). For each
+  `{"t":"incoming","conn":C}` it opens `/v1/accept/C` and serves it with
+  `remote_server::serve_conn`, the same handshake and session as a LAN
+  connection (`serve` is the LAN upgrade in front of it), registered as
+  live so unpairing or sharing off cuts it the same way.
+- **TLS**: rustls with the platform verifier (the OS trust store, as the
+  credential broker's upstream), the in-house WebSocket (`termic_remote::ws`)
+  on top. The TLS session is shared by a reader that blocks on the raw TCP
+  without the session lock and a writer that takes it per frame, so no
+  side polls.
+- **The phone** is told after the welcome, while the relay is on:
+  `{"t":"relay","addr":A,"servers":["wss://relay-eu-central.termic.dev"]}`
+  (also at once when its own `push_reg` is what turned the relay on). It
+  saves it with the computer and dials `/v1/connect?addr=A&t=<token>` when
+  the direct addresses fail.
+- Log lines, under `[relay]`: `control socket open`, `control socket
+  closed` / `control socket: <error>`, `no paired phone has the relay now,
+  closing`, `off`, `accept <conn>: <error>`. A phone that came through the
+  relay logs `[remote] <phone> (Phone) connected from the relay`.
+- All of this is the Rust side: the webview's CSP is unchanged.
 
 ## Not done / known limits
 
@@ -698,8 +755,9 @@ key (a Notification Service Extension decrypts it) would hide even that.
   project's task to it (state, transcript, terminal, keys; the server's
   connection carries one terminal at a time, so the phone and the desktop
   opening different server tasks take turns), not a paired computer's.
-- No push notifications (no server to hold the keys); the phone notices
-  changes while open.
+- Push and the relay need an entitlement on a paired phone; without one
+  the phone notices changes only while open, and only on a network where
+  it reaches the computer directly.
 - A paired computer's tasks have no file tree, editor or diff in the
   desktop view (a server's do: see "Servers").
 - On the phone, the screen reader understands Claude's, Codex's and

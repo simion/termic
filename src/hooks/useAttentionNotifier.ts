@@ -87,7 +87,7 @@ export function useAttentionNotifier() {
             title,
             t.unread!.message?.trim() || (reason && i18n.t("backend:attentionNotify.agentBody", { phrase: reason })),
             { taskId, tabId: t.id },
-            { sound: t.unread!.reason === "done" },
+            { sound: t.unread!.reason === "done", attention: t.unread!.reason === "attention" || t.unread!.reason === "bell" },
           ).catch(() => {});
         }
       }

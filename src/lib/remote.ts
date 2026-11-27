@@ -318,7 +318,7 @@ function ring(alerts: RemoteAlert[]) {
       lastAlerted.set(key, now);
       const title = `${a.machineName} · ${a.project} · ${a.taskName}`;
       const body = a.kind === "waiting" ? (a.question || i18n.t("remote:alert.waiting")) : i18n.t("remote:alert.done");
-      notify(title, body, undefined, { sound: a.kind === "done" }).catch(() => {});
+      notify(title, body, undefined, { sound: a.kind === "done", attention: a.kind === "waiting" }).catch(() => {});
     }
   });
 }

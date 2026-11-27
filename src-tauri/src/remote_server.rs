@@ -33,6 +33,7 @@ use termic_remote::conn::{self, MsgReader, MsgWriter};
 use termic_remote::outbox::Outbox;
 use termic_remote::wire::{self, caps, ClientKind, ClientMsg, Diff, HostKind, ServerMsg, RowGroup, RowPr, RowProfile, RowProp, TabRow, TaskRow};
 use termic_remote::ws;
+use termic_remote::{FrameRead, FrameWrite};
 
 use crate::cli_server::CliHost;
 use crate::dlog;
@@ -41,7 +42,7 @@ use crate::peers::{Grant, Node};
 /// Silence from a client longer than this ends its connection. Clients
 /// ping every 20 s; a phone that was backgrounded and frozen by iOS is
 /// noticed here and its terminal tap released.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
 /// The retained output a resync replays (the whole PTY ring).
 const BACKLOG_BYTES: usize = 256 * 1024;
 /// How long the state watcher waits for the agent cache to change before
@@ -114,11 +115,20 @@ pub(crate) fn serve(mut stream: TcpStream, ws_key: &str, node: Arc<Node>, src: I
         Err(_) => return,
     };
     let Ok((r, w)) = ws::split_tcp(stream, ws::End::Server) else { return };
+    serve_conn(Box::new(r), Box::new(w), kill, node, Some(src));
+}
+
+/// The handshake and the session over any connection: a LAN WebSocket
+/// (`serve`), or one the relay spliced to a phone (relay.rs, `src` None).
+/// `kill` is the TCP under it, shut down to cut the connection (unpairing,
+/// sharing off). Its read timeout is `IDLE_TIMEOUT`.
+pub(crate) fn serve_conn(r: Box<dyn FrameRead>, w: Box<dyn FrameWrite>, kill: TcpStream, node: Arc<Node>, src: Option<IpAddr>) {
+    let from = src.map_or_else(|| "the relay".to_string(), |a| a.to_string());
     let host_id = node.self_id();
-    let accepted = match conn::host_handshake(Box::new(r), Box::new(w), &host_id, |cid| node.stream_keys(cid)) {
+    let accepted = match conn::host_handshake(r, w, &host_id, |cid| node.stream_keys(cid)) {
         Ok(a) => a,
         Err(e) => {
-            dlog(&format!("[remote] {src}: refused ({e})"));
+            dlog(&format!("[remote] {from}: refused ({e})"));
             node.stream_refused();
             return;
         }
@@ -129,7 +139,7 @@ pub(crate) fn serve(mut stream: TcpStream, ws_key: &str, node: Arc<Node>, src: I
         return;
     };
     let live = node.register_live(&client.id, kill);
-    dlog(&format!("[remote] {} ({:?}) connected from {src}", client.name, client.kind));
+    dlog(&format!("[remote] {} ({:?}) connected from {from}", client.name, client.kind));
     run(node.clone(), client.clone(), accepted.reader, accepted.writer);
     node.unregister_live(live);
     dlog(&format!("[remote] {} disconnected", client.name));
@@ -161,6 +171,13 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     };
     if writer.send(&welcome).is_err() {
         return;
+    }
+    if client.kind == ClientKind::Phone {
+        if let Some(m) = relay_msg(&node) {
+            if writer.send(&m).is_err() {
+                return;
+            }
+        }
     }
     let (out, rx) = Outbox::new();
     let s = Arc::new(Session {
@@ -205,6 +222,11 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
     if let Some(t) = state_thread {
         let _ = t.join();
     }
+}
+
+/// What tells a phone this computer is on the relay, while it is.
+fn relay_msg(node: &Node) -> Option<ServerMsg> {
+    node.relay_wanted().then(|| ServerMsg::Relay { addr: node.relay_addr(), servers: vec![crate::relay::SERVER.to_string()] })
 }
 
 /// A task of a server project (docs/remote.md, Servers): the server
@@ -372,14 +394,23 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                 send(&s, msg);
             });
         }
-        ClientMsg::PushToken { platform, token } => {
+        ClientMsg::PushReg { handle, key, ent } => {
             if s.client.kind == ClientKind::Phone {
-                let target = (!token.is_empty() && matches!(platform.as_str(), "ios" | "android"))
-                    .then_some(crate::peers::PushTarget { platform, token });
-                s.node.set_phone_push(&s.client.id, target);
+                let reg = (!handle.is_empty()).then_some(crate::peers::PushReg { handle, key, ent });
+                let was_on = relay_msg(&s.node).is_some();
+                s.node.set_phone_push(&s.client.id, reg);
+                // This registration may be what turned the relay on: say so
+                // now rather than on the phone's next connect.
+                if !was_on {
+                    if let Some(m) = relay_msg(&s.node) {
+                        send(s, m);
+                    }
+                }
             }
         }
-        ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
+        // A raw device token from an older phone: useless without the push
+        // service's keys, so it is no push (docs/remote.md, Push).
+        ClientMsg::PushToken { .. } | ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
     }
 }
 
