@@ -44,11 +44,15 @@ export function TaskLabelText({ task, useBranch, leafOnly = false, title, classN
           prefix) is not enough: flex still hands the leaf a sliver, and a
           leaf 0.02px short already paints its ellipsis (measured in
           sidebar-status.e2e.ts). */}
+      {/* The path gives way, its trailing slash does not: cut to nothing
+          the path left a bare first letter glued to the leaf, so
+          `george/desktop-x` read `gdesktop-x`. Squeezed it is `g…/desktop-x`. */}
       <span
         data-testid="task-label-prefix"
-        className="min-w-0 truncate font-normal text-[var(--color-fg-faint)]"
+        className="flex min-w-0 font-normal text-[var(--color-fg-faint)]"
       >
-        {prefix}
+        <span className="min-w-0 truncate">{prefix.slice(0, -1)}</span>
+        <span data-testid="task-label-slash" className="shrink-0">/</span>
       </span>
       <span className="max-w-full shrink-0 truncate">{leaf}</span>
     </span>

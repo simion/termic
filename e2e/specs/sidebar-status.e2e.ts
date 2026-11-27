@@ -617,6 +617,8 @@ describe("sidebar status section", () => {
         prefixColor: getComputedStyle(prefix).color, leafColor: getComputedStyle(leaf).color,
         leafCut: textWidth(leaf) - leaf.getBoundingClientRect().width,
         prefixSqueezed: textWidth(prefix) - prefix.getBoundingClientRect().width > 1,
+        // The separator stays drawn however hard the path is squeezed.
+        slashWidth: (prefix.querySelector('[data-testid="task-label-slash"]') as HTMLElement | null)?.getBoundingClientRect().width ?? 0,
       };
     }, row);
     const faint = await tokenColor("--color-fg-faint");
@@ -631,6 +633,8 @@ describe("sidebar status section", () => {
       timeout: 5_000, timeoutMsg: "the label never overflowed the narrowed sidebar, so the squeeze was not exercised",
     });
     expect((await parts(treeRow))!.leafCut).toBeLessThan(0.01);
+    // Never `gab-parser`: the path's slash survives the squeeze.
+    expect((await parts(treeRow))!.slashWidth).toBeGreaterThan(2);
     await snap("sidebar-branch-label.png");
     await browser.execute(w => window.__termic!.useApp.getState().setSidebarWidth(w), widthWas);
     await browser.execute(() => window.__termic!.usePrefs.getState().setUseBranchAsTaskName(false));
