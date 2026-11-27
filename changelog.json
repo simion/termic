@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.3.1",
+      "date": "2026-11-27",
+      "summary": "Phones stay quiet while you are at your computer."
+    },
+    {
       "version": "2.3.0",
       "date": "2026-11-27",
       "summary": "Your phone hears from your agents away from home, encrypted end to end."

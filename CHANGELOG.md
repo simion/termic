@@ -4,6 +4,17 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.3.1] - 2026-11-27
+
+Phones stay quiet while you are at your computer.
+
+### Features
+- Settings > Notifications, Notify paired phones: a phone gets a push only after this computer has gone two minutes without input (or always, 1, 5 or 15 minutes, never). Typing anywhere on the computer counts as being there.
+
+### Bug fixes
+- Paired phones got no notification unless Desktop notifications was on, which it is not by default.
+- Pairing a phone said Termic has no relay. It now says to pair on the same network, and that away from it the phone gets in through your own VPN or Termic Remote Pro's encrypted relay.
+
 ## [2.3.0] - 2026-11-27
 
 Your phone hears from your agents away from home, encrypted end to end.
