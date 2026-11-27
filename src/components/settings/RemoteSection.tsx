@@ -10,6 +10,7 @@
 // Phones come from `peer_status` (re-read on `peer://changed`, never
 // polled); servers from the remote store, which the backend keeps current.
 
+import { PhonePushSetting } from "@/components/settings/NotificationsSection";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -117,7 +118,12 @@ export function RemoteSection() {
         }
       >
         {phones.length > 0 ? (
-          <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
+          <>
+            <div data-testid="remote-phones">{phones.map(p => <PhoneRow key={p.id} phone={p} onChanged={refresh} />)}</div>
+            <div className="mt-4 border-t border-[var(--color-border)] pt-4">
+              <PhonePushSetting testId="remote-phone-push-after" />
+            </div>
+          </>
         ) : (
           <Empty>{t("phones.empty")}</Empty>
         )}

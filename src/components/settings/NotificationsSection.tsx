@@ -26,8 +26,6 @@ export function NotificationsSection() {
   const { t } = useTranslation("settings");
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
-  const phonePushAfterMin = usePrefs(s => s.phonePushAfterMin);
-  const setPhonePushAfterMin = usePrefs(s => s.setPhonePushAfterMin);
   const attentionPanel = usePrefs(s => s.attentionPanel);
   const setAttentionPanel = usePrefs(s => s.setAttentionPanel);
   const completionSound = usePrefs(s => s.completionSound);
@@ -74,20 +72,7 @@ export function NotificationsSection() {
       </Block>
 
       <Block>
-        <div className="text-[14px] font-medium">{t("notifications.phones.label")}</div>
-        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("notifications.phones.hint")}</div>
-        <select
-          data-testid="phone-push-after"
-          value={phonePushAfterMin}
-          onChange={(e) => setPhonePushAfterMin(Number(e.target.value))}
-          className="mt-3 h-9 max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
-        >
-          {PHONE_PUSH_AFTER.map(m => (
-            <option key={m} value={m}>
-              {m === 0 ? t("notifications.phones.always") : m < 0 ? t("notifications.phones.never") : t("notifications.phones.after", { count: m })}
-            </option>
-          ))}
-        </select>
+        <PhonePushSetting testId="phone-push-after" />
       </Block>
 
       {/* macOS-only: the sound catalog is macOS system-sound names (plus a
@@ -280,5 +265,31 @@ function NoticesBlock() {
         <Trans t={t} i18nKey="notifications.notices.mergeHint" components={{ b: <b className="font-medium text-[var(--color-fg)]" /> }} />
       </div>
     </Block>
+  );
+}
+
+/** "Notify paired phones": shown here and under the phones in Settings >
+ *  Remote control. Each placement passes its own test id. */
+export function PhonePushSetting({ testId }: { testId: string }) {
+  const { t } = useTranslation("settings");
+  const phonePushAfterMin = usePrefs(s => s.phonePushAfterMin);
+  const setPhonePushAfterMin = usePrefs(s => s.setPhonePushAfterMin);
+  return (
+    <div>
+      <div className="text-[14px] font-medium">{t("notifications.phones.label")}</div>
+      <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("notifications.phones.hint")}</div>
+      <select
+        data-testid={testId}
+        value={phonePushAfterMin}
+        onChange={(e) => setPhonePushAfterMin(Number(e.target.value))}
+        className="mt-3 h-9 max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+      >
+        {PHONE_PUSH_AFTER.map(m => (
+          <option key={m} value={m}>
+            {m === 0 ? t("notifications.phones.always") : m < 0 ? t("notifications.phones.never") : t("notifications.phones.after", { count: m })}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

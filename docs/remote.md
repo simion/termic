@@ -675,7 +675,8 @@ Google carry ciphertext they cannot read.
   its task id and whether it is a needs-you. This is separate from the
   desktop banner: Desktop notifications can be off and phones still hear.
   It is held back while the person is at this computer: Settings >
-  Notifications, "Notify paired phones", is how long the machine must go
+  Notifications, "Notify paired phones" (also under the paired phones in
+  Settings > Remote control, one shared pref), is how long the machine must go
   without input first (`phonePushAfterMin`, default 2 minutes; 0 always,
   -1 never). The idle time is the whole system's (macOS
   `CGEventSourceSecondsSinceLastEventType`, Windows `GetLastInputInfo`), so
