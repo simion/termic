@@ -1408,6 +1408,10 @@ pub struct AgentEntry {
     /// Which of `accounts` a task uses without `--account`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<String>,
+    /// What each renamed account is shown as (Settings, Agents): a client
+    /// shows the label and still sends the account's own name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub account_labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3149,6 +3153,7 @@ mod tests {
                     usable: true,
                     accounts: vec!["Work".into(), "Client A".into()],
                     default_account: Some("Work".into()),
+                    account_labels: [("Client A".to_string(), "Acme seat".to_string())].into(),
                 }],
             }),
             ReplyData::Prompts(PromptsData {

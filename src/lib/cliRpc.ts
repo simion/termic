@@ -1082,6 +1082,9 @@ interface RegistryEntry {
   usable: boolean;
   accounts: string[];
   default_account: string | null;
+  /** The name each account is shown by, where it was renamed (the account
+   *  itself keeps its name: config and `--account` are keyed by it). */
+  account_labels?: Record<string, string>;
 }
 
 function registryView(): RegistryEntry[] {
@@ -1105,6 +1108,7 @@ function registryView(): RegistryEntry[] {
       usable: terminal ? enabled : usableAgents.has(a.id),
       accounts: a.accounts ?? [],
       default_account: a.default_account ?? null,
+      ...(a.account_labels && Object.keys(a.account_labels).length ? { account_labels: a.account_labels } : {}),
     };
   });
 }

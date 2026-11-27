@@ -811,9 +811,9 @@ mod tests {
     fn agents_table_distinguishes_unknown_from_missing() {
         let d = AgentsData {
             agents: vec![
-                AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None },
-                AgentEntry { id: "codex".into(), kind: "agent".into(), enabled: true, installed: Some(false), usable: false, accounts: vec![], default_account: None },
-                AgentEntry { id: "gemini".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None },
+                AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None, account_labels: Default::default() },
+                AgentEntry { id: "codex".into(), kind: "agent".into(), enabled: true, installed: Some(false), usable: false, accounts: vec![], default_account: None, account_labels: Default::default() },
+                AgentEntry { id: "gemini".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None, account_labels: Default::default() },
             ],
         };
         let out = agents_text(&d);
@@ -831,6 +831,7 @@ mod tests {
             agents: vec![AgentEntry {
                 id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true,
                 accounts: vec!["Work".into(), "Client A".into()], default_account: Some("Work".into()),
+                account_labels: Default::default(),
             }],
         };
         let out = agents_text(&d);
@@ -848,8 +849,8 @@ mod tests {
     fn agents_table_stays_aligned_when_an_id_is_longer_than_the_header() {
         let d = AgentsData {
             agents: vec![
-                AgentEntry { id: "my-very-long-custom-terminal".into(), kind: "terminal".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None },
-                AgentEntry { id: "cc".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None },
+                AgentEntry { id: "my-very-long-custom-terminal".into(), kind: "terminal".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None, account_labels: Default::default() },
+                AgentEntry { id: "cc".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None, account_labels: Default::default() },
             ],
         };
         let out = agents_text(&d);
@@ -886,7 +887,7 @@ mod tests {
     #[test]
     fn new_verbs_carry_no_em_dashes() {
         let a = agents_text(&AgentsData {
-            agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None }],
+            agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None, account_labels: Default::default() }],
         });
         let t = tab_text(&TabData {
             agent_args: Vec::new(),
