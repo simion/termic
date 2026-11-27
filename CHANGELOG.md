@@ -4,6 +4,18 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.2.0] - 2026-11-27
+
+Mark a task as unread again, and accented task names keep their letters.
+
+### Features
+- Mark as unread on a task row's menu puts its dot back after an accidental click, until you open the task again. A shortcut for it can be bound in Settings, Shortcuts ([#473](https://github.com/simion/termic/issues/473)).
+- `termic mark` and MCP `task_mark` set a tab's done, needs-you or unread badge, for when you ask an agent to flag a task.
+
+### Bug fixes
+- Accented letters in a task name are spelled out in its branch and folder (Ä becomes ae, ă becomes a) instead of being dropped ([#472](https://github.com/simion/termic/issues/472)).
+- With the branch as a task's name, a narrow sidebar no longer glues the shortened folder to the branch (`gdesktop-...`).
+
 ## [2.1.2] - 2026-11-26
 
 Open files on your forge, answer waiting agents from a floating panel.
