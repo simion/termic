@@ -17,6 +17,7 @@ export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
 export function slugify(s: string) {
   const slug = s
     .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, c => FOLD.get(c) ?? "-")
     .replace(/[^a-z0-9-_]+/g, "-")
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "");
@@ -27,6 +28,15 @@ export function slugify(s: string) {
 }
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
+
+/** Accented Latin letters a slug spells out instead of dropping (GH #472):
+ *  ä→ae, ß→ss, the rest without the accent. The same string as `SLUG_FOLD`
+ *  in termic-proto/src/lib.rs, byte for byte (`utils.test.ts` reads both). */
+export const SLUG_FOLD = "ae:äæ;oe:öœ;ue:ü;ss:ß;th:þ;a:àáâãåāăą;c:çćčĉċ;d:ďđð;e:èéêëēĕėęě;g:ğĝġģ;h:ĥħ;i:ìíîïĩīĭįı;j:ĵ;k:ķ;l:ĺļľŀł;n:ñńņň;o:òóôõōŏőø;r:ŕŗř;s:śŝşšș;t:ţťŧț;u:ùúûũūŭůűų;w:ŵ;y:ýÿŷ;z:źżž";
+const FOLD = new Map(SLUG_FOLD.split(";").flatMap(pair => {
+  const [to, from] = pair.split(":");
+  return [...from].map(c => [c, to] as const);
+}));
 
 /** Like {@link slugify} but PRESERVES slashes, so an already-qualified
  *  branch pasted from elsewhere (e.g. Linear's "username/my-feature")

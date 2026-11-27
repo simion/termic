@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { slugify, branchify, shortPath, formatBytes } from "@/lib/utils";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { slugify, branchify, shortPath, formatBytes, SLUG_FOLD } from "@/lib/utils";
 import { derivedBranch, uniqueBranch } from "@/lib/quickTask";
 
 // ── slugify ───────────────────────────────────────────────────────────
@@ -27,11 +29,23 @@ describe("slugify", () => {
     expect(slugify("foo-bar")).toBe("foo-bar");
   });
 
-  it("collapses dashes a stripped letter puts next to a real one", () => {
-    // 'ă' is not [a-z0-9-_] → replaced with '-', landing beside the typed
-    // one. This used to be pinned AS "m--duc"; a slug is a branch name, and a
-    // branch name never carries two dashes in a row.
-    expect(slugify("mă-duc")).toBe("m-duc");
+  it("collapses dashes a stripped character puts next to a real one", () => {
+    // '!' is not [a-z0-9-_] → replaced with '-', landing beside the typed
+    // one. A slug is a branch name, and a branch name never carries two
+    // dashes in a row.
+    expect(slugify("go!-now")).toBe("go-now");
+  });
+
+  it("spells out accented letters instead of dropping them (GH #472)", () => {
+    expect(slugify("ÄÜÖ Übersicht")).toBe("aeueoe-uebersicht");
+    expect(slugify("Straße")).toBe("strasse");
+    expect(slugify("mă-duc")).toBe("ma-duc");
+    expect(slugify("Łódź")).toBe("lodz");
+  });
+
+  it("folds with the same table as the Rust side, byte for byte", () => {
+    const rust = readFileSync(resolve(__dirname, "../../termic-proto/src/lib.rs"), "utf8");
+    expect(rust).toContain(`pub const SLUG_FOLD: &str = "${SLUG_FOLD}";`);
   });
 
   it("returns empty string for all-special input", () => {
@@ -74,7 +88,10 @@ describe("slugify never emits two dashes in a row", () => {
     ["fix -- auth", "fix-auth"],
     ["a------b", "a-b"],
     // A stripped character landing beside a typed dash.
-    ["mă-duc", "m-duc"],
+    ["go!-now", "go-now"],
+    // Accents are spelled out (GH #472), not dropped.
+    ["mă-duc", "ma-duc"],
+    ["ÄÜÖ Übersicht", "aeueoe-uebersicht"],
     // Edges still go entirely, and collapsing must not leave one behind.
     ["  --lead", "lead"],
     ["trail--  ", "trail"],
@@ -85,8 +102,8 @@ describe("slugify never emits two dashes in a row", () => {
     // ASCII only, and Rust's `slugify` now agrees character for character.
     // It used to be Unicode-aware (`is_alphanumeric`), so the same task name
     // got `café-crème` from one side and `caf-cr-me` from the other.
-    ["café crème", "caf-cr-me"],
-    ["naïve", "na-ve"],
+    ["café crème", "cafe-creme"],
+    ["naïve", "naive"],
     ["🚀 ship it", "ship-it"],
     ["日本語 heading", "heading"],
   ];

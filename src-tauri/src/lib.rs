@@ -33742,9 +33742,11 @@ mod tests {
             // ASCII only, same as the frontend. `is_alphanumeric` is
             // Unicode-aware and kept these, which is how one task name got two
             // different branches depending on which side derived it.
-            ("café crème", "caf-cr-me"),
-            ("naïve", "na-ve"),
-            ("mă-duc", "m-duc"),
+            ("café crème", "cafe-creme"),
+            ("naïve", "naive"),
+            ("mă-duc", "ma-duc"),
+            ("go!-now", "go-now"),
+            ("ÄÜÖ Übersicht", "aeueoe-uebersicht"),
             ("🚀 ship it", "ship-it"),
             ("日本語 heading", "heading"),
             // Windows reserved device names cannot be directories.

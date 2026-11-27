@@ -191,7 +191,8 @@ mod tests {
         assert_eq!(termic_proto::slugify("a//b..c"), "a-b-c");
         assert_eq!(termic_proto::slugify("..."), "");
         assert_eq!(termic_proto::slugify("日本語"), "");
-        assert_eq!(termic_proto::slugify("ünïcode name"), "n-code-name");
+        // Accented Latin is spelled out (GH #472).
+        assert_eq!(termic_proto::slugify("ünïcode name"), "uenicode-name");
         // The desktop's rules, not a box-only variant: `_` kept.
         assert_eq!(termic_proto::slugify("snake_case name"), "snake_case-name");
         for s in [termic_proto::slugify("-x-"), termic_proto::slugify(" a b "), termic_proto::slugify("a\nb\0c")] {

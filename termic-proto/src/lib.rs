@@ -3622,6 +3622,13 @@ mod tests {
     }
 }
 
+/// Accented Latin letters a slug spells out instead of dropping (GH #472):
+/// `to:from…` pairs, German the way Germans write it without the dots
+/// (ä→ae, ß→ss), the rest without the accent. Byte-for-byte the same string
+/// as `SLUG_FOLD` in src/lib/utils.ts, which `utils.test.ts` checks, so the
+/// branch and the worktree directory still agree.
+pub const SLUG_FOLD: &str = "ae:äæ;oe:öœ;ue:ü;ss:ß;th:þ;a:àáâãåāăą;c:çćčĉċ;d:ďđð;e:èéêëēĕėęě;g:ğĝġģ;h:ĥħ;i:ìíîïĩīĭįı;j:ĵ;k:ķ;l:ĺļľŀł;n:ñńņň;o:òóôõōŏőø;r:ŕŗř;s:śŝşšș;t:ţťŧț;u:ùúûũūŭůűų;w:ŵ;y:ýÿŷ;z:źżž";
+
 /// A task name as a branch and worktree-directory name: lowercase ASCII
 /// alphanumerics, `-` and `_`, dash runs collapsed, no leading or trailing
 /// dash, and never a Windows reserved device name (the slug is a directory,
@@ -3635,7 +3642,15 @@ pub fn slugify(s: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                return c.to_string();
+            }
+            SLUG_FOLD
+                .split(';')
+                .find_map(|pair| pair.split_once(':').filter(|(_, from)| from.contains(c)).map(|(to, _)| to.to_string()))
+                .unwrap_or_else(|| "-".into())
+        })
         .collect();
     let mut out = String::with_capacity(mapped.len());
     let mut prev_dash = false;
