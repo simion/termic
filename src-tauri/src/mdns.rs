@@ -106,6 +106,13 @@ pub(crate) struct Sighting {
 // ───────────────────────────── wire format ───────────────────────────
 
 /// `termic-<first 12 hex of id>`, restricted to what a DNS label may hold.
+/// This machine's mDNS host name, `termic-<id12>.local`: what the phone
+/// pairing link carries next to the IPs, so a phone finds the computer
+/// after the router hands it a new address (this responder answers it).
+pub(crate) fn host_name(id: &str) -> String {
+    format!("{}.local", instance_label(id))
+}
+
 fn instance_label(id: &str) -> String {
     let clean: String = id
         .chars()
@@ -236,6 +243,10 @@ pub(crate) struct Parsed {
     /// The enumeration question specifically, so the answer carries the
     /// META -> SERVICE pointer.
     pub meta_question: bool,
+    /// Host names asked for by A or ANY (lowercased): a phone dialing
+    /// `termic-<id12>.local` resolves it this way. Answered only when it is
+    /// ours (`handle_packet` knows our id).
+    pub host_questions: Vec<String>,
     /// Complete adverts (PTR + SRV + TXT with an id), with the PTR's TTL.
     pub adverts: Vec<(Advert, u32)>,
 }
@@ -341,6 +352,9 @@ fn parse_inner(buf: &[u8]) -> Option<Parsed> {
                 parsed.questions_for_us = true;
                 parsed.meta_question = true;
             }
+        }
+        if !parsed.is_response && (qtype == T_A || qtype == T_ANY) && name.to_ascii_lowercase().ends_with(".local") {
+            parsed.host_questions.push(name.to_ascii_lowercase());
         }
     }
 
@@ -941,7 +955,11 @@ fn run(shared: Arc<Shared>, mut joined: HashSet<Ipv4Addr>) {
 fn handle_packet(shared: &Shared, own_id: &str, pkt: &[u8], src: IpAddr) {
     let parsed = parse_packet(pkt);
     if !parsed.is_response {
-        if parsed.questions_for_us {
+        // A lookup of our own host name (a phone dialing termic-<id12>.local)
+        // counts as a question for us: the full answer set carries the A
+        // records for every interface address.
+        let asks_host = parsed.host_questions.iter().any(|h| *h == host_name(own_id));
+        if parsed.questions_for_us || asks_host {
             let now = Instant::now();
             let send = {
                 let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1046,6 +1064,21 @@ mod tests {
         let r = encode_response_with(&advert("aa", "x"), &[], TTL, true);
         assert!(r.windows(7).any(|w| w == b"_termic"));
         assert_eq!(parse_packet(&r).adverts.len(), 1);
+    }
+
+    #[test]
+    fn a_lookup_of_a_host_name_is_recorded_for_the_owner_to_answer() {
+        let mut q = header(0, 1, 0);
+        push_name(&mut q, "TERMIC-0123456789ab.local");
+        q.extend_from_slice(&T_A.to_be_bytes());
+        q.extend_from_slice(&CLASS_IN.to_be_bytes());
+        let p = parse_packet(&q);
+        assert!(!p.questions_for_us, "a host lookup is not a service browse");
+        assert_eq!(p.host_questions, vec!["termic-0123456789ab.local".to_string()]);
+        assert_eq!(host_name("0123456789ABCDEF"), "termic-0123456789ab.local");
+        // The answer set carries the A record for that name.
+        let r = encode_response(&advert("0123456789abcdef", "x"), &[Ipv4Addr::new(192, 168, 1, 7)], TTL);
+        assert!(r.windows(4).any(|w| w == [192, 168, 1, 7]));
     }
 
     #[test]

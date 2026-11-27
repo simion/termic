@@ -203,6 +203,12 @@ pub enum ServerMsg {
         /// before minimums sends none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         needs: Option<String>,
+        /// Where a phone can reach this host now (host:port, the pairing
+        /// link's `h` list, its .local name included). A phone saves it, so
+        /// a computer the router moved to another address is still found.
+        /// Empty from a host that does not say.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hosts: Vec<String>,
     },
     /// Every task and its state. A full snapshot on connect and on every
     /// change, never a delta: a client that misses one gets the next.
@@ -531,8 +537,13 @@ mod tests {
         let row = TaskRow { id: "1".into(), name: "fix".into(), project: "api".into(), agent: "claude".into(), state: "working".into(), ..Default::default() };
         let cases: Vec<(ServerMsg, Value)> = vec![
             (
-                ServerMsg::Welcome { v: 1, id: "i".into(), name: "Mac".into(), version: "1.18.0".into(), kind: HostKind::Desktop, caps: vec!["tasks".into()], grant: Some("drive".into()), needs: None },
+                ServerMsg::Welcome { v: 1, id: "i".into(), name: "Mac".into(), version: "1.18.0".into(), kind: HostKind::Desktop, caps: vec!["tasks".into()], grant: Some("drive".into()), needs: None, hosts: vec![] },
                 json!({"t":"welcome","v":1,"id":"i","name":"Mac","version":"1.18.0","kind":"desktop","caps":["tasks"],"grant":"drive"}),
+            ),
+            // Where a phone reaches it now (its .local name included).
+            (
+                ServerMsg::Welcome { v: 1, id: "i".into(), name: "Mac".into(), version: "2.3.0".into(), kind: HostKind::Desktop, caps: vec![], grant: None, needs: None, hosts: vec!["192.168.1.7:47321".into(), "termic-0123456789ab.local:47321".into()] },
+                json!({"t":"welcome","v":1,"id":"i","name":"Mac","version":"2.3.0","kind":"desktop","caps":[],"hosts":["192.168.1.7:47321","termic-0123456789ab.local:47321"]}),
             ),
             (
                 ServerMsg::Tasks { tasks: vec![row] },

@@ -61,6 +61,10 @@ implementation. The master MCP token is never involved.
 - An answer is used only when one packet carries the PTR, SRV and TXT
   (with `id`) together. That interoperates with ourselves, which is all
   it needs to do.
+- The responder also answers an A (or ANY) lookup of this machine's own
+  name, `termic-<id12>.local`, with every interface address: the phone
+  pairing link carries that name so a phone resolves the computer after a
+  new DHCP lease (remote.md, "Pairing a phone").
 - Nothing discovery says is trusted. It only proposes addresses; pairing
   and every call authenticate on their own.
 

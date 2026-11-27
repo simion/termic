@@ -155,6 +155,9 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
         caps: caps_list,
         grant: Some(client.grant.as_str().to_string()),
         needs: Some(termic_remote::compat::REQUIRES_DESKTOP.into()),
+        // A phone saves where this computer is now, so the router moving it
+        // to another address does not strand the pairing (docs/remote.md).
+        hosts: if client.kind == ClientKind::Phone { node.phone_addresses().unwrap_or_default() } else { Vec::new() },
     };
     if writer.send(&welcome).is_err() {
         return;

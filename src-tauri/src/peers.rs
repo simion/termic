@@ -1792,14 +1792,29 @@ impl Node {
     /// (docs/remote.md, "Pairing a phone"): whoever can see this screen
     /// can pair, exactly like reading a code off it, and nothing else can.
     /// Reopening replaces the key, so an old photo of the code is useless.
-    pub(crate) fn start_phone_pairing(self: &Arc<Self>) -> Result<PhonePairingView, String> {
-        let Some(port) = self.port() else {
-            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
-        };
+    /// Where a phone can reach this machine now: the listener's address (or
+    /// every reachable interface address), then this machine's mDNS name,
+    /// which this app's responder answers wherever the router moves it.
+    /// What the pairing link carries and what a phone's welcome refreshes.
+    /// None while sharing is off.
+    pub(crate) fn phone_addresses(&self) -> Option<Vec<String>> {
+        let port = self.port()?;
         let bound = self.runtime.lock().unwrap().as_ref().map(|r| r.addr);
-        let addresses: Vec<String> = match bound {
+        let mut addresses: Vec<String> = match bound {
             Some(a) if !a.is_unspecified() => vec![SocketAddr::new(a, port).to_string()],
             _ => mdns::reachable_addrs().into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port).to_string()).collect(),
+        };
+        // Only alongside a real address: a name with nothing behind it would
+        // let a computer with no network look pairable.
+        if !addresses.is_empty() {
+            addresses.push(format!("{}:{port}", mdns::host_name(&self.self_id())));
+        }
+        Some(addresses)
+    }
+
+    pub(crate) fn start_phone_pairing(self: &Arc<Self>) -> Result<PhonePairingView, String> {
+        let Some(addresses) = self.phone_addresses() else {
+            return Err("Turn on sharing on this network first (Settings > Remote control).".into());
         };
         if addresses.is_empty() {
             return Err("This computer has no network address a phone could reach. Connect it to Wi-Fi or a VPN first.".into());
@@ -3525,16 +3540,28 @@ mod tests {
         }
     }
 
+    fn utf8_encode(s: &str) -> String {
+        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    }
+
     #[test]
     fn a_phone_pairs_once_with_the_qr_key_and_unpairing_cuts_it() {
         let b = machine("Mac");
         let view = b.node.start_phone_pairing().unwrap();
         assert!(view.link.starts_with("termic-remote://pair?v=1&h="), "{}", view.link);
         assert!(view.svg.starts_with("<?xml") || view.svg.starts_with("<svg"), "an SVG");
+        // Its mDNS name rides with the IPs, last, so a phone still finds it
+        // after the router moves it (the responder answers that name).
+        let host = mdns::host_name(&b.node.self_id());
+        assert_eq!(view.addresses.last().map(|a| a.starts_with(&format!("{host}:"))), Some(true), "{:?}", view.addresses);
+        assert!(view.link.contains(&utf8_encode(&host)), "{}", view.link);
         let k = view.link.split("&k=").nth(1).unwrap();
         let key: [u8; 32] = termic_remote::unb64url(k).unwrap().try_into().unwrap();
         let phone = "a1".repeat(16);
         let mut c = stream_as(&b, &phone, &key, ClientKind::Phone, &["tasks"]).unwrap();
+        // The welcome tells the phone where this computer is now.
+        let ServerMsg::Welcome { hosts, .. } = c.welcome.clone() else { panic!() };
+        assert_eq!(hosts, view.addresses, "a phone's welcome refreshes the pairing's addresses");
         assert_eq!(b.node.status().phones.len(), 1);
         assert!(b.node.status().phone_pairing.is_none(), "the key is spent");
         assert_eq!(b.ui.phones.lock().unwrap().len(), 1, "the desktop was told");

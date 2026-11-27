@@ -89,6 +89,8 @@ pub fn serve_conn(d: Arc<Daemon>, mut reader: MsgReader, mut writer: MsgWriter, 
         caps: [caps::CALL, caps::TASKS, caps::TERMINAL, caps::KEYS, caps::TRANSCRIPT, caps::RESIZE, caps::PTY, caps::PTY_KEEP].map(String::from).to_vec(),
         grant: Some("drive".into()),
         needs: Some(termic_remote::compat::REQUIRES_DESKTOP.into()),
+        // A server is reached by its configured address, not discovered.
+        hosts: Vec::new(),
     };
     if writer.send(&welcome).is_err() {
         return;

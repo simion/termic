@@ -229,7 +229,15 @@ termic-remote://pair?v=1&h=<host:port>[,<host:port>...]&id=<desktop id>&m=<name>
   the dialog withdraws it. The camera is the secure channel, so the phone
   needs no code exchange.
 - `h` lists every address a phone might reach: private LAN first, then
-  Tailscale (100.64.0.0/10), then others. The phone tries them.
+  Tailscale (100.64.0.0/10), then others, and last this machine's mDNS
+  name, `termic-<id12>.local:<port>` (`mdns::host_name`, answered by this
+  app's own responder). The phone tries them all.
+- **The router moving the computer does not strand the phone.** The IPs
+  in the code go stale when DHCP hands out a new lease; the `.local` name
+  does not, and every phone welcome carries the current list (`hosts`,
+  `Node::phone_addresses`), which the phone saves over the one it paired
+  with. So a phone that reaches the computer once by any path, or by its
+  name on the home network, keeps finding it.
 - Opening the dialog turns sharing on (a phone has to reach the listener).
 - Every new phone raises a desktop notification ("A phone was paired:
   ... Not you? Unpair it in Settings"): a photographed QR code is the
