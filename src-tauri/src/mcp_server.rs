@@ -1410,6 +1410,38 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_move",
+        cli_verb: "move",
+        description: "Move a task in its project's sidebar list, as dragging its row does: before or after another task, or to the top or bottom. In a group with other members it moves among them only.",
+        params: &[
+            P_TASK_SELF,
+            P_PROJECT,
+            ParamDef { name: "before", json_type: "string", required: false, description: "Put it just before this task (same project).", cli_flag: Some("--before") },
+            ParamDef { name: "after", json_type: "string", required: false, description: "Put it just after this task (same project).", cli_flag: Some("--after") },
+            ParamDef { name: "top", json_type: "boolean", required: false, description: "First place (of its group, when in one).", cli_flag: Some("--top") },
+            ParamDef { name: "bottom", json_type: "boolean", required: false, description: "Last place (of its group, when in one).", cli_flag: Some("--bottom") },
+        ],
+        destructive: false,
+        read_only: false,
+        build: |a| {
+            let top = arg_bool(a, "top")?;
+            let bottom = arg_bool(a, "bottom")?;
+            Ok(Command::Move {
+                task: Some(need_str(a, "task")?),
+                project: arg_str(a, "project")?,
+                before: arg_str(a, "before")?,
+                after: arg_str(a, "after")?,
+                edge: match (top, bottom) {
+                    (true, false) => Some("top".into()),
+                    (false, true) => Some("bottom".into()),
+                    (false, false) => None,
+                    (true, true) => return Err("pass top or bottom, not both".into()),
+                },
+                cwd: None,
+            })
+        },
+    },
+    ToolDef {
         name: "task_group",
         cli_verb: "group",
         description: "Show, name or recolour a task's sidebar group (tasks you create join yours), or move a task in or out. Name it for the batch of work. An ungrouped task founds its group.",
@@ -2218,7 +2250,7 @@ fn peer_call_command(args: &Args) -> Result<(Command, String), String> {
 /// Tools whose `task` defaults to the caller's own, as the CLI's `rename`,
 /// `group` and `tab` default to `$TERMIC_TASK_ID`.
 const SELF_DEFAULT_TOOLS: &[&str] = &[
-    "task_rename", "task_group", "task_tab", "task_prop", "task_mark", "task_run",
+    "task_rename", "task_group", "task_tab", "task_prop", "task_mark", "task_move", "task_run",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
     "scratchpad_remove", "scratchpad_clear",
     "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
@@ -4243,7 +4275,9 @@ mod tests {
         // 32516: task_mark (GH #473), parity with `termic mark`. Most of
         // its description is the warning that keeps agents from badging
         // their own turns, which is the point of the tool's wording.
-        const RECORDED: usize = 32516;
+        // 33377: task_move, parity with `termic move`: reorder a task in its
+        // project's sidebar list (four placement params, one sentence each).
+        const RECORDED: usize = 33377;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -4390,6 +4424,19 @@ mod tests {
         // The id-bearing kinds say which field is missing.
         let err = build(serde_json::json!({ "task": "t", "kind": "agent" })).unwrap_err();
         assert!(err.contains("agentId"), "{err}");
+    }
+
+    #[test]
+    fn task_move_builds_each_place_and_defaults_to_the_callers_task() {
+        let tool = TOOLS.iter().find(|t| t.name == "task_move").unwrap();
+        let build = |v: serde_json::Value| (tool.build)(v.as_object().unwrap());
+        let c = build(serde_json::json!({ "task": "t", "before": "u" })).unwrap();
+        assert!(matches!(&c, Command::Move { before: Some(b), after: None, edge: None, .. } if b == "u"));
+        let c = build(serde_json::json!({ "task": "t", "bottom": true })).unwrap();
+        assert!(matches!(&c, Command::Move { edge: Some(e), .. } if e == "bottom"));
+        assert!(build(serde_json::json!({ "task": "t", "top": true, "bottom": true })).is_err());
+        assert!(SELF_DEFAULT_TOOLS.contains(&"task_move"));
+        assert_eq!(tool_entry(tool)["annotations"]["destructiveHint"], false);
     }
 
     #[test]

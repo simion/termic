@@ -820,6 +820,63 @@ describe("termic pin: the row's Pin, over the real socket", () => {
   });
 });
 
+describe("termic move: reorder a task in its project's sidebar list", () => {
+  const ids: Record<string, string> = {};
+  after(async () => {
+    for (const id of Object.values(ids)) await archiveTask(id);
+  });
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    for (const n of ["cli-mv-a", "cli-mv-b", "cli-mv-c"]) ids[n] = await openTask(n, false);
+  });
+
+  /** the three tasks' names in the order the sidebar tree draws them */
+  const drawn = () => browser.execute((want: string[]) => {
+    const tree = Array.from(document.querySelectorAll<HTMLElement>("[data-sidebar-task-row]"))
+      .map(el => el.dataset.sidebarTaskRow!).filter(id => want.includes(id));
+    return [...new Set(tree)];
+  }, Object.values(ids)).then(order => order.map(id => Object.keys(ids).find(n => ids[n] === id)));
+
+  it("moves to the top and bottom, and the tree redraws in that order", async () => {
+    let r = await rpc({ cmd: "move", task: "cli-mv-c", edge: "top" });
+    expect(r.ok).toBe(true);
+    expect(r.data.kind).toBe("move");
+    expect(r.data.task.id).toBe(ids["cli-mv-c"]);
+    expect(r.data.position).toBe(1);
+    await browser.waitUntil(async () => (await drawn())[0] === "cli-mv-c", { timeout: 5000, timeoutMsg: "the tree did not redraw with cli-mv-c first" });
+    r = await rpc({ cmd: "move", task: "cli-mv-c", edge: "bottom" });
+    expect(r.ok).toBe(true);
+    expect(r.data.position).toBe(r.data.of);
+    await browser.waitUntil(async () => (await drawn()).at(-1) === "cli-mv-c", { timeout: 5000, timeoutMsg: "cli-mv-c did not go last" });
+  });
+
+  it("moves before and after another task", async () => {
+    let r = await rpc({ cmd: "move", task: "cli-mv-a", after: "cli-mv-c" });
+    expect(r.ok).toBe(true);
+    await browser.waitUntil(async () => (await drawn()).join(" ") === "cli-mv-b cli-mv-c cli-mv-a",
+      { timeout: 5000, timeoutMsg: "after did not land" });
+    r = await rpc({ cmd: "move", task: "cli-mv-a", before: "cli-mv-b" });
+    expect(r.ok).toBe(true);
+    await browser.waitUntil(async () => (await drawn()).join(" ") === "cli-mv-a cli-mv-b cli-mv-c",
+      { timeout: 5000, timeoutMsg: "before did not land" });
+  });
+
+  it("refuses no place, two places, itself and an unknown target, and moves nothing", async () => {
+    const before = (await drawn()).join(" ");
+    for (const bad of [
+      { cmd: "move", task: "cli-mv-a" },
+      { cmd: "move", task: "cli-mv-a", edge: "top", after: "cli-mv-b" },
+      { cmd: "move", task: "cli-mv-a", before: "cli-mv-a" },
+      { cmd: "move", task: "cli-mv-a", before: "no-such-task-xyz" },
+    ]) {
+      const r = await rpc(bad);
+      expect(r.ok).toBe(false);
+    }
+    expect((await drawn()).join(" ")).toBe(before);
+  });
+});
+
 // `termic new --from` / `--resume` (GH #169): adopt a worktree some outside
 // script created, over the real socket. The full server thread runs: project
 // resolution from the worktree's own repo (repo_worktrees), the import RPC

@@ -1034,6 +1034,16 @@ pub(crate) fn dispatch_authenticated(
         Command::Pin { task, project, pinned, cwd } => {
             handle_pin(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), *pinned)
         }
+        Command::Move { task, project, before, after, edge, cwd } => handle_move(
+            &req.id,
+            host,
+            task.as_deref(),
+            project.as_deref(),
+            cwd.as_deref(),
+            before.as_deref(),
+            after.as_deref(),
+            edge.as_deref(),
+        ),
         Command::Group { task, project, name, color, cwd, caller_task, join, leave } => handle_group(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             name.as_deref(), color.as_deref(), caller_task.as_deref(), join.as_deref(), *leave,
@@ -3886,6 +3896,69 @@ fn handle_pin(id: &str, host: &dyn CliHost, task: Option<&str>, project: Option<
     match tasks.iter().find(|w| w.id == t.id) {
         Some(w) => Reply::ok(id, ReplyData::Pin(proto::PinData { task: summarize(w, &projects, &tasks, None, None), pinned })),
         None => Reply::err(id, ErrorCode::Internal, "task disappeared during pin"),
+    }
+}
+
+/// `move` (v30): reorder a task in its project's sidebar list. Both tasks are
+/// resolved here (names, ids, project/name); the webview owns the order and
+/// the group rules (`move_task`, src/lib/taskMove.ts), as a drop does.
+#[allow(clippy::too_many_arguments)]
+fn handle_move(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    before: Option<&str>,
+    after: Option<&str>,
+    edge: Option<&str>,
+) -> Reply {
+    let given = [before.is_some(), after.is_some(), edge.is_some()].iter().filter(|b| **b).count();
+    if given != 1 {
+        return Reply::err(id, ErrorCode::BadRequest, "pass exactly one of --before, --after, --top or --bottom");
+    }
+    if let Some(e) = edge {
+        if e != "top" && e != "bottom" {
+            return Reply::err(id, ErrorCode::BadRequest, format!("edge must be top or bottom, not \"{e}\""));
+        }
+    }
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let mut params = serde_json::json!({ "taskId": t.id });
+    for (key, sel) in [("before", before), ("after", after)] {
+        let Some(sel) = sel else { continue };
+        // The target is looked up in the moving task's project, so a bare
+        // name never lands on a same-named task elsewhere.
+        let in_project = tasks.iter().filter(|w| w.project_id == t.project_id).cloned().collect::<Vec<_>>();
+        let target = match resolve_task_arg(&projects, &in_project, Some(sel), None, None) {
+            Ok(w) => w.clone(),
+            Err(_) => return Reply::err(id, ErrorCode::NotFound, format!("no task \"{sel}\" in the same project as {}", t.name)),
+        };
+        params[key] = serde_json::json!(target.id);
+    }
+    if let Some(e) = edge {
+        params["edge"] = serde_json::json!(e);
+    }
+    let value = match host.rpc("move_task", params, PROJECT_RPC_TIMEOUT) {
+        Ok(v) => v,
+        Err(e) => {
+            return match e.split_once("cli_move:refused: ") {
+                Some((_, why)) => Reply::err(id, ErrorCode::BadRequest, why),
+                None => Reply::err(id, ErrorCode::Internal, format!("move failed ({e})")),
+            };
+        }
+    };
+    let n = |k: &str| value.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let (projects, tasks) = host.projects_tasks();
+    match tasks.iter().find(|w| w.id == t.id) {
+        Some(w) => Reply::ok(
+            id,
+            ReplyData::Move(proto::MoveData { task: summarize(w, &projects, &tasks, None, None), position: n("position"), of: n("of") }),
+        ),
+        None => Reply::err(id, ErrorCode::Internal, "task disappeared during move"),
     }
 }
 
@@ -10119,6 +10192,52 @@ mod tests {
 
     fn w3(host: &StubHost) -> Task {
         host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
+    }
+
+    // ── move (v30) ───────────────────────────────────────────────────
+
+    fn move_req(task: &str, before: Option<&str>, edge: Option<&str>) -> Request {
+        req(
+            Command::Move {
+                task: Some(task.into()), project: None,
+                before: before.map(str::to_string), after: None, edge: edge.map(str::to_string), cwd: None,
+            },
+            Some("tok"),
+        )
+    }
+
+    #[test]
+    fn move_looks_its_target_up_in_the_same_project() {
+        // "fix-auth" names a task in p1 AND in p2: scoped to solo's project
+        // (p1) it is w1, not an ambiguity error.
+        let host = StubHost::default();
+        host.script_rpc("move_task", Ok(serde_json::json!({ "position": 1, "of": 2 })));
+        let reply = handle(&move_req("w3", Some("fix-auth"), None), &host);
+        assert!(reply.ok, "{:?}", reply.error);
+        let p = rpc_params(&host, "move_task");
+        assert_eq!((p["taskId"].as_str(), p["before"].as_str()), (Some("w3"), Some("w1")));
+        let Some(ReplyData::Move(m)) = reply.data else { panic!("expected move") };
+        assert_eq!((m.task.id.as_str(), m.position, m.of), ("w3", 1, 2));
+        // solo lives in p1 only, so from w2 (p2) it is not found.
+        let reply = handle(&move_req("w2", Some("solo"), None), &StubHost::default());
+        assert_eq!(reply.error.unwrap().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn move_takes_exactly_one_place_and_passes_a_refusal_through() {
+        let host = StubHost::default();
+        for r in [
+            req(Command::Move { task: Some("w3".into()), project: None, before: None, after: None, edge: None, cwd: None }, Some("tok")),
+            req(Command::Move { task: Some("w3".into()), project: None, before: Some("w1".into()), after: None, edge: Some("top".into()), cwd: None }, Some("tok")),
+            move_req("w3", None, Some("middle")),
+        ] {
+            assert_eq!(handle(&r, &host).error.unwrap().code, ErrorCode::BadRequest);
+        }
+        let host = StubHost::default();
+        host.script_rpc("move_task", Err("cli_move:refused: this task is in a group and moves among its members".into()));
+        let e = handle(&move_req("w3", None, Some("top")), &host).error.unwrap();
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(e.message, "this task is in a group and moves among its members");
     }
 
     // ── mark (GH #473) ───────────────────────────────────────────────

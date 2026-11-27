@@ -264,6 +264,16 @@ with it, as the sidebar's Move to group does. `--leave` leaves the rest of
 the group as it is. A move is a call of its own: rename or recolour in
 another. Over MCP: `task_group` with `join` or `leave`.
 
+To reorder a task in its project's sidebar list, as dragging its row does:
+
+    "$TERMIC_CLI" move <task> --before <other>   # or --after <other>
+    "$TERMIC_CLI" move <task> --top              # or --bottom
+
+Order is per project. In a group with other members the task moves among
+them only (`--top` / `--bottom` are the group's ends; leave the group to
+move it out); outside a group, a target inside one means the whole group.
+Over MCP: `task_move`.
+
 ### Starting the dev server
 
 When your task has a run script configured, start the dev server with

@@ -122,6 +122,10 @@ To move a task between groups:
     "$TERMIC_CLI" group <task> --join <other>   # into <other>'s group
     "$TERMIC_CLI" group <task> --leave          # out of its group
 
+To reorder a task in its project's sidebar list (within its group, when it is in one):
+
+    "$TERMIC_CLI" move <task> --before <other>   # or --after <other>, --top, --bottom
+
 ## Driving an Existing Task
 
 - `"$TERMIC_CLI" send <task> -p "<text>"` - prompt the RUNNING agent (queues if it is mid-turn or the user is typing into it). With no agent running, add `--resume` or `--fresh`. `-p -` reads stdin.

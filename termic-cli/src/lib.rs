@@ -1213,6 +1213,44 @@ Exit codes: 0 done, 1 error (unknown or ambiguous task), 4 app not running, \
         #[arg(long, requires = "task")]
         project: Option<String>,
     },
+    /// Move a task in its project's sidebar list, as dragging its row does.
+    #[command(after_help = "Places the task before or after another task in the same project, or at \
+the top or bottom. Tasks are ordered within their project; there is no order across projects.
+
+In a task group with other members, the task moves among them: --top and --bottom are the \
+group's first and last place, and --before / --after must name another member (leave the \
+group first with `termic group --leave` to move it out). Outside a group, a target inside a \
+group means the whole group: before its first member or after its last.
+
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current directory. \
+The task given to --before / --after is looked up in the same project.
+
+Prints the task and its new place on stdout. With --output-format json, one object: \
+{\"task\": {...}, \"position\", \"of\"} (1-based, in the order the sidebar draws).
+
+Exit codes: 0 done, 1 error (unknown task, a target in another project, a move a group \
+refuses), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost.")]
+    #[command(group(clap::ArgGroup::new("place").required(true).args(["before", "after", "top", "bottom"])))]
+    Move {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Put it just before this task.
+        #[arg(long, value_name = "TASK")]
+        before: Option<String>,
+        /// Put it just after this task.
+        #[arg(long, value_name = "TASK")]
+        after: Option<String>,
+        /// First place (of its group, when it is in one).
+        #[arg(long)]
+        top: bool,
+        /// Last place (of its group, when it is in one).
+        #[arg(long)]
+        bottom: bool,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
     /// Rename a task: the sidebar label only; branch and directory stay.
     #[command(
         allow_missing_positional = true,
@@ -2575,6 +2613,21 @@ outside.",
                     task: target,
                     project: project.clone(),
                     pinned: !off,
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
+        }
+        Cmd::Move { task, before, after, top, bottom, project } => {
+            let data = client::request(
+                &mut conn,
+                proto::Command::Move {
+                    task: task.clone().or_else(|| own_env("TERMIC_TASK_ID")),
+                    project: project.clone(),
+                    before: before.clone(),
+                    after: after.clone(),
+                    edge: if *top { Some("top".into()) } else if *bottom { Some("bottom".into()) } else { None },
                     cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 },
                 &token,
@@ -4113,6 +4166,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
             OutputFormat::Text => format!("{} {}/{}", if p.pinned { "pinned" } else { "unpinned" }, p.task.project, p.task.name),
         }),
         (Cmd::Pin { .. }, _) => Err(unexpected("pin")),
+        (Cmd::Move { .. }, proto::ReplyData::Move(m)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&m),
+            OutputFormat::Text => format!("moved {}/{} to {} of {}", m.task.project, m.task.name, m.position, m.of),
+        }),
+        (Cmd::Move { .. }, _) => Err(unexpected("move")),
         (Cmd::Group { .. }, proto::ReplyData::Group(g)) => Ok(match format {
             OutputFormat::Json | OutputFormat::StreamJson => output::json(&g),
             OutputFormat::Text => output::group_text(&g),
@@ -4940,6 +4998,24 @@ mod tests {
         assert!(Cli::try_parse_from(["termic", "rename"]).is_err());
         // --project only disambiguates an explicit task name.
         assert!(Cli::try_parse_from(["termic", "rename", "new", "--project", "web"]).is_err());
+    }
+
+    #[test]
+    fn move_parses_one_place_and_renders() {
+        let Cmd::Move { task, before, top, .. } = Cli::try_parse_from(["termic", "move", "fix-login", "--before", "docs"]).unwrap().cmd else { panic!("not move") };
+        assert_eq!((task.as_deref(), before.as_deref(), top), (Some("fix-login"), Some("docs"), false));
+        let Cmd::Move { task, bottom, .. } = Cli::try_parse_from(["termic", "move", "--bottom"]).unwrap().cmd else { panic!("not move") };
+        assert_eq!((task, bottom), (None, true));
+        assert!(Cli::try_parse_from(["termic", "move", "x"]).is_err(), "a place is required");
+        assert!(Cli::try_parse_from(["termic", "move", "x", "--top", "--after", "y"]).is_err(), "one place only");
+        assert!(Cli::try_parse_from(["termic", "move", "--top", "--project", "web"]).is_err(), "--project needs a task");
+        let cmd = Cmd::Move { task: None, before: None, after: None, top: true, bottom: false, project: None };
+        let data = proto::ReplyData::Move(proto::MoveData {
+            task: proto::TaskSummary { id: "w1".into(), name: "fix-login".into(), project: "web".into(), ..Default::default() },
+            position: 1,
+            of: 4,
+        });
+        assert_eq!(render(&cmd, OutputFormat::Text, data).unwrap(), "moved web/fix-login to 1 of 4");
     }
 
     #[test]

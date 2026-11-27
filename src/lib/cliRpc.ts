@@ -22,6 +22,7 @@ import { fetchPrForReview, checkoutPrInMain, prReviewPrompt } from "@/lib/prRevi
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { planTaskMove, type MovePlace } from "@/lib/taskMove";
 import { useApp, tabFromPersisted } from "@/store/app";
 import { agentSendDisposition } from "@/lib/agentSendDisposition";
 import { usePrefs } from "@/store/prefs";
@@ -40,6 +41,7 @@ import {
   taskOpenRepo,
   taskRename,
   taskSetPinned,
+  taskReorder,
   taskSetAccount,
   taskSetYolo,
   tasksList,
@@ -986,6 +988,40 @@ async function pinTaskHandler(params: unknown): Promise<null> {
   return null;
 }
 
+/** `termic move` (and MCP `task_move`): reorder a task in its project's
+ *  sidebar list, the way a drop does: the store first (the row moves now),
+ *  then `task_reorder` with the project's ids in display order. The server
+ *  resolved both tasks and checked they share a project. */
+export async function moveTaskHandler(params: unknown): Promise<{ position: number; of: number }> {
+  const p = params as { taskId?: unknown; before?: unknown; after?: unknown; edge?: unknown };
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("move_task requires a taskId");
+  const place: MovePlace | null =
+    typeof p.before === "string" ? { before: p.before }
+    : typeof p.after === "string" ? { after: p.after }
+    : p.edge === "top" || p.edge === "bottom" ? { edge: p.edge }
+    : null;
+  if (!place) throw new Error("move_task requires before, after or edge");
+  const all = useApp.getState().tasks;
+  const me = all.find(t => t.id === p.taskId);
+  if (!me || me.archived) throw new Error("cli_move:not_found: that task is not in the sidebar");
+  const rows = all.filter(t => t.project_id === me.project_id && !t.archived);
+  const plan = planTaskMove(rows, me.id, place);
+  if ("error" in plan) throw new Error(`cli_move:refused: ${plan.error}`);
+  const byId = new Map(rows.map(t => [t.id, t]));
+  let k = 0;
+  const next = all.map(t => (t.project_id === me.project_id && !t.archived ? byId.get(plan.ids[k++])! : t));
+  if (next.some((t, i) => t !== all[i])) {
+    useApp.setState({ tasks: next });
+    try {
+      await taskReorder(plan.ids);
+    } catch (e) {
+      void useApp.getState().loadAll();
+      throw e;
+    }
+  }
+  return { position: plan.ids.indexOf(me.id) + 1, of: plan.ids.length };
+}
+
 /** `termic group --name/--color` (and MCP `task_group`). A key that is ABSENT
  *  leaves that property as it is; `name: ""` returns the group to following
  *  its lead's name. A task in no group founds a group of one around itself
@@ -1655,6 +1691,7 @@ const handlers: Record<string, Handler> = {
   archive_task: archiveTaskHandler,
   rename_task: renameTaskHandler,
   pin_task: pinTaskHandler,
+  move_task: moveTaskHandler,
   set_task_group: setTaskGroupHandler,
   pad: padHandler,
   schedule: scheduleHandler,

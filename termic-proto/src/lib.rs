@@ -145,7 +145,11 @@ use std::io::{self, BufRead, Read, Write};
 /// v29: the `mark` verb puts a tab's sidebar status by hand (done, needs
 /// attention, unread, or clear), for when a HUMAN asks for it (GH #473).
 /// A v28 server does not know it.
-pub const PROTOCOL_VERSION: u32 = 29;
+///
+/// v30: the `move` verb reorders a task in its project's sidebar list:
+/// before or after another task, or to the top or bottom (of its group,
+/// when it is in one). A v29 server does not know it.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// What `mark` puts on a tab (GH #473). Termic sets done and needs-attention
 /// by itself from agent hooks and output parsing; this is the by-hand
@@ -816,6 +820,24 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// v30: move a task in its project's sidebar list, as dragging its row
+    /// does. Exactly one of `before`, `after` (another task in the same
+    /// project) or `edge` ("top" / "bottom": of the task's group when it is
+    /// in one, else of the project's list). Replies `ReplyData::Move`.
+    Move {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// v15: show or change a task's sidebar TASK GROUP (the block a task an
     /// agent creates joins, led by that agent's task). With neither `name`
     /// nor `color` it only reports. Setting either on a task in no group
@@ -1324,6 +1346,8 @@ pub enum ReplyData {
     Stop(StopData),
     Rename(RenameData),
     Pin(PinData),
+    /// `move` (v30).
+    Move(MoveData),
     Group(GroupData),
     Run(RunData),
     Pad(PadData),
@@ -1666,6 +1690,15 @@ pub struct PinData {
     /// The task after the change, re-read from disk.
     pub task: TaskSummary,
     pub pinned: bool,
+}
+
+/// `move`: the task after the move and where it now sits in its project's
+/// sidebar list (1-based, groups gathered into blocks, as drawn).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MoveData {
+    pub task: TaskSummary,
+    pub position: u32,
+    pub of: u32,
 }
 
 fn pin_default() -> bool {
@@ -2889,6 +2922,10 @@ mod tests {
             },
             Command::Pin { task: Some("fix-auth".into()), project: Some("web".into()), pinned: true, cwd: None },
             Command::Pin { task: None, project: None, pinned: false, cwd: Some("/tasks/web/x".into()) },
+            // v30: every placement shape.
+            Command::Move { task: Some("fix-auth".into()), project: Some("web".into()), before: Some("other".into()), after: None, edge: None, cwd: None },
+            Command::Move { task: None, project: None, before: None, after: Some("other".into()), edge: None, cwd: Some("/tasks/web/x".into()) },
+            Command::Move { task: Some("t".into()), project: None, before: None, after: None, edge: Some("top".into()), cwd: None },
             Command::PadList { task: None, project: None, scope: None, cwd: Some("/tasks/web/x".into()) },
             Command::PadNew {
                 task: Some("fix-auth".into()),
