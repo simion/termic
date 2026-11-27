@@ -308,8 +308,7 @@ const lastAlerted = new Map<string, number>();
  *  in a focused window, and one per task per few seconds. */
 function ring(alerts: RemoteAlert[]) {
   void Promise.all([import("@/store/prefs"), import("@/lib/ipc"), import("@/lib/i18n")]).then(([{ usePrefs }, { notify, pushPhones }, { i18n }]) => {
-    const { desktopNotifications, phonePushAfterMin } = usePrefs.getState();
-    if (!desktopNotifications && phonePushAfterMin < 0) return;
+    const { desktopNotifications } = usePrefs.getState();
     const open = useRemote.getState().open;
     for (const a of alerts) {
       if (open?.machine === a.machine && open?.task === a.task && document.hasFocus()) continue;
@@ -320,7 +319,7 @@ function ring(alerts: RemoteAlert[]) {
       const title = `${a.machineName} · ${a.project} · ${a.taskName}`;
       const body = a.kind === "waiting" ? (a.question || i18n.t("remote:alert.waiting")) : i18n.t("remote:alert.done");
       if (desktopNotifications) notify(title, body, undefined, { sound: a.kind === "done", attention: a.kind === "waiting" }).catch(() => {});
-      pushPhones(title, body, null, a.kind === "waiting", phonePushAfterMin);
+      pushPhones(title, body, null, a.kind === "waiting");
     }
   });
 }

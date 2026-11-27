@@ -81,41 +81,40 @@ describe("settings", () => {
   });
 
   // Phones are told only once this computer has gone a while without
-  // input, and the choice is separate from desktop banners (push.rs).
-  it("sets when paired phones are notified, default two minutes away", async () => {
+  // input, with separate delays for a needs-you and a finished turn. Rust
+  // keeps them (a paired phone can change them too), separate from desktop
+  // banners (push.rs).
+  it("sets when paired phones are told, 30 s for needs-you and 2 min for done", async () => {
     await waitForAppShell();
     await requireTermicApi();
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("notifications"));
     await waitForText("Notify paired phones");
-    // A native <select> in WKWebView ignores WebDriver's option click: set
-    // the value through React's setter and fire change, as credentials.e2e does.
-    const choose = (value: string) => browser.execute((v) => {
-      const el = document.querySelector('[data-testid="phone-push-after"]') as HTMLSelectElement;
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, v);
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }, value);
-    const shown = await browser.execute(() => {
-      const el = document.querySelector('[data-testid="phone-push-after"]') as HTMLSelectElement;
-      return { value: el.value, labels: [...el.options].map(o => o.text) };
-    });
-    expect(shown.value).toBe("2");
-    expect(shown.labels).toEqual([
-      "Always, even while I am here", "After 1 minute away", "After 2 minutes away",
+    await browser.waitUntil(() => browser.execute(() => !(document.querySelector('[data-testid="phone-push-after-attention"]') as HTMLSelectElement)?.disabled),
+      { timeout: 5_000, timeoutMsg: "the delays never loaded" });
+    const read = () => browser.execute(() => ["attention", "done"].map(k => (document.querySelector(`[data-testid="phone-push-after-${k}"]`) as HTMLSelectElement).value));
+    expect(await read()).toEqual(["30", "120"]);
+    const labels = await browser.execute(() => [...(document.querySelector('[data-testid="phone-push-after-done"]') as HTMLSelectElement).options].map(o => o.text));
+    expect(labels).toEqual([
+      "Right away, even while I am here", "After 30 seconds away", "After 1 minute away", "After 2 minutes away",
       "After 5 minutes away", "After 15 minutes away", "Never",
     ]);
     await snap("settings-phone-push.png");
-    for (const [value, want] of [["5", 5], ["-1", -1], ["0", 0]] as const) {
-      await choose(value);
-      await browser.waitUntil(
-        () => browser.execute((w) => window.__termic!.usePrefs.getState().phonePushAfterMin === w, want),
-        { timeout: 5_000, timeoutMsg: `phonePushAfterMin never became ${want}` },
-      );
-      expect(await browser.execute(() => localStorage.getItem("phonePushAfterMin"))).toBe(value);
-    }
-    // Desktop banners are a separate switch: changing phones left it alone.
-    const desktop = await browser.execute(() => window.__termic!.usePrefs.getState().desktopNotifications);
-    await choose("2");
-    expect(await browser.execute(() => window.__termic!.usePrefs.getState().desktopNotifications)).toBe(desktop);
+    // A native <select> in WKWebView ignores WebDriver's option click: set
+    // the value through React's setter and fire change, as credentials.e2e does.
+    const choose = (k: string, v: string) => browser.execute((key, val) => {
+      const el = document.querySelector(`[data-testid="phone-push-after-${key}"]`) as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, val);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }, k, v);
+    await choose("attention", "0");
+    await choose("done", "-1");
+    // Kept by Rust: a reload reads the same values back.
+    await browser.waitUntil(async () => JSON.stringify(await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("phones_notify_prefs"))) === "[0,-1]",
+      { timeout: 5_000, timeoutMsg: "the delays never reached Rust" });
+    await choose("attention", "30");
+    await choose("done", "120");
+    await browser.waitUntil(async () => JSON.stringify(await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("phones_notify_prefs"))) === "[30,120]",
+      { timeout: 5_000, timeoutMsg: "the delays were not put back" });
   });
 
   it("toggles a preference and it lands in the prefs store", async () => {

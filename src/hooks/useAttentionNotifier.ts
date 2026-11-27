@@ -31,8 +31,7 @@ export function useAttentionNotifier() {
       if (state.tabs === prev.tabs) return;
       // Desktop banners are opt-in; paired phones have their own setting
       // (pushPhones). Unread dots in the sidebar update regardless.
-      const { desktopNotifications, phonePushAfterMin } = usePrefs.getState();
-      if (!desktopNotifications && phonePushAfterMin < 0) return;
+      const { desktopNotifications } = usePrefs.getState();
       const taskIds = Object.keys(state.tabs);
       for (const taskId of taskIds) {
         if (state.tabs[taskId] === prev.tabs[taskId]) continue;
@@ -63,7 +62,9 @@ export function useAttentionNotifier() {
           // an agent finished, so suppressing it there is backwards. Shared
           // predicate so this cannot drift from fireDone / setWorkState.
           const watching = isUserWatching(taskId);
-          if (watching && phonePushAfterMin !== 0) continue;
+          // Watching it here: no banner, and no phone either (Rust holds a
+          // push back while this computer has input anyway).
+          if (watching) continue;
           const key = `${taskId}:${t.id}`;
           const now = Date.now();
           if ((lastFiredRef.current[key] || 0) + DEBOUNCE_MS > now) continue;
@@ -89,7 +90,7 @@ export function useAttentionNotifier() {
           if (desktopNotifications && !watching) {
             notify(title, body, { taskId, tabId: t.id }, { sound: t.unread!.reason === "done", attention }).catch(() => {});
           }
-          pushPhones(title, body, taskId, attention, phonePushAfterMin);
+          pushPhones(title, body, taskId, attention);
         }
       }
     });

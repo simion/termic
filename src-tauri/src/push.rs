@@ -68,29 +68,31 @@ fn requests<'a>(targets: &'a [(String, PushReg)], computer: &'a str, title: &str
 /// a failed push loses nothing the phone will not see when it next opens,
 /// so nothing is retried.
 ///
-/// Not while the person is at this computer: `after_ms` is how long it must
-/// have gone without any input first (Settings > Notifications, "Notify
-/// paired phones"; 0 is always, `None` never). The whole system counts, not
-/// just Termic: typing in a browser beside it is being here. Where the OS
-/// cannot say (Linux), Termic's own last input (`app_idle_ms`) stands in.
+/// Not while the person is at this computer: phones are told only once the
+/// machine has gone without input for this kind's delay (peers.rs
+/// `notify_prefs`, set in Settings > Notifications or from a phone; 0
+/// always, -1 never). A needs-you and a finished turn have separate delays. The whole system counts, not just
+/// Termic: typing in a browser beside it is being here. Where the OS cannot
+/// say (Linux), Termic's own last input (`app_idle_ms`) stands in.
 /// shortcut: a push skipped because you were here is not sent later if you
 /// leave with the task still waiting; add a deferred re-check if asked for.
 #[tauri::command]
-pub(crate) fn phones_push(title: String, body: String, task: Option<String>, attention: Option<bool>, after_ms: Option<u64>, app_idle_ms: Option<u64>) {
-    let Some(after) = after_ms else { return };
+pub(crate) fn phones_push(title: String, body: String, task: Option<String>, attention: Option<bool>, app_idle_ms: Option<u64>) {
+    let attention = attention.unwrap_or(false);
     let idle = system_idle_ms().or(app_idle_ms).unwrap_or(u64::MAX);
-    if !away_long_enough(idle, after) {
-        crate::dlog(&format!("[push] skipped: input {}s ago, phones are told after {}s away", idle / 1000, after / 1000));
+    let Some(node) = crate::peers::node() else { return };
+    let (a, d) = node.notify_prefs();
+    if !due(if attention { a } else { d }, idle) {
+        crate::dlog(&format!("[push] not yet: input {}s ago", idle / 1000));
         return;
     }
-    let Some(node) = crate::peers::node() else { return };
     let targets = node.away_push_targets();
     if targets.is_empty() {
         return;
     }
     let computer = node.self_id();
     let task = task.unwrap_or_default();
-    let reqs: Vec<(String, String, String)> = requests(&targets, &computer, &title, &body, &task, attention.unwrap_or(false))
+    let reqs: Vec<(String, String, String)> = requests(&targets, &computer, &title, &body, &task, attention)
         .into_iter()
         .filter_map(|(id, handle, b)| Some((id.to_string(), handle.to_string(), serde_json::to_string(&b).ok()?)))
         .collect();
@@ -114,8 +116,24 @@ pub(crate) fn phones_push(title: String, body: String, task: Option<String>, att
     });
 }
 
-fn away_long_enough(idle_ms: u64, after_ms: u64) -> bool {
-    idle_ms >= after_ms
+/// Whether phones are told now: the delay for this kind against how long
+/// the machine has gone without input. Negative is never.
+fn due(after_s: i32, idle_ms: u64) -> bool {
+    after_s >= 0 && idle_ms >= after_s as u64 * 1000
+}
+
+/// Settings > Notifications reads the two delays.
+#[tauri::command]
+pub(crate) fn phones_notify_prefs() -> (i32, i32) {
+    crate::peers::node().map(|n| n.notify_prefs()).unwrap_or(crate::peers::NOTIFY_DEFAULTS)
+}
+
+/// And sets them (phones read them on their next connect).
+#[tauri::command]
+pub(crate) fn phones_set_notify_prefs(attention_s: i32, done_s: i32) {
+    if let Some(n) = crate::peers::node() {
+        n.set_notify_prefs(attention_s, done_s);
+    }
 }
 
 /// Milliseconds since the last keyboard, mouse or trackpad input anywhere on
@@ -163,9 +181,10 @@ mod tests {
 
     #[test]
     fn phones_hear_only_once_this_computer_has_been_left_long_enough() {
-        assert!(away_long_enough(5_000, 0), "always");
-        assert!(!away_long_enough(30_000, 120_000), "typed 30 s ago");
-        assert!(away_long_enough(120_000, 120_000));
+        assert!(due(0, 5_000), "always");
+        assert!(!due(120, 30_000), "typed 30 s ago");
+        assert!(due(120, 120_000));
+        assert!(!due(-1, u64::MAX), "never");
         // The real reading is sane on a machine that has one.
         if let Some(ms) = system_idle_ms() {
             assert!(ms < 365 * 86_400_000);

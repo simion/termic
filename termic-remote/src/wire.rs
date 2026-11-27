@@ -190,6 +190,11 @@ pub enum ClientMsg {
         #[serde(default)]
         ent: String,
     },
+    /// Set this computer's phone-notification delays (the same two settings
+    /// as its Settings > Notifications): seconds without input before paired
+    /// phones are told an agent needs them, and that one finished. 0 always,
+    /// -1 never. Answered with `ServerMsg::NotifyPrefs`.
+    NotifyPrefs { attention_s: i32, done_s: i32 },
     Ping {},
     #[serde(other)]
     Unknown,
@@ -274,6 +279,9 @@ pub enum ServerMsg {
     /// it when the direct addresses fail. Sent to a phone after the welcome
     /// while the relay is on.
     Relay { addr: String, servers: Vec<String> },
+    /// This computer's phone-notification delays, after the welcome and in
+    /// answer to `ClientMsg::NotifyPrefs`.
+    NotifyPrefs { attention_s: i32, done_s: i32 },
     #[serde(other)]
     Unknown,
 }
@@ -545,6 +553,7 @@ mod tests {
                 ClientMsg::PushReg { handle: "aGFuZGxl".into(), key: "a2V5".into(), ent: "e.s".into() },
                 json!({"t":"push_reg","handle":"aGFuZGxl","key":"a2V5","ent":"e.s"}),
             ),
+            (ClientMsg::NotifyPrefs { attention_s: 30, done_s: -1 }, json!({"t":"notify_prefs","attention_s":30,"done_s":-1})),
         ];
         for (msg, want) in cases {
             assert_eq!(serde_json::to_value(&msg).unwrap(), want);

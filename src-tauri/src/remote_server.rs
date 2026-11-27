@@ -173,6 +173,10 @@ fn run(node: Arc<Node>, client: StreamClient, mut reader: MsgReader, mut writer:
         return;
     }
     if client.kind == ClientKind::Phone {
+        let (attention_s, done_s) = node.notify_prefs();
+        if writer.send(&ServerMsg::NotifyPrefs { attention_s, done_s }).is_err() {
+            return;
+        }
         if let Some(m) = relay_msg(&node) {
             if writer.send(&m).is_err() {
                 return;
@@ -408,6 +412,13 @@ fn handle(s: &Arc<Session>, msg: ClientMsg) {
                         send(s, m);
                     }
                 }
+            }
+        }
+        ClientMsg::NotifyPrefs { attention_s, done_s } => {
+            if s.client.kind == ClientKind::Phone {
+                s.node.set_notify_prefs(attention_s, done_s);
+                let (attention_s, done_s) = s.node.notify_prefs();
+                send(s, ServerMsg::NotifyPrefs { attention_s, done_s });
             }
         }
         // A raw device token from an older phone: useless without the push

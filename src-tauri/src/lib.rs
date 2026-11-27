@@ -30296,6 +30296,8 @@ pub fn run() {
             mcp_server::mcp_install_client,
             peers::peer_status,
             push::phones_push,
+            push::phones_notify_prefs,
+            push::phones_set_notify_prefs,
             peers::peer_set_name,
             peers::peer_pair,
             peers::peer_pair_mode,

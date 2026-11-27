@@ -2,10 +2,12 @@
 // out of the app (desktop notification, sound) and inside it (the tab and
 // sidebar indicators).
 
+import { useEffect, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
-import { ensureNotifyPermission, previewCompletionSound } from "@/lib/ipc";
+import { ensureNotifyPermission, phonesNotifyPrefs, phonesSetNotifyPrefs, previewCompletionSound } from "@/lib/ipc";
+import { listen } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/Button";
-import { PHONE_PUSH_AFTER, usePrefs } from "@/store/prefs";
+import { usePrefs } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { AGENT_HOOKS_HIGHLIGHT } from "./AgentHooksBlock";
 import { Block, SectionTitle, Toggle } from "./Controls";
@@ -268,28 +270,52 @@ function NoticesBlock() {
   );
 }
 
-/** "Notify paired phones": shown here and under the phones in Settings >
- *  Remote control. Each placement passes its own test id. */
+const PHONE_DELAYS = [0, 30, 60, 120, 300, 900, -1] as const;
+
+/** "Notify paired phones": two delays, for a needs-you and for a finished
+ *  turn, kept by the Rust side (peers.json) so a paired phone can read and
+ *  change them too. Shown here and under the phones in Settings > Remote
+ *  control; each placement passes its own test id prefix. */
 export function PhonePushSetting({ testId }: { testId: string }) {
   const { t } = useTranslation("settings");
-  const phonePushAfterMin = usePrefs(s => s.phonePushAfterMin);
-  const setPhonePushAfterMin = usePrefs(s => s.setPhonePushAfterMin);
+  const [prefs, setPrefs] = useState<[number, number] | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () => void phonesNotifyPrefs().then(p => { if (live) setPrefs(p); }).catch(() => {});
+    load();
+    // A phone can change them: Rust says so with the peers change event.
+    const off = listen("peer://changed", load);
+    return () => { live = false; void off.then(f => f()); };
+  }, []);
+  const label = (s: number) => s === 0 ? t("notifications.phones.now") : s < 0 ? t("notifications.phones.never")
+    : s < 60 ? t("notifications.phones.afterSeconds", { count: s }) : t("notifications.phones.after", { count: s / 60 });
+  const pick = (which: 0 | 1, v: number) => {
+    if (!prefs) return;
+    const next: [number, number] = which === 0 ? [v, prefs[1]] : [prefs[0], v];
+    setPrefs(next);
+    void phonesSetNotifyPrefs(next[0], next[1]).catch(() => {});
+  };
+  const select = (which: 0 | 1, id: string) => (
+    <select
+      data-testid={id}
+      value={prefs?.[which] ?? ""}
+      disabled={!prefs}
+      onChange={(e) => pick(which, Number(e.target.value))}
+      className="h-9 w-full max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+    >
+      {PHONE_DELAYS.map(s => <option key={s} value={s}>{label(s)}</option>)}
+    </select>
+  );
   return (
     <div>
       <div className="text-[14px] font-medium">{t("notifications.phones.label")}</div>
       <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("notifications.phones.hint")}</div>
-      <select
-        data-testid={testId}
-        value={phonePushAfterMin}
-        onChange={(e) => setPhonePushAfterMin(Number(e.target.value))}
-        className="mt-3 h-9 max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
-      >
-        {PHONE_PUSH_AFTER.map(m => (
-          <option key={m} value={m}>
-            {m === 0 ? t("notifications.phones.always") : m < 0 ? t("notifications.phones.never") : t("notifications.phones.after", { count: m })}
-          </option>
-        ))}
-      </select>
+      <div className="mt-3 grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+        <span className="text-[13px] text-[var(--color-fg-dim)]">{t("notifications.phones.attention")}</span>
+        {select(0, `${testId}-attention`)}
+        <span className="text-[13px] text-[var(--color-fg-dim)]">{t("notifications.phones.done")}</span>
+        {select(1, `${testId}-done`)}
+      </div>
     </div>
   );
 }

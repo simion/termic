@@ -83,9 +83,6 @@ const LS_FOOTER_HIDDEN = "agentFooterHidden";
 const LS_CONFIRM_CODE_NAV = "confirmBeforeCodeIntel";
 const LS_THEME         = "themeMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
-const LS_PHONE_PUSH_AFTER = "phonePushAfterMin";
-/** The choices for "Notify paired phones"; -1 is never. */
-export const PHONE_PUSH_AFTER = [0, 1, 2, 5, 15, -1] as const;
 // The needs-you panel (GH #468): a floating window while a task waits.
 const LS_ATTENTION_PANEL = "attentionPanel";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
@@ -573,9 +570,6 @@ interface PrefsState {
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
-  /** Minutes this computer must go without input before paired phones get
-   *  a push (0 always, -1 never). Separate from desktopNotifications. */
-  phonePushAfterMin: number;
   attentionPanel: boolean;
   /** In-app notices turned off (lib/notices.ts keys). */
   mutedNotices: string[];
@@ -1113,7 +1107,6 @@ interface PrefsState {
    *  when the save fails, leaving the theme mode untouched. */
   pickImportedTheme:  (id: `custom:${string}`) => Promise<void>;
   setDesktopNotifications: (v: boolean) => void;
-  setPhonePushAfterMin: (v: number) => void;
   setAttentionPanel: (v: boolean) => void;
   setNoticeMuted: (key: string, muted: boolean) => void;
   setCompletionSound: (v: boolean) => void;
@@ -1551,7 +1544,6 @@ function readStoredPrefs() {
     language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
     themeMode: initialTheme,
     desktopNotifications: initialDesktopNotif,
-    phonePushAfterMin: (() => { const n = Number(lsGet(LS_PHONE_PUSH_AFTER, "2")); return (PHONE_PUSH_AFTER as readonly number[]).includes(n) ? n : 2; })(),
     attentionPanel: lsGetBool(LS_ATTENTION_PANEL, false),
     mutedNotices: initialMutedNotices,
     completionSound: initialCompletionSound,
@@ -1923,11 +1915,6 @@ export const usePrefs = create<PrefsState>(set => ({
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
-  },
-  setPhonePushAfterMin: (v) => {
-    if (v === usePrefs.getState().phonePushAfterMin) return;
-    try { localStorage.setItem(LS_PHONE_PUSH_AFTER, String(v)); } catch {}
-    set({ phonePushAfterMin: v });
   },
   setAttentionPanel: (v) => {
     if (v === usePrefs.getState().attentionPanel) return;

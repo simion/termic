@@ -317,7 +317,15 @@ struct Store {
     /// This machine's relay address (relay.rs): 16 random bytes, base64url,
     /// made on first use. Never the instance id.
     relay_addr: String,
+    /// Seconds this machine must go without input before paired phones are
+    /// told an agent needs them / that one finished (push.rs). None: the
+    /// defaults. Set from Settings here or from a phone.
+    notify_attention_s: Option<i32>,
+    notify_done_s: Option<i32>,
 }
+
+/// "Needs you" waits 30 s, "done" 2 minutes, unless changed.
+pub(crate) const NOTIFY_DEFAULTS: (i32, i32) = (30, 120);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1924,6 +1932,28 @@ impl Node {
         }
     }
 
+    /// The phone-notification delays, (needs you, done) in seconds.
+    pub(crate) fn notify_prefs(&self) -> (i32, i32) {
+        let s = self.store.lock().unwrap();
+        (s.notify_attention_s.unwrap_or(NOTIFY_DEFAULTS.0), s.notify_done_s.unwrap_or(NOTIFY_DEFAULTS.1))
+    }
+
+    /// Change them (from Settings or a phone). Anything below -1 is never,
+    /// anything above a day is a day.
+    pub(crate) fn set_notify_prefs(&self, attention_s: i32, done_s: i32) {
+        let clamp = |v: i32| v.clamp(-1, 86_400);
+        {
+            let mut s = self.store.lock().unwrap();
+            let next = (Some(clamp(attention_s)), Some(clamp(done_s)));
+            if (s.notify_attention_s, s.notify_done_s) == next {
+                return;
+            }
+            (s.notify_attention_s, s.notify_done_s) = next;
+            self.save(&s);
+        }
+        self.ui.changed();
+    }
+
     /// termic.dev said the device behind `handle` is gone (410): forget it,
     /// unless the phone registered a new one meanwhile.
     pub(crate) fn forget_push_handle(&self, id: &str, handle: &str) {
@@ -3465,8 +3495,17 @@ mod tests {
     fn next_non_tasks(c: &mut Connected) -> ServerMsg {
         loop {
             match c.reader.recv::<ServerMsg>().unwrap().expect("connection closed") {
-                ServerMsg::Tasks { .. } => continue,
+                // Every phone hears the notification delays after its welcome.
+                ServerMsg::Tasks { .. } | ServerMsg::NotifyPrefs { .. } => continue,
                 m => return m,
+            }
+        }
+    }
+
+    fn next_prefs(c: &mut Connected) -> ServerMsg {
+        loop {
+            if let m @ ServerMsg::NotifyPrefs { .. } = c.reader.recv::<ServerMsg>().unwrap().expect("connection closed") {
+                return m;
             }
         }
     }
@@ -3734,6 +3773,23 @@ mod tests {
         c.writer.send(&ClientMsg::Ping {}).unwrap();
         assert_eq!(next_non_tasks(&mut c), ServerMsg::Pong {});
         assert!(m.node.relay_wanted() && m.node.away_push_targets().is_empty());
+    }
+
+    /// The phone-notification delays default to 30 s / 2 min, a phone can
+    /// change them and hears them back, and they are kept on disk.
+    #[test]
+    fn a_phone_reads_and_sets_the_notification_delays() {
+        let m = machine("Mac");
+        let (phone, key) = paired_phone(&m, "f7");
+        let mut c = stream_as(&m, &phone, &key, ClientKind::Phone, &[]).unwrap();
+        assert_eq!(next_prefs(&mut c), ServerMsg::NotifyPrefs { attention_s: 30, done_s: 120 }, "told after the welcome");
+        c.writer.send(&ClientMsg::NotifyPrefs { attention_s: 60, done_s: -1 }).unwrap();
+        assert_eq!(next_prefs(&mut c), ServerMsg::NotifyPrefs { attention_s: 60, done_s: -1 });
+        assert_eq!(m.node.notify_prefs(), (60, -1));
+        m.node.set_notify_prefs(-5, 999_999);
+        assert_eq!(m.node.notify_prefs(), (-1, 86_400), "clamped");
+        let on_disk = std::fs::read_to_string(m._dir.path().join(PEERS_FILE)).unwrap();
+        assert!(on_disk.contains("\"notify_done_s\": 86400") || on_disk.contains("\"notify_done_s\":86400"), "{on_disk}");
     }
 
     /// A client that goes away is let go: its session ends and it no longer

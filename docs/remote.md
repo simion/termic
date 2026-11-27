@@ -674,16 +674,20 @@ Google carry ciphertext they cannot read.
   (src/lib/ipc.ts) and on to `phones_push` (src-tauri/src/push.rs) with
   its task id and whether it is a needs-you. This is separate from the
   desktop banner: Desktop notifications can be off and phones still hear.
-  It is held back while the person is at this computer: Settings >
-  Notifications, "Notify paired phones" (also under the paired phones in
-  Settings > Remote control, one shared pref), is how long the machine must go
-  without input first (`phonePushAfterMin`, default 2 minutes; 0 always,
-  -1 never). The idle time is the whole system's (macOS
-  `CGEventSourceSecondsSinceLastEventType`, Windows `GetLastInputInfo`), so
-  typing in a browser beside Termic counts as being here; Linux falls back
-  to Termic's own last input (`sinceLastInput` in src/lib/userPresence.ts).
-  A push skipped this way is not sent later. One setting covers every
-  phone; each phone's own switch decides whether it registers at all.
+  It is held back while the person is at this computer: the machine must
+  go without input for a delay first, one for a needs-you (default 30 s)
+  and one for a finished turn (default 2 min); 0 is right away, -1 never.
+  The two values live in `peers.json` (`notify_attention_s`,
+  `notify_done_s`), are set in Settings > Notifications "Notify paired
+  phones" (also under the paired phones in Settings > Remote control), and
+  a phone reads them as `{"t":"notify_prefs","attention_s","done_s"}` after
+  its welcome and sets them by sending the same shape back. The idle time is
+  the whole system's (macOS `CGEventSourceSecondsSinceLastEventType`,
+  Windows `GetLastInputInfo`), so typing in a browser beside Termic counts
+  as being here; Linux falls back to Termic's own last input
+  (`sinceLastInput` in src/lib/userPresence.ts). A push held back this way
+  is not sent later. Each phone's own switch decides whether it registers
+  at all.
   For each paired phone that is not connected right now AND
   whose entitlement checks out with `push` (src-tauri/src/entitlement.rs:
   ed25519 signature against the built-in `ENT_PUBLIC_KEY`, `exp` in the

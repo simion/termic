@@ -1513,14 +1513,19 @@ export async function notify(
 }
 
 /** The same line to paired phones that are away, sealed to each phone
- *  (src-tauri/src/push.rs), once this computer has gone the "Notify paired
- *  phones" delay without input (`afterMin`; negative is never). Independent of desktop notifications: the
- *  phone is where you are when you are not here. `attention`: a needs-you,
- *  not a finished turn. */
-export function pushPhones(title: string, body: string, task: string | null, attention: boolean, afterMin: number): void {
-  if (import.meta.env.VITE_E2E || afterMin < 0) return;
-  invoke("phones_push", { title, body, task, attention, afterMs: afterMin * 60_000, appIdleMs: sinceLastInput() }).catch(() => {});
+ *  (src-tauri/src/push.rs). Rust holds back until this computer has gone the
+ *  delay for this kind without input (Settings > Notifications, "Notify
+ *  paired phones", also settable from a phone). Independent of desktop
+ *  notifications. `attention`: a needs-you, not a finished turn. */
+export function pushPhones(title: string, body: string, task: string | null, attention: boolean): void {
+  if (import.meta.env.VITE_E2E) return;
+  invoke("phones_push", { title, body, task, attention, appIdleMs: sinceLastInput() }).catch(() => {});
 }
+
+/** The phone-notification delays, [needs you, finished] in seconds (0 right
+ *  away, -1 never). One pair per computer, shared with paired phones. */
+export const phonesNotifyPrefs = () => invoke<[number, number]>("phones_notify_prefs");
+export const phonesSetNotifyPrefs = (attentionS: number, doneS: number) => invoke<void>("phones_set_notify_prefs", { attentionS, doneS });
 
 /** Fire a sample notification with the given sound. Mirrors the shape of a
  *  real agent-finished notification (title "project · task", body

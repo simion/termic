@@ -233,21 +233,21 @@ describe("Phones and servers", () => {
     await waitForAttr(`[data-testid="phone-row-${phoneId}"]`, "data-connected", "false");
   });
 
-  // With a phone paired, when it is notified is set right under it too: the
-  // same pref as Settings > Notifications, so the two can never disagree.
-  it("offers when paired phones are notified under the phones", async () => {
-    await waitVisible('[data-testid="remote-phone-push-after"]');
-    expect(await browser.execute(() => (document.querySelector('[data-testid="remote-phone-push-after"]') as HTMLSelectElement).value))
-      .toBe(String(await browser.execute(() => window.__termic!.usePrefs.getState().phonePushAfterMin)));
+  // With a phone paired, the notification delays are set right under it
+  // too: the same values as Settings > Notifications, kept by Rust.
+  it("offers when paired phones are told under the phones", async () => {
+    await waitVisible('[data-testid="remote-phone-push-after-attention"]');
+    await browser.waitUntil(() => browser.execute(() => (document.querySelector('[data-testid="remote-phone-push-after-done"]') as HTMLSelectElement).value === "120"),
+      { timeout: 5_000, timeoutMsg: "the Remote placement never showed the default" });
     await browser.execute(() => {
-      const el = document.querySelector('[data-testid="remote-phone-push-after"]') as HTMLSelectElement;
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, "15");
+      const el = document.querySelector('[data-testid="remote-phone-push-after-done"]') as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, "900");
       el.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await browser.waitUntil(() => browser.execute(() => window.__termic!.usePrefs.getState().phonePushAfterMin === 15),
-      { timeout: 5_000, timeoutMsg: "the Remote placement did not set phonePushAfterMin" });
+    await browser.waitUntil(async () => JSON.stringify(await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("phones_notify_prefs"))) === "[30,900]",
+      { timeout: 5_000, timeoutMsg: "the Remote placement did not reach Rust" });
     await snap("remote-phone-push.png");
-    await browser.execute(() => window.__termic!.usePrefs.getState().setPhonePushAfterMin(2));
+    await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("phones_set_notify_prefs", { attentionS: 30, doneS: 120 }));
   });
 
   it("lets no second phone in with a code already used", async () => {
