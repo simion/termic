@@ -4,6 +4,19 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.2.1] - 2026-11-27
+
+Pair a phone with its camera, and it keeps finding your computer.
+
+### Features
+- Scan the phone pairing code with the phone's camera: it opens Termic Remote, or its store page when the app is not installed yet.
+- `termic move` and MCP `task_move` reorder a task in its project's sidebar list, before or after another task or to the top or bottom.
+
+### Bug fixes
+- A paired phone keeps finding the computer after the router gives the computer a new address.
+- Find in Files on a markdown file open in preview scrolls the preview to the matching line.
+- Double-clicking a code block in a markdown preview keeps the clicked line under the pointer and selects the word there.
+
 ## [2.2.0] - 2026-11-27
 
 Mark a task as unread again, and accented task names keep their letters.

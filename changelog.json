@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.2.1",
+      "date": "2026-11-27",
+      "summary": "Pair a phone with its camera, and it keeps finding your computer."
+    },
+    {
       "version": "2.2.0",
       "date": "2026-11-27",
       "summary": "Mark a task as unread again, and accented task names keep their letters."
