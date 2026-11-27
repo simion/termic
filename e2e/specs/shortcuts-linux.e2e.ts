@@ -742,6 +742,7 @@ type Group = "task" | "tab" | "pane" | "bottom" | "leaves" | "chrome" | "setting
     // where it lives.
     "search-everywhere": "ships unbound; its double-Shift gesture is covered in codenav.e2e.ts",
     "review-pr": "ships unbound; the dialog is opened from the palette in review-pr.e2e.ts",
+    "mark-task-unread": "ships unbound; the task row's menu item is driven in sidebar-filter.e2e.ts",
   };
 
   before(async function () {
