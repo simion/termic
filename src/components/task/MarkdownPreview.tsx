@@ -594,7 +594,7 @@ function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
 }
 
 export function MarkdownPreview(
-  { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
+  { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, revealSourceLine, onSourceLineRevealed, visible = true,
     ownsFind, editorVisible = false, syncView = null, commentFile, edit,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages,
     reader = READER_DEFAULTS, refPath = commentFile, onSelectionLines, outline = false }: {
@@ -606,6 +606,11 @@ export function MarkdownPreview(
      *  below. */
     revealHeading?: string;
     onRevealConsumed?: () => void;
+    /** A source line to scroll to (a search hit in this file): the block
+     *  holding it, once the preview is laid out and rendered. A fresh object
+     *  per jump, so the same line twice still scrolls. */
+    revealSourceLine?: { line: number } | null;
+    onSourceLineRevealed?: () => void;
     /** Whether this preview's container is actually laid out (not hidden
      *  via CSS display). MarkdownPane keeps the preview mounted across
      *  Editor/Preview/Split switches and toggles visibility with `display`,
@@ -817,6 +822,23 @@ export function MarkdownPreview(
     setGotoOpen(false);
     if (refocus) containerRef.current?.focus({ preventScroll: true });
   };
+  // A search hit's line: scroll there once there are blocks to scroll to.
+  // A rebuild can land after `text` does, so a miss retries for a moment
+  // instead of dropping the jump.
+  useEffect(() => {
+    if (!revealSourceLine || !visible || !text) return;
+    let tries = 0, timer = 0;
+    const attempt = () => {
+      const host = hostRef.current, scroller = scrollerRef.current;
+      if (host && scroller && revealLine(host, scroller, revealSourceLine.line)) { onSourceLineRevealed?.(); return; }
+      if (++tries < 20) timer = window.setTimeout(attempt, 50);
+      else onSourceLineRevealed?.();
+    };
+    const raf = requestAnimationFrame(attempt);
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealSourceLine, visible, text]);
+
   const goToLine = (n: number) => {
     closeGoto(true);
     const host = hostRef.current, scroller = scrollerRef.current;

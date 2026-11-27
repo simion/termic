@@ -181,6 +181,18 @@ export function MarkdownPane(
   // the reveal would linger unconsumed and fire as a surprise scroll when
   // the user eventually toggles the view themselves.
   const revealHeading = tab.type === "edit" ? tab.revealHeading : undefined;
+  // A line to jump to (Find in Files, Search Everywhere, go to definition).
+  // The editor half is mounted in preview mode too and consumes `revealAt` in
+  // its own effect, scrolling a HIDDEN editor, so in preview the jump went
+  // nowhere. Captured here in render, before that effect clears it, and
+  // handed to the preview, which scrolls to the block holding that line.
+  const revealAt = tab.type === "edit" ? tab.revealAt : undefined;
+  const [seenRevealAt, setSeenRevealAt] = useState(revealAt);
+  const [previewLine, setPreviewLine] = useState<{ line: number } | null>(null);
+  if (revealAt !== seenRevealAt) {
+    setSeenRevealAt(revealAt);
+    if (revealAt && view === "preview") setPreviewLine({ line: revealAt.line });
+  }
   useEffect(() => {
     if (revealHeading && view === "source") {
       useApp.getState().patchTab(task.id, tab.id, { mdView: "preview" });
@@ -244,6 +256,8 @@ export function MarkdownPane(
             ctx={ctx}
             revealHeading={revealHeading}
             onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
+            revealSourceLine={previewLine}
+            onSourceLineRevealed={() => setPreviewLine(null)}
             // TaskView's flags are about the tab; `showPreview` is the md
             // view mode. A source-view tab keeps this preview mounted but
             // off screen, so both need ANDing.

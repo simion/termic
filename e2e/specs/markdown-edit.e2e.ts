@@ -345,3 +345,107 @@ describe("markdown preview edits", () => {
     expect(readFileSync(path.join(fixture, NAME)).equals(theirs)).toBe(true);
   });
 });
+
+// A jump to a line (Find in Files, Search Everywhere) and a double-click on a
+// code block, both in PREVIEW mode on a document long enough to scroll.
+describe("markdown preview: line jumps and a code block's editor", () => {
+  const JUMP = "e2e-md-jump.md";
+  const filler = Array.from({ length: 60 }, (_, i) => `Filler paragraph ${i + 1}.\n`);
+  const JUMP_SOURCE = [
+    "# Jumps", "",
+    ...filler,
+    "## Target heading", "",
+    "The paragraph a search hit points at.", "",
+    ...filler,
+    "```js",
+    "const first = 1;",
+    "const second = 2;",
+    "const third = 3;",
+    "const fourth = 4;",
+    "```", "",
+  ].join("\n");
+  const lineOfText = (s: string) => JUMP_SOURCE.split("\n").indexOf(s) + 1;
+  let id!: string;
+  after(async () => {
+    if (id) await archiveTask(id);
+    rmSync(path.join(fixture, JUMP), { force: true });
+  });
+
+  /** the on-screen preview's scroller and where `sel` sits inside it */
+  const inView = (pick: string) => browser.execute((tid, text) => {
+    const root = document.querySelector(`[data-task-id="${tid}"]`)!;
+    const body = Array.from(root.querySelectorAll<HTMLElement>(".markdown-body")).find(el => el.getBoundingClientRect().width > 0)!;
+    const el = Array.from(body.querySelectorAll<HTMLElement>("p, h2")).find(e => e.textContent === text)!;
+    let sc: HTMLElement | null = body.parentElement;
+    while (sc && !(getComputedStyle(sc).overflowY === "auto" && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement;
+    const r = el.getBoundingClientRect(), v = sc!.getBoundingClientRect();
+    return { scrolled: sc!.scrollTop, visible: r.top >= v.top && r.bottom <= v.bottom };
+  }, id, pick);
+
+  it("a search hit in a markdown file scrolls the preview to its line", async () => {
+    id = await openTask("e2e-md-jump");
+    writeFileSync(path.join(fixture, JUMP), JUMP_SOURCE);
+    await browser.execute((tid, name) => {
+      const app = window.__termic!.useApp.getState();
+      app.bumpFsRevision(tid);
+      app.openPreviewTab(tid, { type: "edit", path: name, title: name });
+      // preview on this tab only: the default-view pref is shared state
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const t = app.tabs[tid].find((x: any) => x.type === "edit" && x.path === name);
+      app.persistTab(tid, t.id);
+      app.setActiveTabId(tid, t.id);
+      app.patchTab(tid, t.id, { mdView: "preview" });
+    }, id, JUMP);
+    await browser.waitUntil(async () => (await inView("Filler paragraph 1.").catch(() => null)) != null,
+      { timeout: 10_000, timeoutMsg: "the preview never rendered" });
+    expect((await inView("The paragraph a search hit points at.")).visible).toBe(false);
+    // What Find in Files does with a hit: the same tab, a line to reveal.
+    await browser.execute((tid, name, line) => window.__termic!.useApp.getState()
+      .openPreviewTab(tid, { type: "edit", path: name, title: name, revealAt: { line } }),
+    id, JUMP, lineOfText("The paragraph a search hit points at."));
+    await browser.waitUntil(async () => (await inView("The paragraph a search hit points at.")).visible,
+      { timeout: 5_000, timeoutMsg: "the preview did not scroll to the hit's line" });
+    await snap("md-preview-search-jump.png");
+  });
+
+  it("double-clicking a code line keeps it under the pointer and selects its word", async () => {
+    const want = lineOfText("const third = 3;");
+    // Scroll the code block into the middle, then double-click on "third".
+    const clicked = await browser.execute((tid) => {
+      const root = document.querySelector(`[data-task-id="${tid}"]`)!;
+      const pre = Array.from(root.querySelectorAll<HTMLElement>(".markdown-body pre")).find(el => el.getBoundingClientRect().width > 0)!;
+      pre.scrollIntoView({ block: "center" });
+      const code = pre.querySelector("code") ?? pre;
+      const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+      let node: Text | null = null, at = -1;
+      while ((node = walker.nextNode() as Text | null)) { at = node.data.indexOf("third"); if (at >= 0) break; }
+      const r = document.createRange();
+      r.setStart(node!, at + 1); r.setEnd(node!, at + 2);
+      const box = r.getBoundingClientRect();
+      const x = box.left + box.width / 2, y = box.top + box.height / 2;
+      (document.elementFromPoint(x, y) ?? pre).dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: x, clientY: y }));
+      return { x, y };
+    }, id);
+    await browser.waitUntil(() => browser.execute((tid) =>
+      !!Array.from(document.querySelector(`[data-task-id="${tid}"]`)!.querySelectorAll(".tc-block-editor")).find(e => e.getBoundingClientRect().width > 0), id),
+    { timeout: 5_000, timeoutMsg: "no block editor on the code block" });
+    const read = () => browser.execute((tid) => {
+      const ed = Array.from(document.querySelector(`[data-task-id="${tid}"]`)!.querySelectorAll(".tc-block-editor .cm-editor")).find(e => e.getBoundingClientRect().width > 0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = (ed as unknown as { __cmView: any }).__cmView;
+      const sel = v.state.selection.main;
+      return { text: v.state.sliceDoc(sel.from, sel.to), lineText: v.state.doc.lineAt(sel.from).text, top: v.coordsAtPos(sel.from)?.top ?? -1, bottom: v.coordsAtPos(sel.from)?.bottom ?? -1 };
+    }, id);
+    // the word is selected once layout settles (two frames after opening)
+    await browser.waitUntil(async () => (await read()).text !== "", { timeout: 3_000, timeoutMsg: "no word was selected" });
+    const got = await read();
+    await snap("md-preview-code-dblclick.png");
+    expect(got.text).toBe("third");
+    expect(got.lineText).toBe("const third = 3;");
+    // still under the pointer, not pushed down by the editor's header
+    expect(clicked.y).toBeGreaterThanOrEqual(got.top - 2);
+    expect(clicked.y).toBeLessThanOrEqual(got.bottom + 2);
+    expect(want).toBeGreaterThan(0);
+    await browser.keys(["Escape"]);
+  });
+});

@@ -98,6 +98,22 @@ interface Session {
   setLabel(): void;
 }
 
+/** Where a block's first line of text starts on screen (not its padding). */
+function firstTextTop(el: HTMLElement): number | null {
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  return r.getClientRects()[0]?.top ?? el.getBoundingClientRect().top;
+}
+
+/** The nearest ancestor that scrolls vertically. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const o = getComputedStyle(p).overflowY;
+    if ((o === "auto" || o === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return null;
+}
+
 export function useBlockEditor({ hostRef, edit, text, focusPane }: {
   hostRef: RefObject<HTMLElement | null>;
   edit: PreviewEditTarget | undefined;
@@ -328,7 +344,27 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     const el = editableBlock(e.target as Element, host);
     if (!el) return;
     window.getSelection()?.removeAllRanges();
-    open(el);
+    const before = firstTextTop(el);
+    if (!open(el)) return;
+    const sess = sessionRef.current;
+    if (!sess) return;
+    // The editor's header moves the text: scroll by exactly that, so the
+    // line you double-clicked stays under the pointer, then select the word
+    // there, as a double-click in the editor would. Without this the caret
+    // sat at the block's end and whatever slid under the pointer read as the
+    // line picked. The editor holds the block's SOURCE, so a fenced code
+    // block's first line there is the fence, which the rendered block never
+    // draws: the rendered first line lines up with the editor's second.
+    if (typeof e.clientX !== "number" || before == null) return;
+    const doc = sess.view.state.doc;
+    const first = doc.lines > 1 && /^\s*(```|~~~)/.test(doc.line(1).text) ? doc.line(2) : doc.line(1);
+    const after = sess.view.coordsAtPos(first.from)?.top;
+    const scroller = scrollParent(host);
+    if (scroller && after != null) scroller.scrollTop += after - before;
+    const pos = sess.view.posAtCoords({ x: e.clientX, y: e.clientY });
+    if (pos == null) return;
+    const w = sess.view.state.wordAt(pos);
+    sess.view.dispatch({ selection: w ? { anchor: w.from, head: w.to } : { anchor: pos } });
   }
 
   // A pad saves itself and a scoped pad's tab closes without asking, so its

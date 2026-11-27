@@ -340,6 +340,17 @@ theme come from the same `langForId` / `resolveEditorTheme` /
   double-click on a link never opens it (its first click followed it).
 - A code block's header (`codeHeader`) hides and shows with its `<pre>`,
   and the slot goes before it.
+- A double-click keeps the clicked line under the pointer and selects the
+  word there: the slot's header pushes the text down, so the scroller moves
+  by exactly that, measured from the block's first rendered line to the
+  editor's matching one. For a fenced block that is the editor's SECOND
+  line, since the editor holds the source and the rendered `<pre>` never
+  draws the fence; lining up with the first put the pick one line high.
+- A line jump in preview mode (Find in Files, Search Everywhere: the tab's
+  `revealAt`) scrolls the preview to the block holding that line.
+  `MarkdownPane` reads `revealAt` in render and hands it to the preview,
+  because the editor half stays mounted in preview mode and its own effect
+  consumes `revealAt` by scrolling a hidden editor.
 - `⌘Enter`, `⌘S`, the Save button, or blur commits a `DocEdit` with
   `expect` = the lines it opened on (trailing newlines dropped). Blur skips
   focus moving within the editor, the window losing focus, a rebuild
