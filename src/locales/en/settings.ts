@@ -206,6 +206,14 @@ export default {
       label: "Needs-you panel",
       hint: "A small window that stays over your other apps while an agent waits for you, with its question and a button per answer. It shows only while something waits, and does not take focus from the app you are in.",
     },
+    phones: {
+      label: "Notify paired phones",
+      hint: "A phone with Termic Remote Pro and notifications on gets a push when a task needs you or finishes, but not while you are at this computer: typing or moving the mouse anywhere on it counts. Each phone turns notifications on or off in its own settings.",
+      always: "Always, even while I am here",
+      after_one: "After {{count}} minute away",
+      after_other: "After {{count}} minutes away",
+      never: "Never",
+    },
     notices: {
       title: "In-app notices",
       hint: "Notices that pop up in the corner. Turn one off here, or from the … on the notice itself.",

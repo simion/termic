@@ -49,6 +49,12 @@ export function initUserPresence(): void {
   });
 }
 
+/** Milliseconds since the last input Termic itself saw (the stand-in for
+ *  system idle time where the OS gives none, src-tauri/src/push.rs). */
+export function sinceLastInput(): number {
+  return Date.now() - lastSeen;
+}
+
 /** Run `listener` on the first input after AWAY_MS or more without any.
  *  Returns the unsubscribe. */
 export function onReturnFromAway(listener: Listener): () => void {

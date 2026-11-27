@@ -10,7 +10,7 @@
 import { useEffect, useRef } from "react";
 import { isUserWatching, useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
-import { notify, onNotifyClick } from "@/lib/ipc";
+import { notify, onNotifyClick, pushPhones } from "@/lib/ipc";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { TerminalTab } from "@/lib/types";
 import { taskLabel } from "@/lib/taskLabel";
@@ -29,10 +29,10 @@ export function useAttentionNotifier() {
       // write, and `patchTab` replaces only the patched task's array, so an
       // untouched map (or task) has nothing new to announce.
       if (state.tabs === prev.tabs) return;
-      // Gate every notification on the user's pref. We still update unread
-      // dots in the sidebar — only the OS notification is opt-in.
-      const desktopNotifications = usePrefs.getState().desktopNotifications;
-      if (!desktopNotifications) return;
+      // Desktop banners are opt-in; paired phones have their own setting
+      // (pushPhones). Unread dots in the sidebar update regardless.
+      const { desktopNotifications, phonePushAfterMin } = usePrefs.getState();
+      if (!desktopNotifications && phonePushAfterMin < 0) return;
       const taskIds = Object.keys(state.tabs);
       for (const taskId of taskIds) {
         if (state.tabs[taskId] === prev.tabs[taskId]) continue;
@@ -62,7 +62,8 @@ export function useAttentionNotifier() {
           // Termic is exactly when the notification is the ONLY way to learn
           // an agent finished, so suppressing it there is backwards. Shared
           // predicate so this cannot drift from fireDone / setWorkState.
-          if (isUserWatching(taskId)) continue;
+          const watching = isUserWatching(taskId);
+          if (watching && phonePushAfterMin !== 0) continue;
           const key = `${taskId}:${t.id}`;
           const now = Date.now();
           if ((lastFiredRef.current[key] || 0) + DEBOUNCE_MS > now) continue;
@@ -83,12 +84,12 @@ export function useAttentionNotifier() {
           // permission" beats "agent needs your input"). Single path: the
           // terminal used to forward OSC 9 bodies itself AND mark unread,
           // which meant two banners for one event.
-          notify(
-            title,
-            t.unread!.message?.trim() || (reason && i18n.t("backend:attentionNotify.agentBody", { phrase: reason })),
-            { taskId, tabId: t.id },
-            { sound: t.unread!.reason === "done", attention: t.unread!.reason === "attention" || t.unread!.reason === "bell" },
-          ).catch(() => {});
+          const body = t.unread!.message?.trim() || (reason && i18n.t("backend:attentionNotify.agentBody", { phrase: reason }));
+          const attention = t.unread!.reason === "attention" || t.unread!.reason === "bell";
+          if (desktopNotifications && !watching) {
+            notify(title, body, { taskId, tabId: t.id }, { sound: t.unread!.reason === "done", attention }).catch(() => {});
+          }
+          pushPhones(title, body, taskId, attention, phonePushAfterMin);
         }
       }
     });

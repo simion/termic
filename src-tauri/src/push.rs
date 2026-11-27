@@ -67,8 +67,22 @@ fn requests<'a>(targets: &'a [(String, PushReg)], computer: &'a str, title: &str
 /// `attention`: a needs-you, rather than a finished turn. Fire and forget:
 /// a failed push loses nothing the phone will not see when it next opens,
 /// so nothing is retried.
+///
+/// Not while the person is at this computer: `after_ms` is how long it must
+/// have gone without any input first (Settings > Notifications, "Notify
+/// paired phones"; 0 is always, `None` never). The whole system counts, not
+/// just Termic: typing in a browser beside it is being here. Where the OS
+/// cannot say (Linux), Termic's own last input (`app_idle_ms`) stands in.
+/// shortcut: a push skipped because you were here is not sent later if you
+/// leave with the task still waiting; add a deferred re-check if asked for.
 #[tauri::command]
-pub(crate) fn phones_push(title: String, body: String, task: Option<String>, attention: Option<bool>) {
+pub(crate) fn phones_push(title: String, body: String, task: Option<String>, attention: Option<bool>, after_ms: Option<u64>, app_idle_ms: Option<u64>) {
+    let Some(after) = after_ms else { return };
+    let idle = system_idle_ms().or(app_idle_ms).unwrap_or(u64::MAX);
+    if !away_long_enough(idle, after) {
+        crate::dlog(&format!("[push] skipped: input {}s ago, phones are told after {}s away", idle / 1000, after / 1000));
+        return;
+    }
     let Some(node) = crate::peers::node() else { return };
     let targets = node.away_push_targets();
     if targets.is_empty() {
@@ -100,6 +114,39 @@ pub(crate) fn phones_push(title: String, body: String, task: Option<String>, att
     });
 }
 
+fn away_long_enough(idle_ms: u64, after_ms: u64) -> bool {
+    idle_ms >= after_ms
+}
+
+/// Milliseconds since the last keyboard, mouse or trackpad input anywhere on
+/// this machine. None where the OS has no cheap answer.
+#[cfg(target_os = "macos")]
+fn system_idle_ms() -> Option<u64> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    }
+    // kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType.
+    let s = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+    (s.is_finite() && s >= 0.0).then(|| (s * 1000.0) as u64)
+}
+
+#[cfg(windows)]
+fn system_idle_ms() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    Some(unsafe { GetTickCount() }.wrapping_sub(info.dwTime) as u64)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn system_idle_ms() -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +159,17 @@ mod tests {
         let mut buf = sealed.to_vec();
         let plain = k.open_in_place(Nonce::try_assume_unique_for_key(nonce).unwrap(), Aad::empty(), &mut buf).unwrap();
         serde_json::from_slice(plain).unwrap()
+    }
+
+    #[test]
+    fn phones_hear_only_once_this_computer_has_been_left_long_enough() {
+        assert!(away_long_enough(5_000, 0), "always");
+        assert!(!away_long_enough(30_000, 120_000), "typed 30 s ago");
+        assert!(away_long_enough(120_000, 120_000));
+        // The real reading is sane on a machine that has one.
+        if let Some(ms) = system_idle_ms() {
+            assert!(ms < 365 * 86_400_000);
+        }
     }
 
     #[test]

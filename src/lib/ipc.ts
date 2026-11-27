@@ -2,6 +2,7 @@
 // src-tauri/src/lib.rs. Keep arguments shaped exactly as the Rust signature
 // expects (camelCase vs snake_case quirks handled here so call-sites stay clean).
 
+import { sinceLastInput } from "@/lib/userPresence";
 import { invoke } from "@tauri-apps/api/core";
 import { orderedPerKey } from "@/lib/orderedSend";
 import type { AgentUsage, StatusLineOwner } from "@/lib/agentUsage";
@@ -1506,12 +1507,19 @@ export async function notify(
     // The banner stays silent; the sound is decoupled and reliable.
     if (opts?.sound) void playCompletionSound(opts.sound, true);
     notifSend({ title, body, extra: route ? { taskId: route.taskId, tabId: route.tabId } : undefined });
-    // The same line to paired phones that are away, sealed to each phone
-    // (src-tauri/src/push.rs). `attention`: a needs-you, not a finished turn.
-    invoke("phones_push", { title, body, task: route?.taskId ?? null, attention: !!opts?.attention }).catch(() => {});
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }
+}
+
+/** The same line to paired phones that are away, sealed to each phone
+ *  (src-tauri/src/push.rs), once this computer has gone the "Notify paired
+ *  phones" delay without input (`afterMin`; negative is never). Independent of desktop notifications: the
+ *  phone is where you are when you are not here. `attention`: a needs-you,
+ *  not a finished turn. */
+export function pushPhones(title: string, body: string, task: string | null, attention: boolean, afterMin: number): void {
+  if (import.meta.env.VITE_E2E || afterMin < 0) return;
+  invoke("phones_push", { title, body, task, attention, afterMs: afterMin * 60_000, appIdleMs: sinceLastInput() }).catch(() => {});
 }
 
 /** Fire a sample notification with the given sound. Mirrors the shape of a

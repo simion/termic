@@ -5,7 +5,7 @@
 import { useTranslation, Trans } from "react-i18next";
 import { ensureNotifyPermission, previewCompletionSound } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
-import { usePrefs } from "@/store/prefs";
+import { PHONE_PUSH_AFTER, usePrefs } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { AGENT_HOOKS_HIGHLIGHT } from "./AgentHooksBlock";
 import { Block, SectionTitle, Toggle } from "./Controls";
@@ -26,6 +26,8 @@ export function NotificationsSection() {
   const { t } = useTranslation("settings");
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
+  const phonePushAfterMin = usePrefs(s => s.phonePushAfterMin);
+  const setPhonePushAfterMin = usePrefs(s => s.setPhonePushAfterMin);
   const attentionPanel = usePrefs(s => s.attentionPanel);
   const setAttentionPanel = usePrefs(s => s.setAttentionPanel);
   const completionSound = usePrefs(s => s.completionSound);
@@ -69,6 +71,23 @@ export function NotificationsSection() {
             if (v) ensureNotifyPermission();
           }}
         />
+      </Block>
+
+      <Block>
+        <div className="text-[14px] font-medium">{t("notifications.phones.label")}</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("notifications.phones.hint")}</div>
+        <select
+          data-testid="phone-push-after"
+          value={phonePushAfterMin}
+          onChange={(e) => setPhonePushAfterMin(Number(e.target.value))}
+          className="mt-3 h-9 max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+        >
+          {PHONE_PUSH_AFTER.map(m => (
+            <option key={m} value={m}>
+              {m === 0 ? t("notifications.phones.always") : m < 0 ? t("notifications.phones.never") : t("notifications.phones.after", { count: m })}
+            </option>
+          ))}
+        </select>
       </Block>
 
       {/* macOS-only: the sound catalog is macOS system-sound names (plus a

@@ -80,6 +80,44 @@ describe("settings", () => {
     await snap("settings-work-marks.png");
   });
 
+  // Phones are told only once this computer has gone a while without
+  // input, and the choice is separate from desktop banners (push.rs).
+  it("sets when paired phones are notified, default two minutes away", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("notifications"));
+    await waitForText("Notify paired phones");
+    // A native <select> in WKWebView ignores WebDriver's option click: set
+    // the value through React's setter and fire change, as credentials.e2e does.
+    const choose = (value: string) => browser.execute((v) => {
+      const el = document.querySelector('[data-testid="phone-push-after"]') as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, v);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }, value);
+    const shown = await browser.execute(() => {
+      const el = document.querySelector('[data-testid="phone-push-after"]') as HTMLSelectElement;
+      return { value: el.value, labels: [...el.options].map(o => o.text) };
+    });
+    expect(shown.value).toBe("2");
+    expect(shown.labels).toEqual([
+      "Always, even while I am here", "After 1 minute away", "After 2 minutes away",
+      "After 5 minutes away", "After 15 minutes away", "Never",
+    ]);
+    await snap("settings-phone-push.png");
+    for (const [value, want] of [["5", 5], ["-1", -1], ["0", 0]] as const) {
+      await choose(value);
+      await browser.waitUntil(
+        () => browser.execute((w) => window.__termic!.usePrefs.getState().phonePushAfterMin === w, want),
+        { timeout: 5_000, timeoutMsg: `phonePushAfterMin never became ${want}` },
+      );
+      expect(await browser.execute(() => localStorage.getItem("phonePushAfterMin"))).toBe(value);
+    }
+    // Desktop banners are a separate switch: changing phones left it alone.
+    const desktop = await browser.execute(() => window.__termic!.usePrefs.getState().desktopNotifications);
+    await choose("2");
+    expect(await browser.execute(() => window.__termic!.usePrefs.getState().desktopNotifications)).toBe(desktop);
+  });
+
   it("toggles a preference and it lands in the prefs store", async () => {
     await waitForAppShell();
     await requireTermicApi();

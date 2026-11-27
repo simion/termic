@@ -669,9 +669,21 @@ Google carry ciphertext they cannot read.
   is ignored: a raw device token is useless without the sender keys.
 - **The desktop** keeps the last `push_reg` on the phone's pairing
   (`peers.json` `phones[].push_reg`; an older record's `push` is dropped).
-  Every OS notification it shows (`notify` in src/lib/ipc.ts) is offered to
-  `phones_push` (src-tauri/src/push.rs) with its task id and whether it is
-  a needs-you. For each paired phone that is not connected right now AND
+  Every unread edge the notifiers see (src/hooks/useAttentionNotifier.ts,
+  and a paired computer's alerts in src/lib/remote.ts) goes to `pushPhones`
+  (src/lib/ipc.ts) and on to `phones_push` (src-tauri/src/push.rs) with
+  its task id and whether it is a needs-you. This is separate from the
+  desktop banner: Desktop notifications can be off and phones still hear.
+  It is held back while the person is at this computer: Settings >
+  Notifications, "Notify paired phones", is how long the machine must go
+  without input first (`phonePushAfterMin`, default 2 minutes; 0 always,
+  -1 never). The idle time is the whole system's (macOS
+  `CGEventSourceSecondsSinceLastEventType`, Windows `GetLastInputInfo`), so
+  typing in a browser beside Termic counts as being here; Linux falls back
+  to Termic's own last input (`sinceLastInput` in src/lib/userPresence.ts).
+  A push skipped this way is not sent later. One setting covers every
+  phone; each phone's own switch decides whether it registers at all.
+  For each paired phone that is not connected right now AND
   whose entitlement checks out with `push` (src-tauri/src/entitlement.rs:
   ed25519 signature against the built-in `ENT_PUBLIC_KEY`, `exp` in the
   future, `push` in `ent`), it POSTs `https://api.termic.dev/v1/push`:
