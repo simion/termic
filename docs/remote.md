@@ -686,7 +686,12 @@ Google carry ciphertext they cannot read.
   Windows `GetLastInputInfo`), so typing in a browser beside Termic counts
   as being here; Linux falls back to Termic's own last input
   (`sinceLastInput` in src/lib/userPresence.ts). A push held back this way
-  is not sent later. Each phone's own switch decides whether it registers
+  is not sent later. "Watching" a task (selected, in a focused window)
+  silences only the desktop banner, never the phone: a window left
+  frontmost while you walk away says nothing about whether you are there,
+  so a watched task's needs-you and done still reach phones
+  (src/lib/phonePush.ts), and only the idle delay holds them back. Each
+  phone's own switch decides whether it registers
   at all.
   For each paired phone that is not connected right now AND
   whose entitlement checks out with `push` (src-tauri/src/entitlement.rs:
