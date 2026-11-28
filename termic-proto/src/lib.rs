@@ -2727,6 +2727,7 @@ mod tests {
             Command::Open { task: None, project: None, cwd: Some("/tmp/x".into()) },
             Command::Open { task: Some("fix-auth".into()), project: None, cwd: None },
             Command::New {
+                name_from_branch: false,
                 name: "fix-auth".into(),
                 prompt: Some("fix the login redirect".into()),
                 prompt_ref: Some("builtin:review".into()),
@@ -2751,6 +2752,7 @@ mod tests {
                 members: vec!["alpha".into(), "Beta".into()],
             },
             Command::New {
+                name_from_branch: false,
                 name: "bare".into(),
                 prompt: None,
                 prompt_ref: None,
@@ -2776,6 +2778,7 @@ mod tests {
             },
             // v14 checkout shape: an existing branch, the name left to the app.
             Command::New {
+                name_from_branch: false,
                 name: String::new(),
                 prompt: None,
                 prompt_ref: None,
@@ -2801,6 +2804,7 @@ mod tests {
             },
             // v7 import shape (GH #169): adopt a worktree + resume a session.
             Command::New {
+                name_from_branch: false,
                 name: String::new(),
                 prompt: None,
                 prompt_ref: None,
