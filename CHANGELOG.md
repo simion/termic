@@ -4,6 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.5] - 2026-11-28
+
+Answer all of Claude's questions from the phone at once.
+
+### Features
+- When Claude asks several questions, or one with several answers, Termic Remote shows them all in one card and sends every answer with one Submit, including answers you type yourself.
+
 ## [2.4.4] - 2026-11-28
 
 The phone shows the worktree creation log while a task starts.
