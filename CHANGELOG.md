@@ -4,6 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.2] - 2026-11-28
+
+Walk away from a task on screen and it still gets its badge.
+
+### Bug fixes
+- A task left selected while you walked away counted as watched, so when it finished it went quietly idle: no done dot and no desktop notification. After 2 minutes without touching Termic it no longer counts as watched, so you come back to the dot (and the notification, if you have them on).
+
 ## [2.4.1] - 2026-11-28
 
 A task you leave selected now notifies your phone too.
