@@ -747,6 +747,9 @@ fn state_loop(s: &Session) {
     let mut last_states: HashMap<String, String> = HashMap::new();
     // When each task's state last changed (epoch ms), for "2m" on a phone.
     let mut since: HashMap<String, (String, i64)> = HashMap::new();
+    // An AskUserQuestion's questions by the question id on screen: read
+    // from the transcript once per question, not every tick.
+    let mut quizzes: HashMap<String, Vec<termic_remote::wire::QuizItem>> = HashMap::new();
     while !s.done.load(Ordering::SeqCst) {
         let (projects, tasks) = s.host.projects_tasks();
         let live: Vec<&crate::Task> = tasks.iter().filter(|t| !t.archived).collect();
@@ -832,6 +835,25 @@ fn state_loop(s: &Session) {
                 let activity = screen.as_deref().filter(|_| state == "working").and_then(termic_remote::screen::activity);
                 if state != "waiting" {
                     question = None;
+                }
+                // Claude asking several questions, or a multi-select one:
+                // all of them, so a phone answers them at once.
+                if let (Some(q), Some(lines)) = (question.as_mut(), screen.as_deref()) {
+                    if termic_remote::screen::quiz_tabs(lines).is_some() {
+                        if !quizzes.contains_key(&q.id) {
+                            if quizzes.len() > 64 {
+                                quizzes.clear();
+                            }
+                            // Not cached when missing: the transcript may
+                            // not have the tool call yet on first sight.
+                            if let Some(items) = crate::cli_server::claude_quiz(s.host.as_ref(), t) {
+                                quizzes.insert(q.id.clone(), items);
+                            }
+                        }
+                        if let Some(items) = quizzes.get(&q.id) {
+                            termic_remote::screen::attach_quiz(q, lines, items.clone());
+                        }
+                    }
                 }
                 // A server task: the box knows its state, screen and tabs
                 // (server_projects.rs); this machine has no PTY for it.

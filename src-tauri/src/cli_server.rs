@@ -2715,7 +2715,7 @@ fn files_of(host: &dyn CliHost, t: &Task) -> crate::task_host::Host {
 
 /// The claude session transcript of `t`, or why there is none. Shared by
 /// `result` (the last message) and the remote transcript (every turn).
-fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<(PathBuf, crate::task_host::Host), proto::ErrorBody> {
+pub(crate) fn claude_transcript_file(host: &dyn CliHost, t: &Task) -> Result<(PathBuf, crate::task_host::Host), proto::ErrorBody> {
     let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
     // Transcript layout is agent-specific; claude's JSONL is the one
     // reader shipped (docs/plans/cli.md: the RESULT.md file drop stays
@@ -2790,6 +2790,13 @@ pub(crate) fn chat_supported(cli: &str, _on_server: bool) -> bool {
 /// Why a task in the project's own checkout shows no chat (phones, the
 /// transcript view): its folder is shared with other sessions.
 const SHARED_CHECKOUT_CHAT: &str = "This task works in the project's own folder, which other sessions share, so its chat can't be told apart. The Terminal tab shows it.";
+
+/// The questions of the AskUserQuestion Claude is asking in `t`, from its
+/// transcript (screen::attach_quiz checks them against the screen).
+pub(crate) fn claude_quiz(host: &dyn CliHost, t: &Task) -> Option<Vec<termic_remote::wire::QuizItem>> {
+    let (file, fs) = claude_transcript_file(host, t).ok()?;
+    termic_remote::transcript::last_quiz(&fs.read_to_string(&file).ok()?)
+}
 
 pub(crate) fn transcript_turns(host: &dyn CliHost, task: &str) -> Result<(String, Vec<termic_remote::wire::Turn>), String> {
     let (projects, tasks) = host.projects_tasks();

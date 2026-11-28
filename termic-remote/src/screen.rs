@@ -12,7 +12,7 @@
 //! question's id and the host refuses keys for a question that is no
 //! longer on screen (remote_server.rs).
 
-use crate::wire::{Question, QuestionOption};
+use crate::wire::{Question, QuestionOption, Quiz, QuizItem};
 
 /// The visible screen, one string per row, right-trimmed. Starting
 /// mid-stream is fine: TUIs redraw their whole frame, and a garbled first
@@ -267,7 +267,56 @@ pub fn question(lines: &[String]) -> Option<Question> {
     let squash = |s: &str| s.split_whitespace().collect::<String>();
     let labels = rows.iter().map(|(_, o)| squash(&o.label)).collect::<Vec<_>>().join("\u{2}");
     let id = fnv(&format!("{}\u{1}{}\u{1}{labels}", squash(&title), squash(&body)));
-    Some(Question { id, kind: kind.into(), title, body, options })
+    Some(Question { id, kind: kind.into(), title, body, options, quiz: None })
+}
+
+/// Claude's AskUserQuestion tab bar, `←  ☐ Food  ☒ Drink  ✔ Submit  →`:
+/// each question's header and whether it is answered, Submit left out.
+pub fn quiz_tabs(lines: &[String]) -> Option<Vec<(bool, String)>> {
+    let bar = lines.iter().map(|l| l.trim()).find(|l| l.starts_with('←') && l.ends_with('→') && l.contains("Submit"))?;
+    let inner = bar.trim_start_matches('←').trim_end_matches('→');
+    let tabs: Vec<(bool, String)> = inner
+        .split("  ")
+        .map(str::trim)
+        .filter_map(|t| {
+            let mut c = t.chars();
+            let mark = c.next()?;
+            let name = c.as_str().trim().to_string();
+            match mark {
+                '☐' => Some((false, name)),
+                '☒' => Some((true, name)),
+                _ => None,
+            }
+        })
+        .collect();
+    (!tabs.is_empty()).then_some(tabs)
+}
+
+/// `items` (the AskUserQuestion's questions, from the transcript) as the
+/// quiz of `q`, when the screen is that question: a tab bar with the same
+/// headers, the screen's question is one of them, the cursor on one of
+/// its options, and nothing after it answered yet (its ticks are not on
+/// screen). Otherwise `q` stays a one-screen menu.
+pub fn attach_quiz(q: &mut Question, lines: &[String], items: Vec<QuizItem>) {
+    let Some(tabs) = quiz_tabs(lines) else { return };
+    if tabs.len() != items.len() || tabs.iter().zip(&items).any(|((_, h), it)| h != &it.header) {
+        return;
+    }
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let title = squash(&q.title);
+    let Some(current) = items.iter().position(|it| !title.is_empty() && squash(&it.question).ends_with(&title)) else { return };
+    if tabs[current + 1..].iter().any(|(answered, _)| *answered) {
+        return;
+    }
+    let Some(cursor) = q.options.iter().position(|o| o.selected) else { return };
+    let mut items: Vec<QuizItem> = items.into_iter().skip(current).collect();
+    // The first item's ticks, from its rows: "[✔] Pizza".
+    if items[0].multi {
+        for (k, choice) in items[0].options.iter_mut().enumerate() {
+            choice.checked = q.options.get(k).is_some_and(|o| o.label.starts_with("[✔]"));
+        }
+    }
+    q.quiz = Some(Quiz { cursor, items });
 }
 
 /// Spaces before a line's text, after any box border.
@@ -430,6 +479,77 @@ Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel",
         assert_eq!(q.title, "Should the function be named sum or plus?");
         assert!(q.options[0].selected);
         assert_eq!(keys(&q.options[3]), b"\x1b[B\x1b[B\x1b[B\r");
+    }
+
+    /// Claude's AskUserQuestion with two questions, the first multi-select
+    /// (the shape a scratch quiz drew, retyped): the tab bar, `[✔]` ticks,
+    /// a Next row that is no option.
+    fn food_quiz_screen(tabs: &str, cursor_on: usize) -> Vec<String> {
+        let row = |k: usize, label: &str| format!("{} {k}. {label}", if k == cursor_on { '\u{276f}' } else { ' ' });
+        lines(&format!(
+            "\
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+{tabs}
+
+Which foods do you like?
+
+{}
+         Pizza
+{}
+         Tacos
+{}
+     Next
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+  4. Chat about this
+
+Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel",
+            row(1, "[\u{2714}] Pizza"),
+            row(2, "[ ] Tacos"),
+            row(3, "[ ] Type something"),
+        ))
+    }
+
+    fn food_items() -> Vec<QuizItem> {
+        use crate::wire::QuizChoice;
+        let item = |h: &str, q: &str, multi: bool, opts: &[&str]| QuizItem {
+            header: h.into(),
+            question: q.into(),
+            multi,
+            options: opts.iter().map(|l| QuizChoice { label: l.to_string(), ..Default::default() }).collect(),
+        };
+        vec![item("Food", "Which foods do you like?", true, &["Pizza", "Tacos"]), item("Drink", "Which drink?", false, &["Water", "Juice"])]
+    }
+
+    #[test]
+    fn an_ask_user_question_quiz_attaches_from_the_question_on_screen() {
+        let screen = food_quiz_screen("\u{2190}  \u{2612} Food  \u{2610} Drink  \u{2714} Submit  \u{2192}", 2);
+        assert_eq!(quiz_tabs(&screen), Some(vec![(true, "Food".into()), (false, "Drink".into())]));
+        let mut q = question(&screen).expect("a question");
+        attach_quiz(&mut q, &screen, food_items());
+        let quiz = q.quiz.expect("a quiz");
+        assert_eq!(quiz.cursor, 1);
+        assert_eq!(quiz.items.len(), 2);
+        let ticks: Vec<bool> = quiz.items[0].options.iter().map(|o| o.checked).collect();
+        assert_eq!(ticks, [true, false], "the first item's ticks come off the screen");
+    }
+
+    #[test]
+    fn a_quiz_does_not_attach_when_the_screen_is_not_that_quiz() {
+        // A later question already answered: its ticks are not on screen.
+        let answered = food_quiz_screen("\u{2190}  \u{2610} Food  \u{2612} Drink  \u{2714} Submit  \u{2192}", 1);
+        let mut q = question(&answered).unwrap();
+        attach_quiz(&mut q, &answered, food_items());
+        assert!(q.quiz.is_none());
+        // Other headers: the transcript's last quiz is not this one.
+        let other = food_quiz_screen("\u{2190}  \u{2610} Lunch  \u{2610} Drink  \u{2714} Submit  \u{2192}", 1);
+        let mut q = question(&other).unwrap();
+        attach_quiz(&mut q, &other, food_items());
+        assert!(q.quiz.is_none());
+        // No tab bar at all.
+        let plain = lines("Pick one?\n\n\u{276f} 1. A\n  2. B\n\nEnter to confirm");
+        let mut q = question(&plain).unwrap();
+        attach_quiz(&mut q, &plain, food_items());
+        assert!(q.quiz.is_none());
     }
 
     /// The shape of Claude's Bash permission prompt (retyped, synthetic): the

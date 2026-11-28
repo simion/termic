@@ -428,6 +428,43 @@ pub struct Question {
     pub body: String,
     /// The agent's own options, in order, verbatim.
     pub options: Vec<QuestionOption>,
+    /// Claude's AskUserQuestion with several questions or a multi-select
+    /// one: every question still to answer, read from its transcript, so a
+    /// phone answers them all and submits once. Absent: answer `options`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiz: Option<Quiz>,
+}
+
+/// The questions of an AskUserQuestion from the one on screen onward. The
+/// client types its answers itself (see the phone's quizKeys): `cursor` is
+/// the highlighted row of the first item, and each later item starts on
+/// its first row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Quiz {
+    pub cursor: usize,
+    pub items: Vec<QuizItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QuizItem {
+    pub header: String,
+    pub question: String,
+    /// Several answers (Enter toggles a row, Tab moves on) or one (Enter
+    /// picks it and moves on).
+    pub multi: bool,
+    pub options: Vec<QuizChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QuizChoice {
+    pub label: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Ticked on screen already (multi-select, the first item only).
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

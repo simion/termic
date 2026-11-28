@@ -695,9 +695,52 @@ pub fn last_assistant_text(jsonl: &str) -> Option<String> {
     None
 }
 
+/// The questions of the last AskUserQuestion in a Claude Code JSONL
+/// transcript, as asked (screen::attach_quiz checks they are the ones on
+/// screen). None when there is none or its input is not that shape.
+pub fn last_quiz(jsonl: &str) -> Option<Vec<crate::wire::QuizItem>> {
+    use crate::wire::{QuizChoice, QuizItem};
+    for line in jsonl.lines().rev() {
+        if !line.contains("AskUserQuestion") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) else { continue };
+        let Some(input) = blocks.iter().rev().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use") && b.get("name").and_then(|n| n.as_str()) == Some("AskUserQuestion")).and_then(|b| b.get("input")) else { continue };
+        let str_of = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let items: Vec<QuizItem> = input.get("questions")?.as_array()?.iter().map(|q| QuizItem {
+            header: str_of(q, "header"),
+            question: str_of(q, "question"),
+            multi: q.get("multiSelect").and_then(|m| m.as_bool()).unwrap_or(false),
+            options: q.get("options").and_then(|o| o.as_array()).into_iter().flatten()
+                .map(|o| QuizChoice { label: str_of(o, "label"), description: str_of(o, "description"), checked: false })
+                .collect(),
+        }).collect();
+        let ok = !items.is_empty() && items.iter().all(|i| !i.question.is_empty() && !i.options.is_empty());
+        return ok.then_some(items);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_ask_user_question_reads_as_a_quiz() {
+        let jsonl = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Old?","header":"Old","options":[{"label":"A"}]}]}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Two questions."},{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Which foods do you like?","header":"Food","multiSelect":true,"options":[{"label":"Pizza","description":"Hot"},{"label":"Tacos"}]},{"question":"Which drink?","header":"Drink","options":[{"label":"Water"},{"label":"Juice"}]}]}}]}}"#,
+            r#"{"type":"user","message":{"content":"unrelated"}}"#,
+        ]
+        .join("\n");
+        let q = last_quiz(&jsonl).expect("a quiz");
+        assert_eq!(q.len(), 2);
+        assert_eq!((q[0].header.as_str(), q[0].multi, q[0].options.len()), ("Food", true, 2));
+        assert_eq!(q[0].options[0].description, "Hot");
+        assert_eq!((q[1].question.as_str(), q[1].multi), ("Which drink?", false));
+        assert!(last_quiz(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"no"}]}}"#).is_none());
+    }
 
     #[test]
     fn parse_turns_reads_prompts_replies_and_tool_calls() {
