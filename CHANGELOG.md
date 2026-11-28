@@ -4,6 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.0] - 2026-11-28
+
+Separate phone delays for "needs you" and "done", set from the phone too.
+
+### Features
+- Notify paired phones now has two delays: when an agent needs you (default 30 seconds away from this computer) and when one finished (default 2 minutes). Each runs from right away to never.
+- The same two delays can be changed from Termic Remote on the phone. Both places show the same values.
+
 ## [2.3.1] - 2026-11-27
 
 Phones stay quiet while you are at your computer.
