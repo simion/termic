@@ -4,6 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.1] - 2026-11-28
+
+A task you leave selected now notifies your phone too.
+
+### Bug fixes
+- Paired phones were never told about the task selected in Termic's window: a task you started and left on screen before walking away finished, or waited for you, without a push. The selected task now silences only the desktop banner; the phone still hears it once you have been away for the delay you set.
+
 ## [2.4.0] - 2026-11-28
 
 Separate phone delays for "needs you" and "done", set from the phone too.

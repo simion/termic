@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.4.1",
+      "date": "2026-11-28",
+      "summary": "A task you leave selected now notifies your phone too."
+    },
+    {
       "version": "2.4.0",
       "date": "2026-11-28",
       "summary": "Separate phone delays for \"needs you\" and \"done\", set from the phone too."
