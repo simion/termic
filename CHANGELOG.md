@@ -4,6 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.4] - 2026-11-28
+
+The phone shows the worktree creation log while a task starts.
+
+### Features
+- Starting a task from Termic Remote shows the same creation log the desktop shows (worktree, file copy, setup script) while it is created. `termic new` prints those lines too.
+
 ## [2.4.3] - 2026-11-28
 
 Reviews started from the phone match the desktop's.

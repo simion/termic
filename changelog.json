@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.4.4",
+      "date": "2026-11-28",
+      "summary": "The phone shows the worktree creation log while a task starts."
+    },
+    {
       "version": "2.4.3",
       "date": "2026-11-28",
       "summary": "Reviews started from the phone match the desktop's."
