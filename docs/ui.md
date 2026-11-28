@@ -2980,7 +2980,9 @@ renderers, the notifier and the queue gate care.
 
 There is a FOURTH rendering, and it is the one that makes the others worth
 having: `idle` + delegated, the same dashed ring. A done on the tab you are looking
-at is acknowledged straight to idle (`isUserWatching`), and idle draws no
+at is acknowledged straight to idle (`isUserWatching`: the tab on screen, the
+window focused, and input in Termic within `WATCH_IDLE_MS`, 2 minutes, so a
+window left frontmost while you walk away does not count), and idle draws no
 badge at all, so without this the decoration is invisible in the common case
 and a task with two subagents running looks exactly like an inert one. It is
 last in every precedence chain: failed > attention > partial > done >

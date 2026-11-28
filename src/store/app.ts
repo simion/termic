@@ -1,6 +1,7 @@
 // Single Zustand store. Mirrors the legacy `state` object but with React-shaped
 // updates (immutable replacements, not in-place mutations).
 
+import { sinceLastInput } from "@/lib/userPresence";
 import { create } from "zustand";
 import { logWorkState } from "@/lib/workStateLog";
 import { useUI } from "@/store/ui";
@@ -798,8 +799,16 @@ export function isUserWatchingIn(s: AppState, taskId: string, tabId?: string): b
   // so they came back to a task that had quietly gone idle with no badge and
   // no notification. `windowless` alone only covered the window being CLOSED.
   if (!ui.windowFocused) return false;
+  // A frontmost window nobody has touched for a while is not somebody
+  // watching either: start a task, walk away, and its done would be
+  // acknowledged as seen (no dot, no banner) on a screen with nobody at it.
+  if (sinceLastInput() > WATCH_IDLE_MS) return false;
   return isTabOnScreenIn(s, taskId, tabId);
 }
+
+/** How long without input in Termic before "watching" lapses: long enough to
+ *  read along while an agent works, short enough that walking away counts. */
+export const WATCH_IDLE_MS = 2 * 60_000;
 
 /** `isUserWatchingIn` against the current store. */
 export function isUserWatching(taskId: string, tabId?: string): boolean {

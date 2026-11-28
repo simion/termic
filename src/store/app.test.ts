@@ -30,7 +30,9 @@ vi.mock("@/lib/agents", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, useApp } from "@/store/app";
+import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, useApp, WATCH_IDLE_MS } from "@/store/app";
+import { initUserPresence } from "@/lib/userPresence";
+initUserPresence();
 import * as ipc from "@/lib/ipc";
 import { markUnattendedSpawn, takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import type { QueueItem, PaneLeaf, Tab, TerminalTab, PersistedTab } from "@/lib/types";
@@ -111,6 +113,30 @@ describe("setWorkState", () => {
   // isUserWatching is the predicate fireDone, seenAtIdle, forwardNotification
   // and useAttentionNotifier all gate on. If it wrongly reports "watching"
   // while windowless, every completion signal is suppressed at once.
+  // A window left frontmost while you walk away: after WATCH_IDLE_MS with no
+  // input it stops counting as watching, so the done gets its dot (and the
+  // phone, the desktop banner) instead of being swallowed as seen.
+  it("isUserWatching lapses after WATCH_IDLE_MS without input, and comes back on input", () => {
+    vi.useFakeTimers();
+    try {
+      const taskId = "watch-idle";
+      const tab = makeTermTab({ workState: "working" });
+      addTab(taskId, tab);
+      focusTab(taskId, tab.id);
+      useUI.getState().setWindowless(false);
+      window.dispatchEvent(new KeyboardEvent("keydown"));
+      expect(isUserWatching(taskId, tab.id)).toBe(true);
+      vi.advanceTimersByTime(WATCH_IDLE_MS + 1000);
+      expect(isUserWatching(taskId, tab.id)).toBe(false);
+      useApp.getState().setWorkState(taskId, tab.id, "done");
+      expect(getTabWorkState(taskId, tab.id)).toBe("done");
+      window.dispatchEvent(new KeyboardEvent("keydown"));
+      expect(isUserWatching(taskId, tab.id)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("isUserWatching is false while windowless, whatever the store says", () => {
     const taskId = "watch-1";
     const tab = makeTermTab();
