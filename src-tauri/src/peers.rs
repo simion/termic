@@ -2157,7 +2157,7 @@ impl Node {
     /// One verb from a stream client, under its grant: what `/call` did for
     /// a paired computer (its grant, its reply contacts, the signature
     /// rewrite, the protocol check), and Drive for a phone.
-    pub(crate) fn run_stream_call(&self, client: &crate::remote_server::StreamClient, req: Request, proto_v: Option<u32>) -> Reply {
+    pub(crate) fn run_stream_call(&self, client: &crate::remote_server::StreamClient, req: Request, proto_v: Option<u32>, sink: &mut dyn crate::cli_server::EventSink) -> Reply {
         use termic_remote::wire::ClientKind;
         let us = self.self_name();
         let cmd = sanitize(&req.cmd);
@@ -2202,7 +2202,7 @@ impl Node {
         crate::mcp_server::clamp_wait(&mut cmd);
         let inner = Request { id: req.id.clone(), token: None, profile: req.profile.clone(), peer: None, from_task: None, cmd };
         crate::cli_server::with_peer_origin(|| {
-            crate::cli_server::dispatch_authenticated(&inner, self.host.as_ref(), &mut crate::mcp_server::NoopSink)
+            crate::cli_server::dispatch_authenticated(&inner, self.host.as_ref(), sink)
         })
     }
 

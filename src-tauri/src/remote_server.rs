@@ -447,17 +447,36 @@ fn call(s: &Session, id: &str, req: serde_json::Value, proto: Option<u32>) -> Re
         Ok(r) => r,
         Err(e) => return Reply::err(id, ErrorCode::BadRequest, format!("malformed request: {e}")),
     };
-    let mut reply = s.node.run_stream_call(&s.client, req, proto);
+    let mut sink = CallSink { s, id };
+    let mut reply = s.node.run_stream_call(&s.client, req, proto, &mut sink);
     if let Some(fresh) = fresh_req {
         let no_session = reply.error.as_ref().is_some_and(|e| e.message.contains("no prior agent session") || e.message.contains("no agent session to resume"));
         if no_session {
             if let Ok(r) = serde_json::from_value::<Request>(fresh) {
-                reply = s.node.run_stream_call(&s.client, r, proto);
+                reply = s.node.run_stream_call(&s.client, r, proto, &mut sink);
             }
         }
     }
     reply.id = id.to_string();
     reply
+}
+
+/// A call's progress, to the phone that made it: the creation log of a
+/// `new`. Computers are not sent it (their decoder predates the type).
+struct CallSink<'a> {
+    s: &'a Session,
+    id: &'a str,
+}
+
+impl crate::cli_server::EventSink for CallSink<'_> {
+    fn emit(&mut self, ev: &termic_proto::StreamEvent) -> std::io::Result<()> {
+        if self.s.client.kind == ClientKind::Phone && ev.event == "setup_output" {
+            if let Some(data) = &ev.data {
+                send(self.s, ServerMsg::CallProgress { id: self.id.to_string(), data: data.clone() });
+            }
+        }
+        Ok(())
+    }
 }
 
 // ───────────────────────────── terminal ──────────────────────────────

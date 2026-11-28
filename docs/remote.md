@@ -75,6 +75,8 @@ One long-lived connection, client to host.
   `term_open` / `term_input` / `term_close` / `resync`, `term_size` (to
   a host offering `resize` only), `keys`,
   `interrupt`, `transcript`, `ping`. Host: `welcome`, `tasks`, `reply`,
+  `call_progress` (phones only: a `new` call's creation log, the
+  worktree add, copy and setup lines the desktop shows while creating),
   `term_reset` / `term_data` / `term_resize` / `term_closed`, `ack`,
   `transcript`, `pong`, `error`.
 - **Versions.** Additive: unknown types and fields are ignored, the hello

@@ -230,6 +230,10 @@ pub enum ServerMsg {
     /// change, never a delta: a client that misses one gets the next.
     Tasks { tasks: Vec<TaskRow> },
     Reply { id: String, reply: Value },
+    /// Output while call `id` runs: today the creation log and setup
+    /// script of a `new`, the lines the desktop shows while it creates.
+    /// Sent to phones only; an older phone ignores the type.
+    CallProgress { id: String, data: String },
     /// The terminal from scratch: its size and the retained output to
     /// replay. Sent on open, after `resync`, and when the client fell behind.
     TermReset {

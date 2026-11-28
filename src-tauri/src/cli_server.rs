@@ -1749,12 +1749,16 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
                 return;
             }
             sink_dead = match p {
-                RpcProgress::Value(v) => match v.get("setupOutput").and_then(|d| d.as_str()) {
-                    Some(data) => {
-                        sink.emit(&StreamEvent::setup_output(id, data.to_string())).is_err()
+                RpcProgress::Value(v) => {
+                    // The setup script's raw output, or one line of the
+                    // creation log the desktop shows (worktree add, copy).
+                    let data = v.get("setupOutput").and_then(|d| d.as_str()).map(str::to_string)
+                        .or_else(|| v.get("createLine").and_then(|d| d.as_str()).map(|l| format!("{l}\n")));
+                    match data {
+                        Some(data) => sink.emit(&StreamEvent::setup_output(id, data)).is_err(),
+                        None => false,
                     }
-                    None => false,
-                },
+                }
                 RpcProgress::Idle => sink.emit(&StreamEvent::heartbeat(id)).is_err(),
             };
         };
@@ -6770,6 +6774,7 @@ pub(crate) mod test_support {
         pub(crate) rpc_calls: Mutex<Vec<(String, serde_json::Value)>>,
         /// Setup chunks fed through on_progress before a new_task result.
         pub(crate) setup_chunks: Vec<String>,
+        pub(crate) create_lines: Vec<String>,
         /// Tasks "created" by a scripted new_task rpc (appended to
         /// `tasks` on the reload handle_new performs).
         pub(crate) extra_tasks: Mutex<Vec<Task>>,
@@ -6844,6 +6849,7 @@ pub(crate) mod test_support {
                 rpc_results: Mutex::new(HashMap::new()),
                 rpc_calls: Mutex::new(Vec::new()),
                 setup_chunks: Vec::new(),
+                create_lines: Vec::new(),
                 extra_tasks: Mutex::new(Vec::new()),
                 renames: Mutex::new(HashMap::new()),
                 killed: Mutex::new(Vec::new()),
@@ -6983,6 +6989,9 @@ pub(crate) mod test_support {
             timeout: Duration,
             on_progress: &mut dyn FnMut(RpcProgress),
         ) -> Result<serde_json::Value, String> {
+            for line in &self.create_lines {
+                on_progress(RpcProgress::Value(serde_json::json!({ "createLine": line })));
+            }
             for chunk in &self.setup_chunks {
                 on_progress(RpcProgress::Value(serde_json::json!({ "setupOutput": chunk })));
             }
@@ -7575,6 +7584,21 @@ mod tests {
             pr: None,
             members: Vec::new(),
         }
+    }
+
+    /// The creation log the desktop shows (one line per event, no newline)
+    /// streams ahead of the setup script, a line each, for a phone or the CLI.
+    #[test]
+    fn new_streams_the_creation_log_before_setup_output() {
+        let mut host = StubHost::default();
+        host.create_lines = vec!["Creating worktree".into(), "Copying .env".into()];
+        host.setup_chunks = vec!["npm install\n".into()];
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let mut sink = VecSink::default();
+        let reply = handle_request(&req(new_cmd("shiny", Some("web")), Some("tok")), &host, &mut sink);
+        assert!(reply.ok, "{reply:?}");
+        let data: Vec<&str> = sink.events.iter().filter(|e| e.event == "setup_output").filter_map(|e| e.data.as_deref()).collect();
+        assert_eq!(data, ["Creating worktree\n", "Copying .env\n", "npm install\n"]);
     }
 
     #[test]

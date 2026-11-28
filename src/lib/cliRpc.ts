@@ -20,7 +20,7 @@
 
 import { fetchPrForReview, checkoutPrInMain, prReviewPrompt } from "@/lib/prReview";
 import { invoke } from "@tauri-apps/api/core";
-import { type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { planTaskMove, type MovePlace } from "@/lib/taskMove";
 import { useApp, tabFromPersisted } from "@/store/app";
@@ -195,7 +195,19 @@ async function mainCheckoutSandbox(
 /** Create the task (inside the app-wide create lock) the same way the
  *  GUI would: derived + auto-numbered branch for worktrees, the shared
  *  repo checkout for main mode. */
-async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
+async function createTask(p: NewTaskParams, mode: NewTaskMode, progress: Progress): Promise<Task> {
+  // The creation log the desktop shows (worktree add, file copy, member
+  // setup) on setup-output://<id>, forwarded so a phone or the CLI sees it.
+  const id = crypto.randomUUID();
+  const unlisten = await listen<{ line: string }>(`setup-output://${id}`, ev => progress({ createLine: ev.payload.line })).catch(() => null);
+  try {
+    return await createTaskWithId(id, p, mode);
+  } finally {
+    unlisten?.();
+  }
+}
+
+async function createTaskWithId(id: string, p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
   const checkout = checkoutBranchOf(p);
   let name = (p.name ?? "").trim();
   // `new --checkout` may leave the name to us: the branch minus its remote,
@@ -231,7 +243,7 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
     // it out as it exists, and an unknown one is an error, not a new branch.
     if (checkout) {
       return taskCreate({
-        id: crypto.randomUUID(),
+        id,
         project_id: p.projectId,
         name,
         cli,
@@ -256,7 +268,7 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       // Member branch and base stay unset, so Rust falls back to the task
       // branch and each member's own base, as the dialog does.
       return taskCreateMulti({
-        id: crypto.randomUUID(),
+        id,
         project_id: p.projectId,
         name,
         cli,
@@ -268,7 +280,7 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       });
     }
     return taskCreate({
-      id: crypto.randomUUID(),
+      id,
       project_id: p.projectId,
       name,
       cli,
@@ -465,7 +477,7 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
       ? "repo_root"
       : checkout || p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
 
-  const task = importing ? await importTask(p) : await createTask(p, mode);
+  const task = importing ? await importTask(p) : await createTask(p, mode, progress);
   // Before anything mounts, so the first spawn composes the flags in.
   // (The import path carried yolo in the create payload itself.)
   if (!importing && p.yolo) await taskSetYolo(task.id, true).catch(() => {});
