@@ -66,6 +66,7 @@ import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
 import { isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
+import { pushPhonesForTask } from "@/lib/phonePush";
 import { wrapWithDotEnv, loadTaskDotEnv } from "@/lib/dotenv";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { commandShell, loginShell, loginShellArgs } from "@/lib/loginShell";
@@ -720,6 +721,9 @@ const captureArmedRef = useRef(false);
       // Named in the trace because it is indistinguishable from "no done ever
       // fired" once it has happened, and the two have opposite causes.
       app.setWorkState(task.id, tab.id, "idle", `done-while-watching: ${reason}`);
+      // Seen here means no badge, not that you are at the computer: a phone
+      // that is away still hears it (Rust's idle delay decides; lib/phonePush).
+      pushPhonesForTask(task.id, false);
       return true;
     }
     debugLogRef.current?.("state→done", reason);

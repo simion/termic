@@ -311,14 +311,16 @@ function ring(alerts: RemoteAlert[]) {
     const { desktopNotifications } = usePrefs.getState();
     const open = useRemote.getState().open;
     for (const a of alerts) {
-      if (open?.machine === a.machine && open?.task === a.task && document.hasFocus()) continue;
+      // Looking at it here: no desktop banner; phones still hear it (Rust's
+      // idle delay decides whether anyone is at this computer).
+      const watching = open?.machine === a.machine && open?.task === a.task && document.hasFocus();
       const key = `${a.machine}:${a.task}:${a.kind}`;
       const now = Date.now();
       if ((lastAlerted.get(key) ?? 0) + ALERT_DEBOUNCE_MS > now) continue;
       lastAlerted.set(key, now);
       const title = `${a.machineName} · ${a.project} · ${a.taskName}`;
       const body = a.kind === "waiting" ? (a.question || i18n.t("remote:alert.waiting")) : i18n.t("remote:alert.done");
-      if (desktopNotifications) notify(title, body, undefined, { sound: a.kind === "done", attention: a.kind === "waiting" }).catch(() => {});
+      if (desktopNotifications && !watching) notify(title, body, undefined, { sound: a.kind === "done", attention: a.kind === "waiting" }).catch(() => {});
       pushPhones(title, body, null, a.kind === "waiting");
     }
   });

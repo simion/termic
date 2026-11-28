@@ -61,10 +61,10 @@ export function useAttentionNotifier() {
           // Termic is exactly when the notification is the ONLY way to learn
           // an agent finished, so suppressing it there is backwards. Shared
           // predicate so this cannot drift from fireDone / setWorkState.
+          // Watching it here: no desktop banner. Phones still hear it: a
+          // frontmost window says nothing about whether anyone is at it, and
+          // Rust holds the push back while this computer has input.
           const watching = isUserWatching(taskId);
-          // Watching it here: no banner, and no phone either (Rust holds a
-          // push back while this computer has input anyway).
-          if (watching) continue;
           const key = `${taskId}:${t.id}`;
           const now = Date.now();
           if ((lastFiredRef.current[key] || 0) + DEBOUNCE_MS > now) continue;
