@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "2.4.3",
+      "date": "2026-11-28",
+      "summary": "Reviews started from the phone match the desktop's."
+    },
+    {
       "version": "2.4.2",
       "date": "2026-11-28",
       "summary": "Walk away from a task on screen and it still gets its badge."

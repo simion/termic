@@ -4,6 +4,13 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [2.4.3] - 2026-11-28
+
+Reviews started from the phone match the desktop's.
+
+### Features
+- A pull request review started from Termic Remote is named after the PR's branch, like one started from the Review a PR dialog, and keeps any extra instructions typed on the phone after the review prompt.
+
 ## [2.4.2] - 2026-11-28
 
 Walk away from a task on screen and it still gets its badge.
