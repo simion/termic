@@ -1165,6 +1165,7 @@ const TOOLS: &[ToolDef] = &[
         destructive: false,
         read_only: false,
         build: |a| Ok(Command::New {
+            name_from_branch: false,
             name: need_str(a, "name")?,
             prompt: arg_str(a, "prompt")?,
             prompt_ref: arg_str(a, "library")?,
@@ -1223,6 +1224,7 @@ const TOOLS: &[ToolDef] = &[
             }
             .ok_or_else(|| "\"pr\" must be a pull request number or link".to_string())?;
             Ok(Command::New {
+                name_from_branch: false,
                 name: String::new(),
                 prompt: arg_str(a, "prompt")?,
                 prompt_ref: arg_str(a, "library")?,

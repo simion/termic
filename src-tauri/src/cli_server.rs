@@ -1393,6 +1393,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         parent_task,
         parent_tab,
         pr,
+        name_from_branch,
         members,
     } = &req.cmd
     else {
@@ -1456,15 +1457,18 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     }
     let review_name = pr.map(|n| format!("review-pr-{n}"));
     let mut trimmed = name.trim();
-    // A review is named after its PR unless the caller named it.
-    if trimmed.is_empty() {
+    // A review is named after its PR unless the caller named it, or asked
+    // for the PR's branch (`name_from_branch`, the dialog's naming): then
+    // the webview fills it in once it has fetched the PR.
+    let branch_named = pr.is_some() && *name_from_branch;
+    if trimmed.is_empty() && !branch_named {
         if let Some(n) = review_name.as_deref() {
             trimmed = n;
         }
     }
     // With `from` or `checkout` the name is optional: the webview derives
     // it from the branch, as the GUI import and checkout do.
-    if trimmed.is_empty() && from.is_none() && checkout.is_none() {
+    if trimmed.is_empty() && from.is_none() && checkout.is_none() && !branch_named {
         return fail(ErrorCode::BadRequest, "the task name is empty".into());
     }
     // An empty prompt would mint a prompt id nothing ever reports on
@@ -7547,6 +7551,7 @@ mod tests {
 
     fn new_cmd(name: &str, project: Option<&str>) -> Command {
         Command::New {
+            name_from_branch: false,
             name: name.into(),
             prompt: None,
             prompt_ref: None,
@@ -11703,6 +11708,28 @@ mod tests {
         // builtin is not a review prompt however it is titled.
         assert_eq!(params["prompt"], "Run the deep-review skill.");
         assert!(params["promptId"].is_string(), "a review always carries a prompt");
+    }
+
+    /// Termic Remote asks for the dialog's naming: no review-pr-<n> default,
+    /// the webview names it after the PR's branch. The picked prompt and
+    /// the phone's extra text still compose into one prompt.
+    #[test]
+    fn review_with_name_from_branch_leaves_the_name_to_the_webview() {
+        let host = StubHost::default();
+        host.script_rpc("list_prompts", Ok(review_lib()));
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let mut cmd = review_cmd(42);
+        if let Command::New { name_from_branch, prompt, .. } = &mut cmd {
+            *name_from_branch = true;
+            *prompt = Some("If nothing is blocking, approve it.".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, params) = calls.iter().find(|(m, _)| m == "new_task").expect("new_task called");
+        assert_eq!(params["name"], "", "the webview names it after the PR's branch");
+        assert_eq!(params["pr"], 42);
+        assert_eq!(params["prompt"], "Run the deep-review skill.\n\nIf nothing is blocking, approve it.");
     }
 
     #[test]

@@ -159,7 +159,8 @@ interface NewTaskParams {
   /** `termic review` / MCP `task_review` (v21): review this PR. Its head is
    *  fetched and becomes the checkout; the prompt (the server already
    *  resolved the review library prompt into it) gets the PR's details in
-   *  front. The server derived `name` as review-pr-<n> when none was given. */
+   *  front. The server derived `name` as review-pr-<n> when none was given,
+   *  unless the caller asked for the PR's branch (`name_from_branch`). */
   pr?: number;
   /** `new --member` (v24): members of a multi-repo project, already resolved
    *  from names, ordered and given their mode by the server against the
@@ -301,14 +302,17 @@ async function reviewParams(p: NewTaskParams, n: number): Promise<NewTaskParams>
   }
   const { pr, branch } = await fetchPrForReview(p.projectId, n);
   const prompt = typeof p.prompt === "string" && p.prompt ? prReviewPrompt(pr, p.prompt) : p.prompt;
+  // No name (`name_from_branch`, Termic Remote): the PR's branch, as the
+  // Review a PR dialog names it (prReviewTask.startPrReview).
+  const name = (p.name ?? "").trim() || branch;
   if (p.mode === "main") {
     const res = await checkoutPrInMain(p.projectId, branch);
     if (res.conflicted) {
       throw new Error(`checking out ${branch} in the main checkout conflicted with local changes; they are stashed, resolve it in Termic or review in a worktree`);
     }
-    return { ...p, prompt };
+    return { ...p, name, prompt };
   }
-  return { ...p, prompt, checkout: branch, mode: "worktree" };
+  return { ...p, name, prompt, checkout: branch, mode: "worktree" };
 }
 
 /** Rust's import refusals cross the string-only RPC error channel with the

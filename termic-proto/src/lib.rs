@@ -594,6 +594,13 @@ pub enum Command {
         /// and `checkout`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pr: Option<u64>,
+        /// With `pr` and no `name`: name the task after the PR's branch, as
+        /// the Review a PR dialog does, instead of `review-pr-<n>` (the CLI
+        /// and MCP default). Termic Remote sends it so a review started from
+        /// the phone is the same task the desktop would have made. An older
+        /// server ignores it and uses `review-pr-<n>`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        name_from_branch: bool,
         /// v24: multi-repo projects only. Member NAMES as the caller typed
         /// them (`--member`); the server resolves them against the project,
         /// refuses an unknown one, and forwards root_paths. Empty = the

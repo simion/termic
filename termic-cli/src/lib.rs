@@ -2844,6 +2844,7 @@ fn execute_new(
         .transpose()?;
     let task_agent_args = compose_task_agent_args(agent_args, model.as_deref());
     let wire = proto::Command::New {
+        name_from_branch: false,
         name: name.clone().unwrap_or_default(),
         prompt,
         prompt_ref: library.clone(),
@@ -2887,6 +2888,7 @@ fn execute_review(
         .ok_or_else(|| CliError::new(exit_code::ERROR, format!("\"{pr}\" is not a pull request")))?;
     let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
     let wire = proto::Command::New {
+        name_from_branch: false,
         name: String::new(),
         prompt,
         prompt_ref: library.clone(),
