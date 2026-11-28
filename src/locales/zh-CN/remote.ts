@@ -44,7 +44,7 @@ export default {
     kindLan: "当前网络",
     kindTailscale: "Tailscale",
     kindOther: "其他网络",
-    noVpn: "请在与这台电脑相同的网络下扫描:配对需要这样做一次。离开这个网络后,手机可以通过你设置的 VPN(路由器自带的,或两边都装 Tailscale,然后重新打开这里让二维码包含它)连接,或通过 Termic Remote Pro 的加密中转连接,这里无需任何设置。",
+    noVpn: "请在与这台电脑相同的网络下扫描:配对需要这样做一次。离开这个网络后,手机可以通过你设置的 VPN(路由器 VPN、Tailscale、ZeroTier、WireGuard;设置好后重新打开这里,让二维码包含它)连接,或通过 Termic Remote Pro 的加密中转连接,这里无需任何设置。",
     warning: "任何扫描这个二维码的人都能控制这台电脑上的代理。只用你自己的手机扫描。",
     noNetwork: "这台电脑没有连接网络。请先连接 Wi-Fi,然后重新打开这里。",
     helpToggle: "手机连不上?",

@@ -45,7 +45,7 @@ export default {
     kindLan: "This network",
     kindTailscale: "Tailscale",
     kindOther: "Other network",
-    noVpn: "Scan this on the same network as this computer: pairing needs it once. Away from this network the phone gets in through a VPN you set up (your router's, or Tailscale on both, then open this again so the code includes it), or through Termic's encrypted relay with Termic Remote Pro, which needs nothing here.",
+    noVpn: "Scan this on the same network as this computer: pairing needs it once. Away from this network the phone gets in through a VPN you set up (router VPN, Tailscale, ZeroTier, WireGuard; open this again after setting it up so the code includes it), or through Termic's encrypted relay with Termic Remote Pro, which needs nothing here.",
     warning: "Anyone who scans this code can control the agents on this computer. Only scan it with your own phone.",
     noNetwork: "This computer is not on a network. Connect to Wi-Fi, then open this again.",
     helpToggle: "Phone can't connect?",
